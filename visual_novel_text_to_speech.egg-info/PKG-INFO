@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: visual-novel-text-to-speech
+Version: 0.1.0
+Summary: Desktop app for converting visual novel text to speech
+Author: Eugene
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6>=6.6
+Requires-Dist: pyttsx3>=2.90
+Provides-Extra: dev
+Requires-Dist: pyinstaller; extra == "dev"
+
+# Text To Speach Generator for Visual Novels
+
+pip install pyside6
+
+pip show pyside6
+
+one test for PySide6 - python assignment/tests/test.py

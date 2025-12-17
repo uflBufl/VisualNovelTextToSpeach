@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+visual_novel_text_to_speech.egg-info/PKG-INFO
+visual_novel_text_to_speech.egg-info/SOURCES.txt
+visual_novel_text_to_speech.egg-info/dependency_links.txt
+visual_novel_text_to_speech.egg-info/requires.txt
+visual_novel_text_to_speech.egg-info/top_level.txt

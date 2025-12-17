@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visual-novel-text-to-speech"
+version = "0.1.0"
+description = "Desktop app for converting visual novel text to speech"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+authors = [
+    { name = "Eugene" }
+]
+
+dependencies = [
+    "PySide6>=6.6",
+    "pyttsx3>=2.90",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller",
+]
+
+[tool.setuptools]
+packages = []
