@@ -9,11 +9,9 @@
 
 ## Commands
 
+To Espeak instalation(necessary for sound output)
 ```sh
-pip install .
-
-python assignment/tests/test.py(PySide6)
-python assignment/tests/voice_test.py(pyttsx3)
+brew install espeak-ng
 ```
 
 UV installation:
@@ -26,6 +24,7 @@ uv add <name>
 
 To sync dependecies:
 ```sh
+uv lock --refresh
 uv sync
 ```
 
