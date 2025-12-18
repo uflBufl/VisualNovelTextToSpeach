@@ -24,6 +24,7 @@ dependencies = [
     "pytesseract>=0.3.13",
     "TTS>=0.22.0",
     "sounddevice>=0.4.6",
+    "nbstripout>=0.8.2",
 ]
 
 [project.optional-dependencies]
