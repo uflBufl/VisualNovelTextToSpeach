@@ -22,6 +22,13 @@ To Espeak instalation(necessary for sound output):
 UV installation:
 https://docs.astral.sh/uv/getting-started/installation/
 
+To run vntts:
+```sh
+uv run -m vntts
+```
+
+### Development
+
 To add dependecies:
 ```sh
 uv add <name>
@@ -29,8 +36,8 @@ uv add <name>
 
 To sync dependecies:
 ```sh
-uv lock --refresh
 uv sync
+uv lock --refresh
 ```
 
 Activate venv:
@@ -38,7 +45,7 @@ Activate venv:
 ./venv/Scripts/activate
 ```
 
-Run jupyter notebook:
+Run jupyter notebook to experement with images and OCR (notebooks are in exps directory):
 ```sh
 uv run --with jupyter jupyter lab
 ```

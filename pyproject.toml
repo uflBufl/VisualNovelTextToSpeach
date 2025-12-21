@@ -24,8 +24,16 @@ dependencies = [
     "pytesseract>=0.3.13",
     "TTS>=0.22.0",
     "sounddevice>=0.4.6",
-    "nbstripout>=0.8.2",
     "mss>=10.1.0",
+    "pynput>=1.8.1",
+    
+    "torch<2.9"
+]
+
+[dependency-groups]
+dev = [
+    "nbstripout>=0.8.2",
+    "deptree>=0.0.12",
 ]
 
 [project.optional-dependencies]
