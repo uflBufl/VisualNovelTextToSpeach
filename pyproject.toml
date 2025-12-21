@@ -16,18 +16,32 @@ authors = [
 ]
 
 dependencies = [
-    "PySide6>=6.6",
-    "pyttsx3>=2.90",
-    "numpy>=1.24,<2.0",
-    "pandas>=1.5,<2.0",
-    "matplotlib>=3.9.4",
-    "pytesseract>=0.3.13",
-    "TTS>=0.22.0",
-    "sounddevice>=0.4.6",
+    # Core
+    "coqui-tts>=0.27.3",
+    "sounddevice>=0.5.3",
     "mss>=10.1.0",
     "pynput>=1.8.1",
-    
-    "torch<2.9"
+    "torch<2.9",
+    "torchaudio<2.9",
+    "pytesseract>=0.3.13",
+    # Inteface
+    "PySide6>=6.6",
+    # Notebook
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "matplotlib>=3.9.4",
+    # Needs eSpeak to run
+    # "pyttsx3>=2.90",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [dependency-groups]
@@ -40,6 +54,16 @@ dev = [
 dev = [
     "pyinstaller",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.setuptools]
 packages = []

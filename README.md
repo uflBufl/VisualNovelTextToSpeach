@@ -17,6 +17,11 @@ To Espeak instalation(necessary for sound output):
   ```
 - Windows and Linux: https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md
 
+## CUDA
+
+Needs to execute TTS on GPU. If not, will be executed on CPU. Download here:
+https://developer.nvidia.com/cuda-downloads
+
 ## Commands
 
 UV installation:
