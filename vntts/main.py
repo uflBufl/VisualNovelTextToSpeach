@@ -44,9 +44,23 @@ def read_dialog():
         screenshot_bytes = numpy.asarray(screenshot)
         text = pytesseract.image_to_string(screenshot_bytes)
 
-        print(f'Screenshot {output} with text:\n{text}')
+        lines = text.split('\n')
+        character = 'Narrator'
+        if len(lines) > 3 and is_empty(lines[1]):
+            character = lines[0].strip()
+            lines = lines[2:]
+        text = ' '.join(line.strip() for line in lines)
 
-        tts.speak(text)
+        if is_empty(text):
+            print(f'Screenshot {output} has no text')
+        else:
+            print(f'{character} is speaking now')
+            print(f'Screenshot {output} with text:\n{text}')
+            
+            tts.speak(text)
+
+def is_empty(text):
+    return text is None or text == "" or text.isspace()
 
 def on_press(key):
     try:
@@ -56,5 +70,6 @@ def on_press(key):
         pass # Handle special keys (like Ctrl) here
 
 def main():
+    print("Press h to read from screen once")
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
