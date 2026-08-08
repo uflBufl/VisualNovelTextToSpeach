@@ -5,26 +5,53 @@ reads it aloud with Coqui TTS.
 
 ## Requirements
 
-- Python 3.11
+- Python 3.11 (tested; newer versions are not yet verified)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html)
+- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with English language data
 - [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)
+- A working audio output device
 
 Put the Tesseract executable in `PATH`, or configure its location in code:
 
 ```py
-pytesseract.pytesseract.tesseract_cmd = r'<full_path_to_your_tesseract_executable>'
+pytesseract.pytesseract.tesseract_cmd = r'<path-to-tesseract>'
 ```
 
-Install eSpeak-NG on macOS with:
+Install the external tools on macOS with:
 
 ```sh
-brew install espeak-ng
+brew install tesseract espeak-ng
 ```
 
-Follow the linked eSpeak-NG guide on Windows and Linux. A
-[CUDA](https://developer.nvidia.com/cuda-downloads)-compatible GPU is optional;
-TTS runs on the CPU when CUDA is unavailable.
+On Debian or Ubuntu:
+
+```sh
+sudo apt install tesseract-ocr espeak-ng libportaudio2
+```
+
+On Windows, follow the linked Tesseract and eSpeak-NG installation guides and
+ensure Tesseract is in `PATH`. PortAudio is bundled with `sounddevice` on
+macOS and Windows; other Linux distributions may need an equivalent PortAudio
+package. See the [`sounddevice` installation guide](https://python-sounddevice.readthedocs.io/en/0.5.3/installation.html).
+A [CUDA](https://developer.nvidia.com/cuda-downloads)-compatible GPU is
+optional; TTS runs on the CPU when CUDA is unavailable.
+
+## Platform support and permissions
+
+The application targets macOS, Windows, and Linux desktop sessions using X11.
+The verified setup is macOS on Apple silicon with Python 3.11.
+
+- macOS: grant the terminal or packaged application access under **Privacy &
+  Security -> [Accessibility](https://support.apple.com/guide/mac-help/mh43185/mac)**
+  and **[Screen & System Audio Recording](https://support.apple.com/guide/mac-help/mchld6aa7d23/mac)**,
+  then restart it.
+- Windows: run the application in an interactive desktop session. No extra
+  permission is normally required.
+- Linux: run under X11 with `DISPLAY` set. As documented in the
+  [`pynput` platform limitations](https://pynput.readthedocs.io/en/latest/limitations.html),
+  Wayland through XWayland has limited global-keyboard visibility, so the
+  shortcut may not work in native Wayland applications. Headless and SSH
+  sessions are not supported.
 
 ## Run
 

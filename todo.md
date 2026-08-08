@@ -44,5 +44,5 @@
 ## P3 - Cleanup
 
 - [x] Separate runtime dependencies from notebook and development dependencies.
-- [ ] Document supported operating systems, Python versions, required permissions, and external tools.
+- [x] Document supported operating systems, Python versions, required permissions, and external tools.
 - [ ] Add formatting, linting, and automated test commands for contributors.
