@@ -114,10 +114,19 @@ source .venv/bin/activate
 .venv\Scripts\activate
 ```
 
-Run the tests:
+Format and automatically fix lint findings:
 
 ```sh
-uv run python -m unittest discover
+uv run ruff check --fix .
+uv run ruff format .
+```
+
+Verify formatting, linting, and tests:
+
+```sh
+uv run ruff format --check .
+uv run ruff check .
+uv run python -m unittest discover -s tests
 ```
 
 Run an interactive example:

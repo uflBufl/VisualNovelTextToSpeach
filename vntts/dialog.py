@@ -9,8 +9,7 @@ def is_empty(text):
 
 def is_name_word(word):
     return all(
-        character.isalpha() or character in NAME_PUNCTUATION
-        for character in word
+        character.isalpha() or character in NAME_PUNCTUATION for character in word
     )
 
 
@@ -33,15 +32,15 @@ def is_probable_character_name(text):
 
 
 def join_dialog_lines(lines):
-    return ' '.join(line.strip() for line in lines if not is_empty(line))
+    return " ".join(line.strip() for line in lines if not is_empty(line))
 
 
 def parse_dialog(text):
     if is_empty(text):
-        return 'Narrator', ''
+        return "Narrator", ""
 
-    lines = text.split('\n')
-    character = 'Narrator'
+    lines = text.split("\n")
+    character = "Narrator"
     if (
         len(lines) >= 3
         and is_empty(lines[1])

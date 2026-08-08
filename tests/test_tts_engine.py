@@ -33,7 +33,7 @@ class TTSEngineTest(unittest.TestCase):
 
         torch_module = Mock()
         torch_module.cuda.is_available.return_value = False
-        torch_module.device.return_value = 'cpu'
+        torch_module.device.return_value = "cpu"
 
         audio_output = Mock()
         engine = TTSEngine(
@@ -48,49 +48,49 @@ class TTSEngineTest(unittest.TestCase):
     def test_speak_uses_model_sample_rate_and_first_available_speaker(self):
         engine, tts, audio_output = self.create_engine(
             is_multi_speaker=True,
-            speakers=['p225', 'p227'],
+            speakers=["p225", "p227"],
             sample_rate=48000,
         )
 
-        engine.speak('Hello')
+        engine.speak("Hello")
 
-        tts.tts.assert_called_once_with(text='Hello', speaker='p225')
+        tts.tts.assert_called_once_with(text="Hello", speaker="p225")
         audio_output.play.assert_called_once_with(tts.tts.return_value, 48000)
         audio_output.wait.assert_called_once_with()
 
     def test_speak_omits_speaker_and_language_for_single_speaker_model(self):
         engine, tts, _ = self.create_engine()
 
-        engine.speak('Hello')
+        engine.speak("Hello")
 
-        tts.tts.assert_called_once_with(text='Hello')
+        tts.tts.assert_called_once_with(text="Hello")
 
     def test_speak_passes_configured_speaker_and_language(self):
         engine, tts, _ = self.create_engine(
             is_multi_speaker=True,
-            speakers=['Alice', 'Bob'],
+            speakers=["Alice", "Bob"],
             is_multi_lingual=True,
-            languages=['en', 'de'],
-            speaker='Bob',
-            language='en',
+            languages=["en", "de"],
+            speaker="Bob",
+            language="en",
         )
 
-        engine.speak('Hello')
+        engine.speak("Hello")
 
         tts.tts.assert_called_once_with(
-            text='Hello',
-            speaker='Bob',
-            language='en',
+            text="Hello",
+            speaker="Bob",
+            language="en",
         )
 
     def test_multilingual_model_requires_language_selection(self):
         engine, tts, audio_output = self.create_engine(
             is_multi_lingual=True,
-            languages=['en', 'de'],
+            languages=["en", "de"],
         )
 
-        with self.assertRaisesRegex(ValueError, 'requires a language'):
-            engine.speak('Hello')
+        with self.assertRaisesRegex(ValueError, "requires a language"):
+            engine.speak("Hello")
 
         tts.tts.assert_not_called()
         audio_output.play.assert_not_called()
@@ -98,29 +98,29 @@ class TTSEngineTest(unittest.TestCase):
     def test_unsupported_speaker_is_rejected_before_synthesis(self):
         engine, tts, _ = self.create_engine(
             is_multi_speaker=True,
-            speakers=['Alice'],
+            speakers=["Alice"],
         )
 
         with self.assertRaisesRegex(ValueError, "Speaker 'Bob' is not supported"):
-            engine.speak('Hello', speaker='Bob')
+            engine.speak("Hello", speaker="Bob")
 
         tts.tts.assert_not_called()
 
     def test_synthesis_failure_identifies_tts_stage(self):
         engine, tts, audio_output = self.create_engine()
-        tts.tts.side_effect = RuntimeError('model crashed')
+        tts.tts.side_effect = RuntimeError("model crashed")
 
-        with self.assertRaisesRegex(TTSSynthesisError, 'model crashed'):
-            engine.speak('Hello')
+        with self.assertRaisesRegex(TTSSynthesisError, "model crashed"):
+            engine.speak("Hello")
 
         audio_output.play.assert_not_called()
 
     def test_audio_failure_identifies_playback_stage(self):
         engine, _, audio_output = self.create_engine()
-        audio_output.play.side_effect = RuntimeError('device unavailable')
+        audio_output.play.side_effect = RuntimeError("device unavailable")
 
-        with self.assertRaisesRegex(AudioPlaybackError, 'device unavailable'):
-            engine.speak('Hello')
+        with self.assertRaisesRegex(AudioPlaybackError, "device unavailable"):
+            engine.speak("Hello")
 
     def test_stop_delegates_to_audio_output(self):
         engine, _, audio_output = self.create_engine()
@@ -130,5 +130,5 @@ class TTSEngineTest(unittest.TestCase):
         audio_output.stop.assert_called_once_with()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

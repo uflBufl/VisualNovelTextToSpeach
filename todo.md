@@ -45,4 +45,4 @@
 
 - [x] Separate runtime dependencies from notebook and development dependencies.
 - [x] Document supported operating systems, Python versions, required permissions, and external tools.
-- [ ] Add formatting, linting, and automated test commands for contributors.
+- [x] Add formatting, linting, and automated test commands for contributors.

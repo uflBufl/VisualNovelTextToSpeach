@@ -15,5 +15,5 @@ def main():
     # print(tts.speakers)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

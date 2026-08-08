@@ -3,21 +3,21 @@ from TTS.api import TTS
 from vntts.services.tts_engine import TTSEngine
 
 tts_models_to_try = [
-    'tts_models/multilingual/multi-dataset/xtts_v2',
-    'tts_models/en/vctk/vits',
+    "tts_models/multilingual/multi-dataset/xtts_v2",
+    "tts_models/en/vctk/vits",
 ]
 
 
 def main():
     # List available TTS models.
-    print(f'Available TTS models are: {TTS().list_models()}')
+    print(f"Available TTS models are: {TTS().list_models()}")
 
-    tts = TTSEngine(speaker='p227')
+    tts = TTSEngine(speaker="p227")
     speakers = tts.tts.speakers
-    text = 'Hello. This is real time neural text to speech!'
+    text = "Hello. This is real time neural text to speech!"
 
     # List speakers supported by the selected model.
-    print(f'Available speakers: {tts.tts.speakers}')
+    print(f"Available speakers: {speakers}")
 
     # When speaker_wav is used, the named speaker argument is not needed.
     # audio = tts.tts.tts(
@@ -42,5 +42,5 @@ def main():
     tts.speak(text)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
