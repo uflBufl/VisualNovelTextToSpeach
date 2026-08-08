@@ -1,76 +1,89 @@
-# Text To Speach Generator for Visual Novels
+# Visual Novel Text to Speech
 
-## Tesseract
+Captures a visual novel dialog box, recognizes its text with Tesseract, and
+reads it aloud with Coqui TTS.
 
-1. Download and install from link: https://tesseract-ocr.github.io/tessdoc/Installation.html
-2. Next put tesseract folder in `PATH` or in code use:
-   ```py
-   pytesseract.pytesseract.tesseract_cmd = r'<full_path_to_your_tesseract_executable>'
-   ```
+## Requirements
 
-## eSpeak-NG
+- Python 3.11
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html)
+- [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)
 
-To Espeak instalation(necessary for sound output):
-- Mac
-  ```sh
-  brew install espeak-ng
-  ```
-- Windows and Linux: https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md
+Put the Tesseract executable in `PATH`, or configure its location in code:
 
-## CUDA
+```py
+pytesseract.pytesseract.tesseract_cmd = r'<full_path_to_your_tesseract_executable>'
+```
 
-Needs to execute TTS on GPU. If not, will be executed on CPU. Download here:
-https://developer.nvidia.com/cuda-downloads
+Install eSpeak-NG on macOS with:
 
-## Commands
-
-UV installation:
-https://docs.astral.sh/uv/getting-started/installation/
-
-To run vntts:
 ```sh
+brew install espeak-ng
+```
+
+Follow the linked eSpeak-NG guide on Windows and Linux. A
+[CUDA](https://developer.nvidia.com/cuda-downloads)-compatible GPU is optional;
+TTS runs on the CPU when CUDA is unavailable.
+
+## Run
+
+```sh
+uv sync
 uv run -m vntts
 ```
 
-While the application is running, press `Ctrl+Shift+H` to capture and read the
-current dialog. To choose another key combination, set `VNTTS_HOTKEY` using
-[pynput hotkey syntax](https://pynput.readthedocs.io/en/latest/keyboard.html#global-hotkeys):
+Press `Ctrl+Shift+H` to capture and read the current dialog. Set
+`VNTTS_HOTKEY` using [pynput hotkey syntax](https://pynput.readthedocs.io/en/latest/keyboard.html#global-hotkeys)
+to choose another shortcut:
 
 ```sh
 VNTTS_HOTKEY='<ctrl>+<alt>+r' uv run -m vntts
 ```
 
-Invalid `VNTTS_HOTKEY` values produce a warning and fall back to
-`Ctrl+Shift+H`.
+An invalid value falls back to `Ctrl+Shift+H`. Shortcut presses are ignored
+while a dialog is already being processed or spoken.
 
-If a dialog is still being processed or spoken, additional shortcut presses are
-ignored until it finishes.
+## Project layout
 
-### Development
+- `vntts/` - application code
+- `tests/` - automated unit tests
+- `examples/` - interactive GUI, screenshot, and voice demos
+- `exps/` - OCR experimentation notebooks
+- `samples/` - sample images and audio
 
-To add dependecies:
+## Development
+
+Add a dependency:
+
 ```sh
 uv add <name>
 ```
 
-To sync dependecies:
+Synchronize or refresh dependencies:
+
 ```sh
 uv sync
 uv lock --refresh
 ```
 
-Activate venv:
+uv creates the virtual environment in `.venv/`. Activation is optional:
+
 ```sh
-./venv/Scripts/activate
+# macOS and Linux
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
 ```
 
-Run automated tests:
+Run the tests:
 
 ```sh
 uv run python -m unittest discover
 ```
 
-Interactive demos are located in `examples/`:
+Run an interactive example:
 
 ```sh
 uv run python examples/gui_demo.py
@@ -78,7 +91,8 @@ uv run python examples/screenshot_demo.py
 uv run python examples/voice_demo.py
 ```
 
-Run jupyter notebook to experement with images and OCR (notebooks are in exps directory):
+Run the OCR notebooks from `exps/`:
+
 ```sh
 uv run --with jupyter jupyter lab
 ```
