@@ -8,6 +8,7 @@ from PIL import Image
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from uuid import uuid4
 from pynput import keyboard
 
 from vntts.dialog import is_empty, recognize_dialog, speak_dialog
@@ -16,10 +17,8 @@ from vntts.services.tts_engine import AudioPlaybackError, TTSEngine, TTSError
 # Dialog box with speaker name included (on my 2560x1440 monitor)
 dialog_height = 350
 
-screenshot_path = 'logs/screenshots'
+default_screenshot_directory = Path('logs/screenshots')
 default_hotkey = '<ctrl>+<shift>+h'
-# Create directory if not exist
-Path(screenshot_path).mkdir(parents=True, exist_ok=True)
 
 
 class ScreenCaptureError(RuntimeError):
@@ -30,8 +29,27 @@ class OCRError(RuntimeError):
     pass
 
 
-def capture_dialog():
+def get_screenshot_directory():
+    configured_directory = os.environ.get('VNTTS_SCREENSHOT_DIR')
+    if not configured_directory:
+        return default_screenshot_directory
+
+    return Path(configured_directory)
+
+
+def create_screenshot_path(screenshot_directory):
+    screenshot_directory = Path(screenshot_directory)
+    formatted_date = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    return screenshot_directory / f'dialog-{formatted_date}-{uuid4().hex}.png'
+
+
+def capture_dialog(screenshot_directory=None):
     try:
+        if screenshot_directory is None:
+            screenshot_directory = get_screenshot_directory()
+        screenshot_directory = Path(screenshot_directory)
+        screenshot_directory.mkdir(parents=True, exist_ok=True)
+
         with mss.mss() as sct:
             # Take first monitor sizes
             monitor = sct.monitors[1]
@@ -54,9 +72,7 @@ def capture_dialog():
                 'BGRX',
             )
 
-        now = datetime.now()
-        formatted_date = now.strftime('%Y-%m-%d-%H-%M-%S')
-        output = f'{screenshot_path}/dialog-{formatted_date}.png'
+        output = create_screenshot_path(screenshot_directory)
         image.save(output)
         return image, output
     except Exception as error:
@@ -75,8 +91,8 @@ def recognize_screenshot(image):
     return character, text
 
 
-def read_dialog(tts):
-    image, output = capture_dialog()
+def read_dialog(tts, screenshot_directory):
+    image, output = capture_dialog(screenshot_directory)
     character, text = recognize_screenshot(image)
 
     if is_empty(text):
@@ -88,9 +104,9 @@ def read_dialog(tts):
         speak_dialog(text, tts.speak)
 
 
-def read_dialog_safely(tts):
+def read_dialog_safely(tts, screenshot_directory):
     try:
-        read_dialog(tts)
+        read_dialog(tts, screenshot_directory)
     except ScreenCaptureError as error:
         print(f'Screen capture failed: {error}', file=sys.stderr)
     except OCRError as error:
@@ -117,7 +133,7 @@ def get_hotkey():
     return hotkey
 
 
-def create_dialog_read_scheduler(executor, tts):
+def create_dialog_read_scheduler(executor, tts, screenshot_directory):
     active_read = None
     active_read_lock = Lock()
 
@@ -129,7 +145,11 @@ def create_dialog_read_scheduler(executor, tts):
                 print('A dialog read is already in progress')
                 return
 
-            active_read = executor.submit(read_dialog_safely, tts)
+            active_read = executor.submit(
+                read_dialog_safely,
+                tts,
+                screenshot_directory,
+            )
 
     return schedule_dialog_read
 
@@ -158,8 +178,14 @@ def main(tts_factory=TTSEngine):
         return 1
 
     hotkey = get_hotkey()
+    screenshot_directory = get_screenshot_directory()
+    print(f'Screenshots will be stored in {screenshot_directory}')
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='dialog-reader') as executor:
-        schedule_dialog_read = create_dialog_read_scheduler(executor, tts)
+        schedule_dialog_read = create_dialog_read_scheduler(
+            executor,
+            tts,
+            screenshot_directory,
+        )
         listen_for_hotkey(hotkey, schedule_dialog_read)
 
     return 0

@@ -37,7 +37,7 @@
   - Report screen-capture, Tesseract, model, and audio errors.
   - Allow a later shortcut invocation to retry.
 
-- [ ] Make screenshot storage configurable.
+- [x] Make screenshot storage configurable.
   - Avoid filename collisions when multiple captures happen within one second.
   - Document retention behavior and ignore generated screenshots in Git.
 

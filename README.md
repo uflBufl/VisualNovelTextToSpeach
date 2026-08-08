@@ -44,6 +44,16 @@ VNTTS_HOTKEY='<ctrl>+<alt>+r' uv run -m vntts
 An invalid value falls back to `Ctrl+Shift+H`. Shortcut presses are ignored
 while a dialog is already being processed or spoken.
 
+Screenshots are stored in `logs/screenshots/` by default. Set
+`VNTTS_SCREENSHOT_DIR` to use another directory:
+
+```sh
+VNTTS_SCREENSHOT_DIR='/path/to/screenshots' uv run vntts
+```
+
+Screenshots are retained until manually deleted and generated files under
+`logs/` are ignored by Git.
+
 ## Project layout
 
 - `vntts/` - application code
