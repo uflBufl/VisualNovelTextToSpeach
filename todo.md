@@ -16,7 +16,7 @@
   - Add a console entry point for starting the application.
   - Verify that the built wheel can run outside the repository checkout.
 
-- [ ] Make speaker-name detection preserve uncertain text.
+- [x] Make speaker-name detection preserve uncertain text.
   - Do not assume every first line followed by a blank line is a character name.
   - Cover dialogue with a speaker, narration, multiple paragraphs, blank OCR output, and trailing newlines.
 
