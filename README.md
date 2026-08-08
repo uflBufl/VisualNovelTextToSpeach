@@ -30,7 +30,7 @@ TTS runs on the CPU when CUDA is unavailable.
 
 ```sh
 uv sync
-uv run -m vntts
+uv run vntts
 ```
 
 Press `Ctrl+Shift+H` to capture and read the current dialog. Set

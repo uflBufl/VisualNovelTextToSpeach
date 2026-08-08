@@ -11,7 +11,7 @@
   - Protect executable demos with `if __name__ == "__main__":`.
   - Add unit tests for dialogue parsing with OCR and TTS mocked.
 
-- [ ] Fix package discovery in `pyproject.toml`.
+- [x] Fix package discovery in `pyproject.toml`.
   - Include the `vntts` package in built distributions.
   - Add a console entry point for starting the application.
   - Verify that the built wheel can run outside the repository checkout.

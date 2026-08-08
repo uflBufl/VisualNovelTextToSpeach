@@ -34,6 +34,9 @@ dependencies = [
     # "pyttsx3>=2.90",
 ]
 
+[project.scripts]
+vntts = "vntts.main:main"
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
@@ -65,5 +68,5 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+include = ["vntts*"]
