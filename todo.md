@@ -29,7 +29,7 @@
   - Do not hard-code speaker `p227` for models that use different speakers or no speaker.
   - Support language selection where required by multilingual models.
 
-- [ ] Initialize the TTS engine when the application starts rather than during module import.
+- [x] Initialize the TTS engine when the application starts rather than during module import.
   - Report model loading progress and startup failures clearly.
   - Keep modules importable without downloading a model or initializing audio.
 

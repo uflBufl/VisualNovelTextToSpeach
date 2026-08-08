@@ -1,6 +1,7 @@
 import pytesseract
 import mss
 import os
+import sys
 
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
@@ -20,9 +21,8 @@ default_hotkey = '<ctrl>+<shift>+h'
 # Create directory if not exist
 Path(screenshot_path).mkdir(parents=True, exist_ok=True)
 
-tts = TTSEngine()
 
-def read_dialog():
+def read_dialog(tts):
     with mss.mss() as sct:
         # Take first monitor sizes
         monitor = sct.monitors[1]
@@ -61,14 +61,16 @@ def read_dialog():
         else:
             print(f'{character} is speaking now')
             print(f'Screenshot {output} with text:\n{text}')
-            
+
             speak_dialog(text, tts.speak)
 
-def read_dialog_safely():
+
+def read_dialog_safely(tts):
     try:
-        read_dialog()
+        read_dialog(tts)
     except Exception as error:
         print(f'Unable to read dialog: {error}')
+
 
 def get_hotkey():
     hotkey = os.environ.get('VNTTS_HOTKEY', default_hotkey)
@@ -83,7 +85,8 @@ def get_hotkey():
 
     return hotkey
 
-def create_dialog_read_scheduler(executor):
+
+def create_dialog_read_scheduler(executor, tts):
     active_read = None
     active_read_lock = Lock()
 
@@ -95,17 +98,37 @@ def create_dialog_read_scheduler(executor):
                 print('A dialog read is already in progress')
                 return
 
-            active_read = executor.submit(read_dialog_safely)
+            active_read = executor.submit(read_dialog_safely, tts)
 
     return schedule_dialog_read
+
 
 def listen_for_hotkey(hotkey, on_activate):
     print(f'Press {hotkey} to read from screen once')
     with keyboard.GlobalHotKeys({hotkey: on_activate}) as listener:
         listener.join()
 
-def main():
+
+def initialize_tts(tts_factory=TTSEngine):
+    print('Loading TTS model...')
+    try:
+        tts = tts_factory()
+    except Exception as error:
+        print(f'Unable to initialize TTS engine: {error}', file=sys.stderr)
+        return None
+
+    print('TTS model loaded')
+    return tts
+
+
+def main(tts_factory=TTSEngine):
+    tts = initialize_tts(tts_factory)
+    if tts is None:
+        return 1
+
     hotkey = get_hotkey()
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='dialog-reader') as executor:
-        schedule_dialog_read = create_dialog_read_scheduler(executor)
+        schedule_dialog_read = create_dialog_read_scheduler(executor, tts)
         listen_for_hotkey(hotkey, schedule_dialog_read)
+
+    return 0
