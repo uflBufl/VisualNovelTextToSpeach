@@ -22,7 +22,7 @@
 
 ## P2 - Normal priority
 
-- [ ] Pass the converted RGB image to Tesseract instead of the raw BGRA screenshot array.
+- [x] Pass the converted RGB image to Tesseract instead of the raw BGRA screenshot array.
 
 - [ ] Make TTS playback settings model-aware.
   - Read the output sample rate from the loaded model.

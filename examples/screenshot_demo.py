@@ -3,7 +3,6 @@ from datetime import datetime
 from pathlib import Path
 
 import mss
-import numpy
 import pytesseract
 from PIL import Image
 
@@ -42,7 +41,7 @@ def main():
             output = f'{screenshot_path}/dialog-{timestamp}.png'
 
             image.save(output)
-            text = pytesseract.image_to_string(numpy.asarray(screenshot))
+            text = pytesseract.image_to_string(image)
             print(f'Screenshot {output} with text:\n{text}')
 
             # Wait five seconds before taking the next screenshot.

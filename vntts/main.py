@@ -1,5 +1,4 @@
 import pytesseract
-import numpy
 import mss
 import os
 
@@ -38,17 +37,22 @@ def read_dialog():
 
         screenshot = sct.grab(dialog_box)
 
-        img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+        image = Image.frombytes(
+            "RGB",
+            screenshot.size,
+            screenshot.bgra,
+            "raw",
+            "BGRX",
+        )
 
         now = datetime.now()
         formatted_date = now.strftime("%Y-%m-%d-%H-%M-%S")
         output = f'{screenshot_path}/dialog-{formatted_date}.png'
 
-        img.save(output)
+        image.save(output)
 
-        screenshot_bytes = numpy.asarray(screenshot)
         character, text = recognize_dialog(
-            screenshot_bytes,
+            image,
             pytesseract.image_to_string,
         )
 
