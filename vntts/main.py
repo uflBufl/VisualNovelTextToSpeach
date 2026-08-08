@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from pynput import keyboard
 
+from vntts.dialog import is_empty, recognize_dialog, speak_dialog
 from vntts.services.tts_engine import TTSEngine
 
 # Dialog box with speaker name included (on my 2560x1440 monitor)
@@ -46,14 +47,10 @@ def read_dialog():
         img.save(output)
 
         screenshot_bytes = numpy.asarray(screenshot)
-        text = pytesseract.image_to_string(screenshot_bytes)
-
-        lines = text.split('\n')
-        character = 'Narrator'
-        if len(lines) > 3 and is_empty(lines[1]):
-            character = lines[0].strip()
-            lines = lines[2:]
-        text = ' '.join(line.strip() for line in lines)
+        character, text = recognize_dialog(
+            screenshot_bytes,
+            pytesseract.image_to_string,
+        )
 
         if is_empty(text):
             print(f'Screenshot {output} has no text')
@@ -61,10 +58,7 @@ def read_dialog():
             print(f'{character} is speaking now')
             print(f'Screenshot {output} with text:\n{text}')
             
-            tts.speak(text)
-
-def is_empty(text):
-    return text is None or text == "" or text.isspace()
+            speak_dialog(text, tts.speak)
 
 def read_dialog_safely():
     try:

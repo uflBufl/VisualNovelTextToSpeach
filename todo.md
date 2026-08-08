@@ -6,7 +6,7 @@
   - Do not capture the screen while the user is typing in another application unintentionally.
   - Run screenshot, OCR, and speech work outside the keyboard callback.
 
-- [ ] Convert the files in `tests/` into safe automated tests.
+- [x] Convert the files in `tests/` into safe automated tests.
   - Move interactive GUI, screenshot, and voice demos into an `examples/` directory.
   - Protect executable demos with `if __name__ == "__main__":`.
   - Add unit tests for dialogue parsing with OCR and TTS mocked.

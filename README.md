@@ -64,6 +64,20 @@ Activate venv:
 ./venv/Scripts/activate
 ```
 
+Run automated tests:
+
+```sh
+uv run python -m unittest discover
+```
+
+Interactive demos are located in `examples/`:
+
+```sh
+uv run python examples/gui_demo.py
+uv run python examples/screenshot_demo.py
+uv run python examples/voice_demo.py
+```
+
 Run jupyter notebook to experement with images and OCR (notebooks are in exps directory):
 ```sh
 uv run --with jupyter jupyter lab
