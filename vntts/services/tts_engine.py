@@ -1,3 +1,19 @@
+class TTSError(Exception):
+    pass
+
+
+class TTSConfigurationError(TTSError, ValueError):
+    pass
+
+
+class TTSSynthesisError(TTSError, RuntimeError):
+    pass
+
+
+class AudioPlaybackError(RuntimeError):
+    pass
+
+
 class TTSEngine:
     def __init__(
         self,
@@ -45,24 +61,33 @@ class TTSEngine:
         if language is not None:
             arguments['language'] = language
 
-        audio = self.tts.tts(text=text, **arguments)
-        self.audio_output.play(audio, self.sample_rate)
-        self.audio_output.wait()
+        try:
+            audio = self.tts.tts(text=text, **arguments)
+        except Exception as error:
+            raise TTSSynthesisError(str(error)) from error
+
+        try:
+            self.audio_output.play(audio, self.sample_rate)
+            self.audio_output.wait()
+        except Exception as error:
+            raise AudioPlaybackError(str(error)) from error
 
     def _resolve_speaker(self, speaker):
         speaker = speaker if speaker is not None else self.default_speaker
         if not self.tts.is_multi_speaker:
             if speaker is not None:
-                raise ValueError('Loaded TTS model does not support speaker selection')
+                raise TTSConfigurationError(
+                    'Loaded TTS model does not support speaker selection'
+                )
             return None
 
         available_speakers = self.tts.speakers or []
         if speaker is None:
             if not available_speakers:
-                raise ValueError('Loaded TTS model requires a speaker')
+                raise TTSConfigurationError('Loaded TTS model requires a speaker')
             return available_speakers[0]
         if available_speakers and speaker not in available_speakers:
-            raise ValueError(
+            raise TTSConfigurationError(
                 f'Speaker {speaker!r} is not supported; '
                 f'available speakers: {available_speakers}'
             )
@@ -72,19 +97,21 @@ class TTSEngine:
         language = language if language is not None else self.default_language
         if not self.tts.is_multi_lingual:
             if language is not None:
-                raise ValueError('Loaded TTS model does not support language selection')
+                raise TTSConfigurationError(
+                    'Loaded TTS model does not support language selection'
+                )
             return None
 
         available_languages = self.tts.languages or []
         if language is None:
             if len(available_languages) == 1:
                 return available_languages[0]
-            raise ValueError(
+            raise TTSConfigurationError(
                 'Loaded multilingual TTS model requires a language; '
                 f'available languages: {available_languages}'
             )
         if available_languages and language not in available_languages:
-            raise ValueError(
+            raise TTSConfigurationError(
                 f'Language {language!r} is not supported; '
                 f'available languages: {available_languages}'
             )

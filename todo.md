@@ -33,7 +33,7 @@
   - Report model loading progress and startup failures clearly.
   - Keep modules importable without downloading a model or initializing audio.
 
-- [ ] Handle runtime failures without terminating the keyboard listener.
+- [x] Handle runtime failures without terminating the keyboard listener.
   - Report screen-capture, Tesseract, model, and audio errors.
   - Allow a later shortcut invocation to retry.
 

@@ -11,7 +11,7 @@ from threading import Lock
 from pynput import keyboard
 
 from vntts.dialog import is_empty, recognize_dialog, speak_dialog
-from vntts.services.tts_engine import TTSEngine
+from vntts.services.tts_engine import AudioPlaybackError, TTSEngine, TTSError
 
 # Dialog box with speaker name included (on my 2560x1440 monitor)
 dialog_height = 350
@@ -22,54 +22,85 @@ default_hotkey = '<ctrl>+<shift>+h'
 Path(screenshot_path).mkdir(parents=True, exist_ok=True)
 
 
-def read_dialog(tts):
-    with mss.mss() as sct:
-        # Take first monitor sizes
-        monitor = sct.monitors[1]
+class ScreenCaptureError(RuntimeError):
+    pass
 
-        # Dialog box on screen (only works if game in fullscreen)
-        dialog_box = {
-            'left': 0,
-            'top': monitor['height'] - dialog_height,
-            'width': monitor['width'],
-            'height': dialog_height
-        }
 
-        screenshot = sct.grab(dialog_box)
+class OCRError(RuntimeError):
+    pass
 
-        image = Image.frombytes(
-            "RGB",
-            screenshot.size,
-            screenshot.bgra,
-            "raw",
-            "BGRX",
-        )
+
+def capture_dialog():
+    try:
+        with mss.mss() as sct:
+            # Take first monitor sizes
+            monitor = sct.monitors[1]
+
+            # Dialog box on screen (only works if game in fullscreen)
+            dialog_box = {
+                'left': 0,
+                'top': monitor['height'] - dialog_height,
+                'width': monitor['width'],
+                'height': dialog_height,
+            }
+
+            screenshot = sct.grab(dialog_box)
+
+            image = Image.frombytes(
+                'RGB',
+                screenshot.size,
+                screenshot.bgra,
+                'raw',
+                'BGRX',
+            )
 
         now = datetime.now()
-        formatted_date = now.strftime("%Y-%m-%d-%H-%M-%S")
+        formatted_date = now.strftime('%Y-%m-%d-%H-%M-%S')
         output = f'{screenshot_path}/dialog-{formatted_date}.png'
-
         image.save(output)
+        return image, output
+    except Exception as error:
+        raise ScreenCaptureError(str(error)) from error
 
+
+def recognize_screenshot(image):
+    try:
         character, text = recognize_dialog(
             image,
             pytesseract.image_to_string,
         )
+    except Exception as error:
+        raise OCRError(str(error)) from error
 
-        if is_empty(text):
-            print(f'Screenshot {output} has no text')
-        else:
-            print(f'{character} is speaking now')
-            print(f'Screenshot {output} with text:\n{text}')
+    return character, text
 
-            speak_dialog(text, tts.speak)
+
+def read_dialog(tts):
+    image, output = capture_dialog()
+    character, text = recognize_screenshot(image)
+
+    if is_empty(text):
+        print(f'Screenshot {output} has no text')
+    else:
+        print(f'{character} is speaking now')
+        print(f'Screenshot {output} with text:\n{text}')
+
+        speak_dialog(text, tts.speak)
 
 
 def read_dialog_safely(tts):
     try:
         read_dialog(tts)
+    except ScreenCaptureError as error:
+        print(f'Screen capture failed: {error}', file=sys.stderr)
+    except OCRError as error:
+        print(f'Tesseract OCR failed: {error}', file=sys.stderr)
+    except TTSError as error:
+        print(f'TTS model or synthesis failed: {error}', file=sys.stderr)
+    except AudioPlaybackError as error:
+        print(f'Audio playback failed: {error}', file=sys.stderr)
     except Exception as error:
-        print(f'Unable to read dialog: {error}')
+        print(f'Unexpected dialog processing failure: {error}', file=sys.stderr)
 
 
 def get_hotkey():

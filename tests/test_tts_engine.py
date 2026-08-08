@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import Mock
 
-from vntts.services.tts_engine import TTSEngine
+from vntts.services.tts_engine import (
+    AudioPlaybackError,
+    TTSEngine,
+    TTSSynthesisError,
+)
 
 
 class TTSEngineTest(unittest.TestCase):
@@ -101,6 +105,22 @@ class TTSEngineTest(unittest.TestCase):
             engine.speak('Hello', speaker='Bob')
 
         tts.tts.assert_not_called()
+
+    def test_synthesis_failure_identifies_tts_stage(self):
+        engine, tts, audio_output = self.create_engine()
+        tts.tts.side_effect = RuntimeError('model crashed')
+
+        with self.assertRaisesRegex(TTSSynthesisError, 'model crashed'):
+            engine.speak('Hello')
+
+        audio_output.play.assert_not_called()
+
+    def test_audio_failure_identifies_playback_stage(self):
+        engine, _, audio_output = self.create_engine()
+        audio_output.play.side_effect = RuntimeError('device unavailable')
+
+        with self.assertRaisesRegex(AudioPlaybackError, 'device unavailable'):
+            engine.speak('Hello')
 
     def test_stop_delegates_to_audio_output(self):
         engine, _, audio_output = self.create_engine()
