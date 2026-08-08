@@ -24,7 +24,7 @@
 
 - [x] Pass the converted RGB image to Tesseract instead of the raw BGRA screenshot array.
 
-- [ ] Make TTS playback settings model-aware.
+- [x] Make TTS playback settings model-aware.
   - Read the output sample rate from the loaded model.
   - Do not hard-code speaker `p227` for models that use different speakers or no speaker.
   - Support language selection where required by multilingual models.
