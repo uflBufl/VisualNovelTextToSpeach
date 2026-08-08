@@ -29,7 +29,7 @@ TTS runs on the CPU when CUDA is unavailable.
 ## Run
 
 ```sh
-uv sync
+uv sync --no-dev
 uv run vntts
 ```
 
@@ -73,7 +73,7 @@ uv add <name>
 Synchronize or refresh dependencies:
 
 ```sh
-uv sync
+uv sync --group dev
 uv lock --refresh
 ```
 
@@ -104,5 +104,6 @@ uv run python examples/voice_demo.py
 Run the OCR notebooks from `exps/`:
 
 ```sh
-uv run --with jupyter jupyter lab
+uv sync --no-dev --group notebook
+uv run --no-dev --group notebook jupyter lab
 ```
