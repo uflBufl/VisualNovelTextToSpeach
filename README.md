@@ -32,6 +32,20 @@ To run vntts:
 uv run -m vntts
 ```
 
+While the application is running, press `Ctrl+Shift+H` to capture and read the
+current dialog. To choose another key combination, set `VNTTS_HOTKEY` using
+[pynput hotkey syntax](https://pynput.readthedocs.io/en/latest/keyboard.html#global-hotkeys):
+
+```sh
+VNTTS_HOTKEY='<ctrl>+<alt>+r' uv run -m vntts
+```
+
+Invalid `VNTTS_HOTKEY` values produce a warning and fall back to
+`Ctrl+Shift+H`.
+
+If a dialog is still being processed or spoken, additional shortcut presses are
+ignored until it finishes.
+
 ### Development
 
 To add dependecies:

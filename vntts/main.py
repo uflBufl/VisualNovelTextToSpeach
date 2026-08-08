@@ -1,10 +1,13 @@
 import pytesseract
 import numpy
 import mss
+import os
 
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from pynput import keyboard
 
 from vntts.services.tts_engine import TTSEngine
@@ -13,6 +16,7 @@ from vntts.services.tts_engine import TTSEngine
 dialog_height = 350
 
 screenshot_path = 'logs/screenshots'
+default_hotkey = '<ctrl>+<shift>+h'
 # Create directory if not exist
 Path(screenshot_path).mkdir(parents=True, exist_ok=True)
 
@@ -62,14 +66,48 @@ def read_dialog():
 def is_empty(text):
     return text is None or text == "" or text.isspace()
 
-def on_press(key):
+def read_dialog_safely():
     try:
-        if key.char == 'h':
-            read_dialog()
-    except AttributeError:
-        pass # Handle special keys (like Ctrl) here
+        read_dialog()
+    except Exception as error:
+        print(f'Unable to read dialog: {error}')
+
+def get_hotkey():
+    hotkey = os.environ.get('VNTTS_HOTKEY', default_hotkey)
+    try:
+        keyboard.HotKey.parse(hotkey)
+    except (TypeError, ValueError) as error:
+        print(
+            f'Invalid VNTTS_HOTKEY {hotkey!r}: {error}. '
+            f'Using default {default_hotkey!r}'
+        )
+        return default_hotkey
+
+    return hotkey
+
+def create_dialog_read_scheduler(executor):
+    active_read = None
+    active_read_lock = Lock()
+
+    def schedule_dialog_read():
+        nonlocal active_read
+
+        with active_read_lock:
+            if active_read is not None and not active_read.done():
+                print('A dialog read is already in progress')
+                return
+
+            active_read = executor.submit(read_dialog_safely)
+
+    return schedule_dialog_read
+
+def listen_for_hotkey(hotkey, on_activate):
+    print(f'Press {hotkey} to read from screen once')
+    with keyboard.GlobalHotKeys({hotkey: on_activate}) as listener:
+        listener.join()
 
 def main():
-    print("Press h to read from screen once")
-    with keyboard.Listener(on_press=on_press) as listener:
-        listener.join()
+    hotkey = get_hotkey()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='dialog-reader') as executor:
+        schedule_dialog_read = create_dialog_read_scheduler(executor)
+        listen_for_hotkey(hotkey, schedule_dialog_read)
