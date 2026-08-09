@@ -38,13 +38,13 @@ optional; TTS runs on the CPU when CUDA is unavailable.
 
 ## Platform support and permissions
 
-The application targets Windows 11 first. macOS and Linux are development
-platforms until the Windows application and installer are stable.
+The application targets Windows 11 first and also supports running from source
+on macOS. Linux support is limited to X11.
 
 - macOS: grant the terminal or packaged application access under **Privacy &
   Security -> [Accessibility](https://support.apple.com/guide/mac-help/mh43185/mac)**
   and **[Screen & System Audio Recording](https://support.apple.com/guide/mac-help/mchld6aa7d23/mac)**,
-  then restart it.
+  then restart it. Screen-region and selected-window capture are supported.
 - Windows: run the application in an interactive desktop session. No extra
   permission is normally required. Select the game under **Settings -> Capture
   source** and use borderless-windowed mode; minimized and exclusive-fullscreen

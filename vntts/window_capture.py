@@ -149,6 +149,109 @@ class Win32WindowBackend:
         return WindowGeometry(top_left.x, top_left.y, width, height)
 
 
+class MacOSWindowBackend:
+    def __init__(self, quartz=None):
+        if sys.platform != "darwin" and quartz is None:
+            raise WindowCaptureUnavailableError(
+                "macOS game-window capture is available only on macOS"
+            )
+        if quartz is None:
+            try:
+                import Quartz as quartz
+            except ImportError as error:
+                raise WindowCaptureUnavailableError(
+                    "macOS window capture requires pyobjc-framework-Quartz"
+                ) from error
+        self.quartz = quartz
+
+    def _window_info(self, values):
+        quartz = self.quartz
+        layer = int(values.get(quartz.kCGWindowLayer, 0))
+        bounds = values.get(quartz.kCGWindowBounds) or {}
+        width = int(round(float(bounds.get("Width", 0))))
+        height = int(round(float(bounds.get("Height", 0))))
+        owner = str(values.get(quartz.kCGWindowOwnerName) or "").strip()
+        name = str(values.get(quartz.kCGWindowName) or "").strip()
+        if not owner or layer != 0 or width <= 0 or height <= 0:
+            return None
+        title = f"{owner} - {name}" if name and name != owner else owner
+        return WindowInfo(
+            handle=int(values[quartz.kCGWindowNumber]),
+            title=title,
+            process_id=int(values.get(quartz.kCGWindowOwnerPID, 0)),
+            minimized=not bool(values.get(quartz.kCGWindowIsOnscreen, False)),
+        )
+
+    def _copy_windows(self, option, window_id=0):
+        windows = self.quartz.CGWindowListCopyWindowInfo(option, window_id)
+        if windows is None:
+            raise WindowCaptureError(
+                "macOS did not return window information; allow Screen Recording "
+                "access in System Settings"
+            )
+        return windows
+
+    def list_windows(self):
+        quartz = self.quartz
+        values = self._copy_windows(
+            quartz.kCGWindowListOptionOnScreenOnly
+            | quartz.kCGWindowListExcludeDesktopElements,
+            quartz.kCGNullWindowID,
+        )
+        windows = [self._window_info(item) for item in values]
+        windows = [
+            window
+            for window in windows
+            if window is not None and window.process_id != os.getpid()
+        ]
+        return sorted(windows, key=lambda window: window.title.casefold())
+
+    def get_window(self, handle):
+        quartz = self.quartz
+        values = self._copy_windows(
+            quartz.kCGWindowListOptionIncludingWindow,
+            int(handle),
+        )
+        for item in values:
+            if int(item.get(quartz.kCGWindowNumber, -1)) == int(handle):
+                return self._window_info(item)
+        return None
+
+    def get_client_geometry(self, handle):
+        quartz = self.quartz
+        values = self._copy_windows(
+            quartz.kCGWindowListOptionIncludingWindow,
+            int(handle),
+        )
+        for item in values:
+            if int(item.get(quartz.kCGWindowNumber, -1)) != int(handle):
+                continue
+            bounds = item.get(quartz.kCGWindowBounds) or {}
+            geometry = WindowGeometry(
+                left=int(round(float(bounds.get("X", 0)))),
+                top=int(round(float(bounds.get("Y", 0)))),
+                width=int(round(float(bounds.get("Width", 0)))),
+                height=int(round(float(bounds.get("Height", 0)))),
+            )
+            if geometry.width <= 0 or geometry.height <= 0:
+                raise WindowCaptureError(
+                    "Selected game window has no visible capture area"
+                )
+            return geometry
+        raise WindowNotFoundError("Selected macOS game window is no longer available")
+
+
+def create_window_backend(*, platform=None):
+    platform = sys.platform if platform is None else platform
+    if platform == "win32":
+        return Win32WindowBackend()
+    if platform == "darwin":
+        return MacOSWindowBackend()
+    raise WindowCaptureUnavailableError(
+        f"Game-window capture is unsupported on platform {platform!r}"
+    )
+
+
 class WindowCaptureTarget:
     def __init__(self, window_title, backend=None):
         self.window_title = (window_title or "").strip()
@@ -158,7 +261,7 @@ class WindowCaptureTarget:
     @property
     def backend(self):
         if self._backend is None:
-            self._backend = Win32WindowBackend()
+            self._backend = create_window_backend()
         return self._backend
 
     def list_windows(self):
@@ -211,7 +314,7 @@ class WindowCaptureTarget:
 
 
 def list_windows(backend=None):
-    backend = backend or Win32WindowBackend()
+    backend = backend or create_window_backend()
     return backend.list_windows()
 
 
