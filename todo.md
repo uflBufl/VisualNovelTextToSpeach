@@ -24,13 +24,6 @@ sections after their implementation has been verified and committed.
 
 ## Next improvements
 
-### P2 - Game profiles and performance
-
-- [ ] Make live capture adaptive.
-  - Reduce capture frequency while the dialog is unchanged or the game is unfocused.
-  - Increase capture frequency while text is appearing.
-  - Record capture, OCR, and speech latency for performance tuning.
-
 ### P3 - OCR vocabulary
 
 - [ ] Add an OCR correction dictionary.
