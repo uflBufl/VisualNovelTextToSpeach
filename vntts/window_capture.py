@@ -241,12 +241,167 @@ class MacOSWindowBackend:
         raise WindowNotFoundError("Selected macOS game window is no longer available")
 
 
-def create_window_backend(*, platform=None):
+class LinuxX11WindowBackend:
+    def __init__(self, display=None, environment=None):
+        environment = os.environ if environment is None else environment
+        if display is None and sys.platform != "linux":
+            raise WindowCaptureUnavailableError(
+                "X11 game-window capture is available only on Linux"
+            )
+        if display is None and not environment.get("DISPLAY"):
+            raise WindowCaptureUnavailableError(
+                "X11 capture requires an interactive session with DISPLAY set"
+            )
+        if display is None:
+            try:
+                from Xlib.display import Display
+            except ImportError as error:
+                raise WindowCaptureUnavailableError(
+                    "X11 game-window capture requires python-xlib"
+                ) from error
+            try:
+                display = Display()
+            except Exception as error:
+                raise WindowCaptureUnavailableError(
+                    f"Unable to connect to the X11 display: {error}"
+                ) from error
+        self.display = display
+        self.root = display.screen().root
+        self._atoms = {}
+
+    def _atom(self, name):
+        if name not in self._atoms:
+            self._atoms[name] = self.display.intern_atom(name)
+        return self._atoms[name]
+
+    def _property(self, window, name, property_type=0):
+        try:
+            value = window.get_full_property(self._atom(name), property_type)
+        except Exception:
+            return None
+        return None if value is None else value.value
+
+    def _client_ids(self):
+        values = self._property(self.root, "_NET_CLIENT_LIST_STACKING")
+        if values is None:
+            values = self._property(self.root, "_NET_CLIENT_LIST")
+        if values is not None:
+            return [int(value) for value in values]
+        try:
+            return [int(window.id) for window in self.root.query_tree().children]
+        except Exception as error:
+            raise WindowCaptureError(
+                f"Unable to enumerate X11 windows: {error}"
+            ) from error
+
+    def _title(self, window):
+        value = self._property(
+            window,
+            "_NET_WM_NAME",
+            self._atom("UTF8_STRING"),
+        )
+        if value is not None:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace").strip()
+            return bytes(value).decode("utf-8", errors="replace").strip()
+        try:
+            return (window.get_wm_name() or "").strip()
+        except Exception:
+            return ""
+
+    def _window_info(self, handle):
+        try:
+            window = self.display.create_resource_object("window", int(handle))
+            title = self._title(window)
+            attributes = window.get_attributes()
+        except Exception:
+            return None
+        if not title:
+            return None
+        process_ids = self._property(window, "_NET_WM_PID")
+        process_id = int(process_ids[0]) if process_ids is not None else 0
+        states = self._property(window, "_NET_WM_STATE")
+        hidden = self._atom("_NET_WM_STATE_HIDDEN")
+        minimized = attributes.map_state != 2 or (
+            states is not None and hidden in set(states)
+        )
+        return WindowInfo(int(handle), title, process_id, minimized)
+
+    def list_windows(self):
+        windows = [self._window_info(handle) for handle in self._client_ids()]
+        windows = [
+            window
+            for window in windows
+            if window is not None and window.process_id != os.getpid()
+        ]
+        return sorted(windows, key=lambda window: window.title.casefold())
+
+    def get_window(self, handle):
+        return self._window_info(handle)
+
+    def get_client_geometry(self, handle):
+        try:
+            window = self.display.create_resource_object("window", int(handle))
+            geometry = window.get_geometry()
+            translated = window.translate_coords(self.root, 0, 0)
+        except Exception as error:
+            raise WindowNotFoundError(
+                "Selected X11 game window is no longer available"
+            ) from error
+        if geometry.width <= 0 or geometry.height <= 0:
+            raise WindowCaptureError("Selected game window has no visible client area")
+        return WindowGeometry(
+            int(translated.x),
+            int(translated.y),
+            int(geometry.width),
+            int(geometry.height),
+        )
+
+
+class WaylandWindowBackend:
+    message = (
+        "Capture is unavailable in native Wayland sessions. Log out and select "
+        "an X11 desktop session before starting the application. Wayland blocks "
+        "the global window enumeration, screen capture, and hotkeys this app needs."
+    )
+
+    def list_windows(self):
+        raise WindowCaptureUnavailableError(self.message)
+
+    def get_window(self, _handle):
+        raise WindowCaptureUnavailableError(self.message)
+
+    def get_client_geometry(self, _handle):
+        raise WindowCaptureUnavailableError(self.message)
+
+
+def is_native_wayland_session(*, platform=None, environment=None):
     platform = sys.platform if platform is None else platform
+    environment = os.environ if environment is None else environment
+    if not platform.startswith("linux"):
+        return False
+    session_type = environment.get("XDG_SESSION_TYPE", "").strip().casefold()
+    return session_type == "wayland" or (
+        bool(environment.get("WAYLAND_DISPLAY")) and session_type != "x11"
+    )
+
+
+def ensure_screen_capture_supported(*, platform=None, environment=None):
+    if is_native_wayland_session(platform=platform, environment=environment):
+        raise WindowCaptureUnavailableError(WaylandWindowBackend.message)
+
+
+def create_window_backend(*, platform=None, environment=None):
+    platform = sys.platform if platform is None else platform
+    environment = os.environ if environment is None else environment
     if platform == "win32":
         return Win32WindowBackend()
     if platform == "darwin":
         return MacOSWindowBackend()
+    if platform.startswith("linux"):
+        if is_native_wayland_session(platform=platform, environment=environment):
+            return WaylandWindowBackend()
+        return LinuxX11WindowBackend(environment=environment)
     raise WindowCaptureUnavailableError(
         f"Game-window capture is unsupported on platform {platform!r}"
     )

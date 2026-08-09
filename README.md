@@ -49,11 +49,10 @@ on macOS. Linux support is limited to X11.
   permission is normally required. Select the game under **Settings -> Capture
   source** and use borderless-windowed mode; minimized and exclusive-fullscreen
   windows cannot be captured reliably.
-- Linux: run under X11 with `DISPLAY` set. As documented in the
-  [`pynput` platform limitations](https://pynput.readthedocs.io/en/latest/limitations.html),
-  Wayland through XWayland has limited global-keyboard visibility, so the
-  shortcut may not work in native Wayland applications. Headless and SSH
-  sessions are not supported.
+- Linux: run under an X11 desktop session with `DISPLAY` set. Screen-region and
+  selected-window capture are supported. Native Wayland, headless, and SSH
+  sessions are rejected because reliable global capture and hotkeys are not
+  available.
 
 ## Run
 

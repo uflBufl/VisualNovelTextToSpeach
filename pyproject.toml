@@ -20,6 +20,8 @@ dependencies = [
     "coqui-tts>=0.27.3",
     "sounddevice>=0.5.3",
     "mss>=10.1.0",
+    "pyobjc-framework-quartz>=10.3 ; sys_platform == 'darwin'",
+    "python-xlib>=0.33 ; sys_platform == 'linux'",
     "pynput>=1.8.1",
     "torch<2.9",
     "torchaudio<2.9",

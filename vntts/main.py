@@ -33,7 +33,11 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceManifestError,
 )
-from vntts.window_capture import WindowCaptureTarget, enable_windows_dpi_awareness
+from vntts.window_capture import (
+    WindowCaptureTarget,
+    enable_windows_dpi_awareness,
+    ensure_screen_capture_supported,
+)
 
 default_screenshot_directory = Path("logs/screenshots")
 default_hotkey = "<ctrl>+<shift>+h"
@@ -101,6 +105,7 @@ def capture_dialog(
     capture_target=None,
 ):
     try:
+        ensure_screen_capture_supported()
         if screenshot_directory is None:
             screenshot_directory = get_screenshot_directory()
         screenshot_directory = Path(screenshot_directory)

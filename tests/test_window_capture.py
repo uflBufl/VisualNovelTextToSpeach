@@ -1,16 +1,22 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from vntts.ocr import DialogRegion
 from vntts.window_capture import (
+    LinuxX11WindowBackend,
     MacOSWindowBackend,
+    WaylandWindowBackend,
     WindowCaptureTarget,
+    WindowCaptureUnavailableError,
     WindowGeometry,
     WindowInfo,
     WindowMinimizedError,
     WindowNotFoundError,
     create_window_backend,
+    ensure_screen_capture_supported,
+    is_native_wayland_session,
 )
 
 
@@ -40,6 +46,53 @@ class FakeQuartz:
         if option & self.kCGWindowListOptionOnScreenOnly:
             return [window for window in self.windows if window["onscreen"]]
         return self.windows
+
+
+class FakeX11Window:
+    def __init__(self, handle, properties=None, *, geometry=None, map_state=2):
+        self.id = handle
+        self.properties = properties or {}
+        self.geometry = geometry or SimpleNamespace(width=1600, height=900)
+        self.map_state = map_state
+
+    def get_full_property(self, atom, _property_type):
+        value = self.properties.get(atom)
+        return None if value is None else SimpleNamespace(value=value)
+
+    def get_wm_name(self):
+        return self.properties.get("WM_NAME")
+
+    def get_attributes(self):
+        return SimpleNamespace(map_state=self.map_state)
+
+    def get_geometry(self):
+        return self.geometry
+
+    def translate_coords(self, _root, _x, _y):
+        return SimpleNamespace(x=120, y=80)
+
+    def query_tree(self):
+        return SimpleNamespace(children=[])
+
+
+class FakeX11Display:
+    def __init__(self, windows, client_ids):
+        self.windows = {window.id: window for window in windows}
+        self.root = FakeX11Window(
+            1,
+            {"_NET_CLIENT_LIST_STACKING": client_ids},
+        )
+
+    def screen(self):
+        return SimpleNamespace(root=self.root)
+
+    def intern_atom(self, name):
+        return name
+
+    def create_resource_object(self, resource_type, handle):
+        if resource_type != "window" or handle not in self.windows:
+            raise KeyError(handle)
+        return self.windows[handle]
 
 
 class WindowCaptureTargetTest(unittest.TestCase):
@@ -162,6 +215,98 @@ class MacOSWindowBackendTest(unittest.TestCase):
 
         self.assertIs(selected, backend)
         backend_factory.assert_called_once_with()
+
+
+class LinuxWindowBackendTest(unittest.TestCase):
+    def test_x11_lists_windows_and_returns_root_relative_geometry(self):
+        process_id = os.getpid() + 100
+        game = FakeX11Window(
+            100,
+            {
+                "_NET_WM_NAME": b"Reverse: 1999",
+                "_NET_WM_PID": [process_id],
+            },
+        )
+        display = FakeX11Display([game], [100])
+        backend = LinuxX11WindowBackend(display=display)
+
+        self.assertEqual(
+            backend.list_windows(),
+            [WindowInfo(100, "Reverse: 1999", process_id)],
+        )
+        self.assertEqual(
+            backend.get_client_geometry(100),
+            WindowGeometry(120, 80, 1600, 900),
+        )
+
+    def test_x11_reports_hidden_window_as_minimized(self):
+        game = FakeX11Window(
+            100,
+            {
+                "_NET_WM_NAME": b"Reverse: 1999",
+                "_NET_WM_PID": [os.getpid() + 100],
+                "_NET_WM_STATE": ["_NET_WM_STATE_HIDDEN"],
+            },
+        )
+        backend = LinuxX11WindowBackend(display=FakeX11Display([game], [100]))
+
+        self.assertTrue(backend.get_window(100).minimized)
+
+    def test_factory_selects_x11_for_linux_x11_session(self):
+        backend = Mock()
+        environment = {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}
+        with patch(
+            "vntts.window_capture.LinuxX11WindowBackend",
+            return_value=backend,
+        ) as backend_factory:
+            selected = create_window_backend(
+                platform="linux",
+                environment=environment,
+            )
+
+        self.assertIs(selected, backend)
+        backend_factory.assert_called_once_with(environment=environment)
+
+    def test_native_wayland_is_explicitly_refused(self):
+        environment = {
+            "XDG_SESSION_TYPE": "wayland",
+            "WAYLAND_DISPLAY": "wayland-0",
+            "DISPLAY": ":0",
+        }
+
+        self.assertTrue(
+            is_native_wayland_session(
+                platform="linux",
+                environment=environment,
+            )
+        )
+        self.assertIsInstance(
+            create_window_backend(
+                platform="linux",
+                environment=environment,
+            ),
+            WaylandWindowBackend,
+        )
+        with self.assertRaisesRegex(
+            WindowCaptureUnavailableError,
+            "native Wayland",
+        ):
+            ensure_screen_capture_supported(
+                platform="linux",
+                environment=environment,
+            )
+
+    def test_xwayland_variable_does_not_override_explicit_x11_session(self):
+        self.assertFalse(
+            is_native_wayland_session(
+                platform="linux",
+                environment={
+                    "XDG_SESSION_TYPE": "x11",
+                    "WAYLAND_DISPLAY": "wayland-0",
+                    "DISPLAY": ":0",
+                },
+            )
+        )
 
 
 if __name__ == "__main__":

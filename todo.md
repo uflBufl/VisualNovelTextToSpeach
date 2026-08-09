@@ -48,7 +48,7 @@
 ### P3 - Later platforms
 
 - [x] Port the stable Windows application to macOS.
-- [ ] Port the stable Windows application to Linux with explicit X11 and Wayland
+- [x] Port the stable Windows application to Linux with explicit X11 and Wayland
       capture behavior.
 
 ## P1 - High priority
