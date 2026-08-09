@@ -24,15 +24,6 @@ sections after their implementation has been verified and committed.
 
 ## Next improvements
 
-### P1 - Live diagnostics
-
-- [ ] Add a live diagnostics window.
-  - Show the current captured dialog region.
-  - Show recognized speaker, text, OCR confidence, and preprocessing profile.
-  - Show the selected character or narrator voice.
-  - Show capture, OCR, synthesis, and playback latency.
-  - Explain missing macOS permissions and unavailable game windows.
-
 ### P2 - macOS usability
 
 - [ ] Package the application as a macOS `.app` and DMG.
