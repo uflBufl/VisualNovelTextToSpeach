@@ -11,6 +11,27 @@ $Executable = Join-Path $BundleDirectory "VisualNovelTextToSpeech.exe"
 if (-not (Test-Path $Executable -PathType Leaf)) {
     throw "Packaged executable is missing: $Executable"
 }
+$BundledTesseract = Join-Path $BundleDirectory `
+    "_internal\tesseract\tesseract.exe"
+$BundledEnglishData = Join-Path $BundleDirectory `
+    "_internal\tesseract\tessdata\eng.traineddata"
+$BundledEspeak = Get-ChildItem `
+    (Join-Path $BundleDirectory "_internal\espeak-ng") `
+    -Filter "espeak-ng.exe" -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+$BundledEspeakData = Get-ChildItem `
+    (Join-Path $BundleDirectory "_internal\espeak-ng") `
+    -Directory -Filter "espeak-ng-data" -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not (Test-Path $BundledTesseract -PathType Leaf)) {
+    throw "Bundled Tesseract executable is missing."
+}
+if (-not (Test-Path $BundledEnglishData -PathType Leaf)) {
+    throw "Bundled English Tesseract data is missing."
+}
+if (-not $BundledEspeak -or -not $BundledEspeakData) {
+    throw "Bundled eSpeak-NG executable or voice data is missing."
+}
 
 $ReportPath = Join-Path $env:TEMP "vntts-package-self-test.json"
 $OriginalPath = $env:PATH

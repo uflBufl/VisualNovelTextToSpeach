@@ -90,6 +90,9 @@ try {
         }
         throw "The packaged application self-test failed."
     }
+    $PublishedReport = Join-Path $ProjectRoot `
+        "dist\VisualNovelTextToSpeech-windows-x64-self-test.json"
+    Copy-Item $ReportPath $PublishedReport -Force
 
     $Archive = Join-Path $ProjectRoot `
         "dist\VisualNovelTextToSpeech-windows-x64.zip"
@@ -98,7 +101,12 @@ try {
         -DestinationPath $Archive `
         -CompressionLevel Optimal `
         -Force
+    $ChecksumPath = "$Archive.sha256"
+    $Checksum = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -Path $ChecksumPath `
+        -Value "$Checksum  $([System.IO.Path]::GetFileName($Archive))"
     Write-Host "Windows bundle: $Archive"
+    Write-Host "SHA256 checksum: $ChecksumPath"
     Write-Host "Self-test report: $ReportPath"
 }
 finally {
