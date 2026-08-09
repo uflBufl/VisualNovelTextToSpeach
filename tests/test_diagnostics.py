@@ -1,0 +1,119 @@
+import os
+import unittest
+from unittest.mock import Mock, patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PIL import Image  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from vntts.diagnostics import (  # noqa: E402
+    DiagnosticSnapshot,
+    diagnostic_error_guidance,
+    macos_permission_warnings,
+    resolve_voice_label,
+)
+from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
+from vntts.main import analyze_dialog_snapshot  # noqa: E402
+from vntts.ocr import OCRResult  # noqa: E402
+from vntts.voices import CharacterVoice  # noqa: E402
+
+
+class DiagnosticsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_snapshot_preserves_capture_ocr_and_voice_details(self):
+        image = Image.new("RGB", (320, 100), "black")
+        result = OCRResult("Marcus", "Timekeeper.", 92.5, "dark-background", 2)
+        snapshots = []
+        clock = iter((1.0, 1.025, 2.0, 2.075)).__next__
+
+        with (
+            patch("vntts.main.capture_dialog", return_value=(image, None)),
+            patch("vntts.main.recognize_screenshot_result", return_value=result),
+        ):
+            _, _, actual = analyze_dialog_snapshot(
+                "captures",
+                diagnostic_handler=snapshots.append,
+                voice_resolver=lambda character: f"Voice for {character}",
+                clock=clock,
+            )
+
+        self.assertIs(actual, result)
+        self.assertEqual(snapshots[0].image, image)
+        self.assertEqual(snapshots[0].character, "Marcus")
+        self.assertEqual(snapshots[0].text, "Timekeeper.")
+        self.assertEqual(snapshots[0].preprocessing_profile, "dark-background")
+        self.assertEqual(snapshots[0].voice, "Voice for Marcus")
+        self.assertAlmostEqual(snapshots[0].capture_ms, 25.0)
+        self.assertAlmostEqual(snapshots[0].ocr_ms, 75.0)
+
+    def test_dialog_renders_snapshot_and_latencies(self):
+        dialog = DiagnosticsDialog(refresh_interval_ms=60_000)
+        snapshot = DiagnosticSnapshot(
+            Image.new("RGB", (320, 100), "black"),
+            character="Marcus",
+            text="The captured line.",
+            confidence=91.2,
+            preprocessing_profile="balanced",
+            voice="Marcus (reverse1999-marcus)",
+            capture_ms=12.3,
+            ocr_ms=45.6,
+            synthesis_ms=789.0,
+            playback_ms=321.0,
+        )
+
+        dialog.set_snapshot(snapshot)
+
+        self.assertEqual(dialog.speaker.text(), "Marcus")
+        self.assertEqual(dialog.text.toPlainText(), "The captured line.")
+        self.assertEqual(dialog.confidence.text(), "91.2%")
+        self.assertEqual(dialog.preprocessing.text(), "balanced")
+        self.assertEqual(dialog.voice.text(), "Marcus (reverse1999-marcus)")
+        self.assertEqual(dialog.capture_latency.text(), "12.3 ms")
+        self.assertFalse(dialog.preview.pixmap().isNull())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_macos_permission_warnings_explain_both_permissions(self):
+        warnings = macos_permission_warnings(
+            platform="darwin",
+            screen_capture_trusted=lambda: False,
+            accessibility_trusted=lambda: False,
+        )
+
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("Screen & System Audio Recording", warnings[0])
+        self.assertIn("Accessibility", warnings[1])
+
+    def test_unavailable_window_has_actionable_guidance(self):
+        guidance = diagnostic_error_guidance(
+            RuntimeError("Selected window is unavailable"),
+            platform="darwin",
+        )
+
+        self.assertIn("Start or restore the game", guidance)
+        self.assertIn("borderless", guidance)
+
+    def test_voice_label_reports_character_and_narrator_routes(self):
+        voice = CharacterVoice("Marcus", "reverse1999-marcus")
+        router = Mock()
+        router.registry.resolve.side_effect = lambda character: (
+            voice if character == "Marcus" else None
+        )
+        router.narrator_speaker = "Claribel Dervla"
+
+        self.assertEqual(
+            resolve_voice_label(router, "Marcus"),
+            "Marcus (reverse1999-marcus)",
+        )
+        self.assertEqual(
+            resolve_voice_label(router, "Narrator"),
+            "Claribel Dervla",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

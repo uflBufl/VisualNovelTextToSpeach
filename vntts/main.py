@@ -1,9 +1,11 @@
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from threading import Event, Lock
+from time import monotonic
 from uuid import uuid4
 
 import mss
@@ -11,6 +13,7 @@ from PIL import Image
 from pynput import keyboard
 
 from vntts.assets import ModelAssetManager
+from vntts.diagnostics import DiagnosticSnapshot, resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
 from vntts.live import IncrementalDialogTracker, LiveDialogReader
 from vntts.ocr import (
@@ -167,6 +170,51 @@ def recognize_screenshot(
     return result.character, result.text
 
 
+def analyze_dialog_snapshot(
+    screenshot_directory,
+    voice_registry=None,
+    capture_target=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    *,
+    save_screenshot=False,
+    diagnostic_handler=None,
+    voice_resolver=None,
+    clock=monotonic,
+):
+    capture_started = clock()
+    image, output = capture_dialog(
+        screenshot_directory,
+        save_screenshot=save_screenshot,
+        capture_target=capture_target,
+    )
+    capture_ms = (clock() - capture_started) * 1000
+
+    ocr_started = clock()
+    result = recognize_screenshot_result(
+        image,
+        voice_registry,
+        minimum_confidence,
+    )
+    ocr_ms = (clock() - ocr_started) * 1000
+    snapshot = DiagnosticSnapshot(
+        image=image,
+        character=result.character or "Narrator",
+        text=result.text,
+        confidence=result.confidence,
+        preprocessing_profile=result.profile,
+        voice=(
+            voice_resolver(result.character)
+            if voice_resolver is not None
+            else "Not loaded"
+        ),
+        capture_ms=capture_ms,
+        ocr_ms=ocr_ms,
+    )
+    if diagnostic_handler is not None:
+        diagnostic_handler(snapshot)
+    return image, output, result
+
+
 def read_dialog(
     voice_router,
     screenshot_directory,
@@ -174,25 +222,28 @@ def read_dialog(
     speech_handler=None,
     minimum_confidence=default_minimum_ocr_confidence,
     uncertain_frame_recorder=None,
+    diagnostic_handler=None,
+    voice_resolver=None,
 ):
-    image, output = capture_dialog(
+    image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
+        voice_router.registry,
         capture_target=capture_target,
+        minimum_confidence=minimum_confidence,
+        save_screenshot=True,
+        diagnostic_handler=diagnostic_handler,
+        voice_resolver=voice_resolver,
     )
-    try:
-        character, text = recognize_screenshot(
-            image,
-            voice_router.registry,
-            minimum_confidence,
-        )
-    except OCRUncertainError as error:
+    if result.text and not result.is_confident(minimum_confidence):
+        error = OCRUncertainError(result, minimum_confidence)
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(
                 image,
                 error.result,
                 minimum_confidence,
             )
-        raise
+        raise error
+    character, text = result.character, result.text
     if uncertain_frame_recorder is not None:
         uncertain_frame_recorder.reset()
 
@@ -216,6 +267,8 @@ def read_dialog_safely(
     speech_handler=None,
     minimum_confidence=default_minimum_ocr_confidence,
     uncertain_frame_recorder=None,
+    diagnostic_handler=None,
+    voice_resolver=None,
 ):
     try:
         read_dialog(
@@ -225,6 +278,8 @@ def read_dialog_safely(
             speech_handler,
             minimum_confidence,
             uncertain_frame_recorder,
+            diagnostic_handler,
+            voice_resolver,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)
@@ -462,6 +517,8 @@ def create_dialog_read_scheduler(
     speech_handler=None,
     minimum_confidence=default_minimum_ocr_confidence,
     uncertain_frame_recorder=None,
+    diagnostic_handler=None,
+    voice_resolver=None,
 ):
     active_read = None
     active_read_lock = Lock()
@@ -487,6 +544,10 @@ def create_dialog_read_scheduler(
             options["minimum_confidence"] = minimum_confidence
             if uncertain_frame_recorder is not None:
                 options["uncertain_frame_recorder"] = uncertain_frame_recorder
+            if diagnostic_handler is not None:
+                options["diagnostic_handler"] = diagnostic_handler
+            if voice_resolver is not None:
+                options["voice_resolver"] = voice_resolver
             active_read = executor.submit(
                 read_dialog_safely,
                 voice_router,
@@ -505,16 +566,16 @@ def read_live_snapshot(
     minimum_confidence=default_minimum_ocr_confidence,
     uncertain_handler=None,
     uncertain_frame_recorder=None,
+    diagnostic_handler=None,
+    voice_resolver=None,
 ):
-    image, _ = capture_dialog(
+    image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
-        save_screenshot=False,
-        capture_target=capture_target,
-    )
-    result = recognize_screenshot_result(
-        image,
         voice_registry,
-        minimum_confidence,
+        capture_target=capture_target,
+        minimum_confidence=minimum_confidence,
+        diagnostic_handler=diagnostic_handler,
+        voice_resolver=voice_resolver,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:
@@ -603,6 +664,7 @@ class AppController:
         tts_factory=TTSEngine,
         status_handler=print,
         dialog_handler=None,
+        diagnostic_handler=None,
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
@@ -613,6 +675,7 @@ class AppController:
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
+        self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
         self.error_handler = error_handler
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
@@ -622,6 +685,8 @@ class AppController:
         self.speech_executor = None
         self.live_reader = None
         self.schedule_dialog_read = None
+        self.last_diagnostic = None
+        self.diagnostic_lock = Lock()
         self.shutdown_requested = Event()
 
     @property
@@ -680,12 +745,10 @@ class AppController:
                     self.settings.ocr_minimum_confidence,
                     self._ocr_uncertain,
                     self.uncertain_frame_recorder,
+                    self._publish_diagnostic,
+                    self._resolve_voice_label,
                 ),
-                speak_chunk=lambda chunk: speak_live_chunk(
-                    self.voice_router,
-                    chunk,
-                    playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
-                ),
+                speak_chunk=self._speak_live_chunk,
                 report_error=self.error_handler,
                 interrupt_speech=self._interrupt_speech,
                 dialog_observed=self._dialog_observed,
@@ -702,6 +765,8 @@ class AppController:
                 speech_handler=self.live_reader.enqueue,
                 minimum_confidence=self.settings.ocr_minimum_confidence,
                 uncertain_frame_recorder=self.uncertain_frame_recorder,
+                diagnostic_handler=self._publish_diagnostic,
+                voice_resolver=self._resolve_voice_label,
             )
         except Exception as error:
             self.error_handler(error)
@@ -766,37 +831,60 @@ class AppController:
             return None
         return self.capture_target.get_geometry()
 
+    def get_latest_diagnostic(self):
+        with self.diagnostic_lock:
+            return self.last_diagnostic
+
+    def inspect_current_dialog(self):
+        registry = self.voice_router.registry if self.voice_router is not None else None
+        _image, _output, result = analyze_dialog_snapshot(
+            get_screenshot_directory(self.settings),
+            registry,
+            capture_target=self.capture_target,
+            minimum_confidence=self.settings.ocr_minimum_confidence,
+            diagnostic_handler=self._publish_diagnostic,
+            voice_resolver=self._resolve_voice_label,
+        )
+        return result
+
     def test_current_dialog(self):
         if not self.is_ready:
             raise RuntimeError("The speech engine is not ready")
-        image, _output = capture_dialog(
+        image, _output, result = analyze_dialog_snapshot(
             get_screenshot_directory(self.settings),
-            save_screenshot=False,
+            self.voice_router.registry,
             capture_target=self.capture_target,
+            minimum_confidence=self.settings.ocr_minimum_confidence,
+            diagnostic_handler=self._publish_diagnostic,
+            voice_resolver=self._resolve_voice_label,
         )
-        try:
-            character, text = recognize_screenshot(
-                image,
-                self.voice_router.registry,
+        if result.text and not result.is_confident(
+            self.settings.ocr_minimum_confidence
+        ):
+            error = OCRUncertainError(
+                result,
                 self.settings.ocr_minimum_confidence,
             )
-        except OCRUncertainError as error:
             if self.uncertain_frame_recorder is not None:
                 self.uncertain_frame_recorder.record(
                     image,
                     error.result,
                     self.settings.ocr_minimum_confidence,
                 )
-            raise
+            raise error
+        character, text = result.character, result.text
         if self.uncertain_frame_recorder is not None:
             self.uncertain_frame_recorder.reset()
         if is_empty(text):
             raise OCRError("No dialogue text was detected in the calibrated region")
         self.status_handler(f"Testing OCR and speech with {character}")
-        speak_dialog(
-            text,
-            lambda value: self.voice_router.speak(character, value),
-        )
+        try:
+            speak_dialog(
+                text,
+                lambda value: self.voice_router.speak(character, value),
+            )
+        finally:
+            self._refresh_diagnostic_metrics()
         return character, text
 
     def apply_settings(self, settings):
@@ -819,6 +907,8 @@ class AppController:
             self.settings.ocr_minimum_confidence,
             self._ocr_uncertain,
             self.uncertain_frame_recorder,
+            self._publish_diagnostic,
+            self._resolve_voice_label,
         )
         live_configuration = get_live_configuration(self.settings)
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
@@ -833,6 +923,8 @@ class AppController:
             speech_handler=self.live_reader.enqueue,
             minimum_confidence=self.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=self.uncertain_frame_recorder,
+            diagnostic_handler=self._publish_diagnostic,
+            voice_resolver=self._resolve_voice_label,
         )
         if was_live:
             self.live_reader.start()
@@ -860,6 +952,36 @@ class AppController:
             "OCR uncertain",
             f"{result.confidence:.0f}% (requires {minimum_confidence}%): {preview}",
         )
+
+    def _resolve_voice_label(self, character):
+        return resolve_voice_label(self.voice_router, character)
+
+    def _publish_diagnostic(self, snapshot):
+        if self.tts is not None:
+            snapshot = replace(
+                snapshot,
+                synthesis_ms=getattr(self.tts, "last_synthesis_ms", None),
+                playback_ms=getattr(self.tts, "last_playback_ms", None),
+            )
+        with self.diagnostic_lock:
+            self.last_diagnostic = snapshot
+        self.diagnostic_handler(snapshot)
+
+    def _speak_live_chunk(self, chunk):
+        try:
+            return speak_live_chunk(
+                self.voice_router,
+                chunk,
+                playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+            )
+        finally:
+            self._refresh_diagnostic_metrics()
+
+    def _refresh_diagnostic_metrics(self):
+        with self.diagnostic_lock:
+            snapshot = self.last_diagnostic
+        if snapshot is not None:
+            self._publish_diagnostic(snapshot)
 
     def shutdown(self):
         self.shutdown_requested.set()

@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.app import SettingsDialog, TrayApplication, main  # noqa: E402
+from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -42,6 +43,10 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray_application.calibrate_action.text(),
             "Calibrate dialog region",
+        )
+        self.assertEqual(
+            tray_application.diagnostics_action.text(),
+            "Live diagnostics...",
         )
         self.assertEqual(tray_application.setup_action.text(), "Run setup...")
         self.assertEqual(
@@ -110,6 +115,26 @@ class TrayApplicationTest(unittest.TestCase):
         controller.repeat_last_speech.assert_called_once_with()
         controller.clear_speech_queue.assert_called_once_with()
         self.assertEqual(tray_application.pause_action.text(), "Resume speech")
+        tray_application.shutdown()
+
+    def test_live_diagnostics_reuses_the_live_pipeline_snapshot(self):
+        snapshot = DiagnosticSnapshot(None, text="Already captured")
+        controller = Mock()
+        controller.is_live_running = True
+        controller.get_latest_diagnostic.return_value = snapshot
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        observed = []
+        tray_application.signals.diagnostics_changed.connect(observed.append)
+
+        with patch("vntts.app.Thread") as thread:
+            tray_application.refresh_diagnostics()
+
+        self.assertEqual(observed, [snapshot])
+        thread.assert_not_called()
         tray_application.shutdown()
 
     def test_invalid_saved_hotkey_falls_back_without_preventing_startup(self):

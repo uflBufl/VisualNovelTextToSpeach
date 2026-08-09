@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
+from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
+from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.main import (
     AppController,
     format_runtime_error,
@@ -66,6 +68,8 @@ class AppSignals(QObject):
     error_reported = Signal(str)
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
+    diagnostics_changed = Signal(object)
+    diagnostics_failed = Signal(str)
 
 
 class SettingsDialog(QDialog):
@@ -316,6 +320,7 @@ class TrayApplication:
             self.settings,
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
+            diagnostic_handler=self.signals.diagnostics_changed.emit,
             error_handler=lambda error: self.signals.error_reported.emit(
                 format_runtime_error(error)
             ),
@@ -323,6 +328,7 @@ class TrayApplication:
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
+        self.diagnostics_dialog = None
         self.onboarding_cancel_event = Event()
 
         self.tray = QSystemTrayIcon(self._application_icon(), application)
@@ -338,6 +344,7 @@ class TrayApplication:
         self.repeat_action = QAction("Repeat last speech")
         self.clear_queue_action = QAction("Clear speech queue")
         self.calibrate_action = QAction("Calibrate dialog region")
+        self.diagnostics_action = QAction("Live diagnostics...")
         self.settings_action = QAction("Settings...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
@@ -360,6 +367,7 @@ class TrayApplication:
         self.menu.addAction(self.repeat_action)
         self.menu.addAction(self.clear_queue_action)
         self.menu.addAction(self.calibrate_action)
+        self.menu.addAction(self.diagnostics_action)
         self.menu.addSeparator()
         self.menu.addAction(self.settings_action)
         self.menu.addAction(self.setup_action)
@@ -377,6 +385,7 @@ class TrayApplication:
         self.repeat_action.triggered.connect(self.repeat_last_speech)
         self.clear_queue_action.triggered.connect(self.clear_speech_queue)
         self.calibrate_action.triggered.connect(self.calibrate)
+        self.diagnostics_action.triggered.connect(self.open_diagnostics)
         self.settings_action.triggered.connect(self.open_settings)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
@@ -388,6 +397,7 @@ class TrayApplication:
         self.signals.live_changed.connect(self.set_live)
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
+        self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.application.aboutToQuit.connect(self.shutdown)
 
     def _application_icon(self):
@@ -468,6 +478,37 @@ class TrayApplication:
             self.show_error(str(error))
             return
         self.calibration_overlay = show_calibration_overlay(geometry)
+
+    def open_diagnostics(self):
+        if self.diagnostics_dialog is None:
+            self.diagnostics_dialog = DiagnosticsDialog()
+            self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
+            self.signals.diagnostics_changed.connect(
+                self.diagnostics_dialog.set_snapshot
+            )
+        self.diagnostics_dialog.set_permission_warnings(macos_permission_warnings())
+        self.diagnostics_dialog.show()
+        self.diagnostics_dialog.raise_()
+        self.diagnostics_dialog.activateWindow()
+
+    def refresh_diagnostics(self):
+        if self.controller.is_live_running:
+            snapshot = self.controller.get_latest_diagnostic()
+            if snapshot is not None:
+                self.signals.diagnostics_changed.emit(snapshot)
+                return
+
+        def inspect():
+            try:
+                self.controller.inspect_current_dialog()
+            except Exception as error:
+                self.signals.diagnostics_failed.emit(diagnostic_error_guidance(error))
+
+        Thread(target=inspect, daemon=True).start()
+
+    def set_diagnostics_error(self, message):
+        if self.diagnostics_dialog is not None:
+            self.diagnostics_dialog.set_warning(message)
 
     def run_onboarding(self):
         if self.onboarding_wizard is not None:
@@ -619,6 +660,8 @@ class TrayApplication:
         )
 
     def shutdown(self):
+        if self.diagnostics_dialog is not None:
+            self.diagnostics_dialog.close()
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
             self.hotkey_listener = None

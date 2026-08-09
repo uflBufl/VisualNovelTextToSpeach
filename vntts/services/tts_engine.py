@@ -1,3 +1,6 @@
+from time import monotonic
+
+
 class TTSError(Exception):
     pass
 
@@ -68,6 +71,7 @@ class TTSEngine:
         tts_factory=None,
         torch_module=None,
         audio_output=None,
+        clock=monotonic,
     ):
         if tts_factory is None:
             from TTS.api import TTS
@@ -89,6 +93,7 @@ class TTSEngine:
 
         self.tts = tts_factory(model_name=model_name).to(device)
         self.audio_output = audio_output
+        self.clock = clock
         self.default_speaker = speaker
         self.default_language = language
         self.default_speaker_wav = speaker_wav
@@ -97,6 +102,8 @@ class TTSEngine:
         self.synthesis_options = dict(synthesis_options or {})
         self.cached_speakers = set()
         self.playback_active = False
+        self.last_synthesis_ms = None
+        self.last_playback_ms = None
         self.sample_rate = self.tts.synthesizer.output_sample_rate
         if not self.sample_rate:
             raise RuntimeError("Loaded TTS model does not define an output sample rate")
@@ -127,10 +134,13 @@ class TTSEngine:
         if speaker_wav is not None:
             arguments["speaker_wav"] = speaker_wav
 
+        synthesis_started = self.clock()
         try:
             audio = self.tts.tts(text=text, **arguments)
         except Exception as error:
             raise TTSSynthesisError(str(error)) from error
+        finally:
+            self.last_synthesis_ms = (self.clock() - synthesis_started) * 1000
 
         if speaker_wav is not None and speaker is not None:
             self.cached_speakers.add(speaker)
@@ -139,9 +149,11 @@ class TTSEngine:
                 # speaker ID are passed together. Later phrases can reuse it.
                 self.default_speaker_wav = None
 
+        self.last_playback_ms = None
         if playback_guard is not None and not playback_guard():
             return False
 
+        playback_started = self.clock()
         try:
             self.playback_active = True
             self.audio_output.play(audio, self.sample_rate)
@@ -150,6 +162,7 @@ class TTSEngine:
             raise AudioPlaybackError(str(error)) from error
         finally:
             self.playback_active = False
+            self.last_playback_ms = (self.clock() - playback_started) * 1000
         return True
 
     def _resolve_speaker(self, speaker, speaker_wav=None):

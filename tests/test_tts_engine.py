@@ -23,6 +23,7 @@ class TTSEngineTest(unittest.TestCase):
         speaker_wav=None,
         synthesis_options=None,
         model_name="tts_models/en/vctk/vits",
+        clock=None,
     ):
         tts = Mock()
         tts.is_multi_speaker = is_multi_speaker
@@ -40,6 +41,9 @@ class TTSEngineTest(unittest.TestCase):
         torch_module.device.return_value = "cpu"
 
         audio_output = Mock()
+        options = {}
+        if clock is not None:
+            options["clock"] = clock
         engine = TTSEngine(
             model_name=model_name,
             speaker=speaker,
@@ -49,6 +53,7 @@ class TTSEngineTest(unittest.TestCase):
             tts_factory=tts_factory,
             torch_module=torch_module,
             audio_output=audio_output,
+            **options,
         )
         return engine, tts, audio_output
 
@@ -74,6 +79,15 @@ class TTSEngineTest(unittest.TestCase):
         tts.tts.assert_called_once_with(text="Hello", speaker="p225")
         audio_output.play.assert_called_once_with(tts.tts.return_value, 48000)
         audio_output.wait.assert_called_once_with()
+
+    def test_speak_records_synthesis_and_playback_latency(self):
+        clock = iter((0.0, 0.15, 1.0, 1.4)).__next__
+        engine, _, _ = self.create_engine(clock=clock)
+
+        engine.speak("Hello")
+
+        self.assertAlmostEqual(engine.last_synthesis_ms, 150.0)
+        self.assertAlmostEqual(engine.last_playback_ms, 400.0)
 
     def test_speak_omits_speaker_and_language_for_single_speaker_model(self):
         engine, tts, _ = self.create_engine()

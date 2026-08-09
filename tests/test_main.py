@@ -42,8 +42,8 @@ class MainTest(unittest.TestCase):
                 return_value=(image, Path("capture.png")),
             ),
             patch(
-                "vntts.main.recognize_screenshot",
-                return_value=("Lucy", "Hello."),
+                "vntts.main.recognize_screenshot_result",
+                return_value=OCRResult("Lucy", "Hello.", 95.0, "balanced", 1),
             ),
             redirect_stdout(io.StringIO()),
         ):
@@ -88,8 +88,8 @@ class MainTest(unittest.TestCase):
                 "vntts.main.capture_dialog", return_value=(image, Path("capture.png"))
             ),
             patch(
-                "vntts.main.recognize_screenshot",
-                return_value=("Lucy", "Hello."),
+                "vntts.main.recognize_screenshot_result",
+                return_value=OCRResult("Lucy", "Hello.", 95.0, "balanced", 1),
             ),
             redirect_stdout(io.StringIO()),
         ):
@@ -521,6 +521,8 @@ class MainTest(unittest.TestCase):
             speech_handler=live_reader.enqueue,
             minimum_confidence=60,
             uncertain_frame_recorder=None,
+            diagnostic_handler=controller._publish_diagnostic,
+            voice_resolver=controller._resolve_voice_label,
         )
 
     def test_main_connects_hotkeys_to_controller_and_shuts_it_down(self):
@@ -584,8 +586,14 @@ class MainTest(unittest.TestCase):
         with (
             patch("vntts.main.capture_dialog", return_value=(image, None)),
             patch(
-                "vntts.main.recognize_screenshot",
-                return_value=("Marcus", "This is a complete test."),
+                "vntts.main.recognize_screenshot_result",
+                return_value=OCRResult(
+                    "Marcus",
+                    "This is a complete test.",
+                    95.0,
+                    "balanced",
+                    1,
+                ),
             ),
         ):
             character, text = controller.test_current_dialog()
