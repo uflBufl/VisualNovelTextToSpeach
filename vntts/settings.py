@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 5
+settings_schema_version = 6
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -73,6 +73,7 @@ class AppSettings:
     live_idle_flush_ms: int = 700
     live_min_chunk_characters: int = 20
     ocr_minimum_confidence: int = 60
+    ocr_language: str = "eng"
     tts_model: str | None = None
     tts_speaker: str | None = None
     tts_language: str | None = None
@@ -80,6 +81,7 @@ class AppSettings:
     tts_profile: str = "stable"
     voice_manifest: str | None = None
     narrator_speaker: str | None = None
+    active_profile_id: str | None = None
 
     @classmethod
     def from_mapping(cls, values, *, warn=None):
@@ -96,6 +98,7 @@ class AppSettings:
             "clear_queue_hotkey",
             "screenshot_directory",
             "ocr_diagnostics_directory",
+            "ocr_language",
         )
         optional_string_fields = (
             "tts_model",
@@ -105,6 +108,7 @@ class AppSettings:
             "voice_manifest",
             "narrator_speaker",
             "game_window_title",
+            "active_profile_id",
         )
         numeric_fields = {
             "live_interval_ms": 1,
@@ -188,6 +192,7 @@ class AppSettings:
             "VNTTS_TTS_PROFILE": "tts_profile",
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
+            "VNTTS_OCR_LANGUAGE": "ocr_language",
             "VNTTS_CAPTURE_MODE": "capture_mode",
             "VNTTS_GAME_WINDOW_TITLE": "game_window_title",
         }
@@ -198,7 +203,6 @@ class AppSettings:
             "VNTTS_LIVE_MIN_CHUNK_CHARACTERS": "live_min_chunk_characters",
             "VNTTS_OCR_MINIMUM_CONFIDENCE": "ocr_minimum_confidence",
         }
-
         for environment_name, setting_name in string_overrides.items():
             if configured := environment.get(environment_name):
                 values[setting_name] = configured

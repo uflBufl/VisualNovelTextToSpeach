@@ -61,6 +61,7 @@ class ConfigurationPage(QWizardPage):
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.tts_model = QLineEdit(settings.tts_model or default_onboarding_model)
         self.tts_language = QLineEdit(settings.tts_language or "en")
+        self.ocr_language = QLineEdit(settings.ocr_language)
         self.voice_manifest = QLineEdit(settings.voice_manifest or "")
         browse_manifest = QPushButton("Browse...")
         browse_manifest.clicked.connect(self.browse_voice_manifest)
@@ -85,6 +86,7 @@ class ConfigurationPage(QWizardPage):
         form.addRow("Read once hotkey", self.read_hotkey)
         form.addRow("Live reading hotkey", self.live_hotkey)
         form.addRow("TTS model", self.tts_model)
+        form.addRow("OCR language", self.ocr_language)
         form.addRow("TTS language", self.tts_language)
         form.addRow("Voice manifest", manifest_layout)
         form.addRow("Narrator speaker", self.narrator_speaker)
@@ -178,6 +180,7 @@ class ConfigurationPage(QWizardPage):
                 "read_hotkey": hotkeys["Read once"],
                 "live_hotkey": hotkeys["Live reading"],
                 "tts_model": optional_text(self.tts_model),
+                "ocr_language": self.ocr_language.text().strip(),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "narrator_speaker": optional_text(self.narrator_speaker),

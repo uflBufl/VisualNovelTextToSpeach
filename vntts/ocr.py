@@ -234,12 +234,14 @@ def recognize_dialog_image(
     voice_registry=None,
     recognize_text=None,
     recognize_data=None,
+    language="eng",
 ):
     result = recognize_dialog_image_result(
         image,
         voice_registry,
         recognize_text,
         recognize_data,
+        language=language,
     )
     return result.character, result.text
 
@@ -252,6 +254,7 @@ def recognize_dialog_image_result(
     *,
     minimum_confidence=default_minimum_ocr_confidence,
     profiles=default_ocr_profiles,
+    language="eng",
 ):
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
@@ -268,6 +271,7 @@ def recognize_dialog_image_result(
             recognize_data,
             profile.name,
             attempt,
+            language,
         )
         if best_result is None or _result_rank(result) > _result_rank(best_result):
             best_result = result
@@ -284,11 +288,13 @@ def _recognize_preprocessed_dialog(
     recognize_data,
     profile_name,
     attempt,
+    language,
 ):
     data = recognize_data(
         image,
         config="--psm 6",
         output_type=pytesseract.Output.DICT,
+        lang=language,
     )
 
     if voice_registry is not None:
@@ -296,13 +302,18 @@ def _recognize_preprocessed_dialog(
         if speaker is not None:
             voice, speaker_line = speaker
             dialog_image = crop_dialog_text(image, speaker_line)
-            dialog_text = recognize_text(dialog_image, config="--psm 6")
+            dialog_text = recognize_text(
+                dialog_image,
+                config="--psm 6",
+                lang=language,
+            )
             dialog_lines = clean_dialog_lines(dialog_text)
             if dialog_lines:
                 dialog_data = recognize_data(
                     dialog_image,
                     config="--psm 6",
                     output_type=pytesseract.Output.DICT,
+                    lang=language,
                 )
                 return OCRResult(
                     voice.character,
@@ -315,6 +326,7 @@ def _recognize_preprocessed_dialog(
     recognized_text = recognize_text(
         image,
         config="--psm 6",
+        lang=language,
     )
     character, text = parse_recognized_dialog(recognized_text, voice_registry)
     return OCRResult(

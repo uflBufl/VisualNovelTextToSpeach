@@ -46,6 +46,8 @@ from vntts.main import (
 )
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.profiles import GameProfileStore
+from vntts.profiles_ui import GameProfilesDialog
 from vntts.release_smoke_test import (
     default_smoke_test_model,
     run_release_smoke_test,
@@ -114,6 +116,7 @@ class SettingsDialog(QDialog):
         self.ocr_minimum_confidence.setRange(0, 100)
         self.ocr_minimum_confidence.setSuffix("%")
         self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
+        self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.voice_manifest = QLineEdit(settings.voice_manifest or "")
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
@@ -146,6 +149,7 @@ class SettingsDialog(QDialog):
         form.addRow("Capture source", self.capture_mode)
         form.addRow("Game window", window_layout)
         form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
+        form.addRow("OCR language", self.ocr_language)
         form.addRow("OCR diagnostics", self.retain_uncertain_frames)
         form.addRow("Diagnostics directory", diagnostics_layout)
         form.addRow("TTS model", self.tts_model)
@@ -288,6 +292,7 @@ class SettingsDialog(QDialog):
                 "capture_mode": self.capture_mode.currentData(),
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
+                "ocr_language": self.ocr_language.text().strip(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
@@ -309,7 +314,13 @@ class SettingsDialog(QDialog):
 
 
 class TrayApplication:
-    def __init__(self, application, settings=None, controller_factory=AppController):
+    def __init__(
+        self,
+        application,
+        settings=None,
+        controller_factory=AppController,
+        profile_store=None,
+    ):
         self.application = application
         self.settings = settings or load_app_settings()
         self.signals = AppSignals()
@@ -322,6 +333,7 @@ class TrayApplication:
                 format_runtime_error(error)
             ),
         )
+        self.profile_store = profile_store or GameProfileStore.load()
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
@@ -343,6 +355,7 @@ class TrayApplication:
         self.calibrate_action = QAction("Calibrate dialog region")
         self.diagnostics_action = QAction("Live diagnostics...")
         self.settings_action = QAction("Settings...")
+        self.profiles_action = QAction("Game profiles...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.settings_folder_action = QAction("Open settings folder")
@@ -367,6 +380,7 @@ class TrayApplication:
         self.menu.addAction(self.diagnostics_action)
         self.menu.addSeparator()
         self.menu.addAction(self.settings_action)
+        self.menu.addAction(self.profiles_action)
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.settings_folder_action)
@@ -384,6 +398,7 @@ class TrayApplication:
         self.calibrate_action.triggered.connect(self.calibrate)
         self.diagnostics_action.triggered.connect(self.open_diagnostics)
         self.settings_action.triggered.connect(self.open_settings)
+        self.profiles_action.triggered.connect(self.open_profiles)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
@@ -475,6 +490,13 @@ class TrayApplication:
             self.show_error(str(error))
             return
         self.calibration_overlay = show_calibration_overlay(geometry)
+        if self.settings.active_profile_id:
+            self.calibration_overlay.selected.connect(self.update_profile_region)
+
+    def update_profile_region(self, region):
+        profile_id = self.settings.active_profile_id
+        if profile_id and self.profile_store.get(profile_id) is not None:
+            self.profile_store.update_region(profile_id, region)
 
     def open_diagnostics(self):
         if self.diagnostics_dialog is None:
@@ -597,6 +619,7 @@ class TrayApplication:
             return
         self.settings = dialog.settings()
         path = self.settings.save()
+        self._sync_active_profile()
         self.controller.apply_settings(self.settings)
         try:
             self.start_hotkeys()
@@ -604,16 +627,42 @@ class TrayApplication:
             self.show_error(f"Unable to register hotkeys: {error}")
         self.set_status(f"Settings saved to {path}")
 
+    def open_profiles(self):
+        dialog = GameProfilesDialog(self.settings, self.profile_store)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings = dialog.settings()
+        path = self.settings.save()
+        self.controller.shutdown()
+        self.controller.apply_settings(self.settings)
+        ready = self.controller.start()
+        self.set_ready(ready)
+        if not ready:
+            self.set_status("Unable to load the selected profile")
+            return
+        try:
+            self.start_hotkeys()
+        except (TypeError, ValueError) as error:
+            self.show_error(f"Unable to register hotkeys: {error}")
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        self.set_status(f"Profile {profile.name!r} selected; settings saved to {path}")
+
     def open_assets(self):
         dialog = AssetManagerDialog(self.settings)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.settings = dialog.settings()
         path = self.settings.save()
+        self._sync_active_profile()
         self.controller.apply_settings(self.settings)
         self.set_status(
             f"Assets updated; restart to load voice or model changes. Saved to {path}"
         )
+
+    def _sync_active_profile(self):
+        profile_id = self.settings.active_profile_id
+        if profile_id and self.profile_store.get(profile_id) is not None:
+            self.profile_store.update_from_settings(profile_id, self.settings)
 
     def open_settings_folder(self):
         path = get_settings_path().parent

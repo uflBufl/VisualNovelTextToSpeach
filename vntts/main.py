@@ -151,12 +151,14 @@ def recognize_screenshot_result(
     image,
     voice_registry=None,
     minimum_confidence=default_minimum_ocr_confidence,
+    ocr_language="eng",
 ):
     try:
         return recognize_dialog_image_result(
             image,
             voice_registry,
             minimum_confidence=minimum_confidence,
+            language=ocr_language,
         )
     except Exception as error:
         raise OCRError(str(error)) from error
@@ -166,11 +168,13 @@ def recognize_screenshot(
     image,
     voice_registry=None,
     minimum_confidence=default_minimum_ocr_confidence,
+    ocr_language="eng",
 ):
     result = recognize_screenshot_result(
         image,
         voice_registry,
         minimum_confidence,
+        ocr_language,
     )
     if result.text and not result.is_confident(minimum_confidence):
         raise OCRUncertainError(result, minimum_confidence)
@@ -187,6 +191,7 @@ def analyze_dialog_snapshot(
     diagnostic_handler=None,
     voice_resolver=None,
     clock=monotonic,
+    ocr_language="eng",
 ):
     capture_started = clock()
     image, output = capture_dialog(
@@ -201,6 +206,7 @@ def analyze_dialog_snapshot(
         image,
         voice_registry,
         minimum_confidence,
+        ocr_language,
     )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
@@ -231,6 +237,7 @@ def read_dialog(
     uncertain_frame_recorder=None,
     diagnostic_handler=None,
     voice_resolver=None,
+    ocr_language="eng",
 ):
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -240,6 +247,7 @@ def read_dialog(
         save_screenshot=True,
         diagnostic_handler=diagnostic_handler,
         voice_resolver=voice_resolver,
+        ocr_language=ocr_language,
     )
     if result.text and not result.is_confident(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
@@ -276,6 +284,7 @@ def read_dialog_safely(
     uncertain_frame_recorder=None,
     diagnostic_handler=None,
     voice_resolver=None,
+    ocr_language="eng",
 ):
     try:
         read_dialog(
@@ -287,6 +296,7 @@ def read_dialog_safely(
             uncertain_frame_recorder,
             diagnostic_handler,
             voice_resolver,
+            ocr_language,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)
@@ -526,6 +536,7 @@ def create_dialog_read_scheduler(
     uncertain_frame_recorder=None,
     diagnostic_handler=None,
     voice_resolver=None,
+    ocr_language="eng",
 ):
     active_read = None
     active_read_lock = Lock()
@@ -555,6 +566,7 @@ def create_dialog_read_scheduler(
                 options["diagnostic_handler"] = diagnostic_handler
             if voice_resolver is not None:
                 options["voice_resolver"] = voice_resolver
+            options["ocr_language"] = ocr_language
             active_read = executor.submit(
                 read_dialog_safely,
                 voice_router,
@@ -575,6 +587,7 @@ def read_live_snapshot(
     uncertain_frame_recorder=None,
     diagnostic_handler=None,
     voice_resolver=None,
+    ocr_language="eng",
 ):
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -583,6 +596,7 @@ def read_live_snapshot(
         minimum_confidence=minimum_confidence,
         diagnostic_handler=diagnostic_handler,
         voice_resolver=voice_resolver,
+        ocr_language=ocr_language,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:
@@ -754,6 +768,7 @@ class AppController:
                     self.uncertain_frame_recorder,
                     self._publish_diagnostic,
                     self._resolve_voice_label,
+                    self.settings.ocr_language,
                 ),
                 speak_chunk=self._speak_live_chunk,
                 report_error=self.error_handler,
@@ -774,6 +789,7 @@ class AppController:
                 uncertain_frame_recorder=self.uncertain_frame_recorder,
                 diagnostic_handler=self._publish_diagnostic,
                 voice_resolver=self._resolve_voice_label,
+                ocr_language=self.settings.ocr_language,
             )
         except Exception as error:
             self.error_handler(error)
@@ -851,6 +867,7 @@ class AppController:
             minimum_confidence=self.settings.ocr_minimum_confidence,
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
+            ocr_language=self.settings.ocr_language,
         )
         return result
 
@@ -864,6 +881,7 @@ class AppController:
             minimum_confidence=self.settings.ocr_minimum_confidence,
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
+            ocr_language=self.settings.ocr_language,
         )
         if result.text and not result.is_confident(
             self.settings.ocr_minimum_confidence
@@ -916,6 +934,7 @@ class AppController:
             self.uncertain_frame_recorder,
             self._publish_diagnostic,
             self._resolve_voice_label,
+            self.settings.ocr_language,
         )
         live_configuration = get_live_configuration(self.settings)
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
@@ -932,6 +951,7 @@ class AppController:
             uncertain_frame_recorder=self.uncertain_frame_recorder,
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
+            ocr_language=self.settings.ocr_language,
         )
         if was_live:
             self.live_reader.start()

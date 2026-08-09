@@ -1,5 +1,7 @@
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,6 +10,8 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.app import SettingsDialog, TrayApplication, main  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
+from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -49,6 +53,7 @@ class TrayApplicationTest(unittest.TestCase):
             "Live diagnostics...",
         )
         self.assertEqual(tray_application.setup_action.text(), "Run setup...")
+        self.assertEqual(tray_application.profiles_action.text(), "Game profiles...")
         self.assertEqual(
             tray_application.assets_action.text(),
             "Manage models and voices...",
@@ -193,6 +198,56 @@ class TrayApplicationTest(unittest.TestCase):
 
         show_overlay.assert_called_once_with(geometry)
         tray_application.shutdown()
+
+    def test_calibration_updates_the_active_game_profile(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Game", AppSettings())
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(active_profile_id=profile.id),
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=store,
+            )
+            region = DialogRegion(0.1, 0.6, 0.8, 0.3)
+
+            tray_application.update_profile_region(region)
+
+            self.assertEqual(store.get(profile.id).dialog_region, region)
+            tray_application.shutdown()
+
+    def test_profile_selection_reloads_runtime_with_profile_settings(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create(
+                "Reverse: 1999",
+                AppSettings(game_window_title="Reverse: 1999"),
+            )
+            selected_settings = profile.apply(AppSettings())
+            controller = Mock()
+            controller.start.return_value = True
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+                profile_store=store,
+            )
+            dialog = Mock()
+            dialog.exec.return_value = SettingsDialog.DialogCode.Accepted
+            dialog.settings.return_value = selected_settings
+
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch.object(tray_application, "start_hotkeys"),
+                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            ):
+                tray_application.open_profiles()
+
+            controller.shutdown.assert_called_once_with()
+            controller.apply_settings.assert_called_once_with(selected_settings)
+            controller.start.assert_called_once_with()
+            self.assertIn("Reverse: 1999", tray_application.status_action.text())
+            tray_application.shutdown()
 
     def test_incomplete_setup_opens_wizard_instead_of_loading_model(self):
         controller = Mock()

@@ -136,6 +136,22 @@ class RecognizedDialogTest(unittest.TestCase):
         recognize_text.assert_called_once()
         recognize_data.assert_called_once()
 
+    def test_configured_ocr_language_is_passed_to_tesseract(self):
+        recognize_text = Mock(return_value="A reliable result.")
+        recognize_data = Mock(
+            return_value={"text": ["A", "reliable", "result"], "conf": [95, 94, 96]}
+        )
+
+        recognize_dialog_image_result(
+            Image.new("RGB", (320, 120), "black"),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+            language="eng+jpn",
+        )
+
+        self.assertEqual(recognize_text.call_args.kwargs["lang"], "eng+jpn")
+        self.assertEqual(recognize_data.call_args.kwargs["lang"], "eng+jpn")
+
     def test_uncertain_frame_recorder_saves_image_and_metadata_once(self):
         result = OCRResult("Marcus", "Maybe this text", 41.5, "balanced", 3)
         with TemporaryDirectory() as temporary_directory:
