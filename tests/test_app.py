@@ -79,6 +79,17 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog.deleteLater()
 
+    def test_settings_reject_duplicate_recorded_hotkeys(self):
+        dialog = SettingsDialog(AppSettings())
+        dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())
+
+        with patch("vntts.app.QMessageBox.warning") as warning:
+            dialog.validate_and_accept()
+
+        self.assertIn("duplicates", warning.call_args.args[2])
+        self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
+        dialog.deleteLater()
+
     def test_recognized_dialog_has_a_dedicated_tray_status(self):
         tray_application = TrayApplication(
             self.application,

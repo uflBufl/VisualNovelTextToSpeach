@@ -15,6 +15,13 @@ from pynput import keyboard
 from vntts.assets import ModelAssetManager
 from vntts.diagnostics import DiagnosticSnapshot, resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
+from vntts.hotkeys import (
+    HotkeyValidationError,
+    validate_hotkey_assignments,
+)
+from vntts.hotkeys import (
+    default_hotkey as default_hotkey_for_key,
+)
 from vntts.live import IncrementalDialogTracker, LiveDialogReader
 from vntts.ocr import (
     OCRResult,
@@ -43,12 +50,12 @@ from vntts.window_capture import (
 )
 
 default_screenshot_directory = Path("logs/screenshots")
-default_hotkey = "<ctrl>+<shift>+h"
-default_live_hotkey = "<ctrl>+<shift>+l"
-default_pause_hotkey = "<ctrl>+<shift>+p"
-default_skip_hotkey = "<ctrl>+<shift>+s"
-default_repeat_hotkey = "<ctrl>+<shift>+r"
-default_clear_queue_hotkey = "<ctrl>+<shift>+x"
+default_hotkey = default_hotkey_for_key("h")
+default_live_hotkey = default_hotkey_for_key("l")
+default_pause_hotkey = default_hotkey_for_key("p")
+default_skip_hotkey = default_hotkey_for_key("s")
+default_repeat_hotkey = default_hotkey_for_key("r")
+default_clear_queue_hotkey = default_hotkey_for_key("x")
 default_live_interval_ms = 200
 default_live_stability_frames = 2
 default_live_idle_flush_ms = 700
@@ -1032,19 +1039,19 @@ def main(tts_factory=TTSEngine):
     skip_hotkey = get_skip_hotkey(settings)
     repeat_hotkey = get_repeat_hotkey(settings)
     clear_queue_hotkey = get_clear_queue_hotkey(settings)
-    hotkeys = (
-        hotkey,
-        live_hotkey,
-        pause_hotkey,
-        skip_hotkey,
-        repeat_hotkey,
-        clear_queue_hotkey,
-    )
-    if len(set(hotkeys)) != len(hotkeys):
-        print(
-            "All configured hotkeys must be different",
-            file=sys.stderr,
+    try:
+        validate_hotkey_assignments(
+            {
+                "Read once": hotkey,
+                "Live reading": live_hotkey,
+                "Pause or resume": pause_hotkey,
+                "Skip speech": skip_hotkey,
+                "Repeat speech": repeat_hotkey,
+                "Clear queue": clear_queue_hotkey,
+            }
         )
+    except HotkeyValidationError as error:
+        print(f"Invalid hotkeys: {error}", file=sys.stderr)
         controller.shutdown()
         return 1
 

@@ -32,6 +32,8 @@ from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
+from vntts.hotkey_ui import HotkeyRecorder
+from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.main import (
     AppController,
     format_runtime_error,
@@ -79,12 +81,12 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(f"{application_name} settings")
         self.setMinimumWidth(540)
 
-        self.read_hotkey = QLineEdit(settings.read_hotkey)
-        self.live_hotkey = QLineEdit(settings.live_hotkey)
-        self.pause_hotkey = QLineEdit(settings.pause_hotkey)
-        self.skip_hotkey = QLineEdit(settings.skip_hotkey)
-        self.repeat_hotkey = QLineEdit(settings.repeat_hotkey)
-        self.clear_queue_hotkey = QLineEdit(settings.clear_queue_hotkey)
+        self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
+        self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
+        self.pause_hotkey = HotkeyRecorder(settings.pause_hotkey)
+        self.skip_hotkey = HotkeyRecorder(settings.skip_hotkey)
+        self.repeat_hotkey = HotkeyRecorder(settings.repeat_hotkey)
+        self.clear_queue_hotkey = HotkeyRecorder(settings.clear_queue_hotkey)
         self.screenshot_directory = QLineEdit(settings.screenshot_directory)
         self.retain_uncertain_frames = QCheckBox(
             "Save uncertain frames for OCR diagnostics"
@@ -220,26 +222,10 @@ class SettingsDialog(QDialog):
         self.xtts_terms.setEnabled("xtts" in self.tts_model.text().casefold())
 
     def validate_and_accept(self):
-        hotkeys = [
-            self.read_hotkey.text().strip(),
-            self.live_hotkey.text().strip(),
-            self.pause_hotkey.text().strip(),
-            self.skip_hotkey.text().strip(),
-            self.repeat_hotkey.text().strip(),
-            self.clear_queue_hotkey.text().strip(),
-        ]
         try:
-            for hotkey in hotkeys:
-                keyboard.HotKey.parse(hotkey)
-        except (TypeError, ValueError) as error:
+            validate_hotkey_assignments(self.hotkey_assignments())
+        except HotkeyValidationError as error:
             QMessageBox.warning(self, "Invalid hotkey", str(error))
-            return
-        if len(set(hotkeys)) != len(hotkeys):
-            QMessageBox.warning(
-                self,
-                "Invalid hotkeys",
-                "Every speech action must use a different hotkey.",
-            )
             return
         if not self.screenshot_directory.text().strip():
             QMessageBox.warning(
@@ -284,15 +270,16 @@ class SettingsDialog(QDialog):
         def optional_text(widget):
             return widget.text().strip() or None
 
+        hotkeys = self.hotkey_assignments()
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
-                "read_hotkey": self.read_hotkey.text().strip(),
-                "live_hotkey": self.live_hotkey.text().strip(),
-                "pause_hotkey": self.pause_hotkey.text().strip(),
-                "skip_hotkey": self.skip_hotkey.text().strip(),
-                "repeat_hotkey": self.repeat_hotkey.text().strip(),
-                "clear_queue_hotkey": self.clear_queue_hotkey.text().strip(),
+                "read_hotkey": hotkeys["Read once"],
+                "live_hotkey": hotkeys["Live reading"],
+                "pause_hotkey": hotkeys["Pause or resume"],
+                "skip_hotkey": hotkeys["Skip speech"],
+                "repeat_hotkey": hotkeys["Repeat speech"],
+                "clear_queue_hotkey": hotkeys["Clear queue"],
                 "screenshot_directory": self.screenshot_directory.text().strip(),
                 "ocr_diagnostics_directory": (
                     self.ocr_diagnostics_directory.text().strip()
@@ -309,6 +296,16 @@ class SettingsDialog(QDialog):
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
             }
         )
+
+    def hotkey_assignments(self):
+        return {
+            "Read once": self.read_hotkey.hotkey(),
+            "Live reading": self.live_hotkey.hotkey(),
+            "Pause or resume": self.pause_hotkey.hotkey(),
+            "Skip speech": self.skip_hotkey.hotkey(),
+            "Repeat speech": self.repeat_hotkey.hotkey(),
+            "Clear queue": self.clear_queue_hotkey.hotkey(),
+        }
 
 
 class TrayApplication:
@@ -431,16 +428,16 @@ class TrayApplication:
         skip_hotkey = get_skip_hotkey(self.settings)
         repeat_hotkey = get_repeat_hotkey(self.settings)
         clear_queue_hotkey = get_clear_queue_hotkey(self.settings)
-        hotkeys = (
-            read_hotkey,
-            live_hotkey,
-            pause_hotkey,
-            skip_hotkey,
-            repeat_hotkey,
-            clear_queue_hotkey,
+        validate_hotkey_assignments(
+            {
+                "Read once": read_hotkey,
+                "Live reading": live_hotkey,
+                "Pause or resume": pause_hotkey,
+                "Skip speech": skip_hotkey,
+                "Repeat speech": repeat_hotkey,
+                "Clear queue": clear_queue_hotkey,
+            }
         )
-        if len(set(hotkeys)) != len(hotkeys):
-            raise ValueError("Every speech action must use a different hotkey")
         self.hotkey_listener = keyboard.GlobalHotKeys(
             {
                 read_hotkey: self.read_once,

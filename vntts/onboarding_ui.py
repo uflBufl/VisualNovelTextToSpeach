@@ -1,6 +1,5 @@
 from dataclasses import asdict
 
-from pynput import keyboard
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -22,6 +21,8 @@ from PySide6.QtWidgets import (
 
 from vntts.asset_ui import AssetManagerDialog
 from vntts.calibration import show_calibration_overlay
+from vntts.hotkey_ui import HotkeyRecorder
+from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.settings import AppSettings
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
@@ -56,8 +57,8 @@ class ConfigurationPage(QWizardPage):
         window_layout.addWidget(self.game_window)
         window_layout.addWidget(refresh_button)
 
-        self.read_hotkey = QLineEdit(settings.read_hotkey)
-        self.live_hotkey = QLineEdit(settings.live_hotkey)
+        self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
+        self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.tts_model = QLineEdit(settings.tts_model or default_onboarding_model)
         self.tts_language = QLineEdit(settings.tts_language or "en")
         self.voice_manifest = QLineEdit(settings.voice_manifest or "")
@@ -136,17 +137,9 @@ class ConfigurationPage(QWizardPage):
 
     def validatePage(self):
         try:
-            keyboard.HotKey.parse(self.read_hotkey.text().strip())
-            keyboard.HotKey.parse(self.live_hotkey.text().strip())
-        except (TypeError, ValueError) as error:
+            validate_hotkey_assignments(self.hotkey_assignments())
+        except HotkeyValidationError as error:
             QMessageBox.warning(self, "Invalid hotkey", str(error))
-            return False
-        if self.read_hotkey.text().strip() == self.live_hotkey.text().strip():
-            QMessageBox.warning(
-                self,
-                "Invalid hotkeys",
-                "Read once and live reading must use different hotkeys.",
-            )
             return False
         if (
             self.capture_mode.currentData() == "window"
@@ -176,13 +169,14 @@ class ConfigurationPage(QWizardPage):
         def optional_text(widget):
             return widget.text().strip() or None
 
+        hotkeys = self.hotkey_assignments()
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
                 "capture_mode": self.capture_mode.currentData(),
                 "game_window_title": self.game_window.currentText().strip() or None,
-                "read_hotkey": self.read_hotkey.text().strip(),
-                "live_hotkey": self.live_hotkey.text().strip(),
+                "read_hotkey": hotkeys["Read once"],
+                "live_hotkey": hotkeys["Live reading"],
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
@@ -190,6 +184,12 @@ class ConfigurationPage(QWizardPage):
                 "xtts_terms_accepted": self.terms.isChecked(),
             }
         )
+
+    def hotkey_assignments(self):
+        return {
+            "Read once": self.read_hotkey.hotkey(),
+            "Live reading": self.live_hotkey.hotkey(),
+        }
 
 
 class DiagnosticsPage(QWizardPage):

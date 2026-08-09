@@ -4,6 +4,8 @@ import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
+from vntts.hotkeys import default_hotkey
+
 application_directory_name = "VisualNovelTextToSpeech"
 settings_schema_version = 5
 
@@ -51,12 +53,12 @@ class AppSettings:
     schema_version: int = settings_schema_version
     onboarding_completed: bool = False
     xtts_terms_accepted: bool = False
-    read_hotkey: str = "<ctrl>+<shift>+h"
-    live_hotkey: str = "<ctrl>+<shift>+l"
-    pause_hotkey: str = "<ctrl>+<shift>+p"
-    skip_hotkey: str = "<ctrl>+<shift>+s"
-    repeat_hotkey: str = "<ctrl>+<shift>+r"
-    clear_queue_hotkey: str = "<ctrl>+<shift>+x"
+    read_hotkey: str = field(default_factory=lambda: default_hotkey("h"))
+    live_hotkey: str = field(default_factory=lambda: default_hotkey("l"))
+    pause_hotkey: str = field(default_factory=lambda: default_hotkey("p"))
+    skip_hotkey: str = field(default_factory=lambda: default_hotkey("s"))
+    repeat_hotkey: str = field(default_factory=lambda: default_hotkey("r"))
+    clear_queue_hotkey: str = field(default_factory=lambda: default_hotkey("x"))
     screenshot_directory: str = field(
         default_factory=lambda: str(get_local_data_directory() / "screenshots")
     )

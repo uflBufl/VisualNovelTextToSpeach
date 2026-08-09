@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from pynput import keyboard
-
 from vntts.assets import ModelAssetManager
+from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -42,11 +41,13 @@ class OnboardingDiagnostics:
 
     def _check_hotkeys(self, settings):
         try:
-            keyboard.HotKey.parse(settings.read_hotkey)
-            keyboard.HotKey.parse(settings.live_hotkey)
-            if settings.read_hotkey == settings.live_hotkey:
-                raise ValueError("hotkeys must be different")
-        except (TypeError, ValueError) as error:
+            validate_hotkey_assignments(
+                {
+                    "Read once": settings.read_hotkey,
+                    "Live reading": settings.live_hotkey,
+                }
+            )
+        except HotkeyValidationError as error:
             return DiagnosticResult("Hotkeys", "error", str(error))
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
 
