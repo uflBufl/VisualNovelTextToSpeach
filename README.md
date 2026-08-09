@@ -96,6 +96,11 @@ speaker and text.
 Tune live reading with `VNTTS_LIVE_INTERVAL_MS`,
 `VNTTS_LIVE_STABILITY_FRAMES`, `VNTTS_LIVE_IDLE_FLUSH_MS`, and
 `VNTTS_LIVE_MIN_CHUNK_CHARACTERS`. Invalid values use their defaults.
+Low-confidence OCR is retried with alternate preprocessing and is not spoken.
+Set its acceptance threshold in Settings or with
+`VNTTS_OCR_MINIMUM_CONFIDENCE` from 0 to 100. Settings can also retain one copy
+of each uncertain frame and its confidence metadata in the application-data
+directory for OCR diagnostics.
 
 Screenshots are stored in `logs/screenshots/` by default. Set
 `VNTTS_SCREENSHOT_DIR` to use another directory:

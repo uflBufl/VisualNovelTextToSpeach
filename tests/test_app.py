@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from vntts.app import TrayApplication, main  # noqa: E402
+from vntts.app import SettingsDialog, TrayApplication, main  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -53,6 +53,26 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_settings_expose_minimum_ocr_confidence(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                ocr_minimum_confidence=73,
+                retain_uncertain_frames=True,
+                ocr_diagnostics_directory="custom/ocr-diagnostics",
+            )
+        )
+
+        self.assertEqual(dialog.ocr_minimum_confidence.value(), 73)
+        dialog.ocr_minimum_confidence.setValue(81)
+
+        self.assertEqual(dialog.settings().ocr_minimum_confidence, 81)
+        self.assertTrue(dialog.settings().retain_uncertain_frames)
+        self.assertEqual(
+            dialog.settings().ocr_diagnostics_directory,
+            "custom/ocr-diagnostics",
+        )
+        dialog.deleteLater()
 
     def test_recognized_dialog_has_a_dedicated_tray_status(self):
         tray_application = TrayApplication(

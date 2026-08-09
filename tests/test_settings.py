@@ -38,6 +38,9 @@ class SettingsTest(unittest.TestCase):
                 skip_hotkey="<ctrl>+s",
                 repeat_hotkey="<ctrl>+e",
                 clear_queue_hotkey="<ctrl>+x",
+                ocr_minimum_confidence=72,
+                retain_uncertain_frames=True,
+                ocr_diagnostics_directory="custom/ocr-diagnostics",
                 capture_mode="window",
                 game_window_title="Reverse: 1999",
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
@@ -99,6 +102,22 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.capture_mode, "screen")
         self.assertIn("capture_mode", warnings[0])
+
+    def test_ocr_confidence_must_be_between_zero_and_one_hundred(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"ocr_minimum_confidence": 101},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(
+            settings.ocr_minimum_confidence,
+            AppSettings().ocr_minimum_confidence,
+        )
+        self.assertTrue(
+            any("ocr_minimum_confidence" in warning for warning in warnings)
+        )
 
 
 if __name__ == "__main__":

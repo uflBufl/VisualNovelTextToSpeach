@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 3
+settings_schema_version = 5
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -60,12 +60,17 @@ class AppSettings:
     screenshot_directory: str = field(
         default_factory=lambda: str(get_local_data_directory() / "screenshots")
     )
+    ocr_diagnostics_directory: str = field(
+        default_factory=lambda: str(get_local_data_directory() / "ocr-diagnostics")
+    )
+    retain_uncertain_frames: bool = False
     capture_mode: str = "screen"
     game_window_title: str | None = None
     live_interval_ms: int = 200
     live_stability_frames: int = 2
     live_idle_flush_ms: int = 700
     live_min_chunk_characters: int = 20
+    ocr_minimum_confidence: int = 60
     tts_model: str | None = None
     tts_speaker: str | None = None
     tts_language: str | None = None
@@ -88,6 +93,7 @@ class AppSettings:
             "repeat_hotkey",
             "clear_queue_hotkey",
             "screenshot_directory",
+            "ocr_diagnostics_directory",
         )
         optional_string_fields = (
             "tts_model",
@@ -103,8 +109,13 @@ class AppSettings:
             "live_stability_frames": 2,
             "live_idle_flush_ms": 1,
             "live_min_chunk_characters": 1,
+            "ocr_minimum_confidence": 0,
         }
-        boolean_fields = ("onboarding_completed", "xtts_terms_accepted")
+        boolean_fields = (
+            "onboarding_completed",
+            "xtts_terms_accepted",
+            "retain_uncertain_frames",
+        )
 
         for name in string_fields:
             value = values.get(name, getattr(defaults, name))
@@ -128,6 +139,7 @@ class AppSettings:
                 isinstance(value, int)
                 and not isinstance(value, bool)
                 and value >= minimum
+                and (name != "ocr_minimum_confidence" or value <= 100)
             ):
                 parsed[name] = value
             else:
@@ -166,6 +178,7 @@ class AppSettings:
             "VNTTS_REPEAT_HOTKEY": "repeat_hotkey",
             "VNTTS_CLEAR_QUEUE_HOTKEY": "clear_queue_hotkey",
             "VNTTS_SCREENSHOT_DIR": "screenshot_directory",
+            "VNTTS_OCR_DIAGNOSTICS_DIR": "ocr_diagnostics_directory",
             "VNTTS_TTS_MODEL": "tts_model",
             "VNTTS_TTS_SPEAKER": "tts_speaker",
             "VNTTS_TTS_LANGUAGE": "tts_language",
@@ -181,6 +194,7 @@ class AppSettings:
             "VNTTS_LIVE_STABILITY_FRAMES": "live_stability_frames",
             "VNTTS_LIVE_IDLE_FLUSH_MS": "live_idle_flush_ms",
             "VNTTS_LIVE_MIN_CHUNK_CHARACTERS": "live_min_chunk_characters",
+            "VNTTS_OCR_MINIMUM_CONFIDENCE": "ocr_minimum_confidence",
         }
 
         for environment_name, setting_name in string_overrides.items():

@@ -4,12 +4,13 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from vntts.live import SpeechChunk
 from vntts.main import (
     AppController,
     OCRError,
+    OCRUncertainError,
     ScreenCaptureError,
     capture_dialog,
     create_dialog_read_scheduler,
@@ -22,10 +23,11 @@ from vntts.main import (
     main,
     read_dialog,
     read_dialog_safely,
+    read_live_snapshot,
     recognize_screenshot,
     speak_live_chunk,
 )
-from vntts.ocr import DialogRegion
+from vntts.ocr import DialogRegion, OCRResult
 from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
 from vntts.settings import AppSettings
 
@@ -155,11 +157,55 @@ class MainTest(unittest.TestCase):
 
     def test_ocr_failure_identifies_tesseract_stage(self):
         with patch(
-            "vntts.main.recognize_dialog_image",
+            "vntts.main.recognize_dialog_image_result",
             side_effect=RuntimeError("tesseract unavailable"),
         ):
             with self.assertRaisesRegex(OCRError, "tesseract unavailable"):
                 recognize_screenshot(object())
+
+    def test_one_time_read_rejects_uncertain_ocr(self):
+        result = OCRResult("Marcus", "Garbled text", 32.0, "balanced", 3)
+        with patch("vntts.main.recognize_dialog_image_result", return_value=result):
+            with self.assertRaisesRegex(OCRUncertainError, "32%"):
+                recognize_screenshot(object(), minimum_confidence=60)
+
+    def test_live_read_withholds_uncertain_text_and_reports_confidence(self):
+        result = OCRResult("Marcus", "Garbled text", 42.0, "balanced", 3)
+        uncertain_handler = Mock()
+        uncertain_frame_recorder = Mock()
+        with (
+            patch("vntts.main.capture_dialog", return_value=(object(), None)),
+            patch("vntts.main.recognize_screenshot_result", return_value=result),
+        ):
+            snapshot = read_live_snapshot(
+                Path("captures"),
+                minimum_confidence=60,
+                uncertain_handler=uncertain_handler,
+                uncertain_frame_recorder=uncertain_frame_recorder,
+            )
+
+        self.assertEqual(snapshot, (None, ""))
+        uncertain_handler.assert_called_once_with(result, 60)
+        uncertain_frame_recorder.record.assert_called_once_with(
+            ANY,
+            result,
+            60,
+        )
+
+    def test_live_read_resets_diagnostic_deduplication_after_confident_text(self):
+        result = OCRResult("Marcus", "Reliable text", 92.0, "balanced", 1)
+        recorder = Mock()
+        with (
+            patch("vntts.main.capture_dialog", return_value=(object(), None)),
+            patch("vntts.main.recognize_screenshot_result", return_value=result),
+        ):
+            snapshot = read_live_snapshot(
+                Path("captures"),
+                uncertain_frame_recorder=recorder,
+            )
+
+        self.assertEqual(snapshot, ("Marcus", "Reliable text"))
+        recorder.reset.assert_called_once_with()
 
     def test_runtime_failures_are_reported_by_stage(self):
         failures = [
@@ -208,6 +254,7 @@ class MainTest(unittest.TestCase):
             read_dialog_safely,
             tts,
             screenshot_directory,
+            minimum_confidence=60.0,
         )
 
     def test_scheduler_rejects_one_time_read_while_live_mode_is_active(self):
@@ -472,6 +519,8 @@ class MainTest(unittest.TestCase):
             error_handler=controller.error_handler,
             capture_target=None,
             speech_handler=live_reader.enqueue,
+            minimum_confidence=60,
+            uncertain_frame_recorder=None,
         )
 
     def test_main_connects_hotkeys_to_controller_and_shuts_it_down(self):
@@ -583,6 +632,22 @@ class MainTest(unittest.TestCase):
         controller._dialog_observed("Marcus", "A line visible in the tray")
 
         self.assertEqual(dialogs[-1], ("Marcus", "A line visible in the tray"))
+
+    def test_controller_reports_uncertain_ocr_confidence(self):
+        dialogs = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            dialog_handler=lambda character, text: dialogs.append((character, text)),
+        )
+
+        controller._ocr_uncertain(
+            OCRResult("Marcus", "Possibly incorrect", 42.4, "balanced", 3),
+            60,
+        )
+
+        self.assertEqual(dialogs[-1][0], "OCR uncertain")
+        self.assertIn("42% (requires 60%)", dialogs[-1][1])
 
     def test_controller_sets_coqui_acceptance_for_approved_xtts_use(self):
         tts = Mock()

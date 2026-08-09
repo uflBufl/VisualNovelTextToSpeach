@@ -109,6 +109,13 @@
   - [x] Keep the latest recognized speaker and text visible in the tray.
   - [x] Interrupt queued, playing, or synthesizing speech when the dialog changes.
 
+- [x] Retry and withhold uncertain OCR results.
+  - [x] Score recognized words using Tesseract confidence data.
+  - [x] Retry low-confidence frames with alternate preprocessing profiles.
+  - [x] Do not queue uncertain text for speech; show its confidence in the tray.
+  - [x] Allow the minimum accepted confidence to be configured.
+  - [x] Optionally retain uncertain frames for OCR diagnostics.
+
 - [x] Select a Reverse: 1999 voice from the detected speaker name.
   - Load several varied character references from a generated local manifest.
   - Clone and cache each character voice on first use.

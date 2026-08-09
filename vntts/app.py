@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -77,6 +78,11 @@ class SettingsDialog(QDialog):
         self.repeat_hotkey = QLineEdit(settings.repeat_hotkey)
         self.clear_queue_hotkey = QLineEdit(settings.clear_queue_hotkey)
         self.screenshot_directory = QLineEdit(settings.screenshot_directory)
+        self.retain_uncertain_frames = QCheckBox(
+            "Save uncertain frames for OCR diagnostics"
+        )
+        self.retain_uncertain_frames.setChecked(settings.retain_uncertain_frames)
+        self.ocr_diagnostics_directory = QLineEdit(settings.ocr_diagnostics_directory)
         self.capture_mode = QComboBox()
         self.capture_mode.addItem("Calibrated screen region", "screen")
         self.capture_mode.addItem("Selected game window", "window")
@@ -94,6 +100,10 @@ class SettingsDialog(QDialog):
         window_layout.addWidget(self.game_window)
         window_layout.addWidget(refresh_windows_button)
         self.tts_model = QLineEdit(settings.tts_model or "")
+        self.ocr_minimum_confidence = QSpinBox()
+        self.ocr_minimum_confidence.setRange(0, 100)
+        self.ocr_minimum_confidence.setSuffix("%")
+        self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.voice_manifest = QLineEdit(settings.voice_manifest or "")
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
@@ -108,6 +118,12 @@ class SettingsDialog(QDialog):
         screenshot_layout = QHBoxLayout()
         screenshot_layout.addWidget(self.screenshot_directory)
         screenshot_layout.addWidget(browse_button)
+        diagnostics_browse_button = QPushButton("Browse...")
+        diagnostics_browse_button.clicked.connect(self.browse_ocr_diagnostics_directory)
+        diagnostics_layout = QHBoxLayout()
+        diagnostics_layout.addWidget(self.ocr_diagnostics_directory)
+        diagnostics_layout.addWidget(diagnostics_browse_button)
+        self.diagnostics_browse_button = diagnostics_browse_button
 
         form = QFormLayout()
         form.addRow("Read once hotkey", self.read_hotkey)
@@ -119,6 +135,9 @@ class SettingsDialog(QDialog):
         form.addRow("Screenshot directory", screenshot_layout)
         form.addRow("Capture source", self.capture_mode)
         form.addRow("Game window", window_layout)
+        form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
+        form.addRow("OCR diagnostics", self.retain_uncertain_frames)
+        form.addRow("Diagnostics directory", diagnostics_layout)
         form.addRow("TTS model", self.tts_model)
         form.addRow("TTS language", self.tts_language)
         form.addRow("Voice manifest", self.voice_manifest)
@@ -144,8 +163,12 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
+        self.retain_uncertain_frames.toggled.connect(
+            self.update_ocr_diagnostics_controls
+        )
         self.update_capture_controls()
         self.update_terms_control()
+        self.update_ocr_diagnostics_controls()
 
     def browse_screenshot_directory(self):
         selected = QFileDialog.getExistingDirectory(
@@ -155,6 +178,20 @@ class SettingsDialog(QDialog):
         )
         if selected:
             self.screenshot_directory.setText(selected)
+
+    def browse_ocr_diagnostics_directory(self):
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose OCR diagnostics directory",
+            self.ocr_diagnostics_directory.text(),
+        )
+        if selected:
+            self.ocr_diagnostics_directory.setText(selected)
+
+    def update_ocr_diagnostics_controls(self):
+        enabled = self.retain_uncertain_frames.isChecked()
+        self.ocr_diagnostics_directory.setEnabled(enabled)
+        self.diagnostics_browse_button.setEnabled(enabled)
 
     def refresh_windows(self):
         selected_title = self.game_window.currentText().strip()
@@ -204,6 +241,16 @@ class SettingsDialog(QDialog):
             )
             return
         if (
+            self.retain_uncertain_frames.isChecked()
+            and not self.ocr_diagnostics_directory.text().strip()
+        ):
+            QMessageBox.warning(
+                self,
+                "Invalid OCR diagnostics directory",
+                "Choose where uncertain OCR frames should be stored.",
+            )
+            return
+        if (
             self.capture_mode.currentData() == "window"
             and not self.game_window.currentText().strip()
         ):
@@ -239,8 +286,13 @@ class SettingsDialog(QDialog):
                 "repeat_hotkey": self.repeat_hotkey.text().strip(),
                 "clear_queue_hotkey": self.clear_queue_hotkey.text().strip(),
                 "screenshot_directory": self.screenshot_directory.text().strip(),
+                "ocr_diagnostics_directory": (
+                    self.ocr_diagnostics_directory.text().strip()
+                ),
+                "retain_uncertain_frames": self.retain_uncertain_frames.isChecked(),
                 "capture_mode": self.capture_mode.currentData(),
                 "game_window_title": self.game_window.currentText().strip() or None,
+                "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),

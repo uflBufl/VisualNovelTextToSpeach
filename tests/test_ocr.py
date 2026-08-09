@@ -3,16 +3,22 @@ import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 from PIL import Image
 
 from vntts.ocr import (
     DialogRegion,
+    OCRPreprocessingProfile,
+    OCRResult,
+    UncertainFrameRecorder,
+    calculate_ocr_confidence,
     default_dialog_region,
     load_dialog_region,
     parse_dialog_region,
     parse_recognized_dialog,
     recognize_dialog_image,
+    recognize_dialog_image_result,
     save_dialog_region,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -72,6 +78,83 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertEqual(character, "Marcus")
         self.assertEqual(text, "Hello from the suitcase.")
+
+    def test_confidence_is_weighted_by_recognized_word_length(self):
+        confidence = calculate_ocr_confidence(
+            {
+                "text": ["A", "reliable", "", "ignored"],
+                "conf": [20, 90, -1, "invalid"],
+            }
+        )
+
+        self.assertAlmostEqual(confidence, (20 + 90 * 8) / 9)
+
+    def test_low_confidence_result_retries_with_alternate_preprocessing(self):
+        profiles = (
+            OCRPreprocessingProfile("first", 1.0, 170),
+            OCRPreprocessingProfile("second", 2.0, 200),
+        )
+        recognize_text = Mock(
+            side_effect=["Garbled text", "Clear recognized dialogue."]
+        )
+        recognize_data = Mock(
+            side_effect=[
+                {"text": ["Garbled", "text"], "conf": [25, 30]},
+                {
+                    "text": ["Clear", "recognized", "dialogue"],
+                    "conf": [88, 91, 90],
+                },
+            ]
+        )
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (320, 120), "black"),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+            minimum_confidence=60,
+            profiles=profiles,
+        )
+
+        self.assertEqual(result.text, "Clear recognized dialogue.")
+        self.assertEqual(result.profile, "second")
+        self.assertEqual(result.attempts, 2)
+        self.assertGreater(result.confidence, 60)
+
+    def test_confident_first_attempt_does_not_run_extra_ocr(self):
+        recognize_text = Mock(return_value="A reliable result.")
+        recognize_data = Mock(
+            return_value={"text": ["A", "reliable", "result"], "conf": [95, 94, 96]}
+        )
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (320, 120), "black"),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+        )
+
+        self.assertTrue(result.is_confident())
+        recognize_text.assert_called_once()
+        recognize_data.assert_called_once()
+
+    def test_uncertain_frame_recorder_saves_image_and_metadata_once(self):
+        result = OCRResult("Marcus", "Maybe this text", 41.5, "balanced", 3)
+        with TemporaryDirectory() as temporary_directory:
+            recorder = UncertainFrameRecorder(temporary_directory)
+            image = Image.new("RGB", (32, 16), "black")
+
+            image_path = recorder.record(image, result, 60)
+            duplicate = recorder.record(image, result, 60)
+
+            self.assertTrue(image_path.is_file())
+            metadata_path = image_path.with_suffix(".json")
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["confidence"], 41.5)
+            self.assertEqual(metadata["minimum_confidence"], 60)
+            self.assertEqual(metadata["preprocessing_profile"], "balanced")
+            self.assertIsNone(duplicate)
+
+            recorder.reset()
+            self.assertIsNotNone(recorder.record(image, result, 60))
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_screenshots_resolve_speaker_and_dialog(self):

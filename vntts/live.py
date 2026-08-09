@@ -384,6 +384,9 @@ class LiveDialogReader:
                 self.cancelled_chunk_ids.discard(id(chunk))
 
     def _report_observation(self, character, text):
+        if character is None and not text:
+            self.last_observation = None
+            return
         observation = (character, " ".join((text or "").split()))
         if observation == self.last_observation:
             return

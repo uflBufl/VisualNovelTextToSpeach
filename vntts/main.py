@@ -13,7 +13,13 @@ from pynput import keyboard
 from vntts.assets import ModelAssetManager
 from vntts.dialog import is_empty, speak_dialog
 from vntts.live import IncrementalDialogTracker, LiveDialogReader
-from vntts.ocr import get_dialog_region, recognize_dialog_image
+from vntts.ocr import (
+    OCRResult,
+    UncertainFrameRecorder,
+    default_minimum_ocr_confidence,
+    get_dialog_region,
+    recognize_dialog_image_result,
+)
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSEngine,
@@ -54,6 +60,16 @@ class ScreenCaptureError(RuntimeError):
 
 class OCRError(RuntimeError):
     pass
+
+
+class OCRUncertainError(OCRError):
+    def __init__(self, result, minimum_confidence):
+        self.result = result
+        self.minimum_confidence = minimum_confidence
+        super().__init__(
+            f"confidence {result.confidence:.0f}% is below the required "
+            f"{minimum_confidence}%"
+        )
 
 
 class TTSInitializationError(RuntimeError):
@@ -116,16 +132,34 @@ def capture_dialog(
         raise ScreenCaptureError(str(error)) from error
 
 
-def recognize_screenshot(image, voice_registry=None):
+def recognize_screenshot_result(
+    image,
+    voice_registry=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+):
     try:
-        character, text = recognize_dialog_image(
+        return recognize_dialog_image_result(
             image,
             voice_registry,
+            minimum_confidence=minimum_confidence,
         )
     except Exception as error:
         raise OCRError(str(error)) from error
 
-    return character, text
+
+def recognize_screenshot(
+    image,
+    voice_registry=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+):
+    result = recognize_screenshot_result(
+        image,
+        voice_registry,
+        minimum_confidence,
+    )
+    if result.text and not result.is_confident(minimum_confidence):
+        raise OCRUncertainError(result, minimum_confidence)
+    return result.character, result.text
 
 
 def read_dialog(
@@ -133,12 +167,29 @@ def read_dialog(
     screenshot_directory,
     capture_target=None,
     speech_handler=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    uncertain_frame_recorder=None,
 ):
     image, output = capture_dialog(
         screenshot_directory,
         capture_target=capture_target,
     )
-    character, text = recognize_screenshot(image, voice_router.registry)
+    try:
+        character, text = recognize_screenshot(
+            image,
+            voice_router.registry,
+            minimum_confidence,
+        )
+    except OCRUncertainError as error:
+        if uncertain_frame_recorder is not None:
+            uncertain_frame_recorder.record(
+                image,
+                error.result,
+                minimum_confidence,
+            )
+        raise
+    if uncertain_frame_recorder is not None:
+        uncertain_frame_recorder.reset()
 
     if is_empty(text):
         print(f"Screenshot {output} has no text")
@@ -158,6 +209,8 @@ def read_dialog_safely(
     error_handler=None,
     capture_target=None,
     speech_handler=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    uncertain_frame_recorder=None,
 ):
     try:
         read_dialog(
@@ -165,6 +218,8 @@ def read_dialog_safely(
             screenshot_directory,
             capture_target,
             speech_handler,
+            minimum_confidence,
+            uncertain_frame_recorder,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)
@@ -400,6 +455,8 @@ def create_dialog_read_scheduler(
     error_handler=None,
     capture_target=None,
     speech_handler=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    uncertain_frame_recorder=None,
 ):
     active_read = None
     active_read_lock = Lock()
@@ -422,6 +479,9 @@ def create_dialog_read_scheduler(
                 options["capture_target"] = capture_target
             if speech_handler is not None:
                 options["speech_handler"] = speech_handler
+            options["minimum_confidence"] = minimum_confidence
+            if uncertain_frame_recorder is not None:
+                options["uncertain_frame_recorder"] = uncertain_frame_recorder
             active_read = executor.submit(
                 read_dialog_safely,
                 voice_router,
@@ -437,13 +497,29 @@ def read_live_snapshot(
     screenshot_directory,
     voice_registry=None,
     capture_target=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    uncertain_handler=None,
+    uncertain_frame_recorder=None,
 ):
     image, _ = capture_dialog(
         screenshot_directory,
         save_screenshot=False,
         capture_target=capture_target,
     )
-    return recognize_screenshot(image, voice_registry)
+    result = recognize_screenshot_result(
+        image,
+        voice_registry,
+        minimum_confidence,
+    )
+    if result.text and not result.is_confident(minimum_confidence):
+        if uncertain_frame_recorder is not None:
+            uncertain_frame_recorder.record(image, result, minimum_confidence)
+        if uncertain_handler is not None:
+            uncertain_handler(result, minimum_confidence)
+        return None, ""
+    if uncertain_frame_recorder is not None:
+        uncertain_frame_recorder.reset()
+    return result.character, result.text
 
 
 def speak_live_chunk(voice_router, chunk, playback_guard=None):
@@ -534,6 +610,7 @@ class AppController:
         self.dialog_handler = dialog_handler or status_handler
         self.error_handler = error_handler
         self.capture_target = self._create_capture_target()
+        self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         self.tts = None
         self.voice_router = None
         self.capture_executor = None
@@ -595,6 +672,9 @@ class AppController:
                     screenshot_directory,
                     self.voice_router.registry,
                     self.capture_target,
+                    self.settings.ocr_minimum_confidence,
+                    self._ocr_uncertain,
+                    self.uncertain_frame_recorder,
                 ),
                 speak_chunk=lambda chunk: speak_live_chunk(
                     self.voice_router,
@@ -615,6 +695,8 @@ class AppController:
                 error_handler=self.error_handler,
                 capture_target=self.capture_target,
                 speech_handler=self.live_reader.enqueue,
+                minimum_confidence=self.settings.ocr_minimum_confidence,
+                uncertain_frame_recorder=self.uncertain_frame_recorder,
             )
         except Exception as error:
             self.error_handler(error)
@@ -687,7 +769,22 @@ class AppController:
             save_screenshot=False,
             capture_target=self.capture_target,
         )
-        character, text = recognize_screenshot(image, self.voice_router.registry)
+        try:
+            character, text = recognize_screenshot(
+                image,
+                self.voice_router.registry,
+                self.settings.ocr_minimum_confidence,
+            )
+        except OCRUncertainError as error:
+            if self.uncertain_frame_recorder is not None:
+                self.uncertain_frame_recorder.record(
+                    image,
+                    error.result,
+                    self.settings.ocr_minimum_confidence,
+                )
+            raise
+        if self.uncertain_frame_recorder is not None:
+            self.uncertain_frame_recorder.reset()
         if is_empty(text):
             raise OCRError("No dialogue text was detected in the calibrated region")
         self.status_handler(f"Testing OCR and speech with {character}")
@@ -705,6 +802,7 @@ class AppController:
 
         self.settings = settings
         self.capture_target = self._create_capture_target()
+        self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         if self.live_reader is None:
             return
 
@@ -713,6 +811,9 @@ class AppController:
             screenshot_directory,
             self.voice_router.registry,
             self.capture_target,
+            self.settings.ocr_minimum_confidence,
+            self._ocr_uncertain,
+            self.uncertain_frame_recorder,
         )
         live_configuration = get_live_configuration(self.settings)
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
@@ -725,6 +826,8 @@ class AppController:
             error_handler=self.error_handler,
             capture_target=self.capture_target,
             speech_handler=self.live_reader.enqueue,
+            minimum_confidence=self.settings.ocr_minimum_confidence,
+            uncertain_frame_recorder=self.uncertain_frame_recorder,
         )
         if was_live:
             self.live_reader.start()
@@ -734,12 +837,24 @@ class AppController:
             return None
         return self.capture_target_factory(self.settings.game_window_title)
 
+    def _create_uncertain_frame_recorder(self):
+        if not self.settings.retain_uncertain_frames:
+            return None
+        return UncertainFrameRecorder(self.settings.ocr_diagnostics_directory)
+
     def _dialog_observed(self, character, text):
         if not text:
             self.dialog_handler("Narrator", "")
             return
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
+
+    def _ocr_uncertain(self, result: OCRResult, minimum_confidence):
+        preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
+        self.dialog_handler(
+            "OCR uncertain",
+            f"{result.confidence:.0f}% (requires {minimum_confidence}%): {preview}",
+        )
 
     def shutdown(self):
         self.shutdown_requested.set()

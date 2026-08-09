@@ -1,7 +1,10 @@
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from uuid import uuid4
 
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -9,6 +12,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from vntts.dialog import parse_dialog
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
+default_minimum_ocr_confidence = 60.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,82 @@ class OCRLine:
     top: int
     right: int
     bottom: int
+
+
+@dataclass(frozen=True)
+class OCRPreprocessingProfile:
+    name: str
+    contrast: float
+    threshold: int
+
+
+@dataclass(frozen=True)
+class OCRResult:
+    character: str
+    text: str
+    confidence: float
+    profile: str
+    attempts: int
+
+    def is_confident(self, minimum=default_minimum_ocr_confidence):
+        return bool(self.text.strip()) and self.confidence >= minimum
+
+
+default_ocr_profiles = (
+    OCRPreprocessingProfile("balanced", 1.8, 180),
+    OCRPreprocessingProfile("dark-background", 2.2, 155),
+    OCRPreprocessingProfile("light-background", 1.5, 205),
+)
+
+
+class UncertainFrameRecorder:
+    def __init__(self, directory):
+        self.directory = Path(directory).expanduser()
+        self.lock = Lock()
+        self.last_fingerprint = None
+
+    def record(self, image, result, minimum_confidence):
+        fingerprint = (
+            result.character,
+            " ".join(result.text.split()),
+            round(result.confidence, 1),
+            result.profile,
+        )
+        with self.lock:
+            if fingerprint == self.last_fingerprint:
+                return None
+            self.directory.mkdir(parents=True, exist_ok=True)
+            stem = f"uncertain-{datetime.now():%Y-%m-%d-%H-%M-%S}-{uuid4().hex}"
+            image_path = self.directory / f"{stem}.png"
+            metadata_path = self.directory / f"{stem}.json"
+            temporary_image = image_path.with_suffix(".png.tmp")
+            temporary_metadata = metadata_path.with_suffix(".json.tmp")
+            image.save(temporary_image, format="PNG")
+            temporary_metadata.write_text(
+                json.dumps(
+                    {
+                        "image": image_path.name,
+                        "character": result.character,
+                        "text": result.text,
+                        "confidence": result.confidence,
+                        "minimum_confidence": minimum_confidence,
+                        "preprocessing_profile": result.profile,
+                        "attempts": result.attempts,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            temporary_image.replace(image_path)
+            temporary_metadata.replace(metadata_path)
+            self.last_fingerprint = fingerprint
+            return image_path
+
+    def reset(self):
+        with self.lock:
+            self.last_fingerprint = None
 
 
 def parse_dialog_region(value):
@@ -134,10 +214,11 @@ def get_dialog_region():
     return default_dialog_region
 
 
-def preprocess_dialog_image(image):
+def preprocess_dialog_image(image, profile=None):
+    profile = profile or default_ocr_profiles[0]
     image = ImageOps.grayscale(image)
     image = ImageOps.autocontrast(image, cutoff=1)
-    image = ImageEnhance.Contrast(image).enhance(1.8)
+    image = ImageEnhance.Contrast(image).enhance(profile.contrast)
     scale = max(1.0, min(2.0, 600 / max(1, image.height)))
     if scale > 1:
         image = image.resize(
@@ -145,7 +226,7 @@ def preprocess_dialog_image(image):
             Image.Resampling.LANCZOS,
         )
     image = image.filter(ImageFilter.SHARPEN)
-    return image.point(lambda value: 255 if value >= 180 else 0)
+    return image.point(lambda value: 255 if value >= profile.threshold else 0)
 
 
 def recognize_dialog_image(
@@ -154,27 +235,95 @@ def recognize_dialog_image(
     recognize_text=None,
     recognize_data=None,
 ):
+    result = recognize_dialog_image_result(
+        image,
+        voice_registry,
+        recognize_text,
+        recognize_data,
+    )
+    return result.character, result.text
+
+
+def recognize_dialog_image_result(
+    image,
+    voice_registry=None,
+    recognize_text=None,
+    recognize_data=None,
+    *,
+    minimum_confidence=default_minimum_ocr_confidence,
+    profiles=default_ocr_profiles,
+):
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
     if recognize_data is None:
         recognize_data = pytesseract.image_to_data
-    image = preprocess_dialog_image(image)
+
+    best_result = None
+    for attempt, profile in enumerate(profiles, start=1):
+        processed_image = preprocess_dialog_image(image, profile)
+        result = _recognize_preprocessed_dialog(
+            processed_image,
+            voice_registry,
+            recognize_text,
+            recognize_data,
+            profile.name,
+            attempt,
+        )
+        if best_result is None or _result_rank(result) > _result_rank(best_result):
+            best_result = result
+        if result.is_confident(minimum_confidence):
+            return result
+
+    return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
+
+
+def _recognize_preprocessed_dialog(
+    image,
+    voice_registry,
+    recognize_text,
+    recognize_data,
+    profile_name,
+    attempt,
+):
+    data = recognize_data(
+        image,
+        config="--psm 6",
+        output_type=pytesseract.Output.DICT,
+    )
 
     if voice_registry is not None:
-        speaker = recognize_speaker(image, voice_registry, recognize_data)
+        speaker = recognize_speaker_from_data(data, voice_registry)
         if speaker is not None:
             voice, speaker_line = speaker
             dialog_image = crop_dialog_text(image, speaker_line)
             dialog_text = recognize_text(dialog_image, config="--psm 6")
             dialog_lines = clean_dialog_lines(dialog_text)
             if dialog_lines:
-                return voice.character, " ".join(dialog_lines)
+                dialog_data = recognize_data(
+                    dialog_image,
+                    config="--psm 6",
+                    output_type=pytesseract.Output.DICT,
+                )
+                return OCRResult(
+                    voice.character,
+                    " ".join(dialog_lines),
+                    calculate_ocr_confidence(dialog_data),
+                    profile_name,
+                    attempt,
+                )
 
     recognized_text = recognize_text(
         image,
         config="--psm 6",
     )
-    return parse_recognized_dialog(recognized_text, voice_registry)
+    character, text = parse_recognized_dialog(recognized_text, voice_registry)
+    return OCRResult(
+        character,
+        text,
+        calculate_ocr_confidence(data),
+        profile_name,
+        attempt,
+    )
 
 
 def recognize_speaker(image, voice_registry, recognize_data):
@@ -183,6 +332,10 @@ def recognize_speaker(image, voice_registry, recognize_data):
         config="--psm 6",
         output_type=pytesseract.Output.DICT,
     )
+    return recognize_speaker_from_data(data, voice_registry)
+
+
+def recognize_speaker_from_data(data, voice_registry):
     for line in extract_ocr_lines(data)[:6]:
         if len(line.text) > 40:
             continue
@@ -190,6 +343,30 @@ def recognize_speaker(image, voice_registry, recognize_data):
         if voice is not None:
             return voice, line
     return None
+
+
+def calculate_ocr_confidence(data):
+    weighted_confidence = 0.0
+    total_weight = 0
+    confidences = data.get("conf", [])
+    for position, text in enumerate(data.get("text", [])):
+        text = text.strip()
+        if not text or position >= len(confidences):
+            continue
+        try:
+            confidence = float(confidences[position])
+        except (TypeError, ValueError):
+            continue
+        if confidence < 0:
+            continue
+        weight = max(1, sum(character.isalnum() for character in text))
+        weighted_confidence += confidence * weight
+        total_weight += weight
+    return weighted_confidence / total_weight if total_weight else 0.0
+
+
+def _result_rank(result):
+    return result.confidence, len(result.text.strip())
 
 
 def extract_ocr_lines(data):
