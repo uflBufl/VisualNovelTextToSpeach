@@ -24,12 +24,6 @@ sections after their implementation has been verified and committed.
 
 ## Next improvements
 
-### P2 - macOS usability
-
-- [ ] Add a hotkey recorder with macOS-friendly defaults.
-  - Capture shortcuts directly instead of requiring pynput syntax.
-  - Detect duplicate and unavailable shortcuts before saving.
-
 ### P2 - Game profiles and performance
 
 - [ ] Add per-game profiles.
