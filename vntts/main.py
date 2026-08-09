@@ -30,6 +30,7 @@ from vntts.ocr import (
     get_dialog_region,
     recognize_dialog_image_result,
 )
+from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSEngine,
@@ -152,13 +153,19 @@ def recognize_screenshot_result(
     voice_registry=None,
     minimum_confidence=default_minimum_ocr_confidence,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     try:
-        return recognize_dialog_image_result(
+        result = recognize_dialog_image_result(
             image,
             voice_registry,
             minimum_confidence=minimum_confidence,
             language=ocr_language,
+        )
+        return (
+            correction_dictionary.correct_result(result)
+            if correction_dictionary is not None
+            else result
         )
     except Exception as error:
         raise OCRError(str(error)) from error
@@ -169,12 +176,14 @@ def recognize_screenshot(
     voice_registry=None,
     minimum_confidence=default_minimum_ocr_confidence,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     result = recognize_screenshot_result(
         image,
         voice_registry,
         minimum_confidence,
         ocr_language,
+        correction_dictionary,
     )
     if result.text and not result.is_confident(minimum_confidence):
         raise OCRUncertainError(result, minimum_confidence)
@@ -192,6 +201,7 @@ def analyze_dialog_snapshot(
     voice_resolver=None,
     clock=monotonic,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     capture_started = clock()
     image, output = capture_dialog(
@@ -207,6 +217,7 @@ def analyze_dialog_snapshot(
         voice_registry,
         minimum_confidence,
         ocr_language,
+        correction_dictionary,
     )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
@@ -222,6 +233,7 @@ def analyze_dialog_snapshot(
         ),
         capture_ms=capture_ms,
         ocr_ms=ocr_ms,
+        corrections=result.corrections,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -238,6 +250,7 @@ def read_dialog(
     diagnostic_handler=None,
     voice_resolver=None,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -248,6 +261,7 @@ def read_dialog(
         diagnostic_handler=diagnostic_handler,
         voice_resolver=voice_resolver,
         ocr_language=ocr_language,
+        correction_dictionary=correction_dictionary,
     )
     if result.text and not result.is_confident(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
@@ -285,6 +299,7 @@ def read_dialog_safely(
     diagnostic_handler=None,
     voice_resolver=None,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     try:
         read_dialog(
@@ -297,6 +312,7 @@ def read_dialog_safely(
             diagnostic_handler,
             voice_resolver,
             ocr_language,
+            correction_dictionary,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)
@@ -537,6 +553,7 @@ def create_dialog_read_scheduler(
     diagnostic_handler=None,
     voice_resolver=None,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     active_read = None
     active_read_lock = Lock()
@@ -567,6 +584,8 @@ def create_dialog_read_scheduler(
             if voice_resolver is not None:
                 options["voice_resolver"] = voice_resolver
             options["ocr_language"] = ocr_language
+            if correction_dictionary is not None:
+                options["correction_dictionary"] = correction_dictionary
             active_read = executor.submit(
                 read_dialog_safely,
                 voice_router,
@@ -588,6 +607,7 @@ def read_live_snapshot(
     diagnostic_handler=None,
     voice_resolver=None,
     ocr_language="eng",
+    correction_dictionary=None,
 ):
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -597,6 +617,7 @@ def read_live_snapshot(
         diagnostic_handler=diagnostic_handler,
         voice_resolver=voice_resolver,
         ocr_language=ocr_language,
+        correction_dictionary=correction_dictionary,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:
@@ -689,10 +710,15 @@ class AppController:
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
+        correction_store=None,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
+        self.correction_store = correction_store or OCRCorrectionStore.load()
+        self.correction_dictionary = self.correction_store.dictionary_for(
+            self.settings.active_profile_id
+        )
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -771,6 +797,7 @@ class AppController:
                     self._publish_diagnostic,
                     self._resolve_voice_label,
                     self.settings.ocr_language,
+                    self.correction_dictionary,
                 ),
                 speak_chunk=self._speak_live_chunk,
                 report_error=self.error_handler,
@@ -794,6 +821,7 @@ class AppController:
                 diagnostic_handler=self._publish_diagnostic,
                 voice_resolver=self._resolve_voice_label,
                 ocr_language=self.settings.ocr_language,
+                correction_dictionary=self.correction_dictionary,
             )
         except Exception as error:
             self.error_handler(error)
@@ -872,6 +900,7 @@ class AppController:
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
             ocr_language=self.settings.ocr_language,
+            correction_dictionary=self.correction_dictionary,
         )
         return result
 
@@ -886,6 +915,7 @@ class AppController:
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
             ocr_language=self.settings.ocr_language,
+            correction_dictionary=self.correction_dictionary,
         )
         if result.text and not result.is_confident(
             self.settings.ocr_minimum_confidence
@@ -923,6 +953,7 @@ class AppController:
             self.live_reader.wait()
 
         self.settings = settings
+        self.refresh_corrections()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         if self.live_reader is None:
@@ -939,6 +970,7 @@ class AppController:
             self._publish_diagnostic,
             self._resolve_voice_label,
             self.settings.ocr_language,
+            self.correction_dictionary,
         )
         live_configuration = get_live_configuration(self.settings)
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
@@ -956,9 +988,16 @@ class AppController:
             diagnostic_handler=self._publish_diagnostic,
             voice_resolver=self._resolve_voice_label,
             ocr_language=self.settings.ocr_language,
+            correction_dictionary=self.correction_dictionary,
         )
         if was_live:
             self.live_reader.start()
+
+    def refresh_corrections(self):
+        self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
+        self.correction_dictionary = self.correction_store.dictionary_for(
+            self.settings.active_profile_id
+        )
 
     def _create_capture_target(self):
         if self.settings.capture_mode != "window":

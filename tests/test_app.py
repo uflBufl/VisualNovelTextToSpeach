@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from vntts.app import SettingsDialog, TrayApplication, main  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
@@ -55,6 +55,10 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.setup_action.text(), "Run setup...")
         self.assertEqual(tray_application.profiles_action.text(), "Game profiles...")
         self.assertEqual(
+            tray_application.corrections_action.text(),
+            "OCR corrections...",
+        )
+        self.assertEqual(
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
@@ -63,6 +67,23 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_saved_ocr_corrections_are_reloaded_by_controller(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+
+        with patch("vntts.app.OCRCorrectionsDialog", return_value=dialog):
+            tray_application.open_corrections()
+
+        controller.refresh_corrections.assert_called_once_with()
+        self.assertEqual(tray_application.status_action.text(), "OCR corrections saved")
+        tray_application.shutdown()
 
     def test_settings_expose_minimum_ocr_confidence(self):
         dialog = SettingsDialog(

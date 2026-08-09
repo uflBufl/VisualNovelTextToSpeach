@@ -16,10 +16,11 @@ from vntts.profiles import GameProfileStore
 
 
 class GameProfilesDialog(QDialog):
-    def __init__(self, settings, store=None, parent=None):
+    def __init__(self, settings, store=None, correction_store=None, parent=None):
         super().__init__(parent)
         self.original_settings = settings
         self.store = store or GameProfileStore.load()
+        self.correction_store = correction_store
         self.selected_settings = None
         self.setWindowTitle("Game profiles")
         self.setMinimumWidth(500)
@@ -106,6 +107,8 @@ class GameProfilesDialog(QDialog):
         except ValueError as error:
             QMessageBox.warning(self, "Unable to duplicate profile", str(error))
             return
+        if self.correction_store is not None:
+            self.correction_store.copy_profile(profile.id, duplicate.id)
         self.refresh_profiles(duplicate.id)
 
     def rename_profile(self):
@@ -138,6 +141,8 @@ class GameProfilesDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.store.remove(profile.id)
+        if self.correction_store is not None:
+            self.correction_store.remove_profile(profile.id)
         self.refresh_profiles()
 
     def update_summary(self):

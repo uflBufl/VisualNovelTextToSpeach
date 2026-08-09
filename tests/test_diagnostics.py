@@ -26,7 +26,14 @@ class DiagnosticsTest(unittest.TestCase):
 
     def test_snapshot_preserves_capture_ocr_and_voice_details(self):
         image = Image.new("RGB", (320, 100), "black")
-        result = OCRResult("Marcus", "Timekeeper.", 92.5, "dark-background", 2)
+        result = OCRResult(
+            "Marcus",
+            "Timekeeper.",
+            92.5,
+            "dark-background",
+            2,
+            ("Mareus -> Marcus",),
+        )
         snapshots = []
         clock = iter((1.0, 1.025, 2.0, 2.075)).__next__
 
@@ -49,6 +56,7 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(snapshots[0].voice, "Voice for Marcus")
         self.assertAlmostEqual(snapshots[0].capture_ms, 25.0)
         self.assertAlmostEqual(snapshots[0].ocr_ms, 75.0)
+        self.assertEqual(snapshots[0].corrections, ("Mareus -> Marcus",))
 
     def test_dialog_renders_snapshot_and_latencies(self):
         dialog = DiagnosticsDialog(refresh_interval_ms=60_000)
@@ -65,6 +73,7 @@ class DiagnosticsTest(unittest.TestCase):
             playback_ms=321.0,
             capture_interval_ms=600.0,
             game_focused=False,
+            corrections=("Mareus -> Marcus", "tiniekeeper -> timekeeper"),
         )
 
         dialog.set_snapshot(snapshot)
@@ -77,6 +86,10 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(dialog.capture_latency.text(), "12.3 ms")
         self.assertEqual(dialog.capture_interval.text(), "600.0 ms")
         self.assertEqual(dialog.game_focus.text(), "No")
+        self.assertEqual(
+            dialog.corrections.text(),
+            "Mareus -> Marcus\ntiniekeeper -> timekeeper",
+        )
         self.assertFalse(dialog.preview.pixmap().isNull())
         dialog.close()
         dialog.deleteLater()

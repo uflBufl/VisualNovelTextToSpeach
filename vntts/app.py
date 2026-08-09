@@ -44,6 +44,8 @@ from vntts.main import (
     get_repeat_hotkey,
     get_skip_hotkey,
 )
+from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
 from vntts.profiles import GameProfileStore
@@ -320,6 +322,7 @@ class TrayApplication:
         settings=None,
         controller_factory=AppController,
         profile_store=None,
+        correction_store=None,
     ):
         self.application = application
         self.settings = settings or load_app_settings()
@@ -334,6 +337,7 @@ class TrayApplication:
             ),
         )
         self.profile_store = profile_store or GameProfileStore.load()
+        self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
@@ -356,6 +360,7 @@ class TrayApplication:
         self.diagnostics_action = QAction("Live diagnostics...")
         self.settings_action = QAction("Settings...")
         self.profiles_action = QAction("Game profiles...")
+        self.corrections_action = QAction("OCR corrections...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.settings_folder_action = QAction("Open settings folder")
@@ -381,6 +386,7 @@ class TrayApplication:
         self.menu.addSeparator()
         self.menu.addAction(self.settings_action)
         self.menu.addAction(self.profiles_action)
+        self.menu.addAction(self.corrections_action)
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.settings_folder_action)
@@ -399,6 +405,7 @@ class TrayApplication:
         self.diagnostics_action.triggered.connect(self.open_diagnostics)
         self.settings_action.triggered.connect(self.open_settings)
         self.profiles_action.triggered.connect(self.open_profiles)
+        self.corrections_action.triggered.connect(self.open_corrections)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
@@ -628,7 +635,11 @@ class TrayApplication:
         self.set_status(f"Settings saved to {path}")
 
     def open_profiles(self):
-        dialog = GameProfilesDialog(self.settings, self.profile_store)
+        dialog = GameProfilesDialog(
+            self.settings,
+            self.profile_store,
+            self.correction_store,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.settings = dialog.settings()
@@ -646,6 +657,18 @@ class TrayApplication:
             self.show_error(f"Unable to register hotkeys: {error}")
         profile = self.profile_store.get(self.settings.active_profile_id)
         self.set_status(f"Profile {profile.name!r} selected; settings saved to {path}")
+
+    def open_corrections(self):
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        dialog = OCRCorrectionsDialog(
+            self.settings.active_profile_id,
+            profile.name if profile is not None else None,
+            self.correction_store,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.controller.refresh_corrections()
+        self.set_status("OCR corrections saved")
 
     def open_assets(self):
         dialog = AssetManagerDialog(self.settings)

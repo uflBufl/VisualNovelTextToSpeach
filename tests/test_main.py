@@ -525,6 +525,7 @@ class MainTest(unittest.TestCase):
             diagnostic_handler=controller._publish_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language="eng",
+            correction_dictionary=controller.correction_dictionary,
         )
 
     def test_main_connects_hotkeys_to_controller_and_shuts_it_down(self):

@@ -43,6 +43,8 @@ class DiagnosticsDialog(QDialog):
         self.playback_latency = QLabel("-")
         self.capture_interval = QLabel("-")
         self.game_focus = QLabel("-")
+        self.corrections = QLabel("None")
+        self.corrections.setWordWrap(True)
 
         details = QFormLayout()
         details.addRow("Speaker", self.speaker)
@@ -56,6 +58,7 @@ class DiagnosticsDialog(QDialog):
         details.addRow("Playback latency", self.playback_latency)
         details.addRow("Capture interval", self.capture_interval)
         details.addRow("Game focused", self.game_focus)
+        details.addRow("OCR corrections", self.corrections)
 
         self.warning = QLabel()
         self.warning.setWordWrap(True)
@@ -131,6 +134,9 @@ class DiagnosticsDialog(QDialog):
             "-"
             if snapshot.game_focused is None
             else ("Yes" if snapshot.game_focused else "No")
+        )
+        self.corrections.setText(
+            "\n".join(snapshot.corrections) if snapshot.corrections else "None"
         )
         if snapshot.image is not None:
             self.source_pixmap = self._pixmap_from_image(snapshot.image)

@@ -20,6 +20,7 @@ class DiagnosticSnapshot:
     playback_ms: float | None = None
     capture_interval_ms: float | None = None
     game_focused: bool | None = None
+    corrections: tuple[str, ...] = ()
 
 
 def resolve_voice_label(voice_router, character):

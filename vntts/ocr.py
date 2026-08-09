@@ -89,6 +89,7 @@ class OCRResult:
     confidence: float
     profile: str
     attempts: int
+    corrections: tuple[str, ...] = ()
 
     def is_confident(self, minimum=default_minimum_ocr_confidence):
         return bool(self.text.strip()) and self.confidence >= minimum
