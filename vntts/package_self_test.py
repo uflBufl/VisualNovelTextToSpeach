@@ -142,6 +142,7 @@ def run_package_self_test(
     report = {
         "success": successful,
         "frozen": frozen,
+        "python_executable": str(Path(sys.executable).resolve()),
         "bundle_root": str(get_bundle_root() or ""),
         "checks": checks,
     }

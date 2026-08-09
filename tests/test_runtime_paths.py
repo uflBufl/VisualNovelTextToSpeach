@@ -198,6 +198,10 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertTrue(successful)
             self.assertEqual(written_path, report_path)
             self.assertTrue(report["success"])
+            self.assertEqual(
+                report["python_executable"],
+                str(Path(sys.executable).resolve()),
+            )
             self.assertTrue(
                 any(check["name"] == "Tesseract OCR" for check in report["checks"])
             )
