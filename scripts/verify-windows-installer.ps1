@@ -1,7 +1,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallerPath,
-    [switch]$AllowUnsigned
+    [switch]$AllowUnsigned,
+    [string]$SmokeTestImage,
+    [string]$SmokeTestWindowTitle,
+    [string]$SmokeTestModel = "tts_models/en/vctk/vits",
+    [string]$ExpectedSpeaker
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,13 +52,54 @@ try {
 
     & (Join-Path $PSScriptRoot "verify-windows-bundle.ps1") `
         -BundleDirectory $InstallDirectory
+    $InstalledExecutable = Join-Path $InstallDirectory `
+        "VisualNovelTextToSpeech.exe"
     if (-not $AllowUnsigned) {
-        $InstalledExecutable = Join-Path $InstallDirectory `
-            "VisualNovelTextToSpeech.exe"
         $ExecutableSignature = Get-AuthenticodeSignature $InstalledExecutable
         if ($ExecutableSignature.Status -ne "Valid") {
             throw "Installed executable signature is not valid: " +
                 $ExecutableSignature.Status
+        }
+    }
+    if ($SmokeTestImage -or $SmokeTestWindowTitle) {
+        if ($SmokeTestImage -and $SmokeTestWindowTitle) {
+            throw "Choose either a smoke-test image or a window title."
+        }
+        $SmokeReport = Join-Path $env:TEMP `
+            "vntts-release-smoke-$VerificationId.json"
+        $SmokeArguments = @(
+            "--release-smoke-test-report",
+            ('"{0}"' -f $SmokeReport),
+            "--release-smoke-test-model",
+            ('"{0}"' -f $SmokeTestModel)
+        )
+        if ($SmokeTestImage) {
+            $SmokeArguments += @(
+                "--release-smoke-test-image",
+                ('"{0}"' -f (Resolve-Path $SmokeTestImage).Path)
+            )
+        }
+        else {
+            $SmokeArguments += @(
+                "--release-smoke-test-window-title",
+                ('"{0}"' -f $SmokeTestWindowTitle)
+            )
+        }
+        if ($ExpectedSpeaker) {
+            $SmokeArguments += @(
+                "--release-smoke-test-expected-speaker",
+                ('"{0}"' -f $ExpectedSpeaker)
+            )
+        }
+        $Smoke = Start-Process -FilePath $InstalledExecutable `
+            -ArgumentList $SmokeArguments `
+            -Wait `
+            -PassThru
+        if (Test-Path $SmokeReport -PathType Leaf) {
+            Get-Content $SmokeReport
+        }
+        if ($Smoke.ExitCode -ne 0) {
+            throw "Installed OCR-to-speech smoke test failed."
         }
     }
     if (-not (Test-Path $StartMenuShortcut -PathType Leaf)) {

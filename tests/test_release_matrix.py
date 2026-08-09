@@ -1,0 +1,90 @@
+import json
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from vntts.release_matrix import (
+    load_evidence,
+    load_release_matrix,
+    validate_release_evidence,
+)
+
+
+class ReleaseMatrixTest(unittest.TestCase):
+    def setUp(self):
+        self.matrix_path = (
+            Path(__file__).resolve().parents[1]
+            / "packaging"
+            / "windows"
+            / "release-matrix.json"
+        )
+        self.profiles = load_release_matrix(self.matrix_path)
+
+    def evidence_for(self, profile):
+        return {
+            "success": True,
+            "profile": profile["name"],
+            "operating_system": "Microsoft Windows 11 Pro",
+            "build_number": 26100,
+            "gpu_vendor": profile["gpu_vendor"],
+            "gpu_names": [f"{profile['gpu_vendor']} test adapter"],
+            "display_count": profile["minimum_displays"],
+            "monitor_index": 0,
+            "dpi_scale_percent": profile["dpi_scale_percent"],
+            "capture_mode": profile["capture_mode"],
+            "game_process_level": profile["game_process_level"],
+            "installer_signature": "Valid",
+            "smoke_test_model": "tts_models/en/vctk/vits",
+        }
+
+    def test_accepts_complete_matching_signed_evidence(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for profile in self.profiles:
+                path = directory / f"{profile['name']}.json"
+                path.write_text(
+                    json.dumps(self.evidence_for(profile)),
+                    encoding="utf-8",
+                )
+
+            reports = load_evidence(directory)
+
+        self.assertEqual(
+            validate_release_evidence(self.profiles, reports),
+            [],
+        )
+
+    def test_rejects_missing_mismatched_and_unsigned_evidence(self):
+        report = self.evidence_for(self.profiles[0])
+        report["dpi_scale_percent"] = 200
+        report["installer_signature"] = "NotSigned"
+        reports = [(Path("bad.json"), report)]
+
+        errors = validate_release_evidence(self.profiles, reports)
+
+        self.assertTrue(any("dpi_scale_percent" in error for error in errors))
+        self.assertTrue(any("signature" in error for error in errors))
+        self.assertEqual(
+            sum(error.startswith("Missing evidence") for error in errors),
+            len(self.profiles) - 1,
+        )
+
+    def test_unsigned_evidence_can_be_used_for_development(self):
+        reports = []
+        for profile in self.profiles:
+            report = self.evidence_for(profile)
+            report["installer_signature"] = "NotSigned"
+            reports.append((Path(f"{profile['name']}.json"), report))
+
+        self.assertEqual(
+            validate_release_evidence(
+                self.profiles,
+                reports,
+                allow_unsigned=True,
+            ),
+            [],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

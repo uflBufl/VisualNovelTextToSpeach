@@ -43,3 +43,30 @@ Public builds must set `VNTTS_SIGNING_CERTIFICATE_PATH` and optionally
 pass `-RequireSignature` to the installer build script. The Windows installer
 workflow accepts the certificate through the
 `WINDOWS_SIGNING_CERTIFICATE_BASE64` repository secret.
+
+Run every profile in `release-matrix.json` on an interactive Windows 11 machine
+with the required GPU, monitors, and DPI scaling. The release test opens a
+windowed or borderless visual-novel fixture at normal or elevated integrity,
+installs the application, captures and recognizes its dialog, synthesizes and
+plays the recognized text, verifies upgrade and uninstall, and writes a JSON
+evidence report:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-windows-release-test.ps1 `
+  -InstallerPath .\dist\VisualNovelTextToSpeech-0.1.0-windows-x64-setup.exe `
+  -ProfileName nvidia-borderless-normal-125-multidisplay `
+  -ExpectedGpuVendor NVIDIA `
+  -CaptureMode borderless `
+  -GameProcessLevel normal `
+  -MinimumDisplayCount 2 `
+  -ExpectedDpiScale 125
+```
+
+The Windows release compatibility workflow runs the same check on an
+interactive, self-hosted Windows 11 runner and uploads the evidence report.
+After collecting every required report, enforce the release gate with:
+
+```powershell
+uv run python scripts\verify_windows_release_matrix.py `
+  --evidence-directory .\release-evidence
+```

@@ -42,6 +42,10 @@ from vntts.main import (
 )
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.release_smoke_test import (
+    default_smoke_test_model,
+    run_release_smoke_test,
+)
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import AppSettings, get_settings_path, load_app_settings
 from vntts.window_capture import (
@@ -626,6 +630,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-self-test", action="store_true")
     parser.add_argument("--package-self-test-report")
+    parser.add_argument("--release-smoke-test-image")
+    parser.add_argument("--release-smoke-test-window-title")
+    parser.add_argument("--release-smoke-test-report")
+    parser.add_argument(
+        "--release-smoke-test-model",
+        default=default_smoke_test_model,
+    )
+    parser.add_argument("--release-smoke-test-expected-speaker")
     arguments, qt_arguments = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
     )
@@ -633,6 +645,15 @@ def main(argv=None):
     if arguments.package_self_test:
         successful, _report_path = run_package_self_test(
             arguments.package_self_test_report
+        )
+        return 0 if successful else 1
+    if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:
+        successful, _report_path = run_release_smoke_test(
+            image_path=arguments.release_smoke_test_image,
+            window_title=arguments.release_smoke_test_window_title,
+            report_path=arguments.release_smoke_test_report,
+            model_name=arguments.release_smoke_test_model,
+            expected_speaker=arguments.release_smoke_test_expected_speaker,
         )
         return 0 if successful else 1
 

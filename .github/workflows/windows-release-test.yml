@@ -1,0 +1,85 @@
+name: Windows release compatibility test
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_run_id:
+        description: Run ID containing the Windows installer artifact
+        required: true
+        type: string
+      profile:
+        description: Required release-matrix profile
+        required: true
+        type: choice
+        options:
+          - intel-windowed-normal-100
+          - nvidia-borderless-normal-125-multidisplay
+          - amd-windowed-normal-150-multidisplay
+          - intel-borderless-elevated-200
+          - nvidia-windowed-elevated-150-multidisplay
+          - amd-borderless-elevated-125
+      monitor_index:
+        required: true
+        type: string
+        default: "0"
+      smoke_test_model:
+        required: true
+        type: string
+        default: tts_models/en/vctk/vits
+      allow_unsigned:
+        description: Development only; signed installers are required by default
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, windows-11, interactive]
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: VisualNovelTextToSpeech-windows-x64-installer
+          path: dist/release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.installer_run_id }}
+
+      - name: Run installed OCR-to-speech compatibility test
+        shell: powershell
+        run: |
+          $Installer = Get-Item `
+              "dist\release\VisualNovelTextToSpeech-*-windows-x64-setup.exe"
+          $Matrix = Get-Content `
+              "packaging\windows\release-matrix.json" | ConvertFrom-Json
+          $Profile = $Matrix.required_profiles | Where-Object {
+              $_.name -eq "${{ inputs.profile }}"
+          }
+          if (-not $Profile) {
+              throw "Release profile was not found."
+          }
+          $Arguments = @{
+              InstallerPath = $Installer.FullName
+              ProfileName = $Profile.name
+              ExpectedGpuVendor = $Profile.gpu_vendor
+              CaptureMode = $Profile.capture_mode
+              GameProcessLevel = $Profile.game_process_level
+              MinimumDisplayCount = $Profile.minimum_displays
+              ExpectedDpiScale = $Profile.dpi_scale_percent
+              MonitorIndex = [int]"${{ inputs.monitor_index }}"
+              SmokeTestModel = "${{ inputs.smoke_test_model }}"
+          }
+          if ("${{ inputs.allow_unsigned }}" -eq "true") {
+              $Arguments.AllowUnsigned = $true
+          }
+          scripts\run-windows-release-test.ps1 @Arguments
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-evidence-${{ inputs.profile }}
+          path: build/windows/release-evidence.json
+          if-no-files-found: error

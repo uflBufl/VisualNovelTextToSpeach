@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "required_profiles": [
+    {
+      "name": "intel-windowed-normal-100",
+      "gpu_vendor": "Intel",
+      "minimum_displays": 1,
+      "dpi_scale_percent": 100,
+      "capture_mode": "windowed",
+      "game_process_level": "normal"
+    },
+    {
+      "name": "nvidia-borderless-normal-125-multidisplay",
+      "gpu_vendor": "NVIDIA",
+      "minimum_displays": 2,
+      "dpi_scale_percent": 125,
+      "capture_mode": "borderless",
+      "game_process_level": "normal"
+    },
+    {
+      "name": "amd-windowed-normal-150-multidisplay",
+      "gpu_vendor": "AMD",
+      "minimum_displays": 2,
+      "dpi_scale_percent": 150,
+      "capture_mode": "windowed",
+      "game_process_level": "normal"
+    },
+    {
+      "name": "intel-borderless-elevated-200",
+      "gpu_vendor": "Intel",
+      "minimum_displays": 1,
+      "dpi_scale_percent": 200,
+      "capture_mode": "borderless",
+      "game_process_level": "elevated"
+    },
+    {
+      "name": "nvidia-windowed-elevated-150-multidisplay",
+      "gpu_vendor": "NVIDIA",
+      "minimum_displays": 2,
+      "dpi_scale_percent": 150,
+      "capture_mode": "windowed",
+      "game_process_level": "elevated"
+    },
+    {
+      "name": "amd-borderless-elevated-125",
+      "gpu_vendor": "AMD",
+      "minimum_displays": 1,
+      "dpi_scale_percent": 125,
+      "capture_mode": "borderless",
+      "game_process_level": "elevated"
+    }
+  ]
+}

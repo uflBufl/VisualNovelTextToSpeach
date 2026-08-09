@@ -232,6 +232,36 @@ class TrayApplicationTest(unittest.TestCase):
         self_test.assert_called_once_with("custom-report.json")
         application.assert_not_called()
 
+    def test_release_smoke_test_does_not_start_qt_application(self):
+        with (
+            patch("vntts.app.configure_bundled_dependencies"),
+            patch(
+                "vntts.app.run_release_smoke_test",
+                return_value=(True, "report.json"),
+            ) as smoke_test,
+            patch("vntts.app.QApplication") as application,
+        ):
+            result = main(
+                [
+                    "--release-smoke-test-image",
+                    "dialog.png",
+                    "--release-smoke-test-report",
+                    "custom-report.json",
+                    "--release-smoke-test-expected-speaker",
+                    "Marcus",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        smoke_test.assert_called_once_with(
+            image_path="dialog.png",
+            window_title=None,
+            report_path="custom-report.json",
+            model_name="tts_models/en/vctk/vits",
+            expected_speaker="Marcus",
+        )
+        application.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
