@@ -1,0 +1,235 @@
+import json
+import os
+import sys
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+
+application_directory_name = "VisualNovelTextToSpeech"
+settings_schema_version = 3
+
+
+def get_config_directory(*, environment=None, platform=None, home=None):
+    environment = os.environ if environment is None else environment
+    platform = sys.platform if platform is None else platform
+    home = Path.home() if home is None else Path(home)
+
+    if platform == "win32":
+        return (
+            Path(environment.get("APPDATA", home / "AppData" / "Roaming"))
+            / application_directory_name
+        )
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / application_directory_name
+    return Path(environment.get("XDG_CONFIG_HOME", home / ".config")) / "vntts"
+
+
+def get_local_data_directory(*, environment=None, platform=None, home=None):
+    environment = os.environ if environment is None else environment
+    platform = sys.platform if platform is None else platform
+    home = Path.home() if home is None else Path(home)
+
+    if platform == "win32":
+        return (
+            Path(environment.get("LOCALAPPDATA", home / "AppData" / "Local"))
+            / application_directory_name
+        )
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / application_directory_name
+    return Path(environment.get("XDG_DATA_HOME", home / ".local" / "share")) / "vntts"
+
+
+def get_settings_path(*, environment=None):
+    environment = os.environ if environment is None else environment
+    configured_path = environment.get("VNTTS_SETTINGS_FILE")
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return get_config_directory(environment=environment) / "settings.json"
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    schema_version: int = settings_schema_version
+    onboarding_completed: bool = False
+    xtts_terms_accepted: bool = False
+    read_hotkey: str = "<ctrl>+<shift>+h"
+    live_hotkey: str = "<ctrl>+<shift>+l"
+    pause_hotkey: str = "<ctrl>+<shift>+p"
+    skip_hotkey: str = "<ctrl>+<shift>+s"
+    repeat_hotkey: str = "<ctrl>+<shift>+r"
+    clear_queue_hotkey: str = "<ctrl>+<shift>+x"
+    screenshot_directory: str = field(
+        default_factory=lambda: str(get_local_data_directory() / "screenshots")
+    )
+    capture_mode: str = "screen"
+    game_window_title: str | None = None
+    live_interval_ms: int = 200
+    live_stability_frames: int = 2
+    live_idle_flush_ms: int = 700
+    live_min_chunk_characters: int = 20
+    tts_model: str | None = None
+    tts_speaker: str | None = None
+    tts_language: str | None = None
+    tts_speaker_wav: str | None = None
+    tts_profile: str = "stable"
+    voice_manifest: str | None = None
+    narrator_speaker: str | None = None
+
+    @classmethod
+    def from_mapping(cls, values, *, warn=None):
+        warn = (lambda _message: None) if warn is None else warn
+        defaults = cls()
+        parsed = {}
+
+        string_fields = (
+            "read_hotkey",
+            "live_hotkey",
+            "pause_hotkey",
+            "skip_hotkey",
+            "repeat_hotkey",
+            "clear_queue_hotkey",
+            "screenshot_directory",
+        )
+        optional_string_fields = (
+            "tts_model",
+            "tts_speaker",
+            "tts_language",
+            "tts_speaker_wav",
+            "voice_manifest",
+            "narrator_speaker",
+            "game_window_title",
+        )
+        numeric_fields = {
+            "live_interval_ms": 1,
+            "live_stability_frames": 2,
+            "live_idle_flush_ms": 1,
+            "live_min_chunk_characters": 1,
+        }
+        boolean_fields = ("onboarding_completed", "xtts_terms_accepted")
+
+        for name in string_fields:
+            value = values.get(name, getattr(defaults, name))
+            if isinstance(value, str) and value.strip():
+                parsed[name] = value.strip()
+            else:
+                warn(f"Invalid {name!r} setting; using its default")
+
+        for name in optional_string_fields:
+            value = values.get(name, getattr(defaults, name))
+            if value is None:
+                parsed[name] = None
+            elif isinstance(value, str) and value.strip():
+                parsed[name] = value.strip()
+            else:
+                warn(f"Invalid {name!r} setting; using its default")
+
+        for name, minimum in numeric_fields.items():
+            value = values.get(name, getattr(defaults, name))
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= minimum
+            ):
+                parsed[name] = value
+            else:
+                warn(f"Invalid {name!r} setting; using its default")
+
+        for name in boolean_fields:
+            value = values.get(name, getattr(defaults, name))
+            if isinstance(value, bool):
+                parsed[name] = value
+            else:
+                warn(f"Invalid {name!r} setting; using its default")
+
+        profile = values.get("tts_profile", defaults.tts_profile)
+        if isinstance(profile, str) and profile.strip():
+            parsed["tts_profile"] = profile.strip().casefold()
+        else:
+            warn("Invalid 'tts_profile' setting; using its default")
+
+        capture_mode = values.get("capture_mode", defaults.capture_mode)
+        if capture_mode in {"screen", "window"}:
+            parsed["capture_mode"] = capture_mode
+        else:
+            warn("Invalid 'capture_mode' setting; using its default")
+
+        return cls(**parsed)
+
+    def with_environment_overrides(self, environment=None, *, warn=None):
+        environment = os.environ if environment is None else environment
+        warn = (lambda _message: None) if warn is None else warn
+        values = asdict(self)
+        string_overrides = {
+            "VNTTS_HOTKEY": "read_hotkey",
+            "VNTTS_LIVE_HOTKEY": "live_hotkey",
+            "VNTTS_PAUSE_HOTKEY": "pause_hotkey",
+            "VNTTS_SKIP_HOTKEY": "skip_hotkey",
+            "VNTTS_REPEAT_HOTKEY": "repeat_hotkey",
+            "VNTTS_CLEAR_QUEUE_HOTKEY": "clear_queue_hotkey",
+            "VNTTS_SCREENSHOT_DIR": "screenshot_directory",
+            "VNTTS_TTS_MODEL": "tts_model",
+            "VNTTS_TTS_SPEAKER": "tts_speaker",
+            "VNTTS_TTS_LANGUAGE": "tts_language",
+            "VNTTS_TTS_SPEAKER_WAV": "tts_speaker_wav",
+            "VNTTS_TTS_PROFILE": "tts_profile",
+            "VNTTS_VOICE_MANIFEST": "voice_manifest",
+            "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
+            "VNTTS_CAPTURE_MODE": "capture_mode",
+            "VNTTS_GAME_WINDOW_TITLE": "game_window_title",
+        }
+        numeric_overrides = {
+            "VNTTS_LIVE_INTERVAL_MS": "live_interval_ms",
+            "VNTTS_LIVE_STABILITY_FRAMES": "live_stability_frames",
+            "VNTTS_LIVE_IDLE_FLUSH_MS": "live_idle_flush_ms",
+            "VNTTS_LIVE_MIN_CHUNK_CHARACTERS": "live_min_chunk_characters",
+        }
+
+        for environment_name, setting_name in string_overrides.items():
+            if configured := environment.get(environment_name):
+                values[setting_name] = configured
+
+        for environment_name, setting_name in numeric_overrides.items():
+            configured = environment.get(environment_name)
+            if configured is None:
+                continue
+            try:
+                values[setting_name] = int(configured)
+            except ValueError:
+                warn(
+                    f"Invalid {environment_name} {configured!r}; using saved/default value"
+                )
+
+        return self.from_mapping(values, warn=warn)
+
+    def save(self, path=None):
+        path = get_settings_path() if path is None else Path(path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+        temporary_path.write_text(
+            json.dumps(asdict(self), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+        return path
+
+    def updated(self, **changes):
+        return replace(self, **changes)
+
+
+def load_app_settings(path=None, *, environment=None, warn=None):
+    environment = os.environ if environment is None else environment
+    warn = (lambda message: print(message, file=sys.stderr)) if warn is None else warn
+    path = get_settings_path(environment=environment) if path is None else Path(path)
+
+    if not path.is_file():
+        settings = AppSettings()
+    else:
+        try:
+            values = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(values, dict):
+                raise ValueError("settings root must be an object")
+            settings = AppSettings.from_mapping(values, warn=warn)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            warn(f"Unable to load settings from {path}: {error}; using defaults")
+            settings = AppSettings()
+
+    return settings.with_environment_overrides(environment, warn=warn)
