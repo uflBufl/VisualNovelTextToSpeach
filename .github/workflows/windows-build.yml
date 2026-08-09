@@ -1,0 +1,32 @@
+name: Windows portable build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Tesseract
+        shell: powershell
+        run: choco install tesseract --version=5.5.3.20260724 --yes
+
+      - name: Build and self-test portable application
+        shell: powershell
+        run: scripts\build-windows.ps1
+
+      - name: Upload portable application
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisualNovelTextToSpeech-windows-x64
+          path: dist/VisualNovelTextToSpeech-windows-x64.zip
+          if-no-files-found: error
