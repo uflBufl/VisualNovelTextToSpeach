@@ -26,10 +26,6 @@ sections after their implementation has been verified and committed.
 
 ### P2 - macOS usability
 
-- [ ] Package the application as a macOS `.app` and DMG.
-  - Give screen-recording and accessibility permissions a stable application identity.
-  - Add signing and notarization support for distributable builds.
-
 - [ ] Add a hotkey recorder with macOS-friendly defaults.
   - Capture shortcuts directly instead of requiring pynput syntax.
   - Detect duplicate and unavailable shortcuts before saving.
