@@ -1,9 +1,9 @@
 # Windows portable build
 
 PyInstaller one-folder mode is used because the application includes large
-Torch and Coqui libraries plus an external Tesseract process. Build it on
-64-bit Windows with Python 3.11, uv, and a Tesseract 5 installation containing
-English language data:
+Torch and Coqui libraries plus external OCR and phonemizer processes. Build it
+on 64-bit Windows with Python 3.11, uv, Tesseract 5 with English language data,
+and eSpeak-NG:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
@@ -11,8 +11,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 
 Pass `-TesseractDirectory` when Tesseract is installed elsewhere. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,
-all Python dependencies, `tesseract.exe`, its DLLs, and
-`tessdata\eng.traineddata`; speech models remain user-managed downloads.
+all Python dependencies, Tesseract, English OCR data, and eSpeak-NG; speech
+models remain user-managed downloads.
 
 On a clean Windows machine, unpack the archive and verify it with:
 

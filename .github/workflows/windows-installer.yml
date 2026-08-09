@@ -26,6 +26,7 @@ jobs:
         shell: powershell
         run: |
           choco install tesseract --version=5.5.3.20260724 --yes --no-progress
+          choco install espeak-ng --version=1.52.0 --yes --no-progress
           choco install innosetup --yes --no-progress
 
       - name: Build portable application

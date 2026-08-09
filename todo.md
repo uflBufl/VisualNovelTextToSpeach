@@ -30,9 +30,9 @@
 
 - [ ] Produce a standalone Windows build on Windows.
   - [x] Compare `pyside6-deploy` and PyInstaller and select PyInstaller one-folder
-        mode for the Qt, Torch, Coqui, and Tesseract bundle.
-  - [ ] Build on Windows and confirm Python, Qt, Tesseract, and English language
-        data are present in the portable artifact.
+        mode for the Qt, Torch, Coqui, Tesseract, and eSpeak-NG bundle.
+  - [ ] Build on Windows and confirm Python, Qt, Tesseract, English language
+        data, and eSpeak-NG are present in the portable artifact.
   - [ ] Verify operation without Python, uv, Tesseract, or development tools installed.
 
 - [ ] Create and sign a Windows installer.

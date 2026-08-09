@@ -6,6 +6,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 
 project_root = Path(SPEC).resolve().parents[2]
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
+espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
 tesseract_executable = tesseract_directory / "tesseract.exe"
 english_language_data = tesseract_directory / "tessdata" / "eng.traineddata"
 
@@ -13,8 +14,19 @@ if not tesseract_executable.is_file():
     raise SystemExit(f"Tesseract executable is missing: {tesseract_executable}")
 if not english_language_data.is_file():
     raise SystemExit(f"English language data is missing: {english_language_data}")
+espeak_executables = list(espeak_directory.rglob("espeak-ng.exe"))
+espeak_data_directories = list(espeak_directory.rglob("espeak-ng-data"))
+if not espeak_executables:
+    raise SystemExit(f"eSpeak-NG executable is missing under: {espeak_directory}")
+if not espeak_data_directories:
+    raise SystemExit(f"eSpeak-NG voice data is missing under: {espeak_directory}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
+datas.extend(
+    (str(source), str(Path("espeak-ng") / source.relative_to(espeak_directory).parent))
+    for source in espeak_directory.rglob("*")
+    if source.is_file()
+)
 binaries = [(str(tesseract_executable), "tesseract")]
 binaries.extend(
     (str(library), "tesseract") for library in tesseract_directory.glob("*.dll")

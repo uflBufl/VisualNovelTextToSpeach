@@ -1,5 +1,6 @@
 param(
     [string]$TesseractDirectory = "C:\Program Files\Tesseract-OCR",
+    [string]$EspeakDirectory,
     [switch]$SkipTests
 )
 
@@ -23,6 +24,29 @@ if (-not (Test-Path $TesseractExecutable -PathType Leaf)) {
 if (-not (Test-Path $EnglishLanguageData -PathType Leaf)) {
     throw "English language data is missing: $EnglishLanguageData"
 }
+if (-not $EspeakDirectory) {
+    $EspeakCommand = Get-Command "espeak-ng.exe" -ErrorAction SilentlyContinue
+    $EspeakCandidates = @(
+        $(if ($EspeakCommand) { Split-Path -Parent $EspeakCommand.Source }),
+        (Join-Path $env:ProgramFiles "eSpeak NG"),
+        (Join-Path ${env:ProgramFiles(x86)} "eSpeak NG")
+    ) | Where-Object { $_ -and (Test-Path $_ -PathType Container) }
+    $EspeakDirectory = $EspeakCandidates | Select-Object -First 1
+}
+if (-not $EspeakDirectory) {
+    throw "eSpeak-NG installation was not found."
+}
+$EspeakDirectory = (Resolve-Path $EspeakDirectory).Path
+$EspeakExecutable = Get-ChildItem $EspeakDirectory -Filter "espeak-ng.exe" `
+    -Recurse | Select-Object -First 1
+$EspeakData = Get-ChildItem $EspeakDirectory -Directory `
+    -Filter "espeak-ng-data" -Recurse | Select-Object -First 1
+if (-not $EspeakExecutable) {
+    throw "eSpeak-NG executable is missing under: $EspeakDirectory"
+}
+if (-not $EspeakData) {
+    throw "eSpeak-NG voice data is missing under: $EspeakDirectory"
+}
 
 Push-Location $ProjectRoot
 try {
@@ -38,6 +62,7 @@ try {
     }
 
     $env:VNTTS_TESSERACT_DIR = $TesseractDirectory
+    $env:VNTTS_ESPEAK_DIR = $EspeakDirectory
     $WorkPath = Join-Path $ProjectRoot "build\windows\pyinstaller"
     $DistPath = Join-Path $ProjectRoot "dist\windows"
     uv run --frozen pyinstaller --noconfirm --clean `

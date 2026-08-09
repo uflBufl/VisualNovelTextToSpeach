@@ -1,10 +1,15 @@
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from vntts.onboarding import probe_tesseract
-from vntts.runtime_paths import configure_bundled_dependencies, get_bundle_root
+from vntts.runtime_paths import (
+    configure_bundled_dependencies,
+    find_bundled_espeak,
+    get_bundle_root,
+)
 from vntts.settings import get_local_data_directory
 
 required_modules = (
@@ -21,12 +26,30 @@ required_modules = (
 )
 
 
+def probe_espeak(executable):
+    completed = subprocess.run(
+        [str(executable), "--version"],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=15,
+    )
+    output = (completed.stdout or completed.stderr).strip()
+    return output.splitlines()[0] if output else "available"
+
+
 def run_package_self_test(
-    report_path=None, *, import_module=None, tesseract_probe=None
+    report_path=None,
+    *,
+    import_module=None,
+    tesseract_probe=None,
+    espeak_probe=None,
 ):
     import_module = import_module or importlib.import_module
     tesseract_probe = tesseract_probe or probe_tesseract
+    espeak_probe = espeak_probe or probe_espeak
     bundled_tesseract = configure_bundled_dependencies()
+    bundled_espeak = find_bundled_espeak()
     checks = []
 
     for module_name in required_modules:
@@ -85,6 +108,33 @@ def run_package_self_test(
                 "message": str(bundled_tesseract),
             }
         )
+    if frozen and bundled_espeak is None:
+        checks.append(
+            {
+                "name": "Bundled eSpeak-NG",
+                "status": "error",
+                "message": "Bundled espeak-ng.exe or voice data is missing",
+            }
+        )
+    elif frozen:
+        try:
+            espeak_version = espeak_probe(bundled_espeak[0])
+        except Exception as error:
+            checks.append(
+                {
+                    "name": "Bundled eSpeak-NG",
+                    "status": "error",
+                    "message": str(error),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "Bundled eSpeak-NG",
+                    "status": "ok",
+                    "message": espeak_version,
+                }
+            )
 
     successful = all(check["status"] == "ok" for check in checks)
     report = {
