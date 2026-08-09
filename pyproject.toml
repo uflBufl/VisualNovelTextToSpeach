@@ -32,6 +32,8 @@ dependencies = [
 
 [project.scripts]
 vntts = "vntts.main:main"
+vntts-app = "vntts.app:main"
+vntts-calibrate = "vntts.calibration:main"
 
 [tool.uv.sources]
 torch = [

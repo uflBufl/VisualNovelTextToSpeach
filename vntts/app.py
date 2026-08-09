@@ -1,0 +1,602 @@
+import argparse
+import sys
+from dataclasses import asdict
+from multiprocessing import freeze_support
+from threading import Event, Thread
+
+from pynput import keyboard
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QStyle,
+    QSystemTrayIcon,
+    QVBoxLayout,
+)
+
+from vntts.asset_ui import AssetManagerDialog
+from vntts.assets import ModelDownloadCancelled
+from vntts.calibration import show_calibration_overlay
+from vntts.main import (
+    AppController,
+    format_runtime_error,
+    get_clear_queue_hotkey,
+    get_hotkey,
+    get_live_hotkey,
+    get_pause_hotkey,
+    get_repeat_hotkey,
+    get_skip_hotkey,
+)
+from vntts.onboarding_ui import OnboardingWizard
+from vntts.package_self_test import run_package_self_test
+from vntts.runtime_paths import configure_bundled_dependencies
+from vntts.settings import AppSettings, get_settings_path, load_app_settings
+from vntts.window_capture import (
+    WindowCaptureError,
+    enable_windows_dpi_awareness,
+    list_windows,
+)
+
+application_name = "Visual Novel Text to Speech"
+
+
+class AppSignals(QObject):
+    status_changed = Signal(str)
+    dialog_changed = Signal(str, str)
+    ready_changed = Signal(bool)
+    live_changed = Signal(bool)
+    speech_paused_changed = Signal(bool)
+    error_reported = Signal(str)
+    onboarding_test_finished = Signal(bool, str)
+    onboarding_test_progress = Signal(object, str)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.original_settings = settings
+        self.setWindowTitle(f"{application_name} settings")
+        self.setMinimumWidth(540)
+
+        self.read_hotkey = QLineEdit(settings.read_hotkey)
+        self.live_hotkey = QLineEdit(settings.live_hotkey)
+        self.pause_hotkey = QLineEdit(settings.pause_hotkey)
+        self.skip_hotkey = QLineEdit(settings.skip_hotkey)
+        self.repeat_hotkey = QLineEdit(settings.repeat_hotkey)
+        self.clear_queue_hotkey = QLineEdit(settings.clear_queue_hotkey)
+        self.screenshot_directory = QLineEdit(settings.screenshot_directory)
+        self.capture_mode = QComboBox()
+        self.capture_mode.addItem("Calibrated screen region", "screen")
+        self.capture_mode.addItem("Selected game window", "window")
+        self.capture_mode.setCurrentIndex(
+            max(0, self.capture_mode.findData(settings.capture_mode))
+        )
+        self.game_window = QComboBox()
+        self.game_window.setEditable(True)
+        if settings.game_window_title:
+            self.game_window.addItem(settings.game_window_title)
+            self.game_window.setCurrentText(settings.game_window_title)
+        refresh_windows_button = QPushButton("Refresh...")
+        refresh_windows_button.clicked.connect(self.refresh_windows)
+        window_layout = QHBoxLayout()
+        window_layout.addWidget(self.game_window)
+        window_layout.addWidget(refresh_windows_button)
+        self.tts_model = QLineEdit(settings.tts_model or "")
+        self.tts_language = QLineEdit(settings.tts_language or "")
+        self.voice_manifest = QLineEdit(settings.voice_manifest or "")
+        self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
+        self.tts_profile = QComboBox()
+        self.tts_profile.addItems(["stable", "natural", "expressive"])
+        self.tts_profile.setCurrentText(settings.tts_profile)
+        self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
+        self.xtts_terms.setChecked(settings.xtts_terms_accepted)
+
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_screenshot_directory)
+        screenshot_layout = QHBoxLayout()
+        screenshot_layout.addWidget(self.screenshot_directory)
+        screenshot_layout.addWidget(browse_button)
+
+        form = QFormLayout()
+        form.addRow("Read once hotkey", self.read_hotkey)
+        form.addRow("Live reading hotkey", self.live_hotkey)
+        form.addRow("Pause or resume hotkey", self.pause_hotkey)
+        form.addRow("Skip speech hotkey", self.skip_hotkey)
+        form.addRow("Repeat speech hotkey", self.repeat_hotkey)
+        form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
+        form.addRow("Screenshot directory", screenshot_layout)
+        form.addRow("Capture source", self.capture_mode)
+        form.addRow("Game window", window_layout)
+        form.addRow("TTS model", self.tts_model)
+        form.addRow("TTS language", self.tts_language)
+        form.addRow("Voice manifest", self.voice_manifest)
+        form.addRow("Narrator speaker", self.narrator_speaker)
+        form.addRow("Voice profile", self.tts_profile)
+        form.addRow("XTTS license", self.xtts_terms)
+
+        note = QLabel(
+            "Hotkey changes take effect immediately. Voice and model changes "
+            "take effect after restarting the application."
+        )
+        note.setWordWrap(True)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+        self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
+        self.tts_model.textChanged.connect(self.update_terms_control)
+        self.update_capture_controls()
+        self.update_terms_control()
+
+    def browse_screenshot_directory(self):
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose screenshot directory",
+            self.screenshot_directory.text(),
+        )
+        if selected:
+            self.screenshot_directory.setText(selected)
+
+    def refresh_windows(self):
+        selected_title = self.game_window.currentText().strip()
+        try:
+            windows = list_windows()
+        except WindowCaptureError as error:
+            QMessageBox.warning(self, "Window capture unavailable", str(error))
+            return
+        self.game_window.clear()
+        self.game_window.addItems(window.title for window in windows)
+        if selected_title:
+            self.game_window.setCurrentText(selected_title)
+
+    def update_capture_controls(self):
+        self.game_window.setEnabled(self.capture_mode.currentData() == "window")
+
+    def update_terms_control(self):
+        self.xtts_terms.setEnabled("xtts" in self.tts_model.text().casefold())
+
+    def validate_and_accept(self):
+        hotkeys = [
+            self.read_hotkey.text().strip(),
+            self.live_hotkey.text().strip(),
+            self.pause_hotkey.text().strip(),
+            self.skip_hotkey.text().strip(),
+            self.repeat_hotkey.text().strip(),
+            self.clear_queue_hotkey.text().strip(),
+        ]
+        try:
+            for hotkey in hotkeys:
+                keyboard.HotKey.parse(hotkey)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "Invalid hotkey", str(error))
+            return
+        if len(set(hotkeys)) != len(hotkeys):
+            QMessageBox.warning(
+                self,
+                "Invalid hotkeys",
+                "Every speech action must use a different hotkey.",
+            )
+            return
+        if not self.screenshot_directory.text().strip():
+            QMessageBox.warning(
+                self,
+                "Invalid screenshot directory",
+                "Choose a directory for captured screenshots.",
+            )
+            return
+        if (
+            self.capture_mode.currentData() == "window"
+            and not self.game_window.currentText().strip()
+        ):
+            QMessageBox.warning(
+                self,
+                "No game window selected",
+                "Select the game window to capture.",
+            )
+            return
+        if (
+            "xtts" in self.tts_model.text().casefold()
+            and not self.xtts_terms.isChecked()
+        ):
+            QMessageBox.warning(
+                self,
+                "Model license not accepted",
+                "Accept the CPML terms before using XTTS.",
+            )
+            return
+        self.accept()
+
+    def settings(self):
+        def optional_text(widget):
+            return widget.text().strip() or None
+
+        return AppSettings.from_mapping(
+            {
+                **asdict(self.original_settings),
+                "read_hotkey": self.read_hotkey.text().strip(),
+                "live_hotkey": self.live_hotkey.text().strip(),
+                "pause_hotkey": self.pause_hotkey.text().strip(),
+                "skip_hotkey": self.skip_hotkey.text().strip(),
+                "repeat_hotkey": self.repeat_hotkey.text().strip(),
+                "clear_queue_hotkey": self.clear_queue_hotkey.text().strip(),
+                "screenshot_directory": self.screenshot_directory.text().strip(),
+                "capture_mode": self.capture_mode.currentData(),
+                "game_window_title": self.game_window.currentText().strip() or None,
+                "tts_model": optional_text(self.tts_model),
+                "tts_language": optional_text(self.tts_language),
+                "voice_manifest": optional_text(self.voice_manifest),
+                "narrator_speaker": optional_text(self.narrator_speaker),
+                "tts_profile": self.tts_profile.currentText(),
+                "xtts_terms_accepted": self.xtts_terms.isChecked(),
+            }
+        )
+
+
+class TrayApplication:
+    def __init__(self, application, settings=None, controller_factory=AppController):
+        self.application = application
+        self.settings = settings or load_app_settings()
+        self.signals = AppSignals()
+        self.controller = controller_factory(
+            self.settings,
+            status_handler=self.signals.status_changed.emit,
+            dialog_handler=self.signals.dialog_changed.emit,
+            error_handler=lambda error: self.signals.error_reported.emit(
+                format_runtime_error(error)
+            ),
+        )
+        self.hotkey_listener = None
+        self.calibration_overlay = None
+        self.onboarding_wizard = None
+        self.onboarding_cancel_event = Event()
+
+        self.tray = QSystemTrayIcon(self._application_icon(), application)
+        self.menu = QMenu()
+        self.status_action = QAction("Starting...")
+        self.status_action.setEnabled(False)
+        self.dialog_action = QAction("No dialog detected")
+        self.dialog_action.setEnabled(False)
+        self.read_action = QAction("Read current dialog")
+        self.live_action = QAction("Start live reading")
+        self.pause_action = QAction("Pause speech")
+        self.skip_action = QAction("Skip current speech")
+        self.repeat_action = QAction("Repeat last speech")
+        self.clear_queue_action = QAction("Clear speech queue")
+        self.calibrate_action = QAction("Calibrate dialog region")
+        self.settings_action = QAction("Settings...")
+        self.setup_action = QAction("Run setup...")
+        self.assets_action = QAction("Manage models and voices...")
+        self.settings_folder_action = QAction("Open settings folder")
+        self.quit_action = QAction("Quit")
+
+        self.read_action.setEnabled(False)
+        self.live_action.setEnabled(False)
+        self.pause_action.setEnabled(False)
+        self.skip_action.setEnabled(False)
+        self.repeat_action.setEnabled(False)
+        self.clear_queue_action.setEnabled(False)
+        self.menu.addAction(self.status_action)
+        self.menu.addAction(self.dialog_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.read_action)
+        self.menu.addAction(self.live_action)
+        self.menu.addAction(self.pause_action)
+        self.menu.addAction(self.skip_action)
+        self.menu.addAction(self.repeat_action)
+        self.menu.addAction(self.clear_queue_action)
+        self.menu.addAction(self.calibrate_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.settings_action)
+        self.menu.addAction(self.setup_action)
+        self.menu.addAction(self.assets_action)
+        self.menu.addAction(self.settings_folder_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.quit_action)
+        self.tray.setContextMenu(self.menu)
+        self.tray.setToolTip(application_name)
+
+        self.read_action.triggered.connect(self.read_once)
+        self.live_action.triggered.connect(self.toggle_live)
+        self.pause_action.triggered.connect(self.toggle_speech_pause)
+        self.skip_action.triggered.connect(self.skip_current_speech)
+        self.repeat_action.triggered.connect(self.repeat_last_speech)
+        self.clear_queue_action.triggered.connect(self.clear_speech_queue)
+        self.calibrate_action.triggered.connect(self.calibrate)
+        self.settings_action.triggered.connect(self.open_settings)
+        self.setup_action.triggered.connect(self.run_onboarding)
+        self.assets_action.triggered.connect(self.open_assets)
+        self.settings_folder_action.triggered.connect(self.open_settings_folder)
+        self.quit_action.triggered.connect(self.application.quit)
+        self.signals.status_changed.connect(self.set_status)
+        self.signals.dialog_changed.connect(self.set_dialog)
+        self.signals.ready_changed.connect(self.set_ready)
+        self.signals.live_changed.connect(self.set_live)
+        self.signals.speech_paused_changed.connect(self.set_speech_paused)
+        self.signals.error_reported.connect(self.show_error)
+        self.application.aboutToQuit.connect(self.shutdown)
+
+    def _application_icon(self):
+        return self.application.style().standardIcon(
+            QStyle.StandardPixmap.SP_MediaVolume
+        )
+
+    def start(self):
+        self.tray.show()
+        if self.settings.onboarding_completed:
+            Thread(target=self._initialize_controller, daemon=True).start()
+        else:
+            self.set_status("Setup required")
+            QTimer.singleShot(0, self.run_onboarding)
+
+    def _initialize_controller(self):
+        ready = self.controller.start()
+        self.signals.ready_changed.emit(ready)
+        if ready:
+            try:
+                self.start_hotkeys()
+            except (TypeError, ValueError) as error:
+                self.signals.error_reported.emit(f"Unable to register hotkeys: {error}")
+
+    def start_hotkeys(self):
+        if self.hotkey_listener is not None:
+            self.hotkey_listener.stop()
+        read_hotkey = get_hotkey(self.settings)
+        live_hotkey = get_live_hotkey(self.settings)
+        pause_hotkey = get_pause_hotkey(self.settings)
+        skip_hotkey = get_skip_hotkey(self.settings)
+        repeat_hotkey = get_repeat_hotkey(self.settings)
+        clear_queue_hotkey = get_clear_queue_hotkey(self.settings)
+        hotkeys = (
+            read_hotkey,
+            live_hotkey,
+            pause_hotkey,
+            skip_hotkey,
+            repeat_hotkey,
+            clear_queue_hotkey,
+        )
+        if len(set(hotkeys)) != len(hotkeys):
+            raise ValueError("Every speech action must use a different hotkey")
+        self.hotkey_listener = keyboard.GlobalHotKeys(
+            {
+                read_hotkey: self.read_once,
+                live_hotkey: self.toggle_live,
+                pause_hotkey: self.toggle_speech_pause,
+                skip_hotkey: self.skip_current_speech,
+                repeat_hotkey: self.repeat_last_speech,
+                clear_queue_hotkey: self.clear_speech_queue,
+            }
+        )
+        self.hotkey_listener.start()
+
+    def read_once(self):
+        self.controller.read_once()
+
+    def toggle_live(self):
+        self.signals.live_changed.emit(self.controller.toggle_live())
+
+    def toggle_speech_pause(self):
+        self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
+
+    def skip_current_speech(self):
+        self.controller.skip_current_speech()
+
+    def repeat_last_speech(self):
+        self.controller.repeat_last_speech()
+
+    def clear_speech_queue(self):
+        self.controller.clear_speech_queue()
+
+    def calibrate(self):
+        try:
+            geometry = self.controller.get_capture_geometry()
+        except WindowCaptureError as error:
+            self.show_error(str(error))
+            return
+        self.calibration_overlay = show_calibration_overlay(geometry)
+
+    def run_onboarding(self):
+        if self.onboarding_wizard is not None:
+            self.onboarding_wizard.show()
+            self.onboarding_wizard.raise_()
+            self.onboarding_wizard.activateWindow()
+            return
+
+        wizard = OnboardingWizard(self.settings)
+        self.onboarding_wizard = wizard
+        wizard.test_requested.connect(self.run_onboarding_test)
+        wizard.cancel_requested.connect(self.cancel_onboarding_download)
+        self.signals.onboarding_test_finished.connect(wizard.test_page.set_result)
+        self.signals.onboarding_test_progress.connect(wizard.test_page.set_progress)
+        result = wizard.exec()
+        self.onboarding_cancel_event.set()
+        self.signals.onboarding_test_finished.disconnect(wizard.test_page.set_result)
+        self.signals.onboarding_test_progress.disconnect(wizard.test_page.set_progress)
+        self.onboarding_wizard = None
+
+        if result != QDialog.DialogCode.Accepted:
+            self.set_status("Setup required")
+            wizard.deleteLater()
+            return
+
+        self.settings = wizard.settings()
+        path = self.settings.save()
+        self.controller.apply_settings(self.settings)
+        self.set_ready(self.controller.is_ready)
+        try:
+            self.start_hotkeys()
+        except (TypeError, ValueError) as error:
+            self.show_error(f"Unable to register hotkeys: {error}")
+        else:
+            self.set_status(f"Setup completed; settings saved to {path}")
+        wizard.deleteLater()
+
+    def run_onboarding_test(self, settings):
+        self.onboarding_cancel_event = Event()
+
+        def run_test():
+            self.controller.apply_settings(settings)
+            try:
+                self.controller.model_assets.download(
+                    settings.tts_model,
+                    progress=self.signals.onboarding_test_progress.emit,
+                    cancel_event=self.onboarding_cancel_event,
+                )
+            except ModelDownloadCancelled as error:
+                self.signals.onboarding_test_finished.emit(False, str(error))
+                return
+            except Exception as error:
+                self.signals.onboarding_test_finished.emit(
+                    False,
+                    f"Model download or verification failed: {error}",
+                )
+                return
+            if not self.controller.start():
+                self.signals.onboarding_test_finished.emit(
+                    False,
+                    "The speech engine could not be initialized. Check the error "
+                    "notification and try again.",
+                )
+                return
+            try:
+                character, text = self.controller.test_current_dialog()
+            except Exception as error:
+                self.signals.onboarding_test_finished.emit(
+                    False,
+                    format_runtime_error(error),
+                )
+                return
+            preview = " ".join(text.split())
+            if len(preview) > 160:
+                preview = f"{preview[:157]}..."
+            self.signals.onboarding_test_finished.emit(
+                True,
+                f"Success. Recognized {character}: {preview}",
+            )
+
+        Thread(target=run_test, daemon=True).start()
+
+    def cancel_onboarding_download(self):
+        self.onboarding_cancel_event.set()
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.settings)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings = dialog.settings()
+        path = self.settings.save()
+        self.controller.apply_settings(self.settings)
+        try:
+            self.start_hotkeys()
+        except (TypeError, ValueError) as error:
+            self.show_error(f"Unable to register hotkeys: {error}")
+        self.set_status(f"Settings saved to {path}")
+
+    def open_assets(self):
+        dialog = AssetManagerDialog(self.settings)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings = dialog.settings()
+        path = self.settings.save()
+        self.controller.apply_settings(self.settings)
+        self.set_status(
+            f"Assets updated; restart to load voice or model changes. Saved to {path}"
+        )
+
+    def open_settings_folder(self):
+        path = get_settings_path().parent
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def set_status(self, message):
+        self.status_action.setText(message)
+        self.tray.setToolTip(f"{application_name}\n{message}")
+
+    def set_dialog(self, character, text):
+        if not text:
+            self.dialog_action.setText("No dialog detected")
+            return
+        self.dialog_action.setText(f"{character}: {text}")
+
+    def set_ready(self, ready):
+        self.read_action.setEnabled(ready)
+        self.live_action.setEnabled(ready)
+        self.pause_action.setEnabled(ready)
+        self.skip_action.setEnabled(ready)
+        self.repeat_action.setEnabled(ready)
+        self.clear_queue_action.setEnabled(ready)
+        if not ready:
+            self.set_status("Unable to start")
+
+    def set_live(self, running):
+        self.live_action.setText(
+            "Stop live reading" if running else "Start live reading"
+        )
+
+    def set_speech_paused(self, paused):
+        self.pause_action.setText("Resume speech" if paused else "Pause speech")
+
+    def show_error(self, message):
+        self.set_status(message)
+        self.tray.showMessage(
+            f"{application_name} error",
+            message,
+            QSystemTrayIcon.MessageIcon.Critical,
+        )
+
+    def shutdown(self):
+        if self.hotkey_listener is not None:
+            self.hotkey_listener.stop()
+            self.hotkey_listener = None
+        self.controller.shutdown()
+
+
+def main(argv=None):
+    freeze_support()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--package-self-test", action="store_true")
+    parser.add_argument("--package-self-test-report")
+    arguments, qt_arguments = parser.parse_known_args(
+        sys.argv[1:] if argv is None else argv
+    )
+    configure_bundled_dependencies()
+    if arguments.package_self_test:
+        successful, _report_path = run_package_self_test(
+            arguments.package_self_test_report
+        )
+        return 0 if successful else 1
+
+    enable_windows_dpi_awareness()
+    application_arguments = [sys.argv[0], *qt_arguments]
+    application = QApplication.instance() or QApplication(application_arguments)
+    application.setApplicationName(application_name)
+    application.setQuitOnLastWindowClosed(False)
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        QMessageBox.critical(None, application_name, "The system tray is unavailable.")
+        return 1
+
+    tray_application = TrayApplication(application)
+    tray_application.start()
+    return application.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3,22 +3,49 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from uuid import uuid4
 
 import mss
-import pytesseract
 from PIL import Image
 from pynput import keyboard
 
-from vntts.dialog import is_empty, recognize_dialog, speak_dialog
-from vntts.services.tts_engine import AudioPlaybackError, TTSEngine, TTSError
-
-# Dialog box with speaker name included (on my 2560x1440 monitor)
-dialog_height = 350
+from vntts.assets import ModelAssetManager
+from vntts.dialog import is_empty, speak_dialog
+from vntts.live import IncrementalDialogTracker, LiveDialogReader
+from vntts.ocr import get_dialog_region, recognize_dialog_image
+from vntts.services.tts_engine import (
+    AudioPlaybackError,
+    TTSEngine,
+    TTSError,
+    default_tts_profile,
+    get_tts_profile,
+)
+from vntts.settings import AppSettings, load_app_settings
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    CharacterVoiceRouter,
+    VoiceManifestError,
+)
+from vntts.window_capture import WindowCaptureTarget, enable_windows_dpi_awareness
 
 default_screenshot_directory = Path("logs/screenshots")
 default_hotkey = "<ctrl>+<shift>+h"
+default_live_hotkey = "<ctrl>+<shift>+l"
+default_pause_hotkey = "<ctrl>+<shift>+p"
+default_skip_hotkey = "<ctrl>+<shift>+s"
+default_repeat_hotkey = "<ctrl>+<shift>+r"
+default_clear_queue_hotkey = "<ctrl>+<shift>+x"
+default_live_interval_ms = 200
+default_live_stability_frames = 2
+default_live_idle_flush_ms = 700
+default_live_min_chunk_characters = 20
+tts_environment_variables = {
+    "model_name": "VNTTS_TTS_MODEL",
+    "speaker": "VNTTS_TTS_SPEAKER",
+    "language": "VNTTS_TTS_LANGUAGE",
+    "speaker_wav": "VNTTS_TTS_SPEAKER_WAV",
+}
 
 
 class ScreenCaptureError(RuntimeError):
@@ -29,7 +56,14 @@ class OCRError(RuntimeError):
     pass
 
 
-def get_screenshot_directory():
+class TTSInitializationError(RuntimeError):
+    pass
+
+
+def get_screenshot_directory(settings=None):
+    if settings is not None:
+        return Path(settings.screenshot_directory).expanduser()
+
     configured_directory = os.environ.get("VNTTS_SCREENSHOT_DIR")
     if not configured_directory:
         return default_screenshot_directory
@@ -43,7 +77,13 @@ def create_screenshot_path(screenshot_directory):
     return screenshot_directory / f"dialog-{formatted_date}-{uuid4().hex}.png"
 
 
-def capture_dialog(screenshot_directory=None):
+def capture_dialog(
+    screenshot_directory=None,
+    *,
+    save_screenshot=True,
+    region=None,
+    capture_target=None,
+):
     try:
         if screenshot_directory is None:
             screenshot_directory = get_screenshot_directory()
@@ -51,17 +91,12 @@ def capture_dialog(screenshot_directory=None):
         screenshot_directory.mkdir(parents=True, exist_ok=True)
 
         with mss.mss() as sct:
-            # Take first monitor sizes
-            monitor = sct.monitors[1]
-
-            # Dialog box on screen (only works if game in fullscreen)
-            dialog_box = {
-                "left": 0,
-                "top": monitor["height"] - dialog_height,
-                "width": monitor["width"],
-                "height": dialog_height,
-            }
-
+            region = region or get_dialog_region()
+            dialog_box = (
+                capture_target.capture_box(region)
+                if capture_target is not None
+                else region.capture_box(sct.monitors[1])
+            )
             screenshot = sct.grab(dialog_box)
 
             image = Image.frombytes(
@@ -72,18 +107,20 @@ def capture_dialog(screenshot_directory=None):
                 "BGRX",
             )
 
-        output = create_screenshot_path(screenshot_directory)
-        image.save(output)
+        output = None
+        if save_screenshot:
+            output = create_screenshot_path(screenshot_directory)
+            image.save(output)
         return image, output
     except Exception as error:
         raise ScreenCaptureError(str(error)) from error
 
 
-def recognize_screenshot(image):
+def recognize_screenshot(image, voice_registry=None):
     try:
-        character, text = recognize_dialog(
+        character, text = recognize_dialog_image(
             image,
-            pytesseract.image_to_string,
+            voice_registry,
         )
     except Exception as error:
         raise OCRError(str(error)) from error
@@ -91,9 +128,17 @@ def recognize_screenshot(image):
     return character, text
 
 
-def read_dialog(tts, screenshot_directory):
-    image, output = capture_dialog(screenshot_directory)
-    character, text = recognize_screenshot(image)
+def read_dialog(
+    voice_router,
+    screenshot_directory,
+    capture_target=None,
+    speech_handler=None,
+):
+    image, output = capture_dialog(
+        screenshot_directory,
+        capture_target=capture_target,
+    )
+    character, text = recognize_screenshot(image, voice_router.registry)
 
     if is_empty(text):
         print(f"Screenshot {output} has no text")
@@ -101,39 +146,261 @@ def read_dialog(tts, screenshot_directory):
         print(f"{character} is speaking now")
         print(f"Screenshot {output} with text:\n{text}")
 
-        speak_dialog(text, tts.speak)
+        if speech_handler is None:
+            speak_dialog(text, lambda value: voice_router.speak(character, value))
+        else:
+            speech_handler(character, text)
 
 
-def read_dialog_safely(tts, screenshot_directory):
+def read_dialog_safely(
+    voice_router,
+    screenshot_directory,
+    error_handler=None,
+    capture_target=None,
+    speech_handler=None,
+):
     try:
-        read_dialog(tts, screenshot_directory)
-    except ScreenCaptureError as error:
-        print(f"Screen capture failed: {error}", file=sys.stderr)
-    except OCRError as error:
-        print(f"Tesseract OCR failed: {error}", file=sys.stderr)
-    except TTSError as error:
-        print(f"TTS model or synthesis failed: {error}", file=sys.stderr)
-    except AudioPlaybackError as error:
-        print(f"Audio playback failed: {error}", file=sys.stderr)
+        read_dialog(
+            voice_router,
+            screenshot_directory,
+            capture_target,
+            speech_handler,
+        )
     except Exception as error:
-        print(f"Unexpected dialog processing failure: {error}", file=sys.stderr)
+        (error_handler or report_runtime_error)(error)
 
 
-def get_hotkey():
-    hotkey = os.environ.get("VNTTS_HOTKEY", default_hotkey)
+def format_runtime_error(error):
+    if isinstance(error, ScreenCaptureError):
+        message = f"Screen capture failed: {error}"
+    elif isinstance(error, OCRError):
+        message = f"Tesseract OCR failed: {error}"
+    elif isinstance(error, TTSInitializationError):
+        message = f"Unable to initialize TTS engine: {error}"
+    elif isinstance(error, TTSError):
+        message = f"TTS model or synthesis failed: {error}"
+    elif isinstance(error, AudioPlaybackError):
+        message = f"Audio playback failed: {error}"
+    elif isinstance(error, VoiceManifestError):
+        message = f"Voice configuration failed: {error}"
+    else:
+        message = f"Unexpected dialog processing failure: {error}"
+    return message
+
+
+def report_runtime_error(error):
+    print(format_runtime_error(error), file=sys.stderr)
+
+
+def get_validated_hotkey(environment_variable, default):
+    hotkey = os.environ.get(environment_variable, default)
     try:
         keyboard.HotKey.parse(hotkey)
     except (TypeError, ValueError) as error:
         print(
-            f"Invalid VNTTS_HOTKEY {hotkey!r}: {error}. "
-            f"Using default {default_hotkey!r}"
+            f"Invalid {environment_variable} {hotkey!r}: {error}. "
+            f"Using default {default!r}"
         )
-        return default_hotkey
+        return default
 
     return hotkey
 
 
-def create_dialog_read_scheduler(executor, tts, screenshot_directory):
+def get_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey("VNTTS_HOTKEY", default_hotkey)
+    return validate_hotkey(settings.read_hotkey, default_hotkey, "read hotkey")
+
+
+def get_live_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey("VNTTS_LIVE_HOTKEY", default_live_hotkey)
+    return validate_hotkey(settings.live_hotkey, default_live_hotkey, "live hotkey")
+
+
+def get_pause_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey("VNTTS_PAUSE_HOTKEY", default_pause_hotkey)
+    return validate_hotkey(settings.pause_hotkey, default_pause_hotkey, "pause hotkey")
+
+
+def get_skip_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey("VNTTS_SKIP_HOTKEY", default_skip_hotkey)
+    return validate_hotkey(settings.skip_hotkey, default_skip_hotkey, "skip hotkey")
+
+
+def get_repeat_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey("VNTTS_REPEAT_HOTKEY", default_repeat_hotkey)
+    return validate_hotkey(
+        settings.repeat_hotkey,
+        default_repeat_hotkey,
+        "repeat hotkey",
+    )
+
+
+def get_clear_queue_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey(
+            "VNTTS_CLEAR_QUEUE_HOTKEY",
+            default_clear_queue_hotkey,
+        )
+    return validate_hotkey(
+        settings.clear_queue_hotkey,
+        default_clear_queue_hotkey,
+        "clear queue hotkey",
+    )
+
+
+def validate_hotkey(hotkey, default, label):
+    try:
+        keyboard.HotKey.parse(hotkey)
+    except (TypeError, ValueError) as error:
+        print(f"Invalid {label} {hotkey!r}: {error}. Using default {default!r}")
+        return default
+    return hotkey
+
+
+def get_numeric_environment_variable(environment_variable, default, *, minimum):
+    configured_value = os.environ.get(environment_variable)
+    if not configured_value:
+        return default
+
+    try:
+        value = int(configured_value)
+    except ValueError:
+        value = None
+
+    if value is None or value < minimum:
+        print(
+            f"Invalid {environment_variable} {configured_value!r}; "
+            f"using default {default}"
+        )
+        return default
+    return value
+
+
+def get_live_configuration(settings=None):
+    if settings is not None:
+        return {
+            "interval_seconds": settings.live_interval_ms / 1000,
+            "tracker_options": {
+                "stability_frames": settings.live_stability_frames,
+                "idle_flush_seconds": settings.live_idle_flush_ms / 1000,
+                "min_chunk_characters": settings.live_min_chunk_characters,
+            },
+        }
+
+    interval_ms = get_numeric_environment_variable(
+        "VNTTS_LIVE_INTERVAL_MS",
+        default_live_interval_ms,
+        minimum=1,
+    )
+    idle_flush_ms = get_numeric_environment_variable(
+        "VNTTS_LIVE_IDLE_FLUSH_MS",
+        default_live_idle_flush_ms,
+        minimum=1,
+    )
+    stability_frames = get_numeric_environment_variable(
+        "VNTTS_LIVE_STABILITY_FRAMES",
+        default_live_stability_frames,
+        minimum=2,
+    )
+    min_chunk_characters = get_numeric_environment_variable(
+        "VNTTS_LIVE_MIN_CHUNK_CHARACTERS",
+        default_live_min_chunk_characters,
+        minimum=1,
+    )
+    return {
+        "interval_seconds": interval_ms / 1000,
+        "tracker_options": {
+            "stability_frames": stability_frames,
+            "idle_flush_seconds": idle_flush_ms / 1000,
+            "min_chunk_characters": min_chunk_characters,
+        },
+    }
+
+
+def get_tts_configuration(settings=None):
+    if settings is not None:
+        configuration = {
+            name: value
+            for name, value in {
+                "model_name": settings.tts_model,
+                "speaker": settings.tts_speaker,
+                "language": settings.tts_language,
+                "speaker_wav": settings.tts_speaker_wav,
+            }.items()
+            if value
+        }
+        if settings.tts_model and "xtts" in settings.tts_model.casefold():
+            profile_name = settings.tts_profile
+            try:
+                configuration["synthesis_options"] = get_tts_profile(profile_name)
+            except ValueError as error:
+                print(f"{error}. Using {default_tts_profile!r}", file=sys.stderr)
+                configuration["synthesis_options"] = get_tts_profile(
+                    default_tts_profile
+                )
+        return configuration
+
+    configuration = {
+        argument: value
+        for argument, environment_variable in tts_environment_variables.items()
+        if (value := os.environ.get(environment_variable))
+    }
+    profile_name = os.environ.get("VNTTS_TTS_PROFILE")
+    if profile_name:
+        profile_name = profile_name.strip().casefold()
+        try:
+            configuration["synthesis_options"] = get_tts_profile(profile_name)
+        except ValueError as error:
+            print(f"{error}. Using {default_tts_profile!r}", file=sys.stderr)
+            configuration["synthesis_options"] = get_tts_profile(default_tts_profile)
+    return configuration
+
+
+def initialize_voice_router(tts, settings=None, error_handler=None):
+    manifest_path = (
+        settings.voice_manifest
+        if settings is not None
+        else os.environ.get("VNTTS_VOICE_MANIFEST")
+    )
+    try:
+        registry = (
+            CharacterVoiceRegistry.from_file(manifest_path)
+            if manifest_path
+            else CharacterVoiceRegistry()
+        )
+    except VoiceManifestError as error:
+        if error_handler is None:
+            print(f"Unable to initialize character voices: {error}", file=sys.stderr)
+        else:
+            error_handler(error)
+        return None
+
+    return CharacterVoiceRouter(
+        tts,
+        registry,
+        narrator_speaker=(
+            settings.narrator_speaker
+            if settings is not None
+            else os.environ.get("VNTTS_NARRATOR_SPEAKER")
+        ),
+    )
+
+
+def create_dialog_read_scheduler(
+    executor,
+    voice_router,
+    screenshot_directory,
+    *,
+    live_reader=None,
+    error_handler=None,
+    capture_target=None,
+    speech_handler=None,
+):
     active_read = None
     active_read_lock = Lock()
 
@@ -141,29 +408,104 @@ def create_dialog_read_scheduler(executor, tts, screenshot_directory):
         nonlocal active_read
 
         with active_read_lock:
+            if live_reader is not None and live_reader.is_running:
+                print("Stop live reading before requesting a one-time read")
+                return False
             if active_read is not None and not active_read.done():
                 print("A dialog read is already in progress")
-                return
+                return False
 
+            options = {}
+            if error_handler is not None:
+                options["error_handler"] = error_handler
+            if capture_target is not None:
+                options["capture_target"] = capture_target
+            if speech_handler is not None:
+                options["speech_handler"] = speech_handler
             active_read = executor.submit(
                 read_dialog_safely,
-                tts,
+                voice_router,
                 screenshot_directory,
+                **options,
             )
+            return True
 
     return schedule_dialog_read
 
 
-def listen_for_hotkey(hotkey, on_activate):
+def read_live_snapshot(
+    screenshot_directory,
+    voice_registry=None,
+    capture_target=None,
+):
+    image, _ = capture_dialog(
+        screenshot_directory,
+        save_screenshot=False,
+        capture_target=capture_target,
+    )
+    return recognize_screenshot(image, voice_registry)
+
+
+def speak_live_chunk(voice_router, chunk, playback_guard=None):
+    print(f"{chunk.character} is speaking now (live)")
+    print(chunk.text)
+    speak_dialog(
+        chunk.text,
+        lambda value: voice_router.speak(
+            chunk.character,
+            value,
+            **({"playback_guard": playback_guard} if playback_guard else {}),
+        ),
+    )
+
+
+def create_live_toggle(live_reader):
+    def toggle_live_reading():
+        if live_reader.toggle():
+            print("Live reading started")
+        else:
+            print("Live reading stopping")
+
+    return toggle_live_reading
+
+
+def listen_for_hotkeys(
+    hotkey,
+    live_hotkey,
+    pause_hotkey,
+    skip_hotkey,
+    repeat_hotkey,
+    clear_queue_hotkey,
+    on_activate,
+    on_live_toggle,
+    on_pause_toggle,
+    on_skip,
+    on_repeat,
+    on_clear_queue,
+):
     print(f"Press {hotkey} to read from screen once")
-    with keyboard.GlobalHotKeys({hotkey: on_activate}) as listener:
+    print(f"Press {live_hotkey} to start or stop live reading")
+    print(f"Press {pause_hotkey} to pause or resume speech")
+    print(f"Press {skip_hotkey} to skip current speech")
+    print(f"Press {repeat_hotkey} to repeat the last speech")
+    print(f"Press {clear_queue_hotkey} to clear the speech queue")
+    with keyboard.GlobalHotKeys(
+        {
+            hotkey: on_activate,
+            live_hotkey: on_live_toggle,
+            pause_hotkey: on_pause_toggle,
+            skip_hotkey: on_skip,
+            repeat_hotkey: on_repeat,
+            clear_queue_hotkey: on_clear_queue,
+        }
+    ) as listener:
         listener.join()
 
 
 def initialize_tts(tts_factory=TTSEngine):
     print("Loading TTS model...")
     try:
-        tts = tts_factory()
+        tts = tts_factory(**get_tts_configuration())
     except Exception as error:
         print(f"Unable to initialize TTS engine: {error}", file=sys.stderr)
         return None
@@ -172,22 +514,314 @@ def initialize_tts(tts_factory=TTSEngine):
     return tts
 
 
+class AppController:
+    def __init__(
+        self,
+        settings=None,
+        *,
+        tts_factory=TTSEngine,
+        status_handler=print,
+        dialog_handler=None,
+        error_handler=report_runtime_error,
+        capture_target_factory=WindowCaptureTarget,
+        model_asset_manager_factory=ModelAssetManager,
+    ):
+        self.settings = settings or AppSettings()
+        self.capture_target_factory = capture_target_factory
+        self.model_assets = model_asset_manager_factory()
+        self.tts_factory = tts_factory
+        self.status_handler = status_handler
+        self.dialog_handler = dialog_handler or status_handler
+        self.error_handler = error_handler
+        self.capture_target = self._create_capture_target()
+        self.tts = None
+        self.voice_router = None
+        self.capture_executor = None
+        self.speech_executor = None
+        self.live_reader = None
+        self.schedule_dialog_read = None
+        self.shutdown_requested = Event()
+
+    @property
+    def is_ready(self):
+        return self.live_reader is not None
+
+    @property
+    def is_live_running(self):
+        return self.live_reader is not None and self.live_reader.is_running
+
+    def start(self):
+        if self.is_ready:
+            return True
+
+        self.shutdown_requested.clear()
+        self.status_handler("Loading TTS model...")
+        try:
+            self.model_assets.configure_environment()
+            if self.settings.xtts_terms_accepted:
+                os.environ["COQUI_TOS_AGREED"] = "1"
+            self.tts = self.tts_factory(**get_tts_configuration(self.settings))
+        except Exception as error:
+            self.error_handler(TTSInitializationError(str(error)))
+            return False
+
+        if self.shutdown_requested.is_set():
+            self._stop_tts()
+            return False
+
+        try:
+            self.voice_router = initialize_voice_router(
+                self.tts,
+                self.settings,
+                self.error_handler,
+            )
+            if self.voice_router is None:
+                self._stop_tts()
+                return False
+
+            self.capture_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="dialog-capture",
+            )
+            self.speech_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="dialog-speech",
+            )
+            screenshot_directory = get_screenshot_directory(self.settings)
+            self.live_reader = LiveDialogReader(
+                capture_executor=self.capture_executor,
+                speech_executor=self.speech_executor,
+                read_snapshot=lambda: read_live_snapshot(
+                    screenshot_directory,
+                    self.voice_router.registry,
+                    self.capture_target,
+                ),
+                speak_chunk=lambda chunk: speak_live_chunk(
+                    self.voice_router,
+                    chunk,
+                    playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+                ),
+                report_error=self.error_handler,
+                interrupt_speech=self._interrupt_speech,
+                dialog_observed=self._dialog_observed,
+                tracker_factory=IncrementalDialogTracker,
+                **get_live_configuration(self.settings),
+            )
+            self.schedule_dialog_read = create_dialog_read_scheduler(
+                self.capture_executor,
+                self.voice_router,
+                screenshot_directory,
+                live_reader=self.live_reader,
+                error_handler=self.error_handler,
+                capture_target=self.capture_target,
+                speech_handler=self.live_reader.enqueue,
+            )
+        except Exception as error:
+            self.error_handler(error)
+            self.shutdown()
+            return False
+
+        self.status_handler("TTS model loaded")
+        self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
+        return True
+
+    def read_once(self):
+        if not self.is_ready:
+            return False
+        accepted = self.schedule_dialog_read()
+        if accepted:
+            self.status_handler("Reading current dialog")
+        return accepted
+
+    def toggle_live(self):
+        if not self.is_ready:
+            return False
+        running = self.live_reader.toggle()
+        self.status_handler(
+            "Live reading started" if running else "Live reading stopping"
+        )
+        return running
+
+    def toggle_speech_pause(self):
+        if not self.is_ready:
+            return False
+        paused = self.live_reader.toggle_pause()
+        self.status_handler("Speech paused" if paused else "Speech resumed")
+        return paused
+
+    def skip_current_speech(self):
+        if not self.is_ready:
+            return False
+        skipped = self.live_reader.skip_current()
+        self.status_handler(
+            "Skipped current speech" if skipped else "Nothing is currently speaking"
+        )
+        return skipped
+
+    def repeat_last_speech(self):
+        if not self.is_ready:
+            return False
+        repeated = self.live_reader.repeat_last()
+        self.status_handler(
+            "Repeating last speech" if repeated else "No previous speech to repeat"
+        )
+        return repeated
+
+    def clear_speech_queue(self):
+        if not self.is_ready:
+            return False
+        cleared = self.live_reader.clear_queue()
+        self.status_handler("Speech queue cleared")
+        return cleared
+
+    def get_capture_geometry(self):
+        if self.capture_target is None:
+            return None
+        return self.capture_target.get_geometry()
+
+    def test_current_dialog(self):
+        if not self.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        image, _output = capture_dialog(
+            get_screenshot_directory(self.settings),
+            save_screenshot=False,
+            capture_target=self.capture_target,
+        )
+        character, text = recognize_screenshot(image, self.voice_router.registry)
+        if is_empty(text):
+            raise OCRError("No dialogue text was detected in the calibrated region")
+        self.status_handler(f"Testing OCR and speech with {character}")
+        speak_dialog(
+            text,
+            lambda value: self.voice_router.speak(character, value),
+        )
+        return character, text
+
+    def apply_settings(self, settings):
+        was_live = self.is_live_running
+        if was_live:
+            self.live_reader.stop()
+            self.live_reader.wait()
+
+        self.settings = settings
+        self.capture_target = self._create_capture_target()
+        if self.live_reader is None:
+            return
+
+        screenshot_directory = get_screenshot_directory(self.settings)
+        self.live_reader.read_snapshot = lambda: read_live_snapshot(
+            screenshot_directory,
+            self.voice_router.registry,
+            self.capture_target,
+        )
+        live_configuration = get_live_configuration(self.settings)
+        self.live_reader.interval_seconds = live_configuration["interval_seconds"]
+        self.live_reader.tracker_options = live_configuration["tracker_options"]
+        self.schedule_dialog_read = create_dialog_read_scheduler(
+            self.capture_executor,
+            self.voice_router,
+            screenshot_directory,
+            live_reader=self.live_reader,
+            error_handler=self.error_handler,
+            capture_target=self.capture_target,
+            speech_handler=self.live_reader.enqueue,
+        )
+        if was_live:
+            self.live_reader.start()
+
+    def _create_capture_target(self):
+        if self.settings.capture_mode != "window":
+            return None
+        return self.capture_target_factory(self.settings.game_window_title)
+
+    def _dialog_observed(self, character, text):
+        if not text:
+            self.dialog_handler("Narrator", "")
+            return
+        preview = text if len(text) <= 100 else f"{text[:97]}..."
+        self.dialog_handler(character or "Narrator", preview)
+
+    def shutdown(self):
+        self.shutdown_requested.set()
+        if self.live_reader is not None:
+            self.live_reader.stop()
+            self.live_reader.clear_queue()
+            self.live_reader.release_waiters()
+            try:
+                self.live_reader.wait()
+            except Exception as error:
+                self.error_handler(error)
+            self.live_reader = None
+
+        if self.capture_executor is not None:
+            self.capture_executor.shutdown(wait=True)
+            self.capture_executor = None
+        if self.speech_executor is not None:
+            self.speech_executor.shutdown(wait=True)
+            self.speech_executor = None
+        self.schedule_dialog_read = None
+        self._stop_tts()
+
+    def _stop_tts(self):
+        if self.tts is not None and hasattr(self.tts, "stop"):
+            try:
+                self.tts.stop()
+            except Exception as error:
+                self.error_handler(error)
+        self.tts = None
+        self.voice_router = None
+
+    def _interrupt_speech(self):
+        if self.tts is not None and hasattr(self.tts, "stop"):
+            return self.tts.stop()
+        return False
+
+
 def main(tts_factory=TTSEngine):
-    tts = initialize_tts(tts_factory)
-    if tts is None:
+    enable_windows_dpi_awareness()
+    settings = load_app_settings()
+    controller = AppController(settings, tts_factory=tts_factory)
+    if not controller.start():
         return 1
 
-    hotkey = get_hotkey()
-    screenshot_directory = get_screenshot_directory()
-    print(f"Screenshots will be stored in {screenshot_directory}")
-    with ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="dialog-reader"
-    ) as executor:
-        schedule_dialog_read = create_dialog_read_scheduler(
-            executor,
-            tts,
-            screenshot_directory,
+    hotkey = get_hotkey(settings)
+    live_hotkey = get_live_hotkey(settings)
+    pause_hotkey = get_pause_hotkey(settings)
+    skip_hotkey = get_skip_hotkey(settings)
+    repeat_hotkey = get_repeat_hotkey(settings)
+    clear_queue_hotkey = get_clear_queue_hotkey(settings)
+    hotkeys = (
+        hotkey,
+        live_hotkey,
+        pause_hotkey,
+        skip_hotkey,
+        repeat_hotkey,
+        clear_queue_hotkey,
+    )
+    if len(set(hotkeys)) != len(hotkeys):
+        print(
+            "All configured hotkeys must be different",
+            file=sys.stderr,
         )
-        listen_for_hotkey(hotkey, schedule_dialog_read)
+        controller.shutdown()
+        return 1
+
+    try:
+        listen_for_hotkeys(
+            hotkey,
+            live_hotkey,
+            pause_hotkey,
+            skip_hotkey,
+            repeat_hotkey,
+            clear_queue_hotkey,
+            controller.read_once,
+            controller.toggle_live,
+            controller.toggle_speech_pause,
+            controller.skip_current_speech,
+            controller.repeat_last_speech,
+            controller.clear_speech_queue,
+        )
+    finally:
+        controller.shutdown()
 
     return 0
