@@ -2,6 +2,7 @@ import importlib
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from vntts.onboarding import probe_tesseract
@@ -61,6 +62,7 @@ def run_package_self_test(
                     "name": f"Import {module_name}",
                     "status": "error",
                     "message": str(error),
+                    "traceback": traceback.format_exc(),
                 }
             )
         else:
@@ -97,7 +99,7 @@ def run_package_self_test(
             {
                 "name": "Bundled Tesseract",
                 "status": "error",
-                "message": "Bundled tesseract.exe or English language data is missing",
+                "message": "Bundled Tesseract executable or English language data is missing",
             }
         )
     elif frozen:
@@ -113,7 +115,7 @@ def run_package_self_test(
             {
                 "name": "Bundled eSpeak-NG",
                 "status": "error",
-                "message": "Bundled espeak-ng.exe or voice data is missing",
+                "message": "Bundled eSpeak-NG executable or voice data is missing",
             }
         )
     elif frozen:

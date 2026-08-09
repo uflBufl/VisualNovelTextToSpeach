@@ -15,7 +15,11 @@ def find_bundled_espeak(bundle_root=None):
     if bundle_root is None:
         return None
     espeak_root = bundle_root / "espeak-ng"
-    executables = list(espeak_root.rglob("espeak-ng.exe"))
+    executables = [
+        executable
+        for name in ("espeak-ng.exe", "espeak-ng")
+        for executable in espeak_root.rglob(name)
+    ]
     data_directories = list(espeak_root.rglob("espeak-ng-data"))
     if not executables or not data_directories:
         return None
@@ -38,9 +42,16 @@ def configure_bundled_dependencies(bundle_root=None):
         os.environ["ESPEAK_DATA_PATH"] = str(espeak_data)
 
     tesseract_directory = bundle_root / "tesseract"
-    tesseract_executable = tesseract_directory / "tesseract.exe"
+    tesseract_executable = next(
+        (
+            candidate
+            for name in ("tesseract.exe", "tesseract")
+            if (candidate := tesseract_directory / name).is_file()
+        ),
+        None,
+    )
     tessdata_directory = tesseract_directory / "tessdata"
-    if not tesseract_executable.is_file():
+    if tesseract_executable is None:
         return None
     if not (tessdata_directory / "eng.traineddata").is_file():
         return None

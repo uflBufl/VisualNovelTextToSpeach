@@ -1,3 +1,4 @@
+import importlib.metadata
 import os
 from pathlib import Path
 
@@ -7,31 +8,53 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 project_root = Path(SPEC).resolve().parents[2]
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
-tesseract_executable = tesseract_directory / "tesseract.exe"
-english_language_data = tesseract_directory / "tessdata" / "eng.traineddata"
+codesign_identity = os.environ.get("VNTTS_CODESIGN_IDENTITY") or None
+entitlements_file = (
+    str(project_root / "packaging" / "macos" / "entitlements.plist")
+    if codesign_identity
+    else None
+)
+target_arch = os.environ.get("VNTTS_MACOS_TARGET_ARCH") or None
 
-if not tesseract_executable.is_file():
-    raise SystemExit(f"Tesseract executable is missing: {tesseract_executable}")
-if not english_language_data.is_file():
-    raise SystemExit(f"English language data is missing: {english_language_data}")
-espeak_executables = list(espeak_directory.rglob("espeak-ng.exe"))
-espeak_data_directories = list(espeak_directory.rglob("espeak-ng-data"))
-if not espeak_executables:
-    raise SystemExit(f"eSpeak-NG executable is missing under: {espeak_directory}")
-if not espeak_data_directories:
-    raise SystemExit(f"eSpeak-NG voice data is missing under: {espeak_directory}")
+tesseract_executable = tesseract_directory / "bin" / "tesseract"
+english_language_data = tesseract_directory / "share" / "tessdata" / "eng.traineddata"
+espeak_executable = espeak_directory / "bin" / "espeak-ng"
+espeak_data_directory = espeak_directory / "share" / "espeak-ng-data"
+
+for required_path in (
+    tesseract_executable,
+    english_language_data,
+    espeak_executable,
+    espeak_data_directory,
+):
+    if not required_path.exists():
+        raise SystemExit(f"Required macOS dependency is missing: {required_path}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
 datas.extend(
-    (str(source), str(Path("espeak-ng") / source.relative_to(espeak_directory).parent))
-    for source in espeak_directory.rglob("*")
+    (
+        str(source),
+        str(
+            Path("espeak-ng/espeak-ng-data")
+            / source.relative_to(espeak_data_directory).parent
+        ),
+    )
+    for source in espeak_data_directory.rglob("*")
     if source.is_file()
 )
-binaries = [(str(tesseract_executable), "tesseract")]
-binaries.extend(
-    (str(library), "tesseract") for library in tesseract_directory.glob("*.dll")
-)
+for source, destination in (
+    (tesseract_directory / "LICENSE", "third-party-licenses/tesseract"),
+    (espeak_directory / "COPYING", "third-party-licenses/espeak-ng"),
+):
+    if source.is_file():
+        datas.append((str(source), destination))
+
+binaries = [
+    (str(tesseract_executable), "tesseract"),
+    (str(espeak_executable), "espeak-ng"),
+]
 hidden_imports = collect_submodules("transformers.models.gpt2")
+hidden_imports.extend(["ApplicationServices", "Quartz"])
 
 for package in ("TTS", "coqpit", "gruut", "ko_speech_tools", "trainer"):
     package_datas, package_binaries, package_imports = collect_all(package)
@@ -106,12 +129,12 @@ executable = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    target_arch=target_arch,
+    codesign_identity=codesign_identity,
+    entitlements_file=entitlements_file,
 )
 
-bundle = COLLECT(
+collection = COLLECT(
     executable,
     analysis.binaries,
     analysis.datas,
@@ -119,4 +142,18 @@ bundle = COLLECT(
     upx=False,
     upx_exclude=[],
     name="VisualNovelTextToSpeech",
+)
+
+application = BUNDLE(
+    collection,
+    name="Visual Novel Text to Speech.app",
+    bundle_identifier="io.github.visualnoveltexttospeech.app",
+    version=importlib.metadata.version("visual-novel-text-to-speech"),
+    info_plist={
+        "CFBundleDisplayName": "Visual Novel Text to Speech",
+        "CFBundleName": "Visual Novel Text to Speech",
+        "LSMinimumSystemVersion": "13.0",
+        "LSUIElement": True,
+        "NSHighResolutionCapable": True,
+    },
 )

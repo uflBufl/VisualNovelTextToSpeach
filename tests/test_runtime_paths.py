@@ -60,6 +60,21 @@ class RuntimePathsTest(unittest.TestCase):
                     "system-tesseract",
                 )
 
+    def test_configures_macos_tesseract_from_frozen_bundle(self):
+        with TemporaryDirectory() as temporary_directory:
+            bundle_root = Path(temporary_directory)
+            tesseract = bundle_root / "tesseract" / "tesseract"
+            language_data = bundle_root / "tesseract" / "tessdata" / "eng.traineddata"
+            language_data.parent.mkdir(parents=True)
+            tesseract.write_bytes(b"executable")
+            language_data.write_bytes(b"language")
+
+            with patch.object(pytesseract.pytesseract, "tesseract_cmd", "tesseract"):
+                configured = configure_bundled_dependencies(bundle_root)
+
+                self.assertEqual(configured, tesseract)
+                self.assertEqual(pytesseract.pytesseract.tesseract_cmd, str(tesseract))
+
     def test_configures_espeak_path_and_voice_data_from_frozen_bundle(self):
         with TemporaryDirectory() as temporary_directory:
             bundle_root = Path(temporary_directory)
@@ -117,6 +132,20 @@ class RuntimePathsTest(unittest.TestCase):
                     for check in report["checks"]
                     if check["status"] == "error"
                 ],
+            )
+
+    def test_finds_macos_espeak_and_voice_data(self):
+        with TemporaryDirectory() as temporary_directory:
+            bundle_root = Path(temporary_directory)
+            espeak = bundle_root / "espeak-ng" / "espeak-ng"
+            espeak_data = bundle_root / "espeak-ng" / "espeak-ng-data"
+            espeak.parent.mkdir(parents=True)
+            espeak_data.mkdir(parents=True)
+            espeak.write_bytes(b"executable")
+
+            self.assertEqual(
+                find_bundled_espeak(bundle_root),
+                (espeak, espeak_data),
             )
 
     def test_frozen_package_self_test_executes_bundled_espeak_probe(self):
