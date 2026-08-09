@@ -13,6 +13,54 @@ class SpeechChunk:
     text: str
 
 
+class AdaptiveCapturePolicy:
+    def __init__(
+        self,
+        *,
+        base_interval=0.2,
+        fast_interval=None,
+        idle_interval=None,
+        unfocused_interval=None,
+        unchanged_frames=3,
+    ):
+        if base_interval <= 0:
+            raise ValueError("base_interval must be positive")
+        if unchanged_frames < 1:
+            raise ValueError("unchanged_frames must be positive")
+        self.base_interval = base_interval
+        self.fast_interval = fast_interval or max(0.05, base_interval / 2)
+        self.idle_interval = idle_interval or min(1.5, base_interval * 3)
+        self.unfocused_interval = unfocused_interval or min(2.5, base_interval * 8)
+        self.unchanged_frames = unchanged_frames
+        self.last_observation = None
+        self.unchanged_count = 0
+        self.was_focused = True
+
+    def observe(self, character, text, *, focused=True):
+        if not focused:
+            self.was_focused = False
+            self.unchanged_count = 0
+            return self.unfocused_interval
+
+        observation = (
+            (character or "Narrator").strip() or "Narrator",
+            " ".join((text or "").split()),
+        )
+        focus_returned = not self.was_focused
+        self.was_focused = True
+        if observation == self.last_observation:
+            self.unchanged_count += 1
+        else:
+            self.last_observation = observation
+            self.unchanged_count = 0
+
+        if focus_returned or self.unchanged_count == 0:
+            return self.fast_interval
+        if self.unchanged_count >= self.unchanged_frames:
+            return self.idle_interval
+        return self.base_interval
+
+
 class IncrementalDialogTracker:
     def __init__(
         self,
@@ -160,6 +208,10 @@ class LiveDialogReader:
         interval_seconds=0.2,
         tracker_factory=IncrementalDialogTracker,
         tracker_options=None,
+        focus_probe=None,
+        capture_state_changed=None,
+        adaptive_policy_factory=AdaptiveCapturePolicy,
+        adaptive_options=None,
     ):
         self.capture_executor = capture_executor
         self.speech_executor = speech_executor
@@ -171,6 +223,12 @@ class LiveDialogReader:
         self.interval_seconds = interval_seconds
         self.tracker_factory = tracker_factory
         self.tracker_options = tracker_options or {}
+        self.focus_probe = focus_probe or (lambda: True)
+        self.capture_state_changed = capture_state_changed or (
+            lambda _focused, _interval: None
+        )
+        self.adaptive_policy_factory = adaptive_policy_factory
+        self.adaptive_options = adaptive_options or {}
         self.state_lock = RLock()
         self.pause_condition = Condition(self.state_lock)
         self.stop_event = Event()
@@ -316,19 +374,39 @@ class LiveDialogReader:
 
     def _run(self, stop_event):
         tracker = self.tracker_factory(**self.tracker_options)
+        policy = self.adaptive_policy_factory(
+            base_interval=self.interval_seconds,
+            **self.adaptive_options,
+        )
         while not stop_event.is_set():
+            focused = self._is_focused()
+            if not focused:
+                interval = policy.observe(None, None, focused=False)
+                self.capture_state_changed(False, interval)
+                stop_event.wait(interval)
+                continue
             try:
                 character, text = self.read_snapshot()
                 self._report_observation(character, text)
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
+                interval = policy.observe(character, text, focused=True)
             except Exception as error:
                 self.report_error(error)
-            stop_event.wait(self.interval_seconds)
+                interval = self.interval_seconds
+            self.capture_state_changed(True, interval)
+            stop_event.wait(interval)
 
         self._set_generation(tracker.generation)
         self._schedule(tracker.flush())
+
+    def _is_focused(self):
+        try:
+            return bool(self.focus_probe())
+        except Exception as error:
+            self.report_error(error)
+            return True
 
     def _set_generation(self, generation):
         interrupt = False

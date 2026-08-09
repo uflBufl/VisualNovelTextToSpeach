@@ -14,7 +14,7 @@ from vntts.diagnostics import (  # noqa: E402
     resolve_voice_label,
 )
 from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
-from vntts.main import analyze_dialog_snapshot  # noqa: E402
+from vntts.main import AppController, analyze_dialog_snapshot  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
 from vntts.voices import CharacterVoice  # noqa: E402
 
@@ -63,6 +63,8 @@ class DiagnosticsTest(unittest.TestCase):
             ocr_ms=45.6,
             synthesis_ms=789.0,
             playback_ms=321.0,
+            capture_interval_ms=600.0,
+            game_focused=False,
         )
 
         dialog.set_snapshot(snapshot)
@@ -73,6 +75,8 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(dialog.preprocessing.text(), "balanced")
         self.assertEqual(dialog.voice.text(), "Marcus (reverse1999-marcus)")
         self.assertEqual(dialog.capture_latency.text(), "12.3 ms")
+        self.assertEqual(dialog.capture_interval.text(), "600.0 ms")
+        self.assertEqual(dialog.game_focus.text(), "No")
         self.assertFalse(dialog.preview.pixmap().isNull())
         dialog.close()
         dialog.deleteLater()
@@ -87,6 +91,19 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         self.assertIn("Screen & System Audio Recording", warnings[0])
         self.assertIn("Accessibility", warnings[1])
+
+    def test_adaptive_capture_state_updates_live_diagnostics(self):
+        snapshots = []
+        controller = AppController(
+            diagnostic_handler=snapshots.append,
+            model_asset_manager_factory=Mock,
+        )
+        controller.last_diagnostic = DiagnosticSnapshot(None, text="Stable")
+
+        controller._capture_state_changed(False, 1.6)
+
+        self.assertFalse(snapshots[-1].game_focused)
+        self.assertEqual(snapshots[-1].capture_interval_ms, 1600.0)
 
     def test_unavailable_window_has_actionable_guidance(self):
         guidance = diagnostic_error_guidance(

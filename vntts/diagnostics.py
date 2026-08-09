@@ -18,6 +18,8 @@ class DiagnosticSnapshot:
     ocr_ms: float | None = None
     synthesis_ms: float | None = None
     playback_ms: float | None = None
+    capture_interval_ms: float | None = None
+    game_focused: bool | None = None
 
 
 def resolve_voice_label(voice_router, character):

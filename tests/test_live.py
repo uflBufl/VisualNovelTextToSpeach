@@ -3,7 +3,12 @@ from concurrent.futures import Future
 from threading import Event
 from unittest.mock import Mock
 
-from vntts.live import IncrementalDialogTracker, LiveDialogReader, SpeechChunk
+from vntts.live import (
+    AdaptiveCapturePolicy,
+    IncrementalDialogTracker,
+    LiveDialogReader,
+    SpeechChunk,
+)
 
 
 class FakeClock:
@@ -124,6 +129,30 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(1, "Alice", "Partial ending")],
         )
         self.assertEqual(tracker.flush(), [])
+
+
+class AdaptiveCapturePolicyTest(unittest.TestCase):
+    def test_capture_accelerates_while_text_changes_and_slows_when_stable(self):
+        policy = AdaptiveCapturePolicy(
+            base_interval=0.2,
+            fast_interval=0.08,
+            idle_interval=0.7,
+            unchanged_frames=2,
+        )
+
+        self.assertEqual(policy.observe("Alice", "H"), 0.08)
+        self.assertEqual(policy.observe("Alice", "Hello"), 0.08)
+        self.assertEqual(policy.observe("Alice", "Hello"), 0.2)
+        self.assertEqual(policy.observe("Alice", "Hello"), 0.7)
+
+    def test_unfocused_game_uses_slowest_interval(self):
+        policy = AdaptiveCapturePolicy(
+            base_interval=0.2,
+            unfocused_interval=1.8,
+        )
+
+        self.assertEqual(policy.observe(None, None, focused=False), 1.8)
+        self.assertEqual(policy.observe("Alice", "Welcome", focused=True), 0.1)
 
 
 class LiveDialogReaderTest(unittest.TestCase):
@@ -301,6 +330,21 @@ class LiveDialogReaderTest(unittest.TestCase):
                 unittest.mock.call("Bob", "Goodbye"),
             ],
         )
+
+    def test_unfocused_game_skips_capture_and_reports_adaptive_interval(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
+        capture_state_changed = Mock()
+        reader = self.create_reader(
+            focus_probe=Mock(return_value=False),
+            capture_state_changed=capture_state_changed,
+        )
+
+        reader._run(stop_event)
+
+        reader.read_snapshot.assert_not_called()
+        capture_state_changed.assert_called_once_with(False, 0.008)
+        stop_event.wait.assert_called_once_with(0.008)
 
 
 if __name__ == "__main__":

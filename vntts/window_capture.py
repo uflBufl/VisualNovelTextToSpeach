@@ -86,6 +86,7 @@ class Win32WindowBackend:
                 [wintypes.HWND, ctypes.POINTER(wintypes.POINT)],
                 wintypes.BOOL,
             ),
+            "GetForegroundWindow": ([], wintypes.HWND),
         }
         for name, (argument_types, result_type) in functions.items():
             function = getattr(self.user32, name)
@@ -147,6 +148,10 @@ class Win32WindowBackend:
         if width <= 0 or height <= 0:
             raise WindowCaptureError("Selected game window has no visible client area")
         return WindowGeometry(top_left.x, top_left.y, width, height)
+
+    def get_foreground_handle(self):
+        handle = self.user32.GetForegroundWindow()
+        return int(handle.value if hasattr(handle, "value") else handle or 0)
 
 
 class MacOSWindowBackend:
@@ -239,6 +244,19 @@ class MacOSWindowBackend:
                 )
             return geometry
         raise WindowNotFoundError("Selected macOS game window is no longer available")
+
+    def get_foreground_handle(self):
+        quartz = self.quartz
+        values = self._copy_windows(
+            quartz.kCGWindowListOptionOnScreenOnly
+            | quartz.kCGWindowListExcludeDesktopElements,
+            quartz.kCGNullWindowID,
+        )
+        for item in values:
+            window = self._window_info(item)
+            if window is not None:
+                return window.handle
+        return 0
 
 
 class LinuxX11WindowBackend:
@@ -357,6 +375,10 @@ class LinuxX11WindowBackend:
             int(geometry.height),
         )
 
+    def get_foreground_handle(self):
+        values = self._property(self.root, "_NET_ACTIVE_WINDOW")
+        return int(values[0]) if values is not None and len(values) else 0
+
 
 class WaylandWindowBackend:
     message = (
@@ -372,6 +394,9 @@ class WaylandWindowBackend:
         raise WindowCaptureUnavailableError(self.message)
 
     def get_client_geometry(self, _handle):
+        raise WindowCaptureUnavailableError(self.message)
+
+    def get_foreground_handle(self):
         raise WindowCaptureUnavailableError(self.message)
 
 
@@ -432,6 +457,10 @@ class WindowCaptureTarget:
 
     def capture_box(self, region):
         return region.capture_box(self.get_geometry().as_monitor())
+
+    def is_focused(self):
+        window = self._resolve_window()
+        return int(self.backend.get_foreground_handle()) == int(window.handle)
 
     def _resolve_window(self):
         if not self.window_title:

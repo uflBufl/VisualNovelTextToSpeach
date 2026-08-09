@@ -707,6 +707,8 @@ class AppController:
         self.live_reader = None
         self.schedule_dialog_read = None
         self.last_diagnostic = None
+        self.capture_interval_ms = self.settings.live_interval_ms
+        self.game_focused = True
         self.diagnostic_lock = Lock()
         self.shutdown_requested = Event()
 
@@ -774,6 +776,8 @@ class AppController:
                 report_error=self.error_handler,
                 interrupt_speech=self._interrupt_speech,
                 dialog_observed=self._dialog_observed,
+                focus_probe=self._is_game_focused,
+                capture_state_changed=self._capture_state_changed,
                 tracker_factory=IncrementalDialogTracker,
                 **get_live_configuration(self.settings),
             )
@@ -983,7 +987,32 @@ class AppController:
     def _resolve_voice_label(self, character):
         return resolve_voice_label(self.voice_router, character)
 
+    def _is_game_focused(self):
+        if self.capture_target is None:
+            return True
+        return self.capture_target.is_focused()
+
+    def _capture_state_changed(self, focused, interval_seconds):
+        self.game_focused = focused
+        self.capture_interval_ms = interval_seconds * 1000
+        with self.diagnostic_lock:
+            snapshot = self.last_diagnostic
+            if snapshot is not None:
+                snapshot = replace(
+                    snapshot,
+                    capture_interval_ms=self.capture_interval_ms,
+                    game_focused=self.game_focused,
+                )
+                self.last_diagnostic = snapshot
+        if snapshot is not None:
+            self.diagnostic_handler(snapshot)
+
     def _publish_diagnostic(self, snapshot):
+        snapshot = replace(
+            snapshot,
+            capture_interval_ms=self.capture_interval_ms,
+            game_focused=self.game_focused,
+        )
         if self.tts is not None:
             snapshot = replace(
                 snapshot,

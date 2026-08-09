@@ -161,6 +161,17 @@ class WindowCaptureTargetTest(unittest.TestCase):
         with self.assertRaisesRegex(WindowNotFoundError, "Select a game window"):
             target.get_geometry()
 
+    def test_reports_whether_selected_window_is_foreground(self):
+        window = WindowInfo(100, "Reverse: 1999", 42)
+        backend = Mock()
+        backend.list_windows.return_value = [window]
+        backend.get_window.return_value = window
+        backend.get_foreground_handle.side_effect = [100, 200]
+        target = WindowCaptureTarget("Reverse: 1999", backend)
+
+        self.assertTrue(target.is_focused())
+        self.assertFalse(target.is_focused())
+
 
 class MacOSWindowBackendTest(unittest.TestCase):
     def window(self, number, owner, *, name="", onscreen=True, layer=0):
@@ -198,6 +209,16 @@ class MacOSWindowBackendTest(unittest.TestCase):
             backend.get_client_geometry(10),
             WindowGeometry(120, 80, 1600, 900),
         )
+
+    def test_frontmost_quartz_window_is_used_for_focus(self):
+        quartz = FakeQuartz(
+            [
+                self.window(20, "Front game"),
+                self.window(10, "Background game"),
+            ]
+        )
+
+        self.assertEqual(MacOSWindowBackend(quartz).get_foreground_handle(), 20)
 
     def test_reports_window_that_disappeared(self):
         backend = MacOSWindowBackend(FakeQuartz([]))
@@ -251,6 +272,15 @@ class LinuxWindowBackendTest(unittest.TestCase):
         backend = LinuxX11WindowBackend(display=FakeX11Display([game], [100]))
 
         self.assertTrue(backend.get_window(100).minimized)
+
+    def test_x11_reads_active_window_for_focus(self):
+        display = FakeX11Display([], [])
+        display.root.properties["_NET_ACTIVE_WINDOW"] = [100]
+
+        self.assertEqual(
+            LinuxX11WindowBackend(display=display).get_foreground_handle(),
+            100,
+        )
 
     def test_factory_selects_x11_for_linux_x11_session(self):
         backend = Mock()

@@ -41,6 +41,8 @@ class DiagnosticsDialog(QDialog):
         self.ocr_latency = QLabel("-")
         self.synthesis_latency = QLabel("-")
         self.playback_latency = QLabel("-")
+        self.capture_interval = QLabel("-")
+        self.game_focus = QLabel("-")
 
         details = QFormLayout()
         details.addRow("Speaker", self.speaker)
@@ -52,6 +54,8 @@ class DiagnosticsDialog(QDialog):
         details.addRow("OCR latency", self.ocr_latency)
         details.addRow("Synthesis latency", self.synthesis_latency)
         details.addRow("Playback latency", self.playback_latency)
+        details.addRow("Capture interval", self.capture_interval)
+        details.addRow("Game focused", self.game_focus)
 
         self.warning = QLabel()
         self.warning.setWordWrap(True)
@@ -120,6 +124,14 @@ class DiagnosticsDialog(QDialog):
         self.ocr_latency.setText(self._format_latency(snapshot.ocr_ms))
         self.synthesis_latency.setText(self._format_latency(snapshot.synthesis_ms))
         self.playback_latency.setText(self._format_latency(snapshot.playback_ms))
+        self.capture_interval.setText(
+            self._format_latency(snapshot.capture_interval_ms)
+        )
+        self.game_focus.setText(
+            "-"
+            if snapshot.game_focused is None
+            else ("Yes" if snapshot.game_focused else "No")
+        )
         if snapshot.image is not None:
             self.source_pixmap = self._pixmap_from_image(snapshot.image)
             self._scale_preview()
