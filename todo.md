@@ -26,10 +26,6 @@ sections after their implementation has been verified and committed.
 
 ### P2 - Game profiles and performance
 
-- [ ] Add per-game profiles.
-  - Store the selected window, calibrated regions, OCR language, and voice pack.
-  - Allow profiles to be selected, duplicated, renamed, and removed.
-
 - [ ] Make live capture adaptive.
   - Reduce capture frequency while the dialog is unchanged or the game is unfocused.
   - Increase capture frequency while text is appearing.
