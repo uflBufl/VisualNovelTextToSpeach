@@ -59,6 +59,10 @@ class TrayApplicationTest(unittest.TestCase):
             "OCR corrections...",
         )
         self.assertEqual(
+            tray_application.ocr_review_action.text(),
+            "Review uncertain OCR...",
+        )
+        self.assertEqual(
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
@@ -83,6 +87,37 @@ class TrayApplicationTest(unittest.TestCase):
 
         controller.refresh_corrections.assert_called_once_with()
         self.assertEqual(tray_application.status_action.text(), "OCR corrections saved")
+        tray_application.shutdown()
+
+    def test_ocr_review_uses_active_profile_and_runtime_reload(self):
+        with TemporaryDirectory() as temporary_directory:
+            profile_store = GameProfileStore(
+                Path(temporary_directory) / "profiles.json"
+            )
+            profile = profile_store.create("Game", AppSettings())
+            controller = Mock()
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(
+                    active_profile_id=profile.id,
+                    ocr_diagnostics_directory="review",
+                ),
+                controller_factory=Mock(return_value=controller),
+                profile_store=profile_store,
+            )
+            dialog = Mock()
+
+            with patch("vntts.app.OCRReviewDialog", return_value=dialog) as factory:
+                tray_application.open_ocr_review()
+
+        factory.assert_called_once_with(
+            "review",
+            tray_application.correction_store,
+            profile.id,
+            "Game",
+            controller.refresh_corrections,
+        )
+        dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 
     def test_settings_expose_minimum_ocr_confidence(self):

@@ -129,6 +129,26 @@ class OCRCorrectionStore:
                 self.profile_entries.pop(str(profile_id), None)
         self.save()
 
+    def upsert_entries(self, entries, profile_id=None):
+        normalized = normalize_correction_entries(entries)
+        target = (
+            self.profile_entries.setdefault(str(profile_id), {})
+            if profile_id
+            else self.global_entries
+        )
+        replaced_keys = {key.casefold() for key in normalized}
+        merged = {
+            source: replacement
+            for source, replacement in target.items()
+            if source.casefold() not in replaced_keys
+        }
+        merged.update(normalized)
+        if profile_id:
+            self.profile_entries[str(profile_id)] = merged
+        else:
+            self.global_entries = merged
+        self.save()
+
     def copy_profile(self, source_id, destination_id):
         entries = self.profile_entries.get(str(source_id))
         if entries:

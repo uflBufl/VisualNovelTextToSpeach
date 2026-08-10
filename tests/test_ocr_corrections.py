@@ -102,6 +102,21 @@ class OCRCorrectionStoreTest(unittest.TestCase):
 
         self.assertEqual(payload["profiles"], {"copy": {"Vertln": "Vertin"}})
 
+    def test_entries_can_be_added_without_replacing_existing_rules(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = OCRCorrectionStore(
+                Path(temporary_directory) / "ocr-corrections.json",
+                global_entries={"Mareus": "Marcus"},
+            )
+
+            store.upsert_entries({"Vertln": "Vertin"})
+            store.upsert_entries({"mareus": "Ms. Marcus"})
+
+        self.assertEqual(
+            store.global_entries,
+            {"Vertln": "Vertin", "mareus": "Ms. Marcus"},
+        )
+
     def test_invalid_file_falls_back_to_empty_dictionary(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "ocr-corrections.json"

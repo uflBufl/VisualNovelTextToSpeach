@@ -46,6 +46,7 @@ from vntts.main import (
 )
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
+from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
 from vntts.profiles import GameProfileStore
@@ -361,6 +362,7 @@ class TrayApplication:
         self.settings_action = QAction("Settings...")
         self.profiles_action = QAction("Game profiles...")
         self.corrections_action = QAction("OCR corrections...")
+        self.ocr_review_action = QAction("Review uncertain OCR...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.settings_folder_action = QAction("Open settings folder")
@@ -387,6 +389,7 @@ class TrayApplication:
         self.menu.addAction(self.settings_action)
         self.menu.addAction(self.profiles_action)
         self.menu.addAction(self.corrections_action)
+        self.menu.addAction(self.ocr_review_action)
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.settings_folder_action)
@@ -406,6 +409,7 @@ class TrayApplication:
         self.settings_action.triggered.connect(self.open_settings)
         self.profiles_action.triggered.connect(self.open_profiles)
         self.corrections_action.triggered.connect(self.open_corrections)
+        self.ocr_review_action.triggered.connect(self.open_ocr_review)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
@@ -669,6 +673,18 @@ class TrayApplication:
             return
         self.controller.refresh_corrections()
         self.set_status("OCR corrections saved")
+
+    def open_ocr_review(self):
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        dialog = OCRReviewDialog(
+            self.settings.ocr_diagnostics_directory,
+            self.correction_store,
+            self.settings.active_profile_id,
+            profile.name if profile is not None else None,
+            self.controller.refresh_corrections,
+        )
+        dialog.exec()
+        self.set_status("OCR review closed")
 
     def open_assets(self):
         dialog = AssetManagerDialog(self.settings)
