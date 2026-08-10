@@ -5,11 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Application usability
 
-### P2 - Runtime readiness
-
-- [ ] Warm up the selected model and character voices before gameplay and show
-      readiness progress.
-
 ### P2 - macOS polish
 
 - [ ] Add launch-at-login control and actionable permission recovery.
