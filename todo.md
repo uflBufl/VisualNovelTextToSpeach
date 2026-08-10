@@ -5,11 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Application usability
 
-### P1 - Speech controls
-
-- [ ] Add output volume and speaking-speed controls.
-- [ ] Add narrator and character voice previews.
-
 ### P1 - Dialogue history
 
 - [ ] Add searchable session history with replay and export.
