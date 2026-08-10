@@ -523,6 +523,9 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(result)
         model_assets.configure_environment.assert_called_once_with()
+        voice_router.warm_up.assert_called_once_with(
+            progress=controller._warmup_progress
+        )
         live_reader_factory.assert_called_once()
         schedule_dialog_read.assert_called_once_with(
             capture_executor,
@@ -539,6 +542,28 @@ class MainTest(unittest.TestCase):
             ocr_language="eng",
             correction_dictionary=controller.correction_dictionary,
         )
+
+    def test_controller_can_skip_startup_voice_warmup(self):
+        tts = Mock()
+        voice_router = Mock()
+        statuses = []
+        with (
+            patch("vntts.main.initialize_voice_router", return_value=voice_router),
+            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.main.LiveDialogReader", return_value=Mock()),
+            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(warm_up_voices=False),
+                tts_factory=Mock(return_value=tts),
+                status_handler=statuses.append,
+            )
+
+            self.assertTrue(controller.start())
+
+        voice_router.warm_up.assert_not_called()
+        self.assertTrue(any("voice warm-up skipped" in status for status in statuses))
+        controller.shutdown()
 
     def test_main_connects_hotkeys_to_controller_and_shuts_it_down(self):
         settings = AppSettings(

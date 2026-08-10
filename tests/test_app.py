@@ -162,6 +162,14 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.settings().speech_rate_percent, 125)
         dialog.deleteLater()
 
+    def test_settings_control_startup_voice_warmup(self):
+        dialog = SettingsDialog(AppSettings(warm_up_voices=True))
+
+        dialog.warm_up_voices.setChecked(False)
+
+        self.assertFalse(dialog.settings().warm_up_voices)
+        dialog.deleteLater()
+
     def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
         controller = Mock()
         controller.available_voice_characters.return_value = ["Narrator", "Marcus"]

@@ -138,6 +138,8 @@ class SettingsDialog(QDialog):
         self.speech_rate.setRange(50, 150)
         self.speech_rate.setSuffix("%")
         self.speech_rate.setValue(settings.speech_rate_percent)
+        self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
+        self.warm_up_voices.setChecked(settings.warm_up_voices)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
@@ -174,6 +176,7 @@ class SettingsDialog(QDialog):
         form.addRow("Voice profile", self.tts_profile)
         form.addRow("Output volume", self.output_volume)
         form.addRow("Speaking speed", self.speech_rate)
+        form.addRow("Startup readiness", self.warm_up_voices)
         form.addRow("XTTS license", self.xtts_terms)
 
         note = QLabel(
@@ -317,6 +320,7 @@ class SettingsDialog(QDialog):
                 "tts_profile": self.tts_profile.currentText(),
                 "output_volume_percent": self.output_volume.value(),
                 "speech_rate_percent": self.speech_rate.value(),
+                "warm_up_voices": self.warm_up_voices.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
             }
         )

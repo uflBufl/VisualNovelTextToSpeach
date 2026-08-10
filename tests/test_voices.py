@@ -223,6 +223,48 @@ class CharacterVoiceRouterTest(unittest.TestCase):
                 speaker_wav=[str(reference) for reference in references],
             )
 
+    def test_warm_up_synthesizes_narrator_and_every_character_without_playback(self):
+        with TemporaryDirectory() as temporary_directory:
+            reference = Path(temporary_directory) / "marcus.wav"
+            reference.touch()
+            tts = Mock()
+            tts.has_speaker.return_value = False
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Marcus", "reverse-1999-marcus", reference)]
+            )
+            progress = Mock()
+            router = CharacterVoiceRouter(
+                tts,
+                registry,
+                narrator_speaker="Claribel Dervla",
+            )
+
+            count = router.warm_up(progress=progress)
+
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            tts.synthesize.call_args_list,
+            [
+                unittest.mock.call(
+                    "Voice ready.",
+                    speaker="Claribel Dervla",
+                ),
+                unittest.mock.call(
+                    "Voice ready.",
+                    speaker="reverse-1999-marcus",
+                    speaker_wav=str(reference),
+                ),
+            ],
+        )
+        tts.speak.assert_not_called()
+        self.assertEqual(
+            progress.call_args_list,
+            [
+                unittest.mock.call(1, 2, "Narrator"),
+                unittest.mock.call(2, 2, "Marcus"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

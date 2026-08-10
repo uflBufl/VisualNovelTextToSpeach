@@ -146,13 +146,27 @@ class CharacterVoiceRouter:
         self.narrator_speaker = narrator_speaker
 
     def speak(self, character, text, *, playback_guard=None):
+        arguments = self._speech_arguments(character)
+        if playback_guard is not None:
+            arguments["playback_guard"] = playback_guard
+        return self.tts.speak(text, **arguments)
+
+    def warm_up(self, *, progress=None, text="Voice ready."):
+        progress = progress or (lambda _current, _total, _character: None)
+        voices = sorted(
+            {id(voice): voice for voice in self.registry.voices.values()}.values(),
+            key=lambda voice: voice.character.casefold(),
+        )
+        characters = ["Narrator", *(voice.character for voice in voices)]
+        for current, character in enumerate(characters, start=1):
+            progress(current, len(characters), character)
+            self.tts.synthesize(text, **self._speech_arguments(character))
+        return len(characters)
+
+    def _speech_arguments(self, character):
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
-            arguments = {"speaker": self.narrator_speaker}
-            if playback_guard is not None:
-                arguments["playback_guard"] = playback_guard
-            self.tts.speak(text, **arguments)
-            return
+            return {"speaker": self.narrator_speaker}
 
         speaker_wav = None
         if not self.tts.has_speaker(voice.speaker):
@@ -171,13 +185,10 @@ class CharacterVoiceRouter:
             if len(speaker_wav) == 1:
                 speaker_wav = speaker_wav[0]
 
-        arguments = {
+        return {
             "speaker": voice.speaker,
             "speaker_wav": speaker_wav,
         }
-        if playback_guard is not None:
-            arguments["playback_guard"] = playback_guard
-        self.tts.speak(text, **arguments)
 
 
 def normalize_character_name(character):

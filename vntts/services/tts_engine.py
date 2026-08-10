@@ -119,6 +119,38 @@ class TTSEngine:
         synthesis_options=None,
         playback_guard=None,
     ):
+        audio = self.synthesize(
+            text,
+            speaker=speaker,
+            language=language,
+            speaker_wav=speaker_wav,
+            synthesis_options=synthesis_options,
+        )
+
+        self.last_playback_ms = None
+        if playback_guard is not None and not playback_guard():
+            return False
+
+        playback_started = self.clock()
+        try:
+            self.playback_active = True
+            self.audio_output.play(self._scaled_audio(audio), self.sample_rate)
+            self.audio_output.wait()
+        except Exception as error:
+            raise AudioPlaybackError(str(error)) from error
+        finally:
+            self.playback_active = False
+            self.last_playback_ms = (self.clock() - playback_started) * 1000
+        return True
+
+    def synthesize(
+        self,
+        text,
+        speaker=None,
+        language=None,
+        speaker_wav=None,
+        synthesis_options=None,
+    ):
         uses_default_reference = speaker_wav is None
         if uses_default_reference:
             speaker_wav = self.default_speaker_wav
@@ -151,21 +183,7 @@ class TTSEngine:
                 # speaker ID are passed together. Later phrases can reuse it.
                 self.default_speaker_wav = None
 
-        self.last_playback_ms = None
-        if playback_guard is not None and not playback_guard():
-            return False
-
-        playback_started = self.clock()
-        try:
-            self.playback_active = True
-            self.audio_output.play(self._scaled_audio(audio), self.sample_rate)
-            self.audio_output.wait()
-        except Exception as error:
-            raise AudioPlaybackError(str(error)) from error
-        finally:
-            self.playback_active = False
-            self.last_playback_ms = (self.clock() - playback_started) * 1000
-        return True
+        return audio
 
     def _resolve_speaker(self, speaker, speaker_wav=None):
         speaker = speaker if speaker is not None else self.default_speaker

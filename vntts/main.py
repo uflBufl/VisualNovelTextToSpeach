@@ -783,6 +783,11 @@ class AppController:
                 self._stop_tts()
                 return False
 
+            if self.settings.warm_up_voices:
+                self.status_handler("Warming speech model and voices...")
+                warmed = self.voice_router.warm_up(progress=self._warmup_progress)
+                self.status_handler(f"Speech model and {warmed} voices ready")
+
             self.capture_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="dialog-capture",
@@ -836,7 +841,8 @@ class AppController:
             self.shutdown()
             return False
 
-        self.status_handler("TTS model loaded")
+        if not self.settings.warm_up_voices:
+            self.status_handler("TTS model loaded; voice warm-up skipped")
         self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
         return True
 
@@ -1054,6 +1060,9 @@ class AppController:
         finally:
             self._refresh_diagnostic_metrics()
         return character, text
+
+    def _warmup_progress(self, current, total, character):
+        self.status_handler(f"Warming voice {current}/{total}: {character}")
 
     def _create_uncertain_frame_recorder(self):
         if not self.settings.retain_uncertain_frames:

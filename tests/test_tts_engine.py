@@ -91,6 +91,16 @@ class TTSEngineTest(unittest.TestCase):
         self.assertAlmostEqual(engine.last_synthesis_ms, 150.0)
         self.assertAlmostEqual(engine.last_playback_ms, 400.0)
 
+    def test_synthesize_warms_model_without_playing_audio(self):
+        engine, tts, audio_output = self.create_engine()
+
+        audio = engine.synthesize("Voice ready.")
+
+        self.assertIs(audio, tts.tts.return_value)
+        tts.tts.assert_called_once_with(text="Voice ready.")
+        audio_output.play.assert_not_called()
+        audio_output.wait.assert_not_called()
+
     def test_output_volume_scales_audio_before_playback(self):
         engine, tts, audio_output = self.create_engine(volume=0.4)
 
