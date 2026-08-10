@@ -74,6 +74,10 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.support_action.text(),
             "Export support bundle...",
         )
+        self.assertEqual(
+            tray_application.macos_permissions_action.text(),
+            "macOS permissions...",
+        )
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.pause_action.isEnabled())
@@ -169,6 +173,54 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertFalse(dialog.settings().warm_up_voices)
         dialog.deleteLater()
+
+    def test_settings_control_macos_launch_at_login(self):
+        dialog = SettingsDialog(AppSettings(launch_at_login=True))
+
+        self.assertTrue(dialog.launch_at_login.isChecked())
+        dialog.launch_at_login.setChecked(False)
+
+        self.assertFalse(dialog.settings().launch_at_login)
+        dialog.deleteLater()
+
+    def test_settings_change_updates_macos_launch_at_login(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(launch_at_login=False),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        updated = AppSettings(launch_at_login=True)
+        dialog.settings.return_value = updated
+
+        with (
+            patch("vntts.app.SettingsDialog", return_value=dialog),
+            patch("vntts.app.configure_macos_launch_at_login") as configure,
+            patch.object(tray_application, "start_hotkeys"),
+            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+        ):
+            tray_application.open_settings()
+
+        configure.assert_called_once_with(True)
+        controller.apply_settings.assert_called_once_with(updated)
+        self.assertEqual(tray_application.settings, updated)
+        tray_application.shutdown()
+
+    def test_macos_permission_action_opens_recovery_dialog(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        dialog = Mock()
+
+        with patch("vntts.app.MacOSPermissionsDialog", return_value=dialog):
+            tray_application.open_macos_permissions()
+
+        dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
 
     def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
         controller = Mock()

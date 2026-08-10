@@ -35,6 +35,8 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.macos import configure_macos_launch_at_login
+from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.main import (
     AppController,
     format_runtime_error,
@@ -140,6 +142,9 @@ class SettingsDialog(QDialog):
         self.speech_rate.setValue(settings.speech_rate_percent)
         self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
         self.warm_up_voices.setChecked(settings.warm_up_voices)
+        self.launch_at_login = QCheckBox("Launch automatically when I sign in")
+        self.launch_at_login.setChecked(settings.launch_at_login)
+        self.launch_at_login.setEnabled(sys.platform == "darwin")
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
@@ -177,6 +182,7 @@ class SettingsDialog(QDialog):
         form.addRow("Output volume", self.output_volume)
         form.addRow("Speaking speed", self.speech_rate)
         form.addRow("Startup readiness", self.warm_up_voices)
+        form.addRow("macOS startup", self.launch_at_login)
         form.addRow("XTTS license", self.xtts_terms)
 
         note = QLabel(
@@ -321,6 +327,7 @@ class SettingsDialog(QDialog):
                 "output_volume_percent": self.output_volume.value(),
                 "speech_rate_percent": self.speech_rate.value(),
                 "warm_up_voices": self.warm_up_voices.isChecked(),
+                "launch_at_login": self.launch_at_login.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
             }
         )
@@ -389,6 +396,8 @@ class TrayApplication:
         self.voice_preview_action = QAction("Preview voices...")
         self.history_action = QAction("Dialogue history...")
         self.support_action = QAction("Export support bundle...")
+        self.macos_permissions_action = QAction("macOS permissions...")
+        self.macos_permissions_action.setVisible(sys.platform == "darwin")
         self.settings_folder_action = QAction("Open settings folder")
         self.quit_action = QAction("Quit")
 
@@ -420,6 +429,7 @@ class TrayApplication:
         self.menu.addAction(self.voice_preview_action)
         self.menu.addAction(self.history_action)
         self.menu.addAction(self.support_action)
+        self.menu.addAction(self.macos_permissions_action)
         self.menu.addAction(self.settings_folder_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
@@ -443,6 +453,7 @@ class TrayApplication:
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
         self.history_action.triggered.connect(self.open_history)
         self.support_action.triggered.connect(self.export_support_bundle)
+        self.macos_permissions_action.triggered.connect(self.open_macos_permissions)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
         self.quit_action.triggered.connect(self.application.quit)
         self.signals.status_changed.connect(self.set_status)
@@ -462,6 +473,11 @@ class TrayApplication:
 
     def start(self):
         self.tray.show()
+        if self.settings.launch_at_login:
+            try:
+                configure_macos_launch_at_login(True)
+            except OSError as error:
+                self.show_error(f"Unable to configure launch at login: {error}")
         if self.settings.onboarding_completed:
             Thread(target=self._initialize_controller, daemon=True).start()
         else:
@@ -660,7 +676,14 @@ class TrayApplication:
         dialog = SettingsDialog(self.settings)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.settings = dialog.settings()
+        updated_settings = dialog.settings()
+        if updated_settings.launch_at_login != self.settings.launch_at_login:
+            try:
+                configure_macos_launch_at_login(updated_settings.launch_at_login)
+            except OSError as error:
+                self.show_error(f"Unable to configure launch at login: {error}")
+                return
+        self.settings = updated_settings
         path = self.settings.save()
         self._sync_active_profile()
         self.controller.apply_settings(self.settings)
@@ -774,6 +797,9 @@ class TrayApplication:
             self.set_status(f"Support bundle saved to {message}")
         else:
             self.show_error(f"Support bundle export failed: {message}")
+
+    def open_macos_permissions(self):
+        MacOSPermissionsDialog().exec()
 
     def _sync_active_profile(self):
         profile_id = self.settings.active_profile_id

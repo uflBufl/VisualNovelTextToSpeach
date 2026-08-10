@@ -89,14 +89,28 @@ scripts/verify-macos-bundle.sh \
 
 staging_directory=$(mktemp -d "${TMPDIR:-/tmp}/vntts-dmg.XXXXXX")
 mount_directory=$(mktemp -d "${TMPDIR:-/tmp}/vntts-mount.XXXXXX")
+notary_directory=$(mktemp -d "${TMPDIR:-/tmp}/vntts-notary.XXXXXX")
 mounted=false
 cleanup() {
     if [[ $mounted == "true" ]]; then
         hdiutil detach "$mount_directory" -quiet || true
     fi
-    rm -rf "$staging_directory" "$mount_directory"
+    rm -rf "$staging_directory" "$mount_directory" "$notary_directory"
 }
 trap cleanup EXIT
+
+if [[ -n $notary_profile ]]; then
+    app_archive="$notary_directory/VisualNovelTextToSpeech.zip"
+    app_notary_report="$project_root/dist/VisualNovelTextToSpeech-macos-$target_arch-app-notarization.json"
+    ditto -c -k --keepParent "$app_path" "$app_archive"
+    xcrun notarytool submit "$app_archive" \
+        --keychain-profile "$notary_profile" \
+        --wait \
+        --output-format json | tee "$app_notary_report"
+    xcrun stapler staple "$app_path"
+    xcrun stapler validate "$app_path"
+    spctl --assess --type execute --verbose=2 "$app_path"
+fi
 
 ditto "$app_path" "$staging_directory/Visual Novel Text to Speech.app"
 ln -s /Applications "$staging_directory/Applications"
@@ -112,11 +126,15 @@ if [[ -n $signing_identity ]]; then
     codesign --force --timestamp --sign "$signing_identity" "$dmg_path"
 fi
 if [[ -n $notary_profile ]]; then
+    dmg_notary_report="$project_root/dist/VisualNovelTextToSpeech-macos-$target_arch-dmg-notarization.json"
     xcrun notarytool submit "$dmg_path" \
         --keychain-profile "$notary_profile" \
-        --wait
+        --wait \
+        --output-format json | tee "$dmg_notary_report"
     xcrun stapler staple "$dmg_path"
     xcrun stapler validate "$dmg_path"
+    spctl --assess --type open --context context:primary-signature \
+        --verbose=2 "$dmg_path"
 fi
 
 hdiutil attach "$dmg_path" \

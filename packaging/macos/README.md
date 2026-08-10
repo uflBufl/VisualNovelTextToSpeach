@@ -21,4 +21,6 @@ scripts/build-macos.sh \
 
 Create the notary profile beforehand with `xcrun notarytool store-credentials`.
 Signed builds use hardened runtime, are submitted with `notarytool`, and have
-the accepted ticket stapled to the DMG.
+the accepted tickets stapled to both the application and DMG. The manual
+`macos-release.yml` workflow performs the same release with repository secrets
+for the Developer ID certificate and App Store Connect notary credentials.
