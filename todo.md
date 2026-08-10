@@ -5,10 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Application usability
 
-### P1 - Dialogue history
-
-- [ ] Add searchable session history with replay and export.
-
 ### P2 - Support diagnostics
 
 - [ ] Export a support bundle with sanitized settings, logs, OCR metrics, and
