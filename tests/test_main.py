@@ -381,6 +381,18 @@ class MainTest(unittest.TestCase):
         self.assertEqual(configuration["synthesis_options"]["temperature"], 0.95)
         self.assertFalse(configuration["synthesis_options"]["split_sentences"])
 
+    def test_saved_speech_controls_configure_synthesis_and_playback(self):
+        configuration = get_tts_configuration(
+            AppSettings(
+                tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
+                output_volume_percent=65,
+                speech_rate_percent=115,
+            )
+        )
+
+        self.assertEqual(configuration["volume"], 0.65)
+        self.assertEqual(configuration["synthesis_options"]["speed"], 1.15)
+
     def test_invalid_tts_profile_uses_stable_profile(self):
         errors = io.StringIO()
         with (
@@ -631,6 +643,44 @@ class MainTest(unittest.TestCase):
         controller.live_reader.repeat_last.assert_called_once_with()
         controller.live_reader.clear_queue.assert_called_once_with()
         self.assertEqual(statuses[-1], "Speech queue cleared")
+
+    def test_controller_lists_and_previews_character_voices_on_speech_executor(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.live_reader = Mock()
+        controller.live_reader.is_running = False
+        controller.speech_executor = Mock()
+        controller.voice_router = Mock()
+        marcus = Mock(character="Marcus")
+        lucy = Mock(character="Lucy")
+        controller.voice_router.registry.voices = {
+            "marcus": marcus,
+            "marcus-alias": marcus,
+            "lucy": lucy,
+        }
+
+        result = controller.preview_voice("Marcus", "  Hello.  ")
+
+        self.assertIs(result, controller.speech_executor.submit.return_value)
+        self.assertEqual(
+            controller.available_voice_characters(),
+            ["Narrator", "Lucy", "Marcus"],
+        )
+        controller.speech_executor.submit.assert_called_once_with(
+            controller._preview_voice,
+            "Marcus",
+            "Hello.",
+        )
+
+    def test_applying_settings_updates_loaded_speech_controls(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.tts = Mock()
+
+        controller.apply_settings(
+            AppSettings(output_volume_percent=35, speech_rate_percent=125)
+        )
+
+        controller.tts.set_volume.assert_called_once_with(0.35)
+        controller.tts.set_speed.assert_called_once_with(1.25)
 
     def test_controller_reports_current_recognized_dialog(self):
         dialogs = []

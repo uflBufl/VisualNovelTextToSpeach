@@ -479,9 +479,11 @@ def get_tts_configuration(settings=None):
                 "speaker": settings.tts_speaker,
                 "language": settings.tts_language,
                 "speaker_wav": settings.tts_speaker_wav,
+                "volume": settings.output_volume_percent / 100,
             }.items()
             if value
         }
+        configuration["volume"] = settings.output_volume_percent / 100
         if settings.tts_model and "xtts" in settings.tts_model.casefold():
             profile_name = settings.tts_profile
             try:
@@ -491,6 +493,9 @@ def get_tts_configuration(settings=None):
                 configuration["synthesis_options"] = get_tts_profile(
                     default_tts_profile
                 )
+        configuration.setdefault("synthesis_options", {})["speed"] = (
+            settings.speech_rate_percent / 100
+        )
         return configuration
 
     configuration = {
@@ -881,6 +886,36 @@ class AppController:
         self.status_handler("Speech queue cleared")
         return cleared
 
+    def available_voice_characters(self):
+        if self.voice_router is None:
+            return ["Narrator"]
+        voices = {
+            id(voice): voice for voice in self.voice_router.registry.voices.values()
+        }
+        return [
+            "Narrator",
+            *(
+                voice.character
+                for voice in sorted(
+                    voices.values(), key=lambda item: item.character.casefold()
+                )
+            ),
+        ]
+
+    def preview_voice(self, character, text):
+        if not self.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before previewing a voice")
+        if not text or not text.strip():
+            raise ValueError("Enter preview text")
+        self.status_handler(f"Previewing {character or 'Narrator'} voice")
+        return self.speech_executor.submit(
+            self._preview_voice,
+            character or "Narrator",
+            text.strip(),
+        )
+
     def get_capture_geometry(self):
         if self.capture_target is None:
             return None
@@ -956,6 +991,9 @@ class AppController:
         self.refresh_corrections()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
+        if self.tts is not None:
+            self.tts.set_volume(self.settings.output_volume_percent / 100)
+            self.tts.set_speed(self.settings.speech_rate_percent / 100)
         if self.live_reader is None:
             return
 
@@ -1003,6 +1041,13 @@ class AppController:
         if self.settings.capture_mode != "window":
             return None
         return self.capture_target_factory(self.settings.game_window_title)
+
+    def _preview_voice(self, character, text):
+        try:
+            self.voice_router.speak(character, text)
+        finally:
+            self._refresh_diagnostic_metrics()
+        return character, text
 
     def _create_uncertain_frame_recorder(self):
         if not self.settings.retain_uncertain_frames:

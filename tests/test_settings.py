@@ -45,6 +45,8 @@ class SettingsTest(unittest.TestCase):
                 game_window_title="Reverse: 1999",
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 tts_language="en",
+                output_volume_percent=72,
+                speech_rate_percent=115,
             )
 
             self.assertEqual(settings.save(path), path)
@@ -118,6 +120,27 @@ class SettingsTest(unittest.TestCase):
         self.assertTrue(
             any("ocr_minimum_confidence" in warning for warning in warnings)
         )
+
+    def test_speech_controls_are_range_checked(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {
+                "output_volume_percent": 101,
+                "speech_rate_percent": 49,
+            },
+            warn=warnings.append,
+        )
+
+        self.assertEqual(
+            settings.output_volume_percent,
+            AppSettings().output_volume_percent,
+        )
+        self.assertEqual(
+            settings.speech_rate_percent,
+            AppSettings().speech_rate_percent,
+        )
+        self.assertEqual(len(warnings), 2)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,9 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
+        self.assertEqual(
+            tray_application.voice_preview_action.text(), "Preview voices..."
+        )
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.pause_action.isEnabled())
@@ -139,6 +142,40 @@ class TrayApplicationTest(unittest.TestCase):
             "custom/ocr-diagnostics",
         )
         dialog.deleteLater()
+
+    def test_settings_expose_output_volume_and_speech_rate(self):
+        dialog = SettingsDialog(
+            AppSettings(output_volume_percent=75, speech_rate_percent=110)
+        )
+
+        self.assertEqual(dialog.output_volume.value(), 75)
+        self.assertEqual(dialog.speech_rate.value(), 110)
+        dialog.output_volume.setValue(45)
+        dialog.speech_rate.setValue(125)
+
+        self.assertEqual(dialog.settings().output_volume_percent, 45)
+        self.assertEqual(dialog.settings().speech_rate_percent, 125)
+        dialog.deleteLater()
+
+    def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
+        controller = Mock()
+        controller.available_voice_characters.return_value = ["Narrator", "Marcus"]
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+
+        with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
+            tray_application.open_voice_previews()
+
+        factory.assert_called_once_with(
+            ["Narrator", "Marcus"],
+            controller.preview_voice,
+        )
+        dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
 
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())

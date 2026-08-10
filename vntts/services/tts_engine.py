@@ -67,6 +67,7 @@ class TTSEngine:
         language=None,
         speaker_wav=None,
         synthesis_options=None,
+        volume=1.0,
         *,
         tts_factory=None,
         torch_module=None,
@@ -100,6 +101,7 @@ class TTSEngine:
         if synthesis_options is None and "xtts" in model_name.casefold():
             synthesis_options = get_tts_profile(default_tts_profile)
         self.synthesis_options = dict(synthesis_options or {})
+        self.set_volume(volume)
         self.cached_speakers = set()
         self.playback_active = False
         self.last_synthesis_ms = None
@@ -156,7 +158,7 @@ class TTSEngine:
         playback_started = self.clock()
         try:
             self.playback_active = True
-            self.audio_output.play(audio, self.sample_rate)
+            self.audio_output.play(self._scaled_audio(audio), self.sample_rate)
             self.audio_output.wait()
         except Exception as error:
             raise AudioPlaybackError(str(error)) from error
@@ -219,6 +221,28 @@ class TTSEngine:
 
     def has_speaker(self, speaker):
         return speaker in (self.tts.speakers or []) or speaker in self.cached_speakers
+
+    def set_volume(self, volume):
+        if isinstance(volume, bool) or not isinstance(volume, (int, float)):
+            raise TTSConfigurationError("Volume must be a number from 0 to 1")
+        if not 0 <= volume <= 1:
+            raise TTSConfigurationError("Volume must be between 0 and 1")
+        self.volume = float(volume)
+
+    def set_speed(self, speed):
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)):
+            raise TTSConfigurationError("Speech speed must be a number")
+        if not 0.5 <= speed <= 1.5:
+            raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
+        self.synthesis_options["speed"] = float(speed)
+
+    def _scaled_audio(self, audio):
+        if self.volume == 1:
+            return audio
+        try:
+            return audio * self.volume
+        except TypeError:
+            return [sample * self.volume for sample in audio]
 
     def stop(self):
         was_playing = self.playback_active

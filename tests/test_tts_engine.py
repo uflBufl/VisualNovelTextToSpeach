@@ -23,6 +23,7 @@ class TTSEngineTest(unittest.TestCase):
         speaker_wav=None,
         synthesis_options=None,
         model_name="tts_models/en/vctk/vits",
+        volume=1.0,
         clock=None,
     ):
         tts = Mock()
@@ -50,6 +51,7 @@ class TTSEngineTest(unittest.TestCase):
             language=language,
             speaker_wav=speaker_wav,
             synthesis_options=synthesis_options,
+            volume=volume,
             tts_factory=tts_factory,
             torch_module=torch_module,
             audio_output=audio_output,
@@ -88,6 +90,28 @@ class TTSEngineTest(unittest.TestCase):
 
         self.assertAlmostEqual(engine.last_synthesis_ms, 150.0)
         self.assertAlmostEqual(engine.last_playback_ms, 400.0)
+
+    def test_output_volume_scales_audio_before_playback(self):
+        engine, tts, audio_output = self.create_engine(volume=0.4)
+
+        engine.speak("Hello")
+
+        audio_output.play.assert_called_once_with([0.0, 0.2, 0.0], 24000)
+        self.assertEqual(tts.tts.call_count, 1)
+
+    def test_runtime_volume_and_speed_are_validated_and_updated(self):
+        engine, tts, _ = self.create_engine()
+
+        engine.set_volume(0.25)
+        engine.set_speed(1.2)
+        engine.speak("Hello")
+
+        self.assertEqual(engine.volume, 0.25)
+        tts.tts.assert_called_once_with(text="Hello", speed=1.2)
+        with self.assertRaisesRegex(ValueError, "Volume"):
+            engine.set_volume(2)
+        with self.assertRaisesRegex(ValueError, "speed"):
+            engine.set_speed(0.2)
 
     def test_speak_omits_speaker_and_language_for_single_speaker_model(self):
         engine, tts, _ = self.create_engine()

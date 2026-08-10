@@ -57,6 +57,7 @@ from vntts.release_smoke_test import (
 )
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import AppSettings, get_settings_path, load_app_settings
+from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.window_capture import (
     WindowCaptureError,
     enable_windows_dpi_awareness,
@@ -126,6 +127,14 @@ class SettingsDialog(QDialog):
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
         self.tts_profile.setCurrentText(settings.tts_profile)
+        self.output_volume = QSpinBox()
+        self.output_volume.setRange(0, 100)
+        self.output_volume.setSuffix("%")
+        self.output_volume.setValue(settings.output_volume_percent)
+        self.speech_rate = QSpinBox()
+        self.speech_rate.setRange(50, 150)
+        self.speech_rate.setSuffix("%")
+        self.speech_rate.setValue(settings.speech_rate_percent)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
@@ -160,6 +169,8 @@ class SettingsDialog(QDialog):
         form.addRow("Voice manifest", self.voice_manifest)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("Voice profile", self.tts_profile)
+        form.addRow("Output volume", self.output_volume)
+        form.addRow("Speaking speed", self.speech_rate)
         form.addRow("XTTS license", self.xtts_terms)
 
         note = QLabel(
@@ -301,6 +312,8 @@ class SettingsDialog(QDialog):
                 "voice_manifest": optional_text(self.voice_manifest),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "tts_profile": self.tts_profile.currentText(),
+                "output_volume_percent": self.output_volume.value(),
+                "speech_rate_percent": self.speech_rate.value(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
             }
         )
@@ -365,6 +378,7 @@ class TrayApplication:
         self.ocr_review_action = QAction("Review uncertain OCR...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
+        self.voice_preview_action = QAction("Preview voices...")
         self.settings_folder_action = QAction("Open settings folder")
         self.quit_action = QAction("Quit")
 
@@ -374,6 +388,7 @@ class TrayApplication:
         self.skip_action.setEnabled(False)
         self.repeat_action.setEnabled(False)
         self.clear_queue_action.setEnabled(False)
+        self.voice_preview_action.setEnabled(False)
         self.menu.addAction(self.status_action)
         self.menu.addAction(self.dialog_action)
         self.menu.addSeparator()
@@ -392,6 +407,7 @@ class TrayApplication:
         self.menu.addAction(self.ocr_review_action)
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
+        self.menu.addAction(self.voice_preview_action)
         self.menu.addAction(self.settings_folder_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
@@ -412,6 +428,7 @@ class TrayApplication:
         self.ocr_review_action.triggered.connect(self.open_ocr_review)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
+        self.voice_preview_action.triggered.connect(self.open_voice_previews)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
         self.quit_action.triggered.connect(self.application.quit)
         self.signals.status_changed.connect(self.set_status)
@@ -698,6 +715,13 @@ class TrayApplication:
             f"Assets updated; restart to load voice or model changes. Saved to {path}"
         )
 
+    def open_voice_previews(self):
+        dialog = VoicePreviewDialog(
+            self.controller.available_voice_characters(),
+            self.controller.preview_voice,
+        )
+        dialog.exec()
+
     def _sync_active_profile(self):
         profile_id = self.settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
@@ -725,6 +749,7 @@ class TrayApplication:
         self.skip_action.setEnabled(ready)
         self.repeat_action.setEnabled(ready)
         self.clear_queue_action.setEnabled(ready)
+        self.voice_preview_action.setEnabled(ready)
         if not ready:
             self.set_status("Unable to start")
 

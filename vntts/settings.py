@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 6
+settings_schema_version = 7
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -79,6 +79,8 @@ class AppSettings:
     tts_language: str | None = None
     tts_speaker_wav: str | None = None
     tts_profile: str = "stable"
+    output_volume_percent: int = 100
+    speech_rate_percent: int = 100
     voice_manifest: str | None = None
     narrator_speaker: str | None = None
     active_profile_id: str | None = None
@@ -116,6 +118,8 @@ class AppSettings:
             "live_idle_flush_ms": 1,
             "live_min_chunk_characters": 1,
             "ocr_minimum_confidence": 0,
+            "output_volume_percent": 0,
+            "speech_rate_percent": 50,
         }
         boolean_fields = (
             "onboarding_completed",
@@ -146,6 +150,8 @@ class AppSettings:
                 and not isinstance(value, bool)
                 and value >= minimum
                 and (name != "ocr_minimum_confidence" or value <= 100)
+                and (name != "output_volume_percent" or value <= 100)
+                and (name != "speech_rate_percent" or value <= 150)
             ):
                 parsed[name] = value
             else:
@@ -202,6 +208,8 @@ class AppSettings:
             "VNTTS_LIVE_IDLE_FLUSH_MS": "live_idle_flush_ms",
             "VNTTS_LIVE_MIN_CHUNK_CHARACTERS": "live_min_chunk_characters",
             "VNTTS_OCR_MINIMUM_CONFIDENCE": "ocr_minimum_confidence",
+            "VNTTS_OUTPUT_VOLUME_PERCENT": "output_volume_percent",
+            "VNTTS_SPEECH_RATE_PERCENT": "speech_rate_percent",
         }
         for environment_name, setting_name in string_overrides.items():
             if configured := environment.get(environment_name):
