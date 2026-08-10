@@ -5,11 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Application usability
 
-### P2 - Support diagnostics
-
-- [ ] Export a support bundle with sanitized settings, logs, OCR metrics, and
-      dependency status.
-
 ### P2 - Runtime readiness
 
 - [ ] Warm up the selected model and character voices before gameplay and show
