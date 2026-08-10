@@ -70,6 +70,10 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.voice_preview_action.text(), "Preview voices..."
         )
         self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
+        self.assertEqual(
+            tray_application.support_action.text(),
+            "Export support bundle...",
+        )
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.pause_action.isEnabled())
@@ -192,6 +196,44 @@ class TrayApplicationTest(unittest.TestCase):
 
         factory.assert_called_once_with(controller.history, controller.replay_dialog)
         dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        diagnostic = DiagnosticSnapshot(None, confidence=88)
+        controller.get_latest_diagnostic.return_value = diagnostic
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        builder = Mock()
+        builder.build.return_value = Path("support.zip")
+
+        with (
+            patch(
+                "vntts.app.QFileDialog.getSaveFileName",
+                return_value=("support.zip", "ZIP archives (*.zip)"),
+            ),
+            patch("vntts.app.SupportBundleBuilder", return_value=builder) as factory,
+            patch("vntts.app.Thread", ImmediateThread),
+        ):
+            tray_application.export_support_bundle()
+
+        factory.assert_called_once_with(
+            tray_application.settings,
+            tray_application.support_log,
+            diagnostic=diagnostic,
+        )
+        builder.build.assert_called_once_with("support.zip")
+        self.assertIn("Support bundle saved", tray_application.status_action.text())
         tray_application.shutdown()
 
     def test_settings_reject_duplicate_recorded_hotkeys(self):

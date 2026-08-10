@@ -58,6 +58,7 @@ from vntts.release_smoke_test import (
 )
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import AppSettings, get_settings_path, load_app_settings
+from vntts.support import RuntimeSupportLog, SupportBundleBuilder
 from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.window_capture import (
     WindowCaptureError,
@@ -79,6 +80,7 @@ class AppSignals(QObject):
     onboarding_test_progress = Signal(object, str)
     diagnostics_changed = Signal(object)
     diagnostics_failed = Signal(str)
+    support_export_finished = Signal(bool, str)
 
 
 class SettingsDialog(QDialog):
@@ -353,6 +355,7 @@ class TrayApplication:
         )
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
+        self.support_log = RuntimeSupportLog()
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
@@ -381,6 +384,7 @@ class TrayApplication:
         self.assets_action = QAction("Manage models and voices...")
         self.voice_preview_action = QAction("Preview voices...")
         self.history_action = QAction("Dialogue history...")
+        self.support_action = QAction("Export support bundle...")
         self.settings_folder_action = QAction("Open settings folder")
         self.quit_action = QAction("Quit")
 
@@ -411,6 +415,7 @@ class TrayApplication:
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.voice_preview_action)
         self.menu.addAction(self.history_action)
+        self.menu.addAction(self.support_action)
         self.menu.addAction(self.settings_folder_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
@@ -433,6 +438,7 @@ class TrayApplication:
         self.assets_action.triggered.connect(self.open_assets)
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
         self.history_action.triggered.connect(self.open_history)
+        self.support_action.triggered.connect(self.export_support_bundle)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
         self.quit_action.triggered.connect(self.application.quit)
         self.signals.status_changed.connect(self.set_status)
@@ -442,6 +448,7 @@ class TrayApplication:
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
+        self.signals.support_export_finished.connect(self.support_export_finished)
         self.application.aboutToQuit.connect(self.shutdown)
 
     def _application_icon(self):
@@ -733,6 +740,37 @@ class TrayApplication:
         )
         dialog.exec()
 
+    def export_support_bundle(self):
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            None,
+            "Export support bundle",
+            "vntts-support.zip",
+            "ZIP archives (*.zip)",
+        )
+        if not path:
+            return
+        self.set_status("Creating support bundle...")
+
+        def export():
+            try:
+                output = SupportBundleBuilder(
+                    self.settings,
+                    self.support_log,
+                    diagnostic=self.controller.get_latest_diagnostic(),
+                ).build(path)
+            except Exception as error:
+                self.signals.support_export_finished.emit(False, str(error))
+            else:
+                self.signals.support_export_finished.emit(True, str(output))
+
+        Thread(target=export, daemon=True).start()
+
+    def support_export_finished(self, successful, message):
+        if successful:
+            self.set_status(f"Support bundle saved to {message}")
+        else:
+            self.show_error(f"Support bundle export failed: {message}")
+
     def _sync_active_profile(self):
         profile_id = self.settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
@@ -744,6 +782,7 @@ class TrayApplication:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def set_status(self, message):
+        self.support_log.add("status", message)
         self.status_action.setText(message)
         self.tray.setToolTip(f"{application_name}\n{message}")
 
@@ -773,6 +812,7 @@ class TrayApplication:
         self.pause_action.setText("Resume speech" if paused else "Pause speech")
 
     def show_error(self, message):
+        self.support_log.add("error", message)
         self.set_status(message)
         self.tray.showMessage(
             f"{application_name} error",
