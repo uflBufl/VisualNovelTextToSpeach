@@ -5,13 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Application usability
 
-### P1 - OCR review
-
-- [ ] Add an OCR learning loop for uncertain screenshots.
-  - Review saved screenshots with recognized speaker, text, and confidence.
-  - Save corrected phrases globally or for the active game profile.
-  - Reload corrections immediately and mark reviewed samples as resolved.
-
 ### P1 - Speech controls
 
 - [ ] Add output volume and speaking-speed controls.
