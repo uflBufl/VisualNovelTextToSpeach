@@ -331,6 +331,22 @@ class LiveDialogReaderTest(unittest.TestCase):
             ],
         )
 
+    def test_clearing_dialog_reports_session_boundary_once(self):
+        dialog_observed = Mock()
+        reader = self.create_reader(dialog_observed=dialog_observed)
+        reader._report_observation("Alice", "Hello")
+
+        reader._report_observation(None, "")
+        reader._report_observation(None, "")
+
+        self.assertEqual(
+            dialog_observed.call_args_list,
+            [
+                unittest.mock.call("Alice", "Hello"),
+                unittest.mock.call("Narrator", ""),
+            ],
+        )
+
     def test_unfocused_game_skips_capture_and_reports_adaptive_interval(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, True]

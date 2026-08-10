@@ -531,7 +531,7 @@ class MainTest(unittest.TestCase):
             live_reader=live_reader,
             error_handler=controller.error_handler,
             capture_target=None,
-            speech_handler=live_reader.enqueue,
+            speech_handler=controller._enqueue_dialog,
             minimum_confidence=60,
             uncertain_frame_recorder=None,
             diagnostic_handler=controller._publish_diagnostic,
@@ -693,6 +693,11 @@ class MainTest(unittest.TestCase):
         controller._dialog_observed("Marcus", "A line visible in the tray")
 
         self.assertEqual(dialogs[-1], ("Marcus", "A line visible in the tray"))
+        self.assertEqual(controller.history.snapshot()[0].character, "Marcus")
+        self.assertEqual(
+            controller.history.snapshot()[0].text,
+            "A line visible in the tray",
+        )
 
     def test_controller_reports_uncertain_ocr_confidence(self):
         dialogs = []

@@ -463,6 +463,8 @@ class LiveDialogReader:
 
     def _report_observation(self, character, text):
         if character is None and not text:
+            if self.last_observation is not None:
+                self.dialog_observed("Narrator", "")
             self.last_observation = None
             return
         observation = (character, " ".join((text or "").split()))

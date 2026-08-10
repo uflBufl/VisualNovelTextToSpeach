@@ -69,6 +69,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray_application.voice_preview_action.text(), "Preview voices..."
         )
+        self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.pause_action.isEnabled())
@@ -174,6 +175,22 @@ class TrayApplicationTest(unittest.TestCase):
             ["Narrator", "Marcus"],
             controller.preview_voice,
         )
+        dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_history_dialog_uses_controller_session_and_replay(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+
+        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog) as factory:
+            tray_application.open_history()
+
+        factory.assert_called_once_with(controller.history, controller.replay_dialog)
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 

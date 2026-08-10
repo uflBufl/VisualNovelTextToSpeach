@@ -15,6 +15,7 @@ from pynput import keyboard
 from vntts.assets import ModelAssetManager
 from vntts.diagnostics import DiagnosticSnapshot, resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
+from vntts.history import DialogueHistory
 from vntts.hotkeys import (
     HotkeyValidationError,
     validate_hotkey_assignments,
@@ -716,6 +717,7 @@ class AppController:
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
         correction_store=None,
+        history=None,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -724,6 +726,7 @@ class AppController:
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
         )
+        self.history = history or DialogueHistory()
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -820,7 +823,7 @@ class AppController:
                 live_reader=self.live_reader,
                 error_handler=self.error_handler,
                 capture_target=self.capture_target,
-                speech_handler=self.live_reader.enqueue,
+                speech_handler=self._enqueue_dialog,
                 minimum_confidence=self.settings.ocr_minimum_confidence,
                 uncertain_frame_recorder=self.uncertain_frame_recorder,
                 diagnostic_handler=self._publish_diagnostic,
@@ -915,6 +918,9 @@ class AppController:
             character or "Narrator",
             text.strip(),
         )
+
+    def replay_dialog(self, character, text):
+        return self.preview_voice(character, text)
 
     def get_capture_geometry(self):
         if self.capture_target is None:
@@ -1020,7 +1026,7 @@ class AppController:
             live_reader=self.live_reader,
             error_handler=self.error_handler,
             capture_target=self.capture_target,
-            speech_handler=self.live_reader.enqueue,
+            speech_handler=self._enqueue_dialog,
             minimum_confidence=self.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=self.uncertain_frame_recorder,
             diagnostic_handler=self._publish_diagnostic,
@@ -1056,10 +1062,16 @@ class AppController:
 
     def _dialog_observed(self, character, text):
         if not text:
+            self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return
+        self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
+
+    def _enqueue_dialog(self, character, text):
+        self._dialog_observed(character, text)
+        return self.live_reader.enqueue(character, text)
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence):
         preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."

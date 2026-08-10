@@ -32,6 +32,7 @@ from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
+from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.main import (
@@ -379,6 +380,7 @@ class TrayApplication:
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.voice_preview_action = QAction("Preview voices...")
+        self.history_action = QAction("Dialogue history...")
         self.settings_folder_action = QAction("Open settings folder")
         self.quit_action = QAction("Quit")
 
@@ -408,6 +410,7 @@ class TrayApplication:
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.voice_preview_action)
+        self.menu.addAction(self.history_action)
         self.menu.addAction(self.settings_folder_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
@@ -429,6 +432,7 @@ class TrayApplication:
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
+        self.history_action.triggered.connect(self.open_history)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
         self.quit_action.triggered.connect(self.application.quit)
         self.signals.status_changed.connect(self.set_status)
@@ -719,6 +723,13 @@ class TrayApplication:
         dialog = VoicePreviewDialog(
             self.controller.available_voice_characters(),
             self.controller.preview_voice,
+        )
+        dialog.exec()
+
+    def open_history(self):
+        dialog = DialogueHistoryDialog(
+            self.controller.history,
+            self.controller.replay_dialog,
         )
         dialog.exec()
 
