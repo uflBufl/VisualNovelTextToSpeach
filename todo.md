@@ -3,13 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## Application usability
-
-### P2 - macOS polish
-
-- [ ] Add launch-at-login control and actionable permission recovery.
-- [ ] Add signed and notarized macOS distribution support.
-
 ## Windows application
 
 ### P2 - Windows distribution
