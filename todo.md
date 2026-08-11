@@ -20,8 +20,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Reduce remaining speech latency
 
-- [ ] Add a persistent exact-line audio cache keyed by backend, model, voice,
-      normalized text, and synthesis settings.
 - [ ] Preload voice states for characters likely to appear in the current
       chapter and cancel obsolete generation as soon as dialogue advances.
 - [ ] Evaluate MLX-Audio on Apple Silicon if Pocket TTS voice similarity is not

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from vntts.audio_cache import PersistentAudioCache
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -47,7 +48,20 @@ class PocketTTSPreparedSpeech:
     voice_state: Any
     text: str
     cache_key: tuple[str, str]
+    persistent_cache_key: str
     cached_audio: np.ndarray | None = None
+
+
+def _voice_source_identity(voice_key, source):
+    source_path = Path(str(source)).expanduser()
+    try:
+        stat = source_path.stat()
+        source_identity = (
+            f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+        )
+    except OSError:
+        source_identity = str(source)
+    return f"{voice_key}:{source_identity}"
 
 
 class XTTSVoiceRouterBackend:
@@ -106,6 +120,7 @@ class ChatterboxNanoVoiceRouterBackend:
         playback_latency="high",
         runtime_directory=None,
         conditioning_cache_directory=None,
+        persistent_audio_cache_directory=None,
     ):
         if model_factory is None:
             runtime_site_packages = activate_chatterbox_runtime(runtime_directory)
@@ -171,7 +186,13 @@ class ChatterboxNanoVoiceRouterBackend:
         self.last_playback_ms = None
         self.audio_cache_size = max(0, int(audio_cache_size))
         self.audio_cache = OrderedDict()
+        self.persistent_audio_cache = PersistentAudioCache(
+            persistent_audio_cache_directory
+            or get_local_data_directory() / "audio-cache" / self.name,
+            max_entries=max(64, self.audio_cache_size * 8),
+        )
         self.set_volume(volume)
+        self.set_speed(1.0)
 
     def prepare(self, character, text):
         return self.synthesize(character, text)
@@ -197,6 +218,12 @@ class ChatterboxNanoVoiceRouterBackend:
                 self.audio_cache[cache_key] = audio
                 self.last_synthesis_ms = 0.0
                 return audio
+            persistent_key = self._persistent_cache_key(character, cache_key[1])
+            persistent_audio = self.persistent_audio_cache.get(persistent_key)
+            if persistent_audio is not None:
+                self._cache_audio(cache_key, persistent_audio)
+                self.last_synthesis_ms = 0.0
+                return persistent_audio
 
             started = self.clock()
             try:
@@ -209,6 +236,7 @@ class ChatterboxNanoVoiceRouterBackend:
 
             audio = np.asarray(audio, dtype=np.float32).squeeze()
             self._cache_audio(cache_key, audio)
+            self.persistent_audio_cache.put(persistent_key, audio)
             return audio
 
     def speak(self, character, text, *, playback_guard=None):
@@ -392,6 +420,23 @@ class ChatterboxNanoVoiceRouterBackend:
         while len(self.audio_cache) > self.audio_cache_size:
             self.audio_cache.popitem(last=False)
 
+    def _persistent_cache_key(self, character, text):
+        model = f"{self.model.__class__.__module__}.{self.model.__class__.__qualname__}"
+        voice = self.registry.resolve(character)
+        if is_narrator(character) or voice is None:
+            voice_key = "narrator"
+            source = self.narrator_reference or "embedded-default"
+        else:
+            voice_key = voice.speaker
+            source = voice.references[0] if voice.references else "missing-reference"
+        return self.persistent_audio_cache.key(
+            backend=self.name,
+            model=model,
+            voice=_voice_source_identity(voice_key, source),
+            text=text,
+            settings={"sample_rate": self.sample_rate, "speed": self.speed},
+        )
+
     def _prepare_audio(self, audio, fade_seconds=0.01):
         prepared = np.asarray(audio, dtype=np.float32).squeeze().copy()
         if prepared.ndim != 1 or len(prepared) < 4:
@@ -495,6 +540,7 @@ class PocketTTSVoiceRouterBackend:
         playback_latency="low",
         runtime_directory=None,
         voice_state_cache_directory=None,
+        persistent_audio_cache_directory=None,
         cached_stream_chunk_seconds=0.2,
     ):
         if model_factory is None:
@@ -549,6 +595,11 @@ class PocketTTSVoiceRouterBackend:
         self.last_playback_ms = None
         self.audio_cache_size = max(0, int(audio_cache_size))
         self.audio_cache = OrderedDict()
+        self.persistent_audio_cache = PersistentAudioCache(
+            persistent_audio_cache_directory
+            or get_local_data_directory() / "audio-cache" / self.name,
+            max_entries=max(64, self.audio_cache_size * 8),
+        )
         self.cached_stream_chunk_samples = max(
             1,
             round(self.sample_rate * float(cached_stream_chunk_seconds)),
@@ -558,17 +609,30 @@ class PocketTTSVoiceRouterBackend:
 
     def prepare(self, character, text):
         spoken_text = " ".join((text or "").split())
-        with self.model_lock:
-            voice_key, voice_state = self._resolve_voice_state(character)
+        voice_key, source = self._resolve_voice_source(character)
         cache_key = voice_key, spoken_text
+        persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
         cached_audio = self.audio_cache.get(cache_key)
         if cached_audio is not None:
             self.audio_cache.move_to_end(cache_key)
+        else:
+            cached_audio = self.persistent_audio_cache.get(persistent_key)
+            if cached_audio is not None:
+                self._cache_audio(cache_key, cached_audio)
+        voice_state = None
+        if cached_audio is None:
+            with self.model_lock:
+                resolved_voice_key, voice_state = self._resolve_voice_state(character)
+            if resolved_voice_key != voice_key:
+                raise TTSConfigurationError(
+                    "Pocket TTS resolved inconsistent voice state"
+                )
         return PocketTTSPreparedSpeech(
             voice_key,
             voice_state,
             spoken_text,
             cache_key,
+            persistent_key,
             cached_audio,
         )
 
@@ -635,9 +699,11 @@ class PocketTTSVoiceRouterBackend:
                                 raw_chunks=raw_chunks,
                             )
                 if completed and raw_chunks:
-                    self._cache_audio(
-                        prepared.cache_key,
-                        np.concatenate(raw_chunks),
+                    complete_audio = np.concatenate(raw_chunks)
+                    self._cache_audio(prepared.cache_key, complete_audio)
+                    self.persistent_audio_cache.put(
+                        prepared.persistent_cache_key,
+                        complete_audio,
                     )
                 return completed
             except Exception as error:
@@ -824,6 +890,16 @@ class PocketTTSVoiceRouterBackend:
         self.audio_cache[key] = np.asarray(audio, dtype=np.float32)
         while len(self.audio_cache) > self.audio_cache_size:
             self.audio_cache.popitem(last=False)
+
+    def _persistent_cache_key(self, voice_key, text, source):
+        model = f"{self.model.__class__.__module__}.{self.model.__class__.__qualname__}"
+        return self.persistent_audio_cache.key(
+            backend=self.name,
+            model=model,
+            voice=_voice_source_identity(voice_key, source),
+            text=text,
+            settings={"sample_rate": self.sample_rate, "speed": self.speed},
+        )
 
     def _cached_chunks(self, audio):
         for start in range(0, len(audio), self.cached_stream_chunk_samples):

@@ -145,6 +145,12 @@ class FakeStreamingAudioOutput:
 
 
 class ChatterboxNanoBackendTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = TemporaryDirectory()
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
     def test_runtime_activation_requires_an_installed_private_environment(self):
         with TemporaryDirectory() as temporary_directory:
             missing_runtime = Path(temporary_directory) / "missing"
@@ -192,6 +198,9 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
             torch_module=torch_module,
             audio_output=audio_output or Mock(),
             conditioning_cache_directory=conditioning_cache_directory,
+            persistent_audio_cache_directory=(
+                Path(self.temporary_directory.name) / "audio-cache"
+            ),
         )
         model_factory.assert_called_once_with(device="cpu", nano=True)
         return backend, model
@@ -313,6 +322,18 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         self.assertEqual(len(model.generated), 1)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
 
+    def test_audio_cache_survives_backend_restart(self):
+        registry = CharacterVoiceRegistry()
+        first_backend, first_model = self.create_backend(registry)
+        first_backend.prepare("Narrator", "Persistent line.")
+        second_model = FakeChatterboxModel()
+        second_backend, _model = self.create_backend(registry, model=second_model)
+
+        second_backend.prepare("Narrator", "Persistent line.")
+
+        self.assertEqual(len(first_model.generated), 1)
+        self.assertEqual(second_model.generated, [])
+
     def test_playback_guard_prevents_stale_audio(self):
         audio_output = Mock()
         backend, _model = self.create_backend(
@@ -405,6 +426,9 @@ class PocketTTSBackendTest(unittest.TestCase):
                 cache_directory
                 or Path(self.temporary_directory.name) / "voice-state-cache"
             ),
+            persistent_audio_cache_directory=(
+                Path(self.temporary_directory.name) / "audio-cache"
+            ),
         )
         return backend, model, audio_output
 
@@ -450,6 +474,18 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertEqual(len(model.stream_calls), 1)
         self.assertEqual(len(audio_output.streams), 2)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
+
+    def test_complete_audio_cache_survives_backend_restart(self):
+        backend, first_model, _output = self.create_backend()
+        self.assertTrue(backend.speak("Narrator", "Persistent line."))
+        second_model = FakePocketModel()
+        second_backend, _model, _output = self.create_backend(model=second_model)
+
+        self.assertTrue(second_backend.speak("Narrator", "Persistent line."))
+
+        self.assertEqual(len(first_model.stream_calls), 1)
+        self.assertEqual(second_model.prompt_calls, [])
+        self.assertEqual(second_model.stream_calls, [])
 
     def test_voice_state_is_exported_and_reloaded_after_restart(self):
         with TemporaryDirectory() as temporary_directory:
