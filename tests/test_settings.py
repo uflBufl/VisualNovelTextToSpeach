@@ -20,13 +20,13 @@ class SettingsTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(settings.schema_version, 12)
+        self.assertEqual(settings.schema_version, 13)
         self.assertEqual(settings.live_idle_flush_ms, 400)
 
     def test_current_schema_preserves_an_explicit_idle_delay(self):
         settings = AppSettings.from_mapping(
             {
-                "schema_version": 12,
+                "schema_version": 13,
                 "live_idle_flush_ms": 700,
             }
         )
@@ -82,6 +82,7 @@ class SettingsTest(unittest.TestCase):
                 skip_hotkey="<ctrl>+s",
                 repeat_hotkey="<ctrl>+e",
                 clear_queue_hotkey="<ctrl>+x",
+                emergency_stop_hotkey="<ctrl>+q",
                 ocr_minimum_confidence=72,
                 retain_uncertain_frames=True,
                 ocr_diagnostics_directory="custom/ocr-diagnostics",

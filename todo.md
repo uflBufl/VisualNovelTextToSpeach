@@ -34,8 +34,6 @@ sections after their implementation has been verified and committed.
 - [ ] Use the existing `pynput` controller for the cross-platform prototype, then
       use native Windows `SendInput` for the Windows build and Quartz events on
       macOS after verifying Accessibility permission.
-- [ ] Add an emergency stop action and ensure pause, clear queue, focus loss, OCR
-      uncertainty, and application shutdown cancel pending input immediately.
 
 ### P1 - Benchmark remaining backends and hardware
 

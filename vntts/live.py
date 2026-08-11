@@ -370,6 +370,7 @@ class LiveDialogReader:
         self.last_spoken_chunk = None
         self.cancelled_chunk_ids = set()
         self.paused = False
+        self.emergency_stopped = False
         self.last_observation = None
         self.dialog_ready_generation = None
         self.advanced_generation = None
@@ -406,6 +407,7 @@ class LiveDialogReader:
                 return False
         self.clear_queue()
         with self.state_lock:
+            self.emergency_stopped = False
             self.stop_event = Event()
             self.active_generation = 0
             self.suppressed_generation = None
@@ -529,6 +531,23 @@ class LiveDialogReader:
             or had_paused_chunks
             or had_deferred_chunk
         )
+
+    def emergency_stop(self):
+        with self.pause_condition:
+            was_running = self.capture_future is not None and not self.capture_future.done()
+            self.emergency_stopped = True
+            self.stop_event.set()
+            self._cancel_auto_advance_locked()
+            self.pause_condition.notify_all()
+        cleared = self.clear_queue()
+        self.release_waiters()
+        return was_running or cleared
+
+    def resume_after_emergency(self):
+        with self.state_lock:
+            was_stopped = self.emergency_stopped
+            self.emergency_stopped = False
+        return was_stopped
 
     def release_waiters(self):
         with self.pause_condition:
@@ -751,6 +770,8 @@ class LiveDialogReader:
     def _schedule(self, chunks):
         for chunk in chunks:
             with self.pause_condition:
+                if self.emergency_stopped:
+                    continue
                 if self.suppressed_generation == chunk.generation:
                     continue
                 if self.paused:

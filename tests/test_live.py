@@ -497,6 +497,26 @@ class LiveDialogReaderTest(unittest.TestCase):
         interrupt_speech.assert_called_once_with()
         speech_executor.submit.assert_not_called()
 
+    def test_emergency_stop_blocks_pending_ocr_until_explicit_resume(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        interrupt_speech = Mock()
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            interrupt_speech=interrupt_speech,
+        )
+        reader.active_generation = 4
+        reader.current_chunk = SpeechChunk(4, "Alice", "Current text.")
+
+        self.assertTrue(reader.emergency_stop())
+        reader._schedule([SpeechChunk(5, "Bob", "Pending OCR result.")])
+
+        interrupt_speech.assert_called_once_with()
+        speech_executor.submit.assert_not_called()
+        self.assertTrue(reader.resume_after_emergency())
+        reader._schedule([SpeechChunk(5, "Bob", "Explicit new read.")])
+        speech_executor.submit.assert_called_once()
+
     def test_speech_queue_is_bounded_and_merges_overflow_text(self):
         futures = [Future(), Future(), Future()]
         speech_executor = Mock()

@@ -795,12 +795,14 @@ class MainTest(unittest.TestCase):
             settings.skip_hotkey,
             settings.repeat_hotkey,
             settings.clear_queue_hotkey,
+            settings.emergency_stop_hotkey,
             controller.read_once,
             controller.toggle_live,
             controller.toggle_speech_pause,
             controller.skip_current_speech,
             controller.repeat_last_speech,
             controller.clear_speech_queue,
+            controller.emergency_stop,
         )
         controller.shutdown.assert_called_once_with()
 
@@ -864,17 +866,23 @@ class MainTest(unittest.TestCase):
         controller.live_reader.skip_current.return_value = True
         controller.live_reader.repeat_last.return_value = True
         controller.live_reader.clear_queue.return_value = True
+        controller.live_reader.emergency_stop.return_value = True
 
         self.assertTrue(controller.toggle_speech_pause())
         self.assertTrue(controller.skip_current_speech())
         self.assertTrue(controller.repeat_last_speech())
         self.assertTrue(controller.clear_speech_queue())
+        self.assertTrue(controller.emergency_stop())
 
         controller.live_reader.toggle_pause.assert_called_once_with()
         controller.live_reader.skip_current.assert_called_once_with()
         controller.live_reader.repeat_last.assert_called_once_with()
         controller.live_reader.clear_queue.assert_called_once_with()
-        self.assertEqual(statuses[-1], "Speech queue cleared")
+        controller.live_reader.emergency_stop.assert_called_once_with()
+        self.assertEqual(
+            statuses[-1],
+            "Emergency stop: live reading and speech stopped",
+        )
 
     def test_controller_lists_and_previews_character_voices_on_speech_executor(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
@@ -1093,6 +1101,7 @@ class MainTest(unittest.TestCase):
             tts_factory=Mock(),
             dialog_handler=lambda character, text: dialogs.append((character, text)),
         )
+        controller.live_reader = Mock()
 
         controller._ocr_uncertain(
             OCRResult("Marcus", "Possibly incorrect", 42.4, "balanced", 3),
@@ -1101,6 +1110,22 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(dialogs[-1][0], "OCR uncertain")
         self.assertIn("42% (requires 60%)", dialogs[-1][1])
+        controller.live_reader.clear_queue.assert_called_once_with()
+
+    def test_focus_loss_cancels_pending_speech_and_auto_advance(self):
+        statuses = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+        )
+        controller.live_reader = Mock()
+
+        controller._capture_state_changed(False, 1.0)
+        controller._capture_state_changed(False, 1.0)
+
+        controller.live_reader.clear_queue.assert_called_once_with()
+        self.assertIn("pending speech and input cancelled", statuses[-1])
 
     def test_auto_advance_pauses_when_ocr_detects_a_choice_menu(self):
         statuses = []

@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 12
+settings_schema_version = 13
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -59,6 +59,7 @@ class AppSettings:
     skip_hotkey: str = field(default_factory=lambda: default_hotkey("s"))
     repeat_hotkey: str = field(default_factory=lambda: default_hotkey("r"))
     clear_queue_hotkey: str = field(default_factory=lambda: default_hotkey("x"))
+    emergency_stop_hotkey: str = field(default_factory=lambda: default_hotkey("e"))
     screenshot_directory: str = field(
         default_factory=lambda: str(get_local_data_directory() / "screenshots")
     )
@@ -112,6 +113,7 @@ class AppSettings:
             "ocr_language",
             "auto_advance_key",
             "speech_backend",
+            "emergency_stop_hotkey",
         )
         optional_string_fields = (
             "tts_model",
@@ -222,6 +224,7 @@ class AppSettings:
             "VNTTS_SKIP_HOTKEY": "skip_hotkey",
             "VNTTS_REPEAT_HOTKEY": "repeat_hotkey",
             "VNTTS_CLEAR_QUEUE_HOTKEY": "clear_queue_hotkey",
+            "VNTTS_EMERGENCY_STOP_HOTKEY": "emergency_stop_hotkey",
             "VNTTS_SCREENSHOT_DIR": "screenshot_directory",
             "VNTTS_OCR_DIAGNOSTICS_DIR": "ocr_diagnostics_directory",
             "VNTTS_TTS_MODEL": "tts_model",

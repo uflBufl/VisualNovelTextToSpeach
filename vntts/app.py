@@ -51,6 +51,7 @@ from vntts.main import (
     AppController,
     format_runtime_error,
     get_clear_queue_hotkey,
+    get_emergency_stop_hotkey,
     get_hotkey,
     get_live_hotkey,
     get_pause_hotkey,
@@ -152,6 +153,7 @@ class SettingsDialog(QDialog):
         self.skip_hotkey = HotkeyRecorder(settings.skip_hotkey)
         self.repeat_hotkey = HotkeyRecorder(settings.repeat_hotkey)
         self.clear_queue_hotkey = HotkeyRecorder(settings.clear_queue_hotkey)
+        self.emergency_stop_hotkey = HotkeyRecorder(settings.emergency_stop_hotkey)
         self.screenshot_directory = QLineEdit(settings.screenshot_directory)
         self.retain_uncertain_frames = QCheckBox(
             "Save uncertain frames for OCR diagnostics"
@@ -252,6 +254,7 @@ class SettingsDialog(QDialog):
         form.addRow("Skip speech hotkey", self.skip_hotkey)
         form.addRow("Repeat speech hotkey", self.repeat_hotkey)
         form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
+        form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
         form.addRow("Screenshot directory", screenshot_layout)
         form.addRow("Capture source", self.capture_mode)
         form.addRow("Game window", window_layout)
@@ -422,6 +425,7 @@ class SettingsDialog(QDialog):
                 "skip_hotkey": hotkeys["Skip speech"],
                 "repeat_hotkey": hotkeys["Repeat speech"],
                 "clear_queue_hotkey": hotkeys["Clear queue"],
+                "emergency_stop_hotkey": hotkeys["Emergency stop"],
                 "screenshot_directory": self.screenshot_directory.text().strip(),
                 "ocr_diagnostics_directory": (
                     self.ocr_diagnostics_directory.text().strip()
@@ -456,6 +460,7 @@ class SettingsDialog(QDialog):
             "Skip speech": self.skip_hotkey.hotkey(),
             "Repeat speech": self.repeat_hotkey.hotkey(),
             "Clear queue": self.clear_queue_hotkey.hotkey(),
+            "Emergency stop": self.emergency_stop_hotkey.hotkey(),
         }
 
 
@@ -513,6 +518,7 @@ class TrayApplication(QObject):
         self.skip_action = QAction("Skip current speech")
         self.repeat_action = QAction("Repeat last speech")
         self.clear_queue_action = QAction("Clear speech queue")
+        self.emergency_stop_action = QAction("Emergency stop")
         self.calibrate_action = QAction("Calibrate dialog region")
         self.diagnostics_action = QAction("Live diagnostics...")
         self.settings_action = QAction("Settings...")
@@ -537,6 +543,7 @@ class TrayApplication(QObject):
         self.skip_action.setEnabled(False)
         self.repeat_action.setEnabled(False)
         self.clear_queue_action.setEnabled(False)
+        self.emergency_stop_action.setEnabled(False)
         self.voice_preview_action.setEnabled(False)
         self.menu.addAction(self.status_action)
         self.menu.addAction(self.dialog_action)
@@ -548,6 +555,7 @@ class TrayApplication(QObject):
         self.menu.addAction(self.skip_action)
         self.menu.addAction(self.repeat_action)
         self.menu.addAction(self.clear_queue_action)
+        self.menu.addAction(self.emergency_stop_action)
         self.menu.addAction(self.calibrate_action)
         self.menu.addAction(self.diagnostics_action)
         self.menu.addSeparator()
@@ -575,6 +583,7 @@ class TrayApplication(QObject):
         self.skip_action.triggered.connect(self.skip_current_speech)
         self.repeat_action.triggered.connect(self.repeat_last_speech)
         self.clear_queue_action.triggered.connect(self.clear_speech_queue)
+        self.emergency_stop_action.triggered.connect(self.emergency_stop)
         self.calibrate_action.triggered.connect(self.calibrate)
         self.diagnostics_action.triggered.connect(self.open_diagnostics)
         self.settings_action.triggered.connect(self.open_settings)
@@ -650,6 +659,7 @@ class TrayApplication(QObject):
         skip_hotkey = get_skip_hotkey(self.settings)
         repeat_hotkey = get_repeat_hotkey(self.settings)
         clear_queue_hotkey = get_clear_queue_hotkey(self.settings)
+        emergency_stop_hotkey = get_emergency_stop_hotkey(self.settings)
         validate_hotkey_assignments(
             {
                 "Read once": read_hotkey,
@@ -658,6 +668,7 @@ class TrayApplication(QObject):
                 "Skip speech": skip_hotkey,
                 "Repeat speech": repeat_hotkey,
                 "Clear queue": clear_queue_hotkey,
+                "Emergency stop": emergency_stop_hotkey,
             }
         )
         self.hotkey_listener = keyboard.GlobalHotKeys(
@@ -668,6 +679,7 @@ class TrayApplication(QObject):
                 skip_hotkey: self.skip_current_speech,
                 repeat_hotkey: self.repeat_last_speech,
                 clear_queue_hotkey: self.clear_speech_queue,
+                emergency_stop_hotkey: self.emergency_stop,
             }
         )
         self.hotkey_listener.start()
@@ -694,6 +706,11 @@ class TrayApplication(QObject):
 
     def clear_speech_queue(self):
         self.controller.clear_speech_queue()
+
+    def emergency_stop(self):
+        self.controller.emergency_stop()
+        self.signals.live_changed.emit(False)
+        self.signals.speech_paused_changed.emit(False)
 
     def calibrate(self):
         try:
@@ -1035,6 +1052,7 @@ class TrayApplication(QObject):
         self.skip_action.setEnabled(ready)
         self.repeat_action.setEnabled(ready)
         self.clear_queue_action.setEnabled(ready)
+        self.emergency_stop_action.setEnabled(ready)
         self.voice_preview_action.setEnabled(ready)
         if not ready:
             self.set_status("Unable to start")

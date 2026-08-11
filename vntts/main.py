@@ -73,6 +73,7 @@ default_pause_hotkey = default_hotkey_for_key("p")
 default_skip_hotkey = default_hotkey_for_key("s")
 default_repeat_hotkey = default_hotkey_for_key("r")
 default_clear_queue_hotkey = default_hotkey_for_key("x")
+default_emergency_stop_hotkey = default_hotkey_for_key("e")
 default_live_interval_ms = 200
 default_live_stability_frames = 2
 default_live_idle_flush_ms = 400
@@ -507,6 +508,19 @@ def get_clear_queue_hotkey(settings=None):
     )
 
 
+def get_emergency_stop_hotkey(settings=None):
+    if settings is None:
+        return get_validated_hotkey(
+            "VNTTS_EMERGENCY_STOP_HOTKEY",
+            default_emergency_stop_hotkey,
+        )
+    return validate_hotkey(
+        settings.emergency_stop_hotkey,
+        default_emergency_stop_hotkey,
+        "emergency stop hotkey",
+    )
+
+
 def validate_hotkey(hotkey, default, label):
     try:
         keyboard.HotKey.parse(hotkey)
@@ -780,12 +794,14 @@ def listen_for_hotkeys(
     skip_hotkey,
     repeat_hotkey,
     clear_queue_hotkey,
+    emergency_stop_hotkey,
     on_activate,
     on_live_toggle,
     on_pause_toggle,
     on_skip,
     on_repeat,
     on_clear_queue,
+    on_emergency_stop,
 ):
     print(f"Press {hotkey} to read from screen once")
     print(f"Press {live_hotkey} to start or stop live reading")
@@ -793,6 +809,7 @@ def listen_for_hotkeys(
     print(f"Press {skip_hotkey} to skip current speech")
     print(f"Press {repeat_hotkey} to repeat the last speech")
     print(f"Press {clear_queue_hotkey} to clear the speech queue")
+    print(f"Press {emergency_stop_hotkey} for an emergency stop")
     with keyboard.GlobalHotKeys(
         {
             hotkey: on_activate,
@@ -801,6 +818,7 @@ def listen_for_hotkeys(
             skip_hotkey: on_skip,
             repeat_hotkey: on_repeat,
             clear_queue_hotkey: on_clear_queue,
+            emergency_stop_hotkey: on_emergency_stop,
         }
     ) as listener:
         listener.join()
@@ -1065,6 +1083,7 @@ class AppController:
     def read_once(self):
         if not self.is_ready:
             return False
+        self.live_reader.resume_after_emergency()
         accepted = self.schedule_dialog_read()
         if accepted:
             self.status_handler("Reading current dialog")
@@ -1113,6 +1132,14 @@ class AppController:
         cleared = self.live_reader.clear_queue()
         self.status_handler("Speech queue cleared")
         return cleared
+
+    def emergency_stop(self):
+        if not self.is_ready:
+            return False
+        stopped = self.live_reader.emergency_stop()
+        self._set_backend_live_mode(False)
+        self.status_handler("Emergency stop: live reading and speech stopped")
+        return stopped
 
     def set_auto_advance_enabled(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
@@ -1408,6 +1435,8 @@ class AppController:
         return self.live_reader.enqueue(character, text)
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence):
+        if self.live_reader is not None:
+            self.live_reader.clear_queue()
         preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
         self.dialog_handler(
             "OCR uncertain",
@@ -1435,6 +1464,7 @@ class AppController:
         return True
 
     def _capture_state_changed(self, focused, interval_seconds):
+        lost_focus = self.game_focused and not focused
         self.game_focused = focused
         self.capture_interval_ms = interval_seconds * 1000
         with self.diagnostic_lock:
@@ -1448,6 +1478,9 @@ class AppController:
                 self.last_diagnostic = snapshot
         if snapshot is not None:
             self.diagnostic_handler(snapshot)
+        if lost_focus and self.live_reader is not None:
+            self.live_reader.clear_queue()
+            self.status_handler("Game focus lost; pending speech and input cancelled")
 
     def _publish_diagnostic(self, snapshot):
         snapshot = replace(
@@ -1580,6 +1613,7 @@ def main(tts_factory=TTSEngine):
     skip_hotkey = get_skip_hotkey(settings)
     repeat_hotkey = get_repeat_hotkey(settings)
     clear_queue_hotkey = get_clear_queue_hotkey(settings)
+    emergency_stop_hotkey = get_emergency_stop_hotkey(settings)
     try:
         validate_hotkey_assignments(
             {
@@ -1589,6 +1623,7 @@ def main(tts_factory=TTSEngine):
                 "Skip speech": skip_hotkey,
                 "Repeat speech": repeat_hotkey,
                 "Clear queue": clear_queue_hotkey,
+                "Emergency stop": emergency_stop_hotkey,
             }
         )
     except HotkeyValidationError as error:
@@ -1604,12 +1639,14 @@ def main(tts_factory=TTSEngine):
             skip_hotkey,
             repeat_hotkey,
             clear_queue_hotkey,
+            emergency_stop_hotkey,
             controller.read_once,
             controller.toggle_live,
             controller.toggle_speech_pause,
             controller.skip_current_speech,
             controller.repeat_last_speech,
             controller.clear_speech_queue,
+            controller.emergency_stop,
         )
     finally:
         controller.shutdown()

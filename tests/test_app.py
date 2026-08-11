@@ -49,6 +49,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.clear_queue_action.text(),
             "Clear speech queue",
         )
+        self.assertEqual(tray_application.emergency_stop_action.text(), "Emergency stop")
         self.assertEqual(
             tray_application.calibrate_action.text(),
             "Calibrate dialog region",
@@ -539,6 +540,7 @@ class TrayApplicationTest(unittest.TestCase):
                 AppSettings().skip_hotkey,
                 AppSettings().repeat_hotkey,
                 AppSettings().clear_queue_hotkey,
+                AppSettings().emergency_stop_hotkey,
             },
         )
         listener_factory.return_value.start.assert_called_once_with()
