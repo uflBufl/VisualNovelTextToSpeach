@@ -12,6 +12,7 @@ from vntts.wwise import (
     convert_audio,
     extract_bank,
     extract_embedded_media,
+    inspect_bank_data,
 )
 
 
@@ -51,6 +52,18 @@ class WwiseBankTest(unittest.TestCase):
         truncated = make_bank((10, b"voice"))[:-1]
         with self.assertRaisesRegex(WwiseBankError, "truncated"):
             extract_embedded_media(truncated)
+
+    def test_inspects_bank_sections_without_copying_embedded_media(self):
+        bank = make_bank((10, b"one"), (20, b"two"))
+        bank += b"HIRC" + struct.pack("<I", 4) + struct.pack("<I", 7)
+
+        summary = inspect_bank_data(bank)
+
+        self.assertEqual(summary.sections, ("BKHD", "DIDX", "DATA", "HIRC"))
+        self.assertEqual(summary.media_ids, (10, 20))
+        self.assertEqual(summary.media_count, 2)
+        self.assertEqual(summary.embedded_media_bytes, 6)
+        self.assertEqual(summary.hirc_object_count, 7)
 
     def test_extract_bank_writes_wem_files_and_honors_limit(self):
         with TemporaryDirectory() as temporary_directory:

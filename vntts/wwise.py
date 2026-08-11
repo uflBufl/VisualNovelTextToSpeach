@@ -23,6 +23,91 @@ class EmbeddedMedia:
         return len(self.data)
 
 
+@dataclass(frozen=True)
+class WwiseBankSummary:
+    bank_version: int | None
+    sections: tuple[str, ...]
+    media_ids: tuple[int, ...]
+    embedded_media_bytes: int
+    hirc_object_count: int | None
+
+    @property
+    def media_count(self):
+        return len(self.media_ids)
+
+
+def inspect_bank_data(bank_data):
+    sections = []
+    section_locations = {}
+    offset = 0
+    while offset + 8 <= len(bank_data):
+        tag_bytes = bank_data[offset : offset + 4]
+        if tag_bytes == b"\0\0\0\0" and not any(bank_data[offset:]):
+            break
+        try:
+            tag = tag_bytes.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise WwiseBankError(f"Invalid Wwise section at offset {offset}") from error
+        size = struct.unpack_from("<I", bank_data, offset + 4)[0]
+        payload_offset = offset + 8
+        end = payload_offset + size
+        if end > len(bank_data):
+            raise WwiseBankError(f"Wwise {tag} section is truncated")
+        sections.append(tag)
+        section_locations[tag] = (payload_offset, size)
+        offset = end
+
+    if not sections:
+        raise WwiseBankError("Wwise bank contains no sections")
+
+    bank_version = None
+    bkhd = section_locations.get("BKHD")
+    if bkhd is not None and bkhd[1] >= 4:
+        bank_version = struct.unpack_from("<I", bank_data, bkhd[0])[0]
+
+    hirc_object_count = None
+    hirc = section_locations.get("HIRC")
+    if hirc is not None:
+        if hirc[1] < 4:
+            raise WwiseBankError("Wwise bank has an invalid HIRC section")
+        hirc_object_count = struct.unpack_from("<I", bank_data, hirc[0])[0]
+
+    media_ids = []
+    embedded_media_bytes = 0
+    didx = section_locations.get("DIDX")
+    if didx is not None:
+        didx_offset, didx_size = didx
+        if didx_size % 12:
+            raise WwiseBankError("Wwise bank has an invalid DIDX section")
+        data = section_locations.get("DATA")
+        if data is None:
+            raise WwiseBankError("Wwise bank does not contain a DATA section")
+        _data_offset, data_size = data
+        for entry_offset in range(didx_offset, didx_offset + didx_size, 12):
+            media_id, relative_offset, media_size = struct.unpack_from(
+                "<III", bank_data, entry_offset
+            )
+            if relative_offset + media_size > data_size:
+                raise WwiseBankError(f"Embedded media {media_id} is out of bounds")
+            media_ids.append(media_id)
+            embedded_media_bytes += media_size
+
+    return WwiseBankSummary(
+        bank_version=bank_version,
+        sections=tuple(sections),
+        media_ids=tuple(media_ids),
+        embedded_media_bytes=embedded_media_bytes,
+        hirc_object_count=hirc_object_count,
+    )
+
+
+def inspect_bank(bank):
+    bank = Path(bank).expanduser().resolve()
+    if not bank.is_file():
+        raise WwiseBankError(f"Wwise bank does not exist: {bank}")
+    return inspect_bank_data(bank.read_bytes())
+
+
 def extract_embedded_media(bank_data):
     didx_offset = bank_data.find(b"DIDX")
     if didx_offset < 0 or didx_offset + 8 > len(bank_data):

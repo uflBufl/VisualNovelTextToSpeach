@@ -17,8 +17,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Import Reverse: 1999 NPC voices
 
-- [ ] Add `vntts-reverse1999-index` to discover every installed Wwise bank,
-      classify story/activity/NPC banks, and cache their events and media IDs.
 - [ ] Parse Wwise HIRC event relationships, using `wwiser` where practical,
       instead of selecting embedded media only by file size.
 - [ ] Create a versioned NPC catalog that maps display names and aliases to
