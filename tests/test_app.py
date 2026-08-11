@@ -71,6 +71,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
+        self.assertFalse(tray_application.speaker_mapping_action.isVisible())
         self.assertEqual(
             tray_application.voice_preview_action.text(), "Preview voices..."
         )
@@ -88,6 +89,25 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_unknown_speaker_adds_mapping_action_and_notification(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch.object(tray_application.tray, "showMessage") as notification:
+            tray_application.signals.unknown_speaker.emit("Selone")
+            self.application.processEvents()
+
+        self.assertTrue(tray_application.speaker_mapping_action.isVisible())
+        self.assertEqual(
+            tray_application.speaker_mapping_action.text(), "Map voice for Selone..."
+        )
+        self.assertIn("narrator voice", notification.call_args.args[1])
+        tray_application.shutdown()
 
     def test_macos_tray_icon_is_a_distinct_adaptive_mask(self):
         icon = create_application_icon(

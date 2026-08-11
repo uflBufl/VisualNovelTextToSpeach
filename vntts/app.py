@@ -68,6 +68,8 @@ from vntts.release_smoke_test import (
     default_smoke_test_model,
     run_release_smoke_test,
 )
+from vntts.reverse1999_audition import load_audition_data
+from vntts.reverse1999_audition_ui import Reverse1999AuditionDialog
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import (
     AppSettings,
@@ -134,6 +136,7 @@ class AppSignals(QObject):
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
     support_export_finished = Signal(bool, str)
+    unknown_speaker = Signal(str)
 
 
 class SettingsDialog(QDialog):
@@ -476,6 +479,7 @@ class TrayApplication(QObject):
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
             diagnostic_handler=self.signals.diagnostics_changed.emit,
+            unknown_speaker_handler=self.signals.unknown_speaker.emit,
             error_handler=self.report_controller_error,
         )
         self.profile_store = profile_store or GameProfileStore.load()
@@ -492,6 +496,7 @@ class TrayApplication(QObject):
         self.onboarding_wizard = None
         self.diagnostics_dialog = None
         self.onboarding_cancel_event = Event()
+        self.pending_unknown_speaker = None
 
         self.tray = QSystemTrayIcon(self._application_icon(), application)
         self.menu = QMenu()
@@ -517,6 +522,8 @@ class TrayApplication(QObject):
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.voice_preview_action = QAction("Preview voices...")
+        self.speaker_mapping_action = QAction("Map detected speaker...")
+        self.speaker_mapping_action.setVisible(False)
         self.history_action = QAction("Dialogue history...")
         self.support_action = QAction("Export support bundle...")
         self.macos_permissions_action = QAction("macOS permissions...")
@@ -551,6 +558,7 @@ class TrayApplication(QObject):
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.voice_preview_action)
+        self.menu.addAction(self.speaker_mapping_action)
         self.menu.addAction(self.history_action)
         self.menu.addAction(self.support_action)
         self.menu.addAction(self.macos_permissions_action)
@@ -576,6 +584,7 @@ class TrayApplication(QObject):
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
+        self.speaker_mapping_action.triggered.connect(self.open_speaker_mapping)
         self.history_action.triggered.connect(self.open_history)
         self.support_action.triggered.connect(self.export_support_bundle)
         self.macos_permissions_action.triggered.connect(self.open_macos_permissions)
@@ -590,6 +599,7 @@ class TrayApplication(QObject):
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
         self.signals.support_export_finished.connect(self.support_export_finished)
+        self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
         self.application.aboutToQuit.connect(self.shutdown)
 
     def _application_icon(self):
@@ -929,6 +939,31 @@ class TrayApplication(QObject):
             self.controller.available_voice_characters(),
             self.controller.preview_voice,
         )
+        dialog.exec()
+
+    def offer_speaker_mapping(self, speaker):
+        self.pending_unknown_speaker = speaker
+        self.speaker_mapping_action.setText(f"Map voice for {speaker}...")
+        self.speaker_mapping_action.setVisible(True)
+        self.tray.showMessage(
+            "Character voice not mapped",
+            f"{speaker} is using the narrator voice. Open the tray menu to map it.",
+            QSystemTrayIcon.MessageIcon.Information,
+        )
+
+    def open_speaker_mapping(self):
+        try:
+            dialogue_index, bank_index = load_audition_data()
+        except Exception as error:
+            self.show_error(
+                f"Unable to open voice mapping: {error}. Run the Reverse: 1999 "
+                "index and config commands first."
+            )
+            return
+        dialog = Reverse1999AuditionDialog(dialogue_index, bank_index)
+        if self.pending_unknown_speaker:
+            dialog.search.setText(self.pending_unknown_speaker)
+            dialog.speaker_name.setText(self.pending_unknown_speaker)
         dialog.exec()
 
     def open_history(self):

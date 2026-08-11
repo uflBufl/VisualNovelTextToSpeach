@@ -826,6 +826,7 @@ class AppController:
         status_handler=print,
         dialog_handler=None,
         diagnostic_handler=None,
+        unknown_speaker_handler=None,
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
@@ -850,6 +851,7 @@ class AppController:
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
         self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
+        self.unknown_speaker_handler = unknown_speaker_handler or (lambda _name: None)
         self.error_handler = error_handler
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
@@ -869,6 +871,7 @@ class AppController:
         self.diagnostic_lock = Lock()
         self.voice_prime_lock = Lock()
         self.primed_voice_keys = set()
+        self.reported_unknown_speakers = set()
         self.voice_prime_futures = set()
         self.shutdown_requested = Event()
 
@@ -1323,10 +1326,23 @@ class AppController:
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return
+        self._offer_unknown_speaker_mapping(character)
         self._prime_observed_voice(character)
         self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
+
+    def _offer_unknown_speaker_mapping(self, character):
+        key = normalize_character_name(character)
+        if not key or key == "narrator" or self.voice_router is None:
+            return False
+        if self.voice_router.registry.resolve_closest(character) is not None:
+            return False
+        if key in self.reported_unknown_speakers:
+            return False
+        self.reported_unknown_speakers.add(key)
+        self.unknown_speaker_handler(character.strip())
+        return True
 
     def _prime_observed_voice(self, character):
         prime = getattr(self.speech_backend, "prime", None)

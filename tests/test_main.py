@@ -930,6 +930,36 @@ class MainTest(unittest.TestCase):
             "A line visible in the tray",
         )
 
+    def test_controller_offers_each_confident_unknown_speaker_once(self):
+        offered = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.resolve_closest.return_value = None
+
+        controller._dialog_observed("Selone", "First line")
+        controller._dialog_observed("Selone", "Second line")
+        controller._dialog_observed("Narrator", "Scene description")
+
+        self.assertEqual(offered, ["Selone"])
+
+    def test_controller_does_not_offer_configured_speaker(self):
+        offered = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.resolve_closest.return_value = Mock()
+
+        controller._dialog_observed("Kamuta", "A line")
+
+        self.assertEqual(offered, [])
+
     def test_live_mode_uses_playback_safe_backend_threads(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
