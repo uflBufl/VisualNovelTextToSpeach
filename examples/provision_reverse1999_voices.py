@@ -223,6 +223,11 @@ def provision_character(character, references_directory, reference_count):
     for reference_image in order_references(images)[:max_reference_attempts]:
         try:
             media = resolve_media(reference_image)
+            if not str(media.get("mime", "")).casefold().startswith("audio/"):
+                last_error = WikiAPIError(
+                    f"{reference_image} is {media.get('mime') or 'not audio'}"
+                )
+                continue
             extension = Path(reference_image).suffix.casefold()
             reference_path = references_directory / (
                 f"{slug}-{len(references) + 1:02d}{extension}"

@@ -36,6 +36,9 @@ dependencies = [
 vntts = "vntts.main:main"
 vntts-app = "vntts.app:main"
 vntts-calibrate = "vntts.calibration:main"
+vntts-wwise-extract = "vntts.game_audio_cli:extract_main"
+vntts-audio-convert = "vntts.game_audio_cli:convert_main"
+vntts-reverse1999-voice = "vntts.reverse1999_voice_import:main"
 
 [tool.uv.sources]
 torch = [

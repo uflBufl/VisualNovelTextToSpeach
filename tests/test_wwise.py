@@ -1,0 +1,107 @@
+import struct
+import unittest
+from pathlib import Path
+from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
+
+from vntts.wwise import (
+    AudioConversionError,
+    EmbeddedMedia,
+    WwiseBankError,
+    convert_audio,
+    extract_bank,
+    extract_embedded_media,
+)
+
+
+def make_bank(*media):
+    data = b""
+    entries = []
+    for media_id, content in media:
+        entries.append(struct.pack("<III", media_id, len(data), len(content)))
+        data += content
+    didx = b"".join(entries)
+    return (
+        b"BKHD"
+        + struct.pack("<I", 0)
+        + b"DIDX"
+        + struct.pack("<I", len(didx))
+        + didx
+        + b"DATA"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+class WwiseBankTest(unittest.TestCase):
+    def test_extracts_embedded_media_with_ids_and_bytes(self):
+        first = b"RIFF-first"
+        second = b"RIFF-second"
+
+        self.assertEqual(
+            extract_embedded_media(make_bank((10, first), (20, second))),
+            [EmbeddedMedia(10, first), EmbeddedMedia(20, second)],
+        )
+
+    def test_invalid_or_truncated_bank_is_rejected(self):
+        with self.assertRaisesRegex(WwiseBankError, "DIDX"):
+            extract_embedded_media(b"BKHD")
+
+        truncated = make_bank((10, b"voice"))[:-1]
+        with self.assertRaisesRegex(WwiseBankError, "truncated"):
+            extract_embedded_media(truncated)
+
+    def test_extract_bank_writes_wem_files_and_honors_limit(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            bank = directory / "voice.bnk"
+            bank.write_bytes(make_bank((10, b"one"), (20, b"two")))
+
+            outputs = extract_bank(bank, directory / "output", limit=1)
+
+            self.assertEqual([path.name for path in outputs], ["10.wem"])
+            self.assertEqual(outputs[0].read_bytes(), b"one")
+
+    def test_extract_bank_does_not_overwrite_without_permission(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            bank = directory / "voice.bnk"
+            bank.write_bytes(make_bank((10, b"new")))
+            output = directory / "output"
+            output.mkdir()
+            (output / "10.wem").write_bytes(b"existing")
+
+            with self.assertRaisesRegex(WwiseBankError, "--overwrite"):
+                extract_bank(bank, output)
+
+            self.assertEqual((output / "10.wem").read_bytes(), b"existing")
+
+
+class AudioConversionTest(unittest.TestCase):
+    def test_conversion_invokes_decoder_and_requires_created_output(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "voice.wem"
+            output = directory / "voice.wav"
+            source.write_bytes(b"voice")
+
+            def run(command, **_options):
+                Path(command[2]).write_bytes(b"wav")
+                return CompletedProcess(command, 0, "", "")
+
+            with patch("vntts.wwise.resolve_decoder", return_value="decoder"):
+                result = convert_audio(source, output, runner=run)
+
+        self.assertEqual(result, output.resolve())
+
+    def test_decoder_failure_includes_reported_error(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "voice.wem"
+            source.write_bytes(b"voice")
+            runner = Mock(return_value=CompletedProcess([], 1, "", "unsupported codec"))
+
+            with patch("vntts.wwise.resolve_decoder", return_value="decoder"):
+                with self.assertRaisesRegex(AudioConversionError, "unsupported codec"):
+                    convert_audio(source, directory / "voice.wav", runner=runner)
