@@ -10,7 +10,7 @@ from unittest.mock import ANY, Mock, patch
 from PIL import Image, ImageDraw
 
 from vntts.diagnostics import DiagnosticSnapshot
-from vntts.live import SpeechChunk
+from vntts.live import AdaptiveSpeechBackpressure, SpeechChunk
 from vntts.main import (
     AppController,
     CapturedDialogFrame,
@@ -947,12 +947,19 @@ class MainTest(unittest.TestCase):
             [True, False],
         )
 
-    def test_live_underflow_disables_prefetch_for_the_session(self):
+    def test_live_underflow_temporarily_disables_then_restores_prefetch(self):
         statuses = []
+        now = [0.0]
+        policy = AdaptiveSpeechBackpressure(
+            normal_jobs=2,
+            cooldown_seconds=10,
+            clock=lambda: now[0],
+        )
         controller = AppController(
             AppSettings(),
             tts_factory=Mock(),
             status_handler=statuses.append,
+            speech_backpressure_factory=Mock(return_value=policy),
         )
         controller.live_reader = Mock()
         controller.speech_backend = Mock()
@@ -961,9 +968,18 @@ class MainTest(unittest.TestCase):
         chunk = SpeechChunk(1, "Kamuta", "A line.")
 
         self.assertTrue(controller._play_live_chunk(chunk, "prepared"))
-
         self.assertEqual(controller.live_reader.max_speech_jobs, 1)
         self.assertIn("prefetch disabled", statuses[-1])
+
+        controller.speech_backend.last_playback_underrun = False
+        now[0] = 9.0
+        controller._play_live_chunk(chunk, "prepared")
+        self.assertEqual(controller.live_reader.max_speech_jobs, 1)
+
+        now[0] = 10.0
+        controller._play_live_chunk(chunk, "prepared")
+        self.assertEqual(controller.live_reader.max_speech_jobs, 2)
+        self.assertIn("prefetch restored", statuses[-1])
 
     def test_controller_primes_a_live_voice_as_soon_as_its_name_is_observed(self):
         controller = AppController(AppSettings(), tts_factory=Mock())

@@ -7,13 +7,8 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Prototype streaming Pocket TTS
 
-- [ ] Add Pocket TTS as an optional, isolated runtime while keeping the stable
-      speech backend as the default.
-- [ ] Stream generated PCM directly to one persistent playback stream and make
-      pause, skip, queue clearing, dialogue replacement, and shutdown interrupt
-      generation immediately.
-- [ ] Export each cloned NPC voice state to `safetensors`, reload it on later
-      launches, and keep recently used voice states in memory.
+- [ ] Make pause, skip, queue clearing, dialogue replacement, and shutdown
+      interrupt in-flight Pocket TTS generation immediately.
 - [ ] Benchmark Kamuta, Fatutu, and Selone references against Chatterbox Nano:
       model startup, voice conditioning, first-audio latency, realtime factor,
       speaker similarity, artifacts, RAM, and CPU use.
@@ -62,8 +57,6 @@ sections after their implementation has been verified and committed.
     and within 750 ms on the supported CUDA target.
   - Start an already-visible second sentence within 300 ms of the first ending.
   - Never speak or advance stale OCR generations.
-- [ ] Add adaptive backpressure: disable concurrent synthesis automatically after
-      an audio underrun and restore it only after a clean cooldown period.
 - [ ] Use the existing `pynput` controller for the cross-platform prototype, then
       use native Windows `SendInput` for the Windows build and Quartz events on
       macOS after verifying Accessibility permission.
@@ -90,8 +83,8 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Live-mode integration and safety tests
 
-- [ ] Add deterministic coverage for audio-underrun backpressure and emergency
-      cancellation during every pipeline stage.
+- [ ] Add deterministic coverage for emergency cancellation during every
+      pipeline stage.
 - [ ] Add real Windows and macOS soak tests covering CPU and GPU speech, animated
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.

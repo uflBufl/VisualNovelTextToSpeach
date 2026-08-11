@@ -240,6 +240,17 @@ class TTSEngineTest(unittest.TestCase):
         self.assertEqual(prepared[-1], 0.0)
         self.assertEqual(prepared[10], 1.0)
 
+    def test_playback_reports_and_resets_output_underflow(self):
+        engine, _tts, audio_output = self.create_engine()
+        audio_output.wait.return_value.output_underflow = True
+
+        engine.play([0.0, 0.5, 0.0])
+        self.assertTrue(engine.last_playback_underrun)
+
+        audio_output.wait.return_value.output_underflow = False
+        engine.play([0.0, 0.5, 0.0])
+        self.assertFalse(engine.last_playback_underrun)
+
     def test_runtime_volume_and_speed_are_validated_and_updated(self):
         engine, tts, _ = self.create_engine()
 

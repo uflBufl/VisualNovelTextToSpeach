@@ -25,7 +25,11 @@ from vntts.hotkeys import (
 from vntts.hotkeys import (
     default_hotkey as default_hotkey_for_key,
 )
-from vntts.live import IncrementalDialogTracker, LiveDialogReader
+from vntts.live import (
+    AdaptiveSpeechBackpressure,
+    IncrementalDialogTracker,
+    LiveDialogReader,
+)
 from vntts.ocr import (
     OCRResult,
     UncertainFrameRecorder,
@@ -827,6 +831,7 @@ class AppController:
         model_asset_manager_factory=ModelAssetManager,
         chatterbox_backend_factory=ChatterboxNanoVoiceRouterBackend,
         pocket_backend_factory=PocketTTSVoiceRouterBackend,
+        speech_backpressure_factory=AdaptiveSpeechBackpressure,
         correction_store=None,
         history=None,
     ):
@@ -835,6 +840,7 @@ class AppController:
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
         self.pocket_backend_factory = pocket_backend_factory
+        self.speech_backpressure_factory = speech_backpressure_factory
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -855,6 +861,7 @@ class AppController:
         self.speech_executor = None
         self.playback_executor = None
         self.live_reader = None
+        self.live_speech_backpressure = self.speech_backpressure_factory()
         self.schedule_dialog_read = None
         self.last_diagnostic = None
         self.capture_interval_ms = self.settings.live_interval_ms
@@ -969,6 +976,10 @@ class AppController:
                     True,
                 )
             )
+            max_speech_jobs = 2 if can_prepare_during_playback else 1
+            self.live_speech_backpressure = self.speech_backpressure_factory(
+                normal_jobs=max_speech_jobs,
+            )
             screenshot_directory = get_screenshot_directory(self.settings)
             self.live_reader = LiveDialogReader(
                 capture_executor=self.capture_executor,
@@ -1005,7 +1016,7 @@ class AppController:
                     else None
                 ),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
-                max_speech_jobs=2 if can_prepare_during_playback else 1,
+                max_speech_jobs=max_speech_jobs,
                 **get_live_configuration(self.settings),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -1045,6 +1056,8 @@ class AppController:
         if not self.is_ready:
             return False
         running = self.live_reader.toggle()
+        if running:
+            self.live_reader.max_speech_jobs = self.live_speech_backpressure.reset()
         self._set_backend_live_mode(running)
         self.status_handler(
             "Live reading started" if running else "Live reading stopping"
@@ -1424,10 +1437,18 @@ class AppController:
                 audio,
                 playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
             )
-            if getattr(self.speech_backend, "last_playback_underrun", False):
-                self.live_reader.max_speech_jobs = 1
+            underflowed = bool(
+                getattr(self.speech_backend, "last_playback_underrun", False)
+            )
+            jobs, changed = self.live_speech_backpressure.observe_playback(
+                underflowed=underflowed,
+            )
+            self.live_reader.max_speech_jobs = jobs
+            if changed:
                 self.status_handler(
-                    "Audio underrun detected; live speech prefetch disabled"
+                    "Audio underrun detected; live speech prefetch disabled temporarily"
+                    if underflowed
+                    else "Audio playback stable; live speech prefetch restored"
                 )
             return result
         finally:

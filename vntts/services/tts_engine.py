@@ -159,6 +159,7 @@ class TTSEngine:
         self.synthesis_lock = Lock()
         self.playback_lock = Lock()
         self.playback_active = False
+        self.last_playback_underrun = False
         self.last_synthesis_ms = None
         self.last_playback_ms = None
         self.sample_rate = self.tts.synthesizer.output_sample_rate
@@ -191,6 +192,7 @@ class TTSEngine:
         be prepared while sentence N is using the output device.
         """
         self.last_playback_ms = None
+        self.last_playback_underrun = False
         if playback_guard is not None and not playback_guard():
             return False
 
@@ -210,13 +212,29 @@ class TTSEngine:
                     playback_sample_rate,
                     latency=self.playback_latency,
                 )
-                self.audio_output.wait()
+                playback_status = self.audio_output.wait()
+                self.last_playback_underrun = self._playback_underflowed(
+                    playback_status
+                )
             except Exception as error:
                 raise AudioPlaybackError(str(error)) from error
             finally:
                 self.playback_active = False
                 self.last_playback_ms = (self.clock() - playback_started) * 1000
         return True
+
+    def _playback_underflowed(self, playback_status=None):
+        value = getattr(playback_status, "output_underflow", None)
+        if isinstance(value, (bool, np.bool_)):
+            return bool(value)
+        get_stream = getattr(self.audio_output, "get_stream", None)
+        if not callable(get_stream):
+            return False
+        try:
+            value = get_stream().status.output_underflow
+        except (AttributeError, RuntimeError):
+            return False
+        return bool(value) if isinstance(value, (bool, np.bool_)) else False
 
     def synthesize(
         self,

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 from vntts.live import (
     AdaptiveCapturePolicy,
+    AdaptiveSpeechBackpressure,
     IncrementalDialogTracker,
     LiveDialogReader,
     SpeechChunk,
@@ -30,6 +31,53 @@ class ImmediateExecutor:
         except Exception as error:
             future.set_exception(error)
         return future
+
+
+class AdaptiveSpeechBackpressureTest(unittest.TestCase):
+    def test_underflow_serializes_until_a_clean_cooldown_has_elapsed(self):
+        clock = FakeClock()
+        policy = AdaptiveSpeechBackpressure(
+            normal_jobs=2,
+            cooldown_seconds=10,
+            clock=clock,
+        )
+
+        self.assertEqual(
+            policy.observe_playback(underflowed=True),
+            (1, True),
+        )
+        clock.advance(9)
+        self.assertEqual(
+            policy.observe_playback(underflowed=False),
+            (1, False),
+        )
+        clock.advance(1)
+        self.assertEqual(
+            policy.observe_playback(underflowed=False),
+            (2, True),
+        )
+
+    def test_another_underflow_restarts_the_cooldown(self):
+        clock = FakeClock()
+        policy = AdaptiveSpeechBackpressure(cooldown_seconds=10, clock=clock)
+
+        policy.observe_playback(underflowed=True)
+        clock.advance(9)
+        policy.observe_playback(underflowed=True)
+        clock.advance(2)
+
+        self.assertEqual(
+            policy.observe_playback(underflowed=False),
+            (1, False),
+        )
+
+    def test_serial_backend_never_reports_a_backpressure_transition(self):
+        policy = AdaptiveSpeechBackpressure(normal_jobs=1)
+
+        self.assertEqual(
+            policy.observe_playback(underflowed=True),
+            (1, False),
+        )
 
 
 class IncrementalDialogTrackerTest(unittest.TestCase):

@@ -10,6 +10,7 @@ from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
+    XTTSVoiceRouterBackend,
     activate_chatterbox_runtime,
     activate_pocket_tts_runtime,
     configure_cpu_synthesis_threads,
@@ -338,6 +339,15 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
         self.assertTrue(np.all(np.isfinite(prepared)))
         self.assertLessEqual(float(np.max(np.abs(prepared))), 0.95)
+
+
+class XTTSBackendTest(unittest.TestCase):
+    def test_exposes_the_wrapped_engine_underflow_status(self):
+        voice_router = Mock()
+        voice_router.tts.last_playback_underrun = True
+        backend = XTTSVoiceRouterBackend(voice_router)
+
+        self.assertTrue(backend.last_playback_underrun)
 
 
 class PocketTTSBackendTest(unittest.TestCase):

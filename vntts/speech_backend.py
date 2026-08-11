@@ -73,6 +73,12 @@ class XTTSVoiceRouterBackend:
     def stop(self):
         return self.voice_router.tts.stop()
 
+    @property
+    def last_playback_underrun(self):
+        return bool(
+            getattr(self.voice_router.tts, "last_playback_underrun", False)
+        )
+
 
 class ChatterboxNanoVoiceRouterBackend:
     """Low-latency English voice cloning with persistent voice conditioning."""
@@ -234,12 +240,6 @@ class ChatterboxNanoVoiceRouterBackend:
                 self.last_playback_underrun = self._playback_underflowed(
                     playback_status
                 )
-                if self.last_playback_underrun:
-                    self.capabilities = SpeechBackendCapabilities(
-                        voice_cloning=True,
-                        streaming=False,
-                        concurrent_prepare_and_play=False,
-                    )
             except Exception as error:
                 raise AudioPlaybackError(str(error)) from error
             finally:

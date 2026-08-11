@@ -29,6 +29,41 @@ class LivePipelineMetrics:
     last_auto_advance_at: float | None = None
 
 
+class AdaptiveSpeechBackpressure:
+    """Temporarily serialize speech after an output underrun."""
+
+    def __init__(self, *, normal_jobs=2, cooldown_seconds=10.0, clock=monotonic):
+        if normal_jobs < 1:
+            raise ValueError("normal_jobs must be positive")
+        if cooldown_seconds <= 0:
+            raise ValueError("cooldown_seconds must be positive")
+        self.normal_jobs = int(normal_jobs)
+        self.cooldown_seconds = float(cooldown_seconds)
+        self.clock = clock
+        self.current_jobs = self.normal_jobs
+        self.last_underflow_at = None
+
+    def reset(self):
+        self.current_jobs = self.normal_jobs
+        self.last_underflow_at = None
+        return self.current_jobs
+
+    def observe_playback(self, *, underflowed):
+        previous_jobs = self.current_jobs
+        now = self.clock()
+        if underflowed:
+            self.last_underflow_at = now
+            self.current_jobs = 1
+        elif (
+            self.current_jobs < self.normal_jobs
+            and self.last_underflow_at is not None
+            and now - self.last_underflow_at >= self.cooldown_seconds
+        ):
+            self.current_jobs = self.normal_jobs
+            self.last_underflow_at = None
+        return self.current_jobs, self.current_jobs != previous_jobs
+
+
 class AdaptiveCapturePolicy:
     def __init__(
         self,
