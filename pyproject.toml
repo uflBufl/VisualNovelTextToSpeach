@@ -43,6 +43,7 @@ vntts-audio-convert = "vntts.game_audio_cli:convert_main"
 vntts-reverse1999-voice = "vntts.reverse1999_voice_import:main"
 vntts-reverse1999-index = "vntts.reverse1999_index:main"
 vntts-reverse1999-config = "vntts.reverse1999_config:main"
+vntts-reverse1999-audition = "vntts.reverse1999_audition_ui:main"
 
 [tool.uv.sources]
 torch = [

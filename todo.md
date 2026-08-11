@@ -17,8 +17,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Import Reverse: 1999 NPC voices
 
-- [ ] Provide a chapter-aware audition UI when automatic speaker mapping is
-      unavailable.
 - [ ] Use Selone as the first assisted-import validation case, then apply the
       same workflow to all unresolved story NPCs.
 - [ ] Score extracted clips for duration, silence, clipping, music/SFX, and
