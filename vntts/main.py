@@ -45,6 +45,7 @@ from vntts.services.tts_engine import (
 from vntts.settings import AppSettings, load_app_settings
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
+    PocketTTSVoiceRouterBackend,
     XTTSVoiceRouterBackend,
 )
 from vntts.voices import (
@@ -52,6 +53,7 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceManifestError,
     find_default_voice_manifest,
+    normalize_character_name,
 )
 from vntts.window_capture import (
     WindowCaptureTarget,
@@ -68,7 +70,7 @@ default_repeat_hotkey = default_hotkey_for_key("r")
 default_clear_queue_hotkey = default_hotkey_for_key("x")
 default_live_interval_ms = 200
 default_live_stability_frames = 2
-default_live_idle_flush_ms = 700
+default_live_idle_flush_ms = 400
 default_live_min_chunk_characters = 20
 tts_environment_variables = {
     "model_name": "VNTTS_TTS_MODEL",
@@ -824,6 +826,7 @@ class AppController:
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
         chatterbox_backend_factory=ChatterboxNanoVoiceRouterBackend,
+        pocket_backend_factory=PocketTTSVoiceRouterBackend,
         correction_store=None,
         history=None,
     ):
@@ -831,6 +834,7 @@ class AppController:
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
+        self.pocket_backend_factory = pocket_backend_factory
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -856,6 +860,9 @@ class AppController:
         self.capture_interval_ms = self.settings.live_interval_ms
         self.game_focused = True
         self.diagnostic_lock = Lock()
+        self.voice_prime_lock = Lock()
+        self.primed_voice_keys = set()
+        self.voice_prime_futures = set()
         self.shutdown_requested = Event()
 
     @property
@@ -872,9 +879,12 @@ class AppController:
 
         self.shutdown_requested.clear()
         use_xtts = self.settings.speech_backend == "coqui-xtts"
-        self.status_handler(
-            "Loading TTS model..." if use_xtts else "Loading Chatterbox Nano..."
-        )
+        loading_status = {
+            "coqui-xtts": "Loading TTS model...",
+            "chatterbox-nano": "Loading Chatterbox Nano...",
+            "pocket-tts": "Loading Pocket TTS...",
+        }[self.settings.speech_backend]
+        self.status_handler(loading_status)
         try:
             if use_xtts:
                 self.model_assets.configure_environment()
@@ -882,14 +892,20 @@ class AppController:
                     os.environ["COQUI_TOS_AGREED"] = "1"
                 self.tts = self.tts_factory(**get_tts_configuration(self.settings))
             else:
-                self.model_assets.configure_huggingface_environment()
+                if self.settings.speech_backend == "chatterbox-nano":
+                    self.model_assets.configure_huggingface_environment()
                 registry = initialize_voice_registry(
                     self.settings,
                     self.error_handler,
                 )
                 if registry is None:
                     return False
-                self.tts = self.chatterbox_backend_factory(
+                backend_factory = (
+                    self.pocket_backend_factory
+                    if self.settings.speech_backend == "pocket-tts"
+                    else self.chatterbox_backend_factory
+                )
+                self.tts = backend_factory(
                     registry,
                     narrator_reference=self.settings.tts_speaker_wav,
                     volume=self.settings.output_volume_percent / 100,
@@ -945,6 +961,14 @@ class AppController:
                 max_workers=1,
                 thread_name_prefix="dialog-playback",
             )
+            backend_capabilities = getattr(self.speech_backend, "capabilities", None)
+            can_prepare_during_playback = bool(
+                getattr(
+                    backend_capabilities,
+                    "concurrent_prepare_and_play",
+                    True,
+                )
+            )
             screenshot_directory = get_screenshot_directory(self.settings)
             self.live_reader = LiveDialogReader(
                 capture_executor=self.capture_executor,
@@ -981,6 +1005,7 @@ class AppController:
                     else None
                 ),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
+                max_speech_jobs=2 if can_prepare_during_playback else 1,
                 **get_live_configuration(self.settings),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -1020,6 +1045,7 @@ class AppController:
         if not self.is_ready:
             return False
         running = self.live_reader.toggle()
+        self._set_backend_live_mode(running)
         self.status_handler(
             "Live reading started" if running else "Live reading stopping"
         )
@@ -1174,6 +1200,7 @@ class AppController:
     def apply_settings(self, settings):
         was_live = self.is_live_running
         if was_live:
+            self._set_backend_live_mode(False)
             self.live_reader.stop()
             self.live_reader.wait()
 
@@ -1225,7 +1252,13 @@ class AppController:
             correction_dictionary=self.correction_dictionary,
         )
         if was_live:
+            self._set_backend_live_mode(True)
             self.live_reader.start()
+
+    def _set_backend_live_mode(self, active):
+        configure = getattr(self.speech_backend, "set_live_mode_active", None)
+        if callable(configure):
+            configure(active)
 
     def refresh_corrections(self):
         self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
@@ -1277,9 +1310,32 @@ class AppController:
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return
+        self._prime_observed_voice(character)
         self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
+
+    def _prime_observed_voice(self, character):
+        prime = getattr(self.speech_backend, "prime", None)
+        if not callable(prime) or self.speech_executor is None:
+            return False
+        key = normalize_character_name(character) or "narrator"
+        with self.voice_prime_lock:
+            if key in self.primed_voice_keys:
+                return False
+            self.primed_voice_keys.add(key)
+            future = self.speech_executor.submit(prime, character)
+            self.voice_prime_futures.add(future)
+        future.add_done_callback(self._voice_prime_finished)
+        return True
+
+    def _voice_prime_finished(self, future):
+        with self.voice_prime_lock:
+            self.voice_prime_futures.discard(future)
+        try:
+            future.result()
+        except Exception as error:
+            self.error_handler(error)
 
     def _enqueue_dialog(self, character, text):
         self._dialog_observed(character, text)
@@ -1364,10 +1420,16 @@ class AppController:
     def _play_live_chunk(self, chunk, audio):
         print(f"{chunk.character} is speaking now (live)")
         try:
-            return self.speech_backend.play(
+            result = self.speech_backend.play(
                 audio,
                 playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
             )
+            if getattr(self.speech_backend, "last_playback_underrun", False):
+                self.live_reader.max_speech_jobs = 1
+                self.status_handler(
+                    "Audio underrun detected; live speech prefetch disabled"
+                )
+            return result
         finally:
             self._refresh_diagnostic_metrics()
 
@@ -1379,6 +1441,7 @@ class AppController:
 
     def shutdown(self):
         self.shutdown_requested.set()
+        self._set_backend_live_mode(False)
         if self.live_reader is not None:
             self.live_reader.stop()
             self.live_reader.clear_queue()

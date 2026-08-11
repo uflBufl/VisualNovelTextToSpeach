@@ -193,7 +193,30 @@ class IncrementalDialogTracker:
         if not text or not any(character.isalnum() for character in text):
             return []
 
-        return [SpeechChunk(self.generation, self.character, text)]
+        return [
+            SpeechChunk(self.generation, self.character, sentence)
+            for sentence in self._split_sentences(text)
+            if any(character.isalnum() for character in sentence)
+        ]
+
+    @staticmethod
+    def _split_sentences(text):
+        sentences = []
+        start = 0
+        for position, character in enumerate(text):
+            if character not in ".!?":
+                continue
+            next_position = position + 1
+            if next_position != len(text) and not text[next_position].isspace():
+                continue
+            sentence = text[start:next_position].strip()
+            if sentence:
+                sentences.append(sentence)
+            start = next_position
+        remainder = text[start:].strip()
+        if remainder:
+            sentences.append(remainder)
+        return sentences
 
     def _find_boundary(self, text):
         sentence_boundary = self._last_punctuation_boundary(text, ".!?")

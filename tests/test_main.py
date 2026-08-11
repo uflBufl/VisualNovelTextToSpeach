@@ -667,6 +667,7 @@ class MainTest(unittest.TestCase):
         backend = Mock()
         backend.registry = Mock()
         backend.narrator_speaker = "Chatterbox default"
+        backend.capabilities.concurrent_prepare_and_play = False
         backend_factory = Mock(return_value=backend)
         tts_factory = Mock()
         model_assets = Mock()
@@ -674,7 +675,9 @@ class MainTest(unittest.TestCase):
         with (
             patch("vntts.main.initialize_voice_registry", return_value=registry),
             patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
-            patch("vntts.main.LiveDialogReader", return_value=Mock()),
+            patch(
+                "vntts.main.LiveDialogReader", return_value=Mock()
+            ) as live_reader_factory,
             patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
@@ -696,6 +699,50 @@ class MainTest(unittest.TestCase):
         )
         self.assertIs(controller.tts, backend)
         self.assertIs(controller.voice_router, backend)
+        self.assertIs(controller.speech_backend, backend)
+        self.assertEqual(
+            live_reader_factory.call_args.kwargs["max_speech_jobs"],
+            1,
+        )
+        controller.shutdown()
+
+    def test_controller_loads_only_pocket_tts_when_selected(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "Pocket TTS default"
+        backend.capabilities.concurrent_prepare_and_play = False
+        pocket_factory = Mock(return_value=backend)
+        chatterbox_factory = Mock()
+        tts_factory = Mock()
+        model_assets = Mock()
+        registry = Mock()
+        statuses = []
+        with (
+            patch("vntts.main.initialize_voice_registry", return_value=registry),
+            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.main.LiveDialogReader", return_value=Mock()),
+            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(speech_backend="pocket-tts"),
+                tts_factory=tts_factory,
+                chatterbox_backend_factory=chatterbox_factory,
+                pocket_backend_factory=pocket_factory,
+                model_asset_manager_factory=Mock(return_value=model_assets),
+                status_handler=statuses.append,
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertIn("Loading Pocket TTS...", statuses)
+        tts_factory.assert_not_called()
+        chatterbox_factory.assert_not_called()
+        model_assets.configure_huggingface_environment.assert_not_called()
+        pocket_factory.assert_called_once_with(
+            registry,
+            narrator_reference=None,
+            volume=1.0,
+        )
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
 
@@ -881,6 +928,59 @@ class MainTest(unittest.TestCase):
         self.assertEqual(
             controller.history.snapshot()[0].text,
             "A line visible in the tray",
+        )
+
+    def test_live_mode_uses_playback_safe_backend_threads(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.live_reader = Mock()
+        controller.live_reader.toggle.side_effect = [True, False]
+        controller.speech_backend = Mock()
+
+        self.assertTrue(controller.toggle_live())
+        self.assertFalse(controller.toggle_live())
+
+        self.assertEqual(
+            [
+                call.args[0]
+                for call in controller.speech_backend.set_live_mode_active.call_args_list
+            ],
+            [True, False],
+        )
+
+    def test_live_underflow_disables_prefetch_for_the_session(self):
+        statuses = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+        )
+        controller.live_reader = Mock()
+        controller.speech_backend = Mock()
+        controller.speech_backend.play.return_value = True
+        controller.speech_backend.last_playback_underrun = True
+        chunk = SpeechChunk(1, "Kamuta", "A line.")
+
+        self.assertTrue(controller._play_live_chunk(chunk, "prepared"))
+
+        self.assertEqual(controller.live_reader.max_speech_jobs, 1)
+        self.assertIn("prefetch disabled", statuses[-1])
+
+    def test_controller_primes_a_live_voice_as_soon_as_its_name_is_observed(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+        future = Mock()
+        controller.speech_executor.submit.return_value = future
+
+        controller._dialog_observed("Kamuta", "A partial line")
+        controller._dialog_observed("Kamuta", "A partial line still appearing")
+
+        controller.speech_executor.submit.assert_called_once_with(
+            controller.speech_backend.prime,
+            "Kamuta",
+        )
+        future.add_done_callback.assert_called_once_with(
+            controller._voice_prime_finished
         )
 
     def test_controller_reports_uncertain_ocr_confidence(self):

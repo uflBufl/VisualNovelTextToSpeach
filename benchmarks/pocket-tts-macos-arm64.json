@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-12",
+  "platform": "macOS 15.7.7 arm64",
+  "python": "3.11.13",
+  "backend": "pocket-tts 2.1.0",
+  "device": "cpu",
+  "voice": "alba (built-in)",
+  "text": "These old ones are enough to carry everyone.",
+  "iterations": 1,
+  "conditioning_seconds": 6.395,
+  "audio_seconds": 2.0,
+  "first_audio_seconds": 0.069,
+  "synthesis_seconds": 0.33,
+  "realtime_factor": 0.165,
+  "voice_cloning": {
+    "measured": false,
+    "reason": "Kyutai voice-cloning weights require accepted model terms and Hugging Face authentication"
+  }
+}

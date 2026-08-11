@@ -5,6 +5,55 @@ sections after their implementation has been verified and committed.
 
 ## Live mode
 
+### P0 - Prototype streaming Pocket TTS
+
+- [ ] Add Pocket TTS as an optional, isolated runtime while keeping the stable
+      speech backend as the default.
+- [ ] Stream generated PCM directly to one persistent playback stream and make
+      pause, skip, queue clearing, dialogue replacement, and shutdown interrupt
+      generation immediately.
+- [ ] Export each cloned NPC voice state to `safetensors`, reload it on later
+      launches, and keep recently used voice states in memory.
+- [ ] Benchmark Kamuta, Fatutu, and Selone references against Chatterbox Nano:
+      model startup, voice conditioning, first-audio latency, realtime factor,
+      speaker similarity, artifacts, RAM, and CPU use.
+- [ ] Keep Pocket TTS experimental until its voice similarity and 30-minute live
+      soak test pass; only then consider making it the live-mode default.
+
+### P0 - Import Reverse: 1999 NPC voices
+
+- [ ] Add `vntts-reverse1999-index` to discover every installed Wwise bank,
+      classify story/activity/NPC banks, and cache their events and media IDs.
+- [ ] Parse Wwise HIRC event relationships, using `wwiser` where practical,
+      instead of selecting embedded media only by file size.
+- [ ] Create a versioned NPC catalog that maps display names and aliases to
+      internal NPC IDs, banks, language, game version, and approved references.
+- [ ] Decode the game's dialogue configuration to map speaker names to NPC IDs;
+      provide a chapter-aware audition UI when automatic mapping is unavailable.
+- [ ] Use Selone as the first assisted-import validation case, then apply the
+      same workflow to all unresolved story NPCs.
+- [ ] Score extracted clips for duration, silence, clipping, music/SFX, and
+      multiple speakers; choose 3-5 clean references totalling 15-30 seconds.
+- [ ] Normalize and trim approved references, record their bank/media IDs and
+      checksums, and update the voice manifest atomically and idempotently.
+- [ ] Add a resumable `scan -> map -> extract -> score -> review -> import`
+      batch command with mapped, unresolved, rejected, and approved counts.
+- [ ] When OCR sees an unknown speaker, offer to map the voice instead of
+      silently treating a confidently recognized name as Narrator.
+- [ ] Keep extracted copyrighted recordings local; ship only extraction tools,
+      mappings, checksums, and user-created manifests.
+
+### P1 - Reduce remaining speech latency
+
+- [ ] Record timestamps for text visible, OCR stable, speaker resolved,
+      generation started, first PCM, playback started, and playback completed.
+- [ ] Add a persistent exact-line audio cache keyed by backend, model, voice,
+      normalized text, and synthesis settings.
+- [ ] Preload voice states for characters likely to appear in the current
+      chapter and cancel obsolete generation as soon as dialogue advances.
+- [ ] Evaluate MLX-Audio on Apple Silicon if Pocket TTS voice similarity is not
+      sufficient, and evaluate F5-TTS/TensorRT for the Windows NVIDIA build.
+
 ### P0 - Validate performance and resilience
 
 - [ ] Validate the live-mode acceptance targets on supported hardware:

@@ -12,12 +12,38 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_schema_11_idle_delay_migrates_to_lower_live_latency(self):
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": 11,
+                "live_idle_flush_ms": 700,
+            }
+        )
+
+        self.assertEqual(settings.schema_version, 12)
+        self.assertEqual(settings.live_idle_flush_ms, 400)
+
+    def test_current_schema_preserves_an_explicit_idle_delay(self):
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": 12,
+                "live_idle_flush_ms": 700,
+            }
+        )
+
+        self.assertEqual(settings.live_idle_flush_ms, 700)
+
     def test_speech_backend_can_be_selected_from_environment(self):
         settings = AppSettings().with_environment_overrides(
             {"VNTTS_SPEECH_BACKEND": "chatterbox-nano"}
         )
 
         self.assertEqual(settings.speech_backend, "chatterbox-nano")
+
+    def test_pocket_tts_backend_can_be_selected(self):
+        settings = AppSettings.from_mapping({"speech_backend": "pocket-tts"})
+
+        self.assertEqual(settings.speech_backend, "pocket-tts")
 
     def test_unknown_speech_backend_uses_xtts(self):
         warnings = []

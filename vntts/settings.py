@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 11
+settings_schema_version = 12
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -70,7 +70,7 @@ class AppSettings:
     game_window_title: str | None = None
     live_interval_ms: int = 200
     live_stability_frames: int = 2
-    live_idle_flush_ms: int = 700
+    live_idle_flush_ms: int = 400
     live_min_chunk_characters: int = 20
     auto_advance_enabled: bool = False
     auto_advance_key: str = "space"
@@ -96,6 +96,9 @@ class AppSettings:
         warn = (lambda _message: None) if warn is None else warn
         defaults = cls()
         parsed = {}
+        source_schema = values.get("schema_version", 0)
+        if isinstance(source_schema, bool) or not isinstance(source_schema, int):
+            source_schema = 0
 
         string_fields = (
             "read_hotkey",
@@ -169,6 +172,12 @@ class AppSettings:
             else:
                 warn(f"Invalid {name!r} setting; using its default")
 
+        # Schema 11 shipped the conservative 700ms idle delay as its only
+        # effective value. Move that default forward while preserving an
+        # explicitly saved 700ms value in current-schema settings.
+        if source_schema < 12 and parsed["live_idle_flush_ms"] == 700:
+            parsed["live_idle_flush_ms"] = defaults.live_idle_flush_ms
+
         for name in boolean_fields:
             value = values.get(name, getattr(defaults, name))
             if isinstance(value, bool):
@@ -192,7 +201,11 @@ class AppSettings:
             warn("Invalid 'auto_advance_key' setting; using its default")
             parsed["auto_advance_key"] = defaults.auto_advance_key
 
-        if parsed["speech_backend"] not in {"coqui-xtts", "chatterbox-nano"}:
+        if parsed["speech_backend"] not in {
+            "coqui-xtts",
+            "chatterbox-nano",
+            "pocket-tts",
+        }:
             warn("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
 

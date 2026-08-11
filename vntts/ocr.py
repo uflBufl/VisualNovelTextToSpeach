@@ -6,18 +6,34 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-# Keep OCR from consuming every CPU core while PortAudio is playing speech.
-# One Tesseract OpenMP worker is sufficient for the small calibrated region and
-# allows live mode to recognize the next sentence during audio playback.
-os.environ.setdefault("OMP_THREAD_LIMIT", "1")
-
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from pytesseract import pytesseract as pytesseract_runtime
 
 from vntts.dialog import is_probable_character_name, parse_dialog
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
 default_minimum_ocr_confidence = 60.0
+
+
+def configure_tesseract_process_environment():
+    """Limit Tesseract without globally throttling PyTorch or other runtimes."""
+    current = pytesseract_runtime.subprocess_args
+    if getattr(current, "_vntts_limited_omp", False):
+        return
+
+    def subprocess_args(include_stdout=True):
+        arguments = current(include_stdout=include_stdout)
+        environment = dict(arguments.get("env") or os.environ)
+        environment["OMP_THREAD_LIMIT"] = "1"
+        arguments["env"] = environment
+        return arguments
+
+    subprocess_args._vntts_limited_omp = True
+    pytesseract_runtime.subprocess_args = subprocess_args
+
+
+configure_tesseract_process_environment()
 
 
 @dataclass(frozen=True)

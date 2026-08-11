@@ -6,6 +6,7 @@ from threading import Lock
 from time import monotonic
 
 import numpy as np
+from scipy.signal import resample_poly
 
 
 class TTSError(Exception):
@@ -74,6 +75,32 @@ def get_tts_profile(name):
         raise TTSConfigurationError(
             f"Unknown TTS profile {name!r}; available profiles: {available}"
         ) from error
+
+
+def match_output_sample_rate(audio_output, audio, source_sample_rate):
+    """Resample once in Python instead of relying on a live device converter."""
+    query_devices = getattr(audio_output, "query_devices", None)
+    if not callable(query_devices):
+        return audio, source_sample_rate
+    try:
+        device = query_devices(kind="output")
+        target_sample_rate = int(round(float(device["default_samplerate"])))
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        return audio, source_sample_rate
+    if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:
+        return audio, source_sample_rate
+
+    divisor = np.gcd(source_sample_rate, target_sample_rate)
+    resampled = resample_poly(
+        np.asarray(audio, dtype=np.float32),
+        target_sample_rate // divisor,
+        source_sample_rate // divisor,
+        axis=0,
+    ).astype(np.float32, copy=False)
+    peak = float(np.max(np.abs(resampled))) if resampled.size else 0.0
+    if peak > 0.95:
+        resampled *= 0.95 / peak
+    return resampled, target_sample_rate
 
 
 class TTSEngine:
@@ -173,9 +200,14 @@ class TTSEngine:
             playback_started = self.clock()
             try:
                 self.playback_active = True
-                self.audio_output.play(
+                prepared, playback_sample_rate = match_output_sample_rate(
+                    self.audio_output,
                     self._prepare_audio(audio),
                     self.sample_rate,
+                )
+                self.audio_output.play(
+                    prepared,
+                    playback_sample_rate,
                     latency=self.playback_latency,
                 )
                 self.audio_output.wait()

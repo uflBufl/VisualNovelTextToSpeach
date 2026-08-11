@@ -178,6 +178,10 @@ class SettingsDialog(QDialog):
             "Chatterbox Nano (faster English CPU)",
             "chatterbox-nano",
         )
+        self.speech_backend.addItem(
+            "Pocket TTS (experimental streaming)",
+            "pocket-tts",
+        )
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )

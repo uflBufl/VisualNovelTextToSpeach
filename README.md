@@ -132,6 +132,17 @@ uv sync --project backends/chatterbox-nano
 
 The first Nano start downloads several gigabytes of model assets.
 
+For experimental streaming speech, install its isolated runtime once, select
+Pocket TTS in Settings, and restart the app:
+
+```sh
+uv sync --project backends/pocket-tts
+```
+
+Character voice cloning also requires accepting the model terms at
+<https://huggingface.co/kyutai/pocket-tts> and authenticating once with
+`uvx hf auth login`.
+
 Import clean story-NPC references from an installed Reverse: 1999 game bank:
 
 ```sh

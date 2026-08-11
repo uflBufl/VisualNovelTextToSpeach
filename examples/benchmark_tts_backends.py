@@ -4,6 +4,8 @@ Examples:
   uv run python examples/benchmark_tts_backends.py xtts voice.wav
   uv sync --project backends/chatterbox-nano
   uv run python examples/benchmark_tts_backends.py chatterbox-nano voice.wav
+  uv sync --project backends/pocket-tts
+  uv run python examples/benchmark_tts_backends.py pocket-tts voice.wav
 """
 
 import argparse
@@ -29,6 +31,37 @@ class BenchmarkBackend:
 
 
 def create_backend(name, reference):
+    if name == "pocket-tts":
+        from vntts.speech_backend import activate_pocket_tts_runtime
+
+        try:
+            activate_pocket_tts_runtime()
+            from pocket_tts import TTSModel
+        except ImportError as error:
+            raise RuntimeError(
+                "Pocket TTS is optional; run "
+                "`uv sync --project backends/pocket-tts` first"
+            ) from error
+
+        model = TTSModel.load_model()
+        reference_path = Path(reference).expanduser()
+        voice_source = (
+            str(reference_path.resolve()) if reference_path.is_file() else reference
+        )
+        conditioning_started = monotonic()
+        voice_state = model.get_state_for_audio_prompt(voice_source)
+        conditioning_seconds = monotonic() - conditioning_started
+
+        def synthesize_stream(text):
+            return model.generate_audio_stream(voice_state, text)
+
+        return BenchmarkBackend(
+            synthesize_stream,
+            model.sample_rate,
+            conditioning_seconds,
+            streaming=True,
+        )
+
     reference = Path(reference).expanduser().resolve()
     if name in {"xtts", "xtts-stream"}:
         from vntts.services.tts_engine import TTSEngine
@@ -70,8 +103,13 @@ def create_backend(name, reference):
         )
 
     try:
-        from vntts.speech_backend import activate_chatterbox_runtime
+        from vntts.assets import ModelAssetManager
+        from vntts.speech_backend import (
+            activate_chatterbox_runtime,
+            select_torch_device,
+        )
 
+        ModelAssetManager().configure_huggingface_environment()
         activate_chatterbox_runtime()
         import torch
         from chatterbox.tts_turbo import ChatterboxTurboTTS
@@ -81,7 +119,7 @@ def create_backend(name, reference):
             "`uv sync --project backends/chatterbox-nano` first"
         ) from error
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_torch_device(torch)
     load_arguments = {"device": device}
     if name == "chatterbox-nano":
         load_arguments["nano"] = True
@@ -140,6 +178,7 @@ def main(argv=None):
             "xtts-stream",
             "chatterbox-nano",
             "chatterbox-turbo",
+            "pocket-tts",
         ),
     )
     parser.add_argument("reference")

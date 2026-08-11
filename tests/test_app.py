@@ -232,6 +232,14 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.settings().speech_backend, "chatterbox-nano")
         dialog.deleteLater()
 
+    def test_settings_offer_experimental_streaming_backend(self):
+        dialog = SettingsDialog(AppSettings(speech_backend="pocket-tts"))
+
+        self.assertEqual(dialog.speech_backend.currentData(), "pocket-tts")
+        self.assertIn("experimental", dialog.speech_backend.currentText().casefold())
+        self.assertFalse(dialog.speech_rate.isEnabled())
+        dialog.deleteLater()
+
     def test_settings_control_macos_launch_at_login(self):
         dialog = SettingsDialog(AppSettings(launch_at_login=True))
 

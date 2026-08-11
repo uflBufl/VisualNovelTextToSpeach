@@ -1,11 +1,13 @@
 import json
+import os
 import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from PIL import Image
+from pytesseract import pytesseract as pytesseract_runtime
 
 from vntts.ocr import (
     DialogRegion,
@@ -29,6 +31,13 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_tesseract_thread_limit_does_not_leak_into_application_environment(self):
+        with patch.dict(os.environ, {}, clear=True):
+            arguments = pytesseract_runtime.subprocess_args()
+
+            self.assertEqual(arguments["env"]["OMP_THREAD_LIMIT"], "1")
+            self.assertNotIn("OMP_THREAD_LIMIT", os.environ)
+
     def test_region_converts_normalized_values_to_monitor_coordinates(self):
         region = DialogRegion(0.1, 0.6, 0.8, 0.3)
 

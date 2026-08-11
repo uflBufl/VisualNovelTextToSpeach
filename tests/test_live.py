@@ -151,6 +151,19 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         )
         self.assertEqual(tracker.flush(), [])
 
+    def test_visible_sentences_are_prepared_as_separate_chunks(self):
+        tracker = self.create_tracker()
+
+        tracker.observe("Alice", "First sentence. Second sentence.")
+
+        self.assertEqual(
+            tracker.observe("Alice", "First sentence. Second sentence."),
+            [
+                SpeechChunk(1, "Alice", "First sentence."),
+                SpeechChunk(1, "Alice", "Second sentence."),
+            ],
+        )
+
     def test_noise_only_text_is_committed_without_being_spoken(self):
         tracker = self.create_tracker()
 
