@@ -85,6 +85,15 @@ def read_pcm_wav(path):
     return samples, sample_rate
 
 
+def _write_pcm_wav(path, samples, sample_rate):
+    pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(sample_rate)
+        audio.writeframes(pcm.tobytes())
+
+
 def _dbfs(value):
     return 20.0 * math.log10(max(float(value), 1e-9))
 
@@ -158,6 +167,47 @@ def analyze_voice_reference(path, *, silence_dbfs=-42.0, frame_ms=20):
         quality_score=max(0, score),
         technical_flags=tuple(flags),
     )
+
+
+def trim_and_normalize_voice_reference(
+    source,
+    output,
+    *,
+    silence_dbfs=-42.0,
+    padding_ms=80,
+    peak_dbfs=-3.0,
+    fade_ms=10,
+):
+    samples, sample_rate = read_pcm_wav(source)
+    if not len(samples):
+        raise VoiceReferenceQualityError(f"WAV contains no audio: {source}")
+    frame_ms = 10
+    frame_size = max(1, round(sample_rate * frame_ms / 1000))
+    active = _frame_rms(samples, frame_size) > 10 ** (silence_dbfs / 20.0)
+    active_frames = np.flatnonzero(active)
+    if not len(active_frames):
+        raise VoiceReferenceQualityError(f"WAV contains no speech-level audio: {source}")
+    padding = round(sample_rate * padding_ms / 1000)
+    start = max(0, int(active_frames[0]) * frame_size - padding)
+    end = min(len(samples), (int(active_frames[-1]) + 1) * frame_size + padding)
+    normalized = samples[start:end].copy()
+    peak = float(np.max(np.abs(normalized)))
+    if peak <= 1e-9:
+        raise VoiceReferenceQualityError(f"WAV contains no audible signal: {source}")
+    target_peak = 10 ** (peak_dbfs / 20.0)
+    normalized *= target_peak / peak
+    fade_samples = min(round(sample_rate * fade_ms / 1000), len(normalized) // 2)
+    if fade_samples:
+        fade = np.linspace(0.0, 1.0, fade_samples, endpoint=False, dtype=np.float32)
+        normalized[:fade_samples] *= fade
+        normalized[-fade_samples:] *= fade[::-1]
+
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(f"{output.suffix}.tmp")
+    _write_pcm_wav(temporary, normalized, sample_rate)
+    temporary.replace(output)
+    return output
 
 
 def review_voice_reference(metrics, *, music_or_sfx, multiple_speakers):

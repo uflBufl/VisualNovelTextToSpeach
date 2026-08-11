@@ -1,6 +1,7 @@
 import json
 import struct
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -49,9 +50,9 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
                 patch.object(
                     importer,
                     "convert_audio",
-                    side_effect=lambda _source, destination, **_options: Path(
+                    side_effect=lambda _source, destination, **_options: write_wav(
                         destination
-                    ).write_bytes(b"wav"),
+                    ),
                 ),
             ):
                 references = importer.decode_references(
@@ -62,7 +63,12 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
                     "decoder",
                 )
 
-        self.assertEqual([path.name for path in references], ["kamuta-game-01.wav"])
+        self.assertEqual(
+            [reference.path.name for reference in references],
+            ["kamuta-game-01.wav"],
+        )
+        self.assertEqual(references[0].media_id, 20)
+        self.assertEqual(len(references[0].source_sha256), 64)
 
     def test_known_kamuta_bank_is_resolved_from_game_audio_directory(self):
         with TemporaryDirectory() as temporary_directory:
@@ -116,6 +122,48 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
             manifest["voices"][1]["references"],
             ["references/kamuta-game-01.wav"],
         )
+
+    def test_manifest_records_reference_provenance_idempotently(self):
+        with TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            references = output / "references"
+            references.mkdir()
+            path = references / "selone-game-01.wav"
+            path.write_bytes(b"voice")
+            reference = importer.ImportedReference(
+                path=path,
+                media_id=42,
+                source_sha256="a" * 64,
+                reference_sha256="b" * 64,
+            )
+
+            importer.update_manifest(output, "Selone", [reference], Path("selone.bnk"))
+            manifest_path = importer.update_manifest(
+                output, "Selone", [reference], Path("selone.bnk")
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(manifest["voices"]), 1)
+        self.assertEqual(
+            manifest["voices"][0]["reference_metadata"],
+            [
+                {
+                    "bank": "selone.bnk",
+                    "media_id": 42,
+                    "source_sha256": "a" * 64,
+                    "reference_sha256": "b" * 64,
+                }
+            ],
+        )
+
+
+def write_wav(path):
+    path = Path(path)
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes((b"\x00\x10" * 32000))
 
 
 if __name__ == "__main__":

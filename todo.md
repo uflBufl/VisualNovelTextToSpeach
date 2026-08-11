@@ -19,8 +19,6 @@ sections after their implementation has been verified and committed.
 
 - [ ] Use Selone as the first assisted-import validation case, then apply the
       same workflow to all unresolved story NPCs.
-- [ ] Normalize and trim approved references, record their bank/media IDs and
-      checksums, and update the voice manifest atomically and idempotently.
 - [ ] Add a resumable `scan -> map -> extract -> score -> review -> import`
       batch command with mapped, unresolved, rejected, and approved counts.
 - [ ] When OCR sees an unknown speaker, offer to map the voice instead of

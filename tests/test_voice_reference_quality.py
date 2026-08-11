@@ -12,6 +12,7 @@ from vntts.voice_reference_quality import (
     record_clip_review,
     review_voice_reference,
     select_reference_set,
+    trim_and_normalize_voice_reference,
     write_quality_report,
 )
 
@@ -65,6 +66,24 @@ class VoiceReferenceQualityTest(unittest.TestCase):
 
             with self.assertRaisesRegex(VoiceReferenceQualityError, "no audio"):
                 analyze_voice_reference(path)
+
+    def test_trims_silence_and_normalizes_peak_atomically(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source.wav"
+            output = root / "normalized.wav"
+            sample_rate = 16000
+            silence = np.zeros(sample_rate, dtype=np.float32)
+            time = np.arange(sample_rate * 2) / sample_rate
+            tone = (0.1 * np.sin(2 * np.pi * 220 * time)).astype(np.float32)
+            write_wav(source, np.concatenate((silence, tone, silence)))
+
+            trim_and_normalize_voice_reference(source, output)
+            result = analyze_voice_reference(output)
+
+        self.assertLess(result.duration_seconds, 2.3)
+        self.assertAlmostEqual(result.peak_dbfs, -3.0, delta=0.1)
+        self.assertLess(result.silence_ratio, 0.1)
 
     def test_writes_atomic_review_report(self):
         with TemporaryDirectory() as temporary_directory:

@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import sys
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,6 +13,7 @@ from vntts.reverse1999_catalog import (
     default_catalog_path,
     normalize_name,
 )
+from vntts.voice_reference_quality import trim_and_normalize_voice_reference
 from vntts.wwise import (
     AudioConversionError,
     WwiseBankError,
@@ -25,6 +28,14 @@ default_output = project_root / "data" / "reverse1999-voices"
 
 class GameVoiceImportError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ImportedReference:
+    path: Path
+    media_id: int
+    source_sha256: str
+    reference_sha256: str
 
 
 def create_parser():
@@ -151,13 +162,22 @@ def decode_references(bank, output_directory, character, reference_count, decode
             source = temporary_directory / f"{item.media_id}.wem"
             source.write_bytes(item.data)
             output = references_directory / f"{slug}-game-{index:02d}.wav"
+            decoded_output = temporary_directory / f"{item.media_id}.wav"
             convert_audio(
                 source,
-                output,
+                decoded_output,
                 decoder=decoder,
                 overwrite=True,
             )
-            decoded.append(output)
+            trim_and_normalize_voice_reference(decoded_output, output)
+            decoded.append(
+                ImportedReference(
+                    path=output,
+                    media_id=item.media_id,
+                    source_sha256=hashlib.sha256(item.data).hexdigest(),
+                    reference_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+                )
+            )
     return decoded
 
 
@@ -179,25 +199,43 @@ def update_manifest(output_directory, character, references, source_bank):
         for voice in voices
         if normalize_name(str(voice.get("character", ""))) != normalized_character
     ]
-    voices.append(
-        {
-            "character": character.strip(),
-            "speaker": f"reverse-1999-{slugify(character)}-game-v1",
-            "references": [
-                reference.relative_to(output_directory).as_posix()
-                for reference in references
-            ],
-            "aliases": [],
-            "sources": [f"local-game-bank:{source_bank.name}"],
-        }
-    )
+    reference_paths = [
+        reference.path if isinstance(reference, ImportedReference) else Path(reference)
+        for reference in references
+    ]
+    entry = {
+        "character": character.strip(),
+        "speaker": f"reverse-1999-{slugify(character)}-game-v1",
+        "references": [
+            reference.relative_to(output_directory).as_posix()
+            for reference in reference_paths
+        ],
+        "aliases": [],
+        "sources": [f"local-game-bank:{source_bank.name}"],
+    }
+    imported = [
+        reference for reference in references if isinstance(reference, ImportedReference)
+    ]
+    if imported:
+        entry["reference_metadata"] = [
+            {
+                "bank": source_bank.name,
+                "media_id": reference.media_id,
+                "source_sha256": reference.source_sha256,
+                "reference_sha256": reference.reference_sha256,
+            }
+            for reference in imported
+        ]
+    voices.append(entry)
     voices.sort(key=lambda voice: voice["character"].casefold())
     manifest["version"] = 2
     manifest["voices"] = voices
-    manifest_path.write_text(
+    temporary = manifest_path.with_suffix(f"{manifest_path.suffix}.tmp")
+    temporary.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(manifest_path)
     return manifest_path
 
 
