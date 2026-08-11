@@ -15,6 +15,7 @@ from pynput import keyboard
 
 from vntts.assets import ModelAssetManager
 from vntts.auto_advance import DialogueAdvancer
+from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.diagnostics import DiagnosticSnapshot, resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
 from vntts.history import DialogueHistory
@@ -835,6 +836,7 @@ class AppController:
         speech_backpressure_factory=AdaptiveSpeechBackpressure,
         correction_store=None,
         history=None,
+        chapter_voice_preloader=None,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -847,6 +849,9 @@ class AppController:
             self.settings.active_profile_id
         )
         self.history = history or DialogueHistory()
+        self.chapter_voice_preloader = (
+            chapter_voice_preloader or ChapterVoicePreloader.load_optional()
+        )
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -1338,6 +1343,7 @@ class AppController:
             return
         self._offer_unknown_speaker_mapping(character)
         self._prime_observed_voice(character)
+        self._prime_likely_chapter_voice(character, text)
         self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
@@ -1359,6 +1365,13 @@ class AppController:
         if not callable(prime) or self.speech_executor is None:
             return False
         key = normalize_character_name(character) or "narrator"
+        registry = getattr(self.voice_router, "registry", None)
+        if (
+            key != "narrator"
+            and registry is not None
+            and registry.resolve(character) is None
+        ):
+            return False
         with self.voice_prime_lock:
             if key in self.primed_voice_keys:
                 return False
@@ -1367,6 +1380,20 @@ class AppController:
             self.voice_prime_futures.add(future)
         future.add_done_callback(self._voice_prime_finished)
         return True
+
+    def _prime_likely_chapter_voice(self, character, text):
+        if self.voice_router is None:
+            return False
+        registry = getattr(self.voice_router, "registry", None)
+        if registry is None:
+            return False
+        for recommendation in self.chapter_voice_preloader.recommend(character, text):
+            voice = registry.resolve(recommendation)
+            if voice is None:
+                continue
+            if self._prime_observed_voice(voice.character):
+                return True
+        return False
 
     def _voice_prime_finished(self, future):
         with self.voice_prime_lock:

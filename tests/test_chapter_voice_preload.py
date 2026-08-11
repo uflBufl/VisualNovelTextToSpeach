@@ -1,0 +1,75 @@
+import json
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from vntts.chapter_voice_preload import ChapterVoicePreloader
+
+
+def dialogue_document():
+    return {
+        "dialogue": [
+            {
+                "chapter": "24006",
+                "sequence": 10,
+                "speaker_name": "Kamuta",
+                "text": "These old ones are enough to carry everyone.",
+            },
+            {
+                "chapter": "24006",
+                "sequence": 20,
+                "speaker_name": "Fatutu",
+                "text": "Besides, brother, you will dive in after him!",
+            },
+            {
+                "chapter": "24006",
+                "sequence": 30,
+                "speaker_name": "Selone",
+                "text": "The tide is changing.",
+            },
+            {
+                "chapter": "99001",
+                "sequence": 10,
+                "speaker_name": "Fatutu",
+                "text": "A completely different scene.",
+            },
+        ]
+    }
+
+
+class ChapterVoicePreloaderTest(unittest.TestCase):
+    def test_ranks_upcoming_unique_speakers_after_matching_partial_dialogue(self):
+        preloader = ChapterVoicePreloader.from_document(dialogue_document())
+
+        recommendations = preloader.recommend(
+            "Kamuta",
+            "These old ones are enough to carry",
+        )
+
+        self.assertEqual(recommendations, ("Fatutu", "Selone"))
+
+    def test_retains_chapter_during_short_following_ocr_observation(self):
+        preloader = ChapterVoicePreloader.from_document(dialogue_document())
+        preloader.recommend("Kamuta", "These old ones are enough to carry")
+
+        recommendations = preloader.recommend("Narrator", "A")
+
+        self.assertEqual(recommendations, ("Kamuta", "Fatutu", "Selone"))
+
+    def test_does_not_guess_from_ambiguous_speaker_without_enough_text(self):
+        preloader = ChapterVoicePreloader.from_document(dialogue_document())
+
+        self.assertEqual(preloader.recommend("Fatutu", "Hi"), ())
+
+    def test_optional_loader_tolerates_missing_and_invalid_index(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "dialogue.json"
+            self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
+            path.write_text("not json", encoding="utf-8")
+            self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
+            path.write_text(json.dumps(dialogue_document()), encoding="utf-8")
+            self.assertEqual(len(ChapterVoicePreloader.load_optional(path).dialogue), 4)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -37,6 +37,7 @@ from vntts.main import (
 from vntts.ocr import DialogRegion, OCRResult
 from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
 from vntts.settings import AppSettings
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class MainTest(unittest.TestCase):
@@ -1044,6 +1045,46 @@ class MainTest(unittest.TestCase):
         future.add_done_callback.assert_called_once_with(
             controller._voice_prime_finished
         )
+
+    def test_controller_primes_one_likely_chapter_voice_per_observation(self):
+        preloader = Mock()
+        preloader.recommend.return_value = ("Fatutu", "Selone")
+        registry = CharacterVoiceRegistry(
+            [
+                CharacterVoice("Fatutu", "fatutu"),
+                CharacterVoice("Selone", "selone"),
+            ]
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock(registry=registry)
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+        future = Mock()
+        controller.speech_executor.submit.return_value = future
+
+        controller._dialog_observed("Kamuta", "These old ones are enough")
+
+        preloader.recommend.assert_called_once_with(
+            "Kamuta", "These old ones are enough"
+        )
+        controller.speech_executor.submit.assert_called_once_with(
+            controller.speech_backend.prime,
+            "Fatutu",
+        )
+
+    def test_controller_does_not_prime_unknown_speaker_as_narrator(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+
+        self.assertFalse(controller._prime_observed_voice("Unknown NPC"))
+
+        controller.speech_executor.submit.assert_not_called()
 
     def test_controller_reports_uncertain_ocr_confidence(self):
         dialogs = []
