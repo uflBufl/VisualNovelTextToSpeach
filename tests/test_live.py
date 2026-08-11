@@ -354,6 +354,21 @@ class LiveDialogReaderTest(unittest.TestCase):
         interrupt_speech.assert_not_called()
         self.assertEqual(reader.active_generation, 2)
 
+    def test_new_dialog_interrupts_backend_that_supports_safe_replacement(self):
+        interrupt_speech = Mock(return_value=True)
+        reader = self.create_reader(
+            interrupt_speech=interrupt_speech,
+            interrupt_on_dialog_replacement=True,
+        )
+        reader.active_generation = 1
+        old_chunk = SpeechChunk(1, "Alice", "Old text.")
+        reader.current_chunk = old_chunk
+
+        reader._set_generation(2)
+
+        interrupt_speech.assert_called_once_with()
+        self.assertFalse(reader.wait_until_playable(old_chunk))
+
     def test_new_dialog_cancels_stale_queued_speech(self):
         speech_executor = Mock()
         speech_executor.submit.return_value = Future()

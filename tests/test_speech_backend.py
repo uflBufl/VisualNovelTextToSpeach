@@ -1,10 +1,13 @@
+import queue
 import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock
 
 import numpy as np
+import torch
 
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend import (
@@ -87,6 +90,28 @@ class FakePocketModel:
         self.stream_calls.append((state, text))
         yield FakeTensor([0.0, 0.25, -0.25])
         yield FakeTensor([0.1, -0.1, 0.0])
+
+
+class FakePrivatePocketModel(FakePocketModel):
+    class FlowModel:
+        ldim = 2
+        dtype = torch.float32
+
+        @staticmethod
+        def parameters():
+            return iter((torch.zeros(1),))
+
+    def __init__(self):
+        super().__init__()
+        self.flow_lm = self.FlowModel()
+        self.generation_calls = 0
+
+    def _autoregressive_generation(self, *_arguments):
+        raise AssertionError("Pocket TTS loop was not patched")
+
+    def _run_flow_lm_and_increment_step(self, **_arguments):
+        self.generation_calls += 1
+        return torch.zeros((1, 1, 2)), torch.tensor(False)
 
 
 class FakeOutputStream:
@@ -390,6 +415,20 @@ class PocketTTSBackendTest(unittest.TestCase):
             with self.assertRaisesRegex(TTSConfigurationError, "uv sync --project"):
                 activate_pocket_tts_runtime(missing_runtime)
 
+    def test_private_pocket_latent_loop_stops_before_next_generation_step(self):
+        model = FakePrivatePocketModel()
+        backend, _model, _output = self.create_backend(model=model)
+        cancellation = Event()
+        cancellation.set()
+        backend.active_generation_cancel = cancellation
+        latents = queue.Queue()
+
+        model._autoregressive_generation({}, 10, 2, latents)
+
+        self.assertTrue(backend.cooperative_generation_cancellation)
+        self.assertEqual(model.generation_calls, 0)
+        self.assertIsNone(latents.get_nowait())
+
     def test_streams_generated_chunks_without_waiting_for_full_waveform(self):
         backend, model, audio_output = self.create_backend()
 
@@ -469,6 +508,36 @@ class PocketTTSBackendTest(unittest.TestCase):
 
         self.assertTrue(np.all(np.isfinite(prepared)))
         self.assertLessEqual(float(np.max(np.abs(prepared))), 0.95)
+
+    def test_stop_cancels_active_generation_and_aborts_stream(self):
+        backend, _model, audio_output = self.create_backend()
+        backend.playback_active = True
+        backend.active_generation_cancel = Event()
+        stream = audio_output.OutputStream()
+        backend.active_stream = stream
+
+        self.assertTrue(backend.stop())
+
+        self.assertTrue(backend.active_generation_cancel.is_set())
+        self.assertTrue(stream.aborted)
+
+    def test_cancelled_stream_is_drained_without_writing_later_chunks(self):
+        backend, _model, audio_output = self.create_backend()
+        stream = audio_output.OutputStream()
+        generated = []
+
+        def chunks():
+            generated.append(1)
+            yield FakeTensor([0.1, -0.1])
+            backend.playback_stop.set()
+            generated.append(2)
+            yield FakeTensor([0.2, -0.2])
+            generated.append(3)
+
+        self.assertFalse(backend._write_chunks(stream, chunks(), None))
+
+        self.assertEqual(generated, [1, 2, 3])
+        self.assertEqual(len(stream.writes), 1)
 
 
 if __name__ == "__main__":

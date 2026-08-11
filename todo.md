@@ -7,8 +7,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Prototype streaming Pocket TTS
 
-- [ ] Make pause, skip, queue clearing, dialogue replacement, and shutdown
-      interrupt in-flight Pocket TTS generation immediately.
 - [ ] Benchmark Kamuta, Fatutu, and Selone references against Chatterbox Nano:
       model startup, voice conditioning, first-audio latency, realtime factor,
       speaker similarity, artifacts, RAM, and CPU use.

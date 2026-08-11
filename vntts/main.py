@@ -1020,6 +1020,13 @@ class AppController:
                 ),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
                 max_speech_jobs=max_speech_jobs,
+                interrupt_on_dialog_replacement=bool(
+                    getattr(
+                        backend_capabilities,
+                        "interrupt_on_dialog_replacement",
+                        False,
+                    )
+                ),
                 **get_live_configuration(self.settings),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(

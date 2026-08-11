@@ -314,6 +314,7 @@ class LiveDialogReader:
         auto_advance=None,
         auto_advance_delay_seconds=0.35,
         max_speech_jobs=2,
+        interrupt_on_dialog_replacement=False,
     ):
         self.capture_executor = capture_executor
         self.speech_executor = speech_executor
@@ -343,6 +344,9 @@ class LiveDialogReader:
         if max_speech_jobs < 1:
             raise ValueError("max_speech_jobs must be positive")
         self.max_speech_jobs = max_speech_jobs
+        self.interrupt_on_dialog_replacement = bool(
+            interrupt_on_dialog_replacement
+        )
         self.state_lock = RLock()
         self.pause_condition = Condition(self.state_lock)
         self.stop_event = Event()
@@ -722,12 +726,19 @@ class LiveDialogReader:
 
     def _set_generation(self, generation):
         stale_futures = []
+        interrupt_current = False
         with self.pause_condition:
             changed = generation != self.active_generation
             self.active_generation = generation
             if self.suppressed_generation != generation:
                 self.suppressed_generation = None
             if changed:
+                interrupt_current = bool(
+                    self.interrupt_on_dialog_replacement
+                    and self.current_chunk is not None
+                )
+                if interrupt_current:
+                    self.cancelled_chunk_ids.add(id(self.current_chunk))
                 self.dialog_ready_generation = None
                 self._cancel_auto_advance_locked()
                 stale_futures = [
@@ -746,11 +757,12 @@ class LiveDialogReader:
                 ):
                     self.deferred_chunk = None
                 self.pause_condition.notify_all()
-        # Let audio that already reached playback finish naturally. Abruptly
-        # stopping the output device on every OCR dialog transition produces
-        # clicks and pops; stale queued work can be cancelled safely instead.
+        # Most backends finish active playback to avoid clicks. Streaming
+        # backends that cooperatively cancel generation opt into interruption.
         for future in stale_futures:
             future.cancel()
+        if interrupt_current:
+            self._interrupt_speech()
 
     def _schedule(self, chunks):
         for chunk in chunks:

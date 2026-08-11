@@ -7,6 +7,7 @@ from hashlib import blake2b
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
+from types import MethodType
 from typing import Any, Protocol
 
 import numpy as np
@@ -26,6 +27,7 @@ class SpeechBackendCapabilities:
     voice_cloning: bool
     streaming: bool
     concurrent_prepare_and_play: bool
+    interrupt_on_dialog_replacement: bool = False
 
 
 class SpeechBackend(Protocol):
@@ -416,6 +418,57 @@ class ChatterboxNanoVoiceRouterBackend:
         return prepared
 
 
+def _install_pocket_generation_cancellation(model, cancel_event_provider):
+    """Patch Pocket TTS 2.1's private latent loop with cooperative cancellation."""
+    required = (
+        "_autoregressive_generation",
+        "_run_flow_lm_and_increment_step",
+        "flow_lm",
+    )
+    if not all(hasattr(model, name) for name in required):
+        return False
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    def cancellable_generation(
+        pocket_model,
+        model_state,
+        max_gen_len,
+        frames_after_eos,
+        latents_queue,
+    ):
+        cancel_event = cancel_event_provider()
+        backbone_input = torch.full(
+            (1, 1, pocket_model.flow_lm.ldim),
+            fill_value=float("NaN"),
+            device=next(iter(pocket_model.flow_lm.parameters())).device,
+            dtype=pocket_model.flow_lm.dtype,
+        )
+        eos_step = None
+        with torch.no_grad():
+            for generation_step in range(max_gen_len):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                next_latent, is_eos = pocket_model._run_flow_lm_and_increment_step(
+                    model_state=model_state,
+                    backbone_input_latents=backbone_input,
+                )
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                if is_eos.item() and eos_step is None:
+                    eos_step = generation_step
+                if eos_step is not None and generation_step >= eos_step + frames_after_eos:
+                    break
+                latents_queue.put(next_latent)
+                backbone_input = next_latent
+        latents_queue.put(None)
+
+    model._autoregressive_generation = MethodType(cancellable_generation, model)
+    return True
+
+
 class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
@@ -425,6 +478,7 @@ class PocketTTSVoiceRouterBackend:
         streaming=True,
         # Voice-state preparation and streaming use the same model instance.
         concurrent_prepare_and_play=False,
+        interrupt_on_dialog_replacement=True,
     )
 
     def __init__(
@@ -481,6 +535,12 @@ class PocketTTSVoiceRouterBackend:
         self.playback_lock = Lock()
         self.active_stream_lock = Lock()
         self.active_stream = None
+        self.active_generation_cancel = None
+        self.cooperative_generation_cancellation = (
+            _install_pocket_generation_cancellation(
+                self.model, lambda: self.active_generation_cancel
+            )
+        )
         self.playback_stop = Event()
         self.playback_active = False
         self.last_playback_underrun = False
@@ -536,6 +596,8 @@ class PocketTTSVoiceRouterBackend:
             if playback_guard is not None and not playback_guard():
                 return False
             self.playback_stop.clear()
+            generation_cancel = Event()
+            self.active_generation_cancel = generation_cancel
             self.last_playback_underrun = False
             self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
             self.last_first_audio_ms = self.last_synthesis_ms
@@ -583,6 +645,8 @@ class PocketTTSVoiceRouterBackend:
                     return False
                 raise AudioPlaybackError(str(error)) from error
             finally:
+                if self.active_generation_cancel is generation_cancel:
+                    self.active_generation_cancel = None
                 with self.active_stream_lock:
                     self.active_stream = None
                 self.playback_active = False
@@ -622,6 +686,9 @@ class PocketTTSVoiceRouterBackend:
     def stop(self):
         was_playing = self.playback_active
         self.playback_stop.set()
+        generation_cancel = self.active_generation_cancel
+        if generation_cancel is not None:
+            generation_cancel.set()
         with self.active_stream_lock:
             stream = self.active_stream
         if stream is not None:
@@ -641,11 +708,17 @@ class PocketTTSVoiceRouterBackend:
         raw_chunks=None,
     ):
         wrote_audio = False
+        cancelled = False
         for chunk in chunks:
             if self.playback_stop.is_set():
-                return False
+                cancelled = True
+                continue
             if playback_guard is not None and not playback_guard():
-                return False
+                generation_cancel = self.active_generation_cancel
+                if generation_cancel is not None:
+                    generation_cancel.set()
+                cancelled = True
+                continue
             raw = self._to_numpy(chunk)
             if raw.size == 0:
                 continue
@@ -660,9 +733,12 @@ class PocketTTSVoiceRouterBackend:
                 self.last_playback_underrun or bool(underflowed)
             )
             wrote_audio = True
+        if cancelled:
+            return False
         if not wrote_audio:
             raise TTSSynthesisError("Pocket TTS generated no audio")
         return True
+
 
     def _resolve_voice_state(self, character):
         voice_key, source = self._resolve_voice_source(character)
