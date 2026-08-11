@@ -31,9 +31,6 @@ sections after their implementation has been verified and committed.
     and within 750 ms on the supported CUDA target.
   - Start an already-visible second sentence within 300 ms of the first ending.
   - Never speak or advance stale OCR generations.
-- [ ] Use the existing `pynput` controller for the cross-platform prototype, then
-      use native Windows `SendInput` for the Windows build and Quartz events on
-      macOS after verifying Accessibility permission.
 
 ### P1 - Benchmark remaining backends and hardware
 

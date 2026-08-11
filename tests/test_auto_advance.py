@@ -18,12 +18,12 @@ class FakeKeyboardController:
 
 
 class DialogueAdvancerTest(unittest.TestCase):
-    def test_sends_one_press_and_release_for_configured_key(self):
+    def test_cross_platform_fallback_sends_one_press_and_release(self):
         controller = FakeKeyboardController()
         advancer = DialogueAdvancer(
             "enter",
             controller_factory=lambda: controller,
-            platform="win32",
+            platform="linux",
         )
 
         self.assertTrue(advancer.advance())
@@ -32,6 +32,21 @@ class DialogueAdvancerTest(unittest.TestCase):
             controller.events,
             [("press", keyboard.Key.enter), ("release", keyboard.Key.enter)],
         )
+
+    def test_windows_uses_native_send_input(self):
+        sender = Mock(return_value=True)
+        controller_factory = Mock()
+        advancer = DialogueAdvancer(
+            "right",
+            controller_factory=controller_factory,
+            platform="win32",
+            windows_sender=sender,
+        )
+
+        self.assertTrue(advancer.advance())
+
+        sender.assert_called_once_with(0x27)
+        controller_factory.assert_not_called()
 
     def test_rejects_unknown_key(self):
         with self.assertRaises(ValueError):
@@ -63,6 +78,17 @@ class DialogueAdvancerTest(unittest.TestCase):
             [call(0, "down"), call(0, "up")],
         )
         controller_factory.assert_not_called()
+
+    def test_macos_refuses_native_input_without_accessibility_permission(self):
+        advancer = DialogueAdvancer(
+            "space",
+            platform="darwin",
+            quartz_module=None,
+            accessibility_probe=lambda: False,
+        )
+
+        with self.assertRaisesRegex(PermissionError, "Accessibility"):
+            advancer.advance()
 
 
 if __name__ == "__main__":
