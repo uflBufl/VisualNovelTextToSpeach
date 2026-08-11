@@ -5,6 +5,12 @@ import unicodedata
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.reverse1999_catalog import (
+    Reverse1999CatalogError,
+    Reverse1999NpcCatalog,
+    default_catalog_path,
+    normalize_name,
+)
 from vntts.wwise import (
     AudioConversionError,
     WwiseBankError,
@@ -15,9 +21,6 @@ from vntts.wwise import (
 
 project_root = Path(__file__).resolve().parents[1]
 default_output = project_root / "data" / "reverse1999-voices"
-known_story_banks = {
-    "kamuta": "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk",
-}
 
 
 class GameVoiceImportError(RuntimeError):
@@ -52,6 +55,12 @@ def create_parser():
         help="Existing or new VNTTS voice-pack directory.",
     )
     parser.add_argument(
+        "--catalog",
+        type=Path,
+        default=default_catalog_path,
+        help="Versioned Reverse: 1999 NPC catalog.",
+    )
+    parser.add_argument(
         "--references",
         type=int,
         default=3,
@@ -63,14 +72,6 @@ def create_parser():
         help="Path or command name for vgmstream-cli.",
     )
     return parser
-
-
-def normalize_name(value):
-    return "".join(
-        character
-        for character in unicodedata.normalize("NFKC", value).casefold()
-        if character.isalnum()
-    )
 
 
 def slugify(value):
@@ -100,15 +101,24 @@ def find_game_audio_directory(home=None):
     return None
 
 
-def resolve_bank(character, bank=None, game_audio_directory=None):
+def resolve_bank(
+    character,
+    bank=None,
+    game_audio_directory=None,
+    catalog_path=default_catalog_path,
+):
     if bank is not None:
         bank = Path(bank).expanduser().resolve()
     else:
-        filename = known_story_banks.get(normalize_name(character))
-        if filename is None:
+        try:
+            npc = Reverse1999NpcCatalog.load(catalog_path).resolve(character)
+        except Reverse1999CatalogError as error:
+            raise GameVoiceImportError(str(error)) from error
+        if npc is None:
             raise GameVoiceImportError(
-                f"No known story bank for {character!r}; pass --bank explicitly"
+                f"No cataloged story bank for {character!r}; pass --bank explicitly"
             )
+        filename = npc.banks[0]
         game_audio_directory = game_audio_directory or find_game_audio_directory()
         if game_audio_directory is None:
             raise GameVoiceImportError(
@@ -198,6 +208,7 @@ def main(arguments=None):
             arguments.character,
             arguments.bank,
             arguments.game_audio_directory,
+            arguments.catalog,
         )
         decoder = resolve_decoder(arguments.decoder)
         output_directory = arguments.output.expanduser().resolve()

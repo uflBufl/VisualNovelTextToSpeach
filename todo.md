@@ -17,8 +17,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Import Reverse: 1999 NPC voices
 
-- [ ] Create a versioned NPC catalog that maps display names and aliases to
-      internal NPC IDs, banks, language, game version, and approved references.
 - [ ] Decode the game's dialogue configuration to map speaker names to NPC IDs;
       provide a chapter-aware audition UI when automatic mapping is unavailable.
 - [ ] Use Selone as the first assisted-import validation case, then apply the

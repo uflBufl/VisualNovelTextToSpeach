@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "game": "Reverse: 1999",
+  "npcs": [
+    {
+      "id": "520301",
+      "display_name": "Kamuta",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk",
+          "media_id": 428529154,
+          "source_sha256": "82b4088427458fca26e40dde049608a3890779abb33d996674b6cd5feddc7b2e",
+          "reference": "reverse1999-voices/references/kamuta-game-01.wav",
+          "reference_sha256": "4ad87f4196c0be8df8dedb00b3bda79de1683aad546a78b7c9f5fe76b7f05bc6"
+        },
+        {
+          "bank": "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk",
+          "media_id": 677159542,
+          "source_sha256": "593efdb9c51dc0b0543408cee99f99fc09749f7e357d747b216504d714e83eb5",
+          "reference": "reverse1999-voices/references/kamuta-game-02.wav",
+          "reference_sha256": "280f3ca6337d618eec929db8c427e5ddbc428e66f343b198b075217b3b20cfd9"
+        },
+        {
+          "bank": "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk",
+          "media_id": 787715124,
+          "source_sha256": "8316940a6f4b283e815967fa3fa370e4082412efa079690e68850b935e32db1e",
+          "reference": "reverse1999-voices/references/kamuta-game-03.wav",
+          "reference_sha256": "1ba6f48dfb59bc911ab5a9c5a87e0aa16fe1e5363257ebba24fa30b6b1a9d728"
+        }
+      ]
+    }
+  ]
+}

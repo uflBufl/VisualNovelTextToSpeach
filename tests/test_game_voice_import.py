@@ -67,7 +67,7 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
     def test_known_kamuta_bank_is_resolved_from_game_audio_directory(self):
         with TemporaryDirectory() as temporary_directory:
             audio_directory = Path(temporary_directory)
-            bank = audio_directory / importer.known_story_banks["kamuta"]
+            bank = audio_directory / "activitystory_yuzhou2_7_yishi_npc520301_voc.bnk"
             bank.write_bytes(b"bank")
 
             resolved = importer.resolve_bank(

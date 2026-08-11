@@ -152,6 +152,9 @@ uv run vntts-reverse1999-voice Kamuta
 uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
 ```
 
+NPC mappings and approved reference metadata are stored in
+`data/reverse1999-npc-catalog.json`.
+
 Extract or convert game audio directly:
 
 ```sh
