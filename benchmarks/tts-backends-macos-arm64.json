@@ -1,0 +1,35 @@
+{
+  "date": "2026-08-11",
+  "platform": "macOS 15.7.7 arm64",
+  "python": "3.11",
+  "device": "cpu",
+  "reference": "samples/speakers/01.wav",
+  "text": "The first sentence should begin quickly. The second should already be ready.",
+  "results": {
+    "xtts": {
+      "audio_seconds": 5.089,
+      "synthesis_seconds": 4.133,
+      "realtime_factor": 0.812
+    },
+    "xtts_stream": {
+      "conditioning_seconds": 0.21,
+      "mean_first_audio_seconds": 0.888,
+      "mean_synthesis_seconds": 5.685,
+      "realtime_factor": 1.275,
+      "decision": "rejected for live playback because generation is slower than audio"
+    },
+    "chatterbox_nano": {
+      "conditioning_seconds": 1.053,
+      "mean_synthesis_seconds": 1.978,
+      "realtime_factor": 0.462,
+      "iterations": 2,
+      "decision": "selected as the optional English CPU backend"
+    }
+  },
+  "not_measured": [
+    "speaker similarity",
+    "hallucination rate",
+    "Windows CUDA latency",
+    "peak RAM and VRAM"
+  ]
+}

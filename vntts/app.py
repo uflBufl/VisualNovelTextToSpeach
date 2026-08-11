@@ -5,8 +5,15 @@ from multiprocessing import freeze_support
 from threading import Event, Thread
 
 from pynput import keyboard
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QDesktopServices,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,7 +42,10 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
-from vntts.macos import configure_macos_launch_at_login
+from vntts.macos import (
+    configure_macos_launch_at_login,
+    get_macos_permission_status,
+)
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.main import (
     AppController,
@@ -59,9 +69,15 @@ from vntts.release_smoke_test import (
     run_release_smoke_test,
 )
 from vntts.runtime_paths import configure_bundled_dependencies
-from vntts.settings import AppSettings, get_settings_path, load_app_settings
+from vntts.settings import (
+    AppSettings,
+    get_local_data_directory,
+    get_settings_path,
+    load_app_settings,
+)
 from vntts.support import RuntimeSupportLog, SupportBundleBuilder
 from vntts.voice_preview_ui import VoicePreviewDialog
+from vntts.voices import find_default_voice_manifest
 from vntts.window_capture import (
     WindowCaptureError,
     enable_windows_dpi_awareness,
@@ -69,6 +85,40 @@ from vntts.window_capture import (
 )
 
 application_name = "Visual Novel Text to Speech"
+
+
+def create_application_icon(style, *, platform=None):
+    platform = sys.platform if platform is None else platform
+    if platform != "darwin":
+        return style.standardIcon(QStyle.StandardPixmap.SP_MediaVolume)
+
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(Qt.GlobalColor.black)
+    painter.drawRoundedRect(QRectF(4, 5, 56, 45), 12, 12)
+    tail = QPainterPath()
+    tail.moveTo(QPointF(17, 46))
+    tail.lineTo(QPointF(11, 60))
+    tail.lineTo(QPointF(31, 48))
+    tail.closeSubpath()
+    painter.drawPath(tail)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    font = painter.font()
+    font.setBold(True)
+    font.setPixelSize(29)
+    painter.setFont(font)
+    painter.drawText(
+        QRectF(4, 5, 56, 45),
+        Qt.AlignmentFlag.AlignCenter,
+        "V",
+    )
+    painter.end()
+    icon = QIcon(pixmap)
+    icon.setIsMask(True)
+    return icon
 
 
 class AppSignals(QObject):
@@ -82,6 +132,7 @@ class AppSignals(QObject):
     onboarding_test_progress = Signal(object, str)
     diagnostics_changed = Signal(object)
     diagnostics_failed = Signal(str)
+    hotkeys_requested = Signal()
     support_export_finished = Signal(bool, str)
 
 
@@ -121,13 +172,26 @@ class SettingsDialog(QDialog):
         window_layout.addWidget(self.game_window)
         window_layout.addWidget(refresh_windows_button)
         self.tts_model = QLineEdit(settings.tts_model or "")
+        self.speech_backend = QComboBox()
+        self.speech_backend.addItem("XTTS (compatible)", "coqui-xtts")
+        self.speech_backend.addItem(
+            "Chatterbox Nano (faster English CPU)",
+            "chatterbox-nano",
+        )
+        self.speech_backend.setCurrentIndex(
+            max(0, self.speech_backend.findData(settings.speech_backend))
+        )
         self.ocr_minimum_confidence = QSpinBox()
         self.ocr_minimum_confidence.setRange(0, 100)
         self.ocr_minimum_confidence.setSuffix("%")
         self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
         self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
-        self.voice_manifest = QLineEdit(settings.voice_manifest or "")
+        default_voice_manifest = find_default_voice_manifest()
+        self.voice_manifest = QLineEdit(
+            settings.voice_manifest
+            or (str(default_voice_manifest) if default_voice_manifest else "")
+        )
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
@@ -140,6 +204,20 @@ class SettingsDialog(QDialog):
         self.speech_rate.setRange(50, 150)
         self.speech_rate.setSuffix("%")
         self.speech_rate.setValue(settings.speech_rate_percent)
+        self.auto_advance = QCheckBox("Advance after the spoken dialogue finishes")
+        self.auto_advance.setChecked(settings.auto_advance_enabled)
+        self.auto_advance_key = QComboBox()
+        self.auto_advance_key.addItem("Space", "space")
+        self.auto_advance_key.addItem("Enter", "enter")
+        self.auto_advance_key.addItem("Right arrow", "right")
+        self.auto_advance_key.addItem("Down arrow", "down")
+        self.auto_advance_key.setCurrentIndex(
+            max(0, self.auto_advance_key.findData(settings.auto_advance_key))
+        )
+        self.auto_advance_delay = QSpinBox()
+        self.auto_advance_delay.setRange(0, 5000)
+        self.auto_advance_delay.setSuffix(" ms")
+        self.auto_advance_delay.setValue(settings.auto_advance_delay_ms)
         self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
         self.warm_up_voices.setChecked(settings.warm_up_voices)
         self.launch_at_login = QCheckBox("Launch automatically when I sign in")
@@ -174,13 +252,17 @@ class SettingsDialog(QDialog):
         form.addRow("OCR language", self.ocr_language)
         form.addRow("OCR diagnostics", self.retain_uncertain_frames)
         form.addRow("Diagnostics directory", diagnostics_layout)
-        form.addRow("TTS model", self.tts_model)
+        form.addRow("Speech engine", self.speech_backend)
+        form.addRow("XTTS model", self.tts_model)
         form.addRow("TTS language", self.tts_language)
         form.addRow("Voice manifest", self.voice_manifest)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("Voice profile", self.tts_profile)
         form.addRow("Output volume", self.output_volume)
         form.addRow("Speaking speed", self.speech_rate)
+        form.addRow("Auto advance", self.auto_advance)
+        form.addRow("Advance key", self.auto_advance_key)
+        form.addRow("Advance delay", self.auto_advance_delay)
         form.addRow("Startup readiness", self.warm_up_voices)
         form.addRow("macOS startup", self.launch_at_login)
         form.addRow("XTTS license", self.xtts_terms)
@@ -203,12 +285,17 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
+        self.speech_backend.currentIndexChanged.connect(
+            self.update_speech_backend_controls
+        )
         self.retain_uncertain_frames.toggled.connect(
             self.update_ocr_diagnostics_controls
         )
+        self.auto_advance.toggled.connect(self.update_auto_advance_controls)
         self.update_capture_controls()
-        self.update_terms_control()
+        self.update_speech_backend_controls()
         self.update_ocr_diagnostics_controls()
+        self.update_auto_advance_controls()
 
     def browse_screenshot_directory(self):
         selected = QFileDialog.getExistingDirectory(
@@ -233,6 +320,11 @@ class SettingsDialog(QDialog):
         self.ocr_diagnostics_directory.setEnabled(enabled)
         self.diagnostics_browse_button.setEnabled(enabled)
 
+    def update_auto_advance_controls(self):
+        enabled = self.auto_advance.isChecked()
+        self.auto_advance_key.setEnabled(enabled)
+        self.auto_advance_delay.setEnabled(enabled)
+
     def refresh_windows(self):
         selected_title = self.game_window.currentText().strip()
         try:
@@ -249,7 +341,19 @@ class SettingsDialog(QDialog):
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
 
     def update_terms_control(self):
-        self.xtts_terms.setEnabled("xtts" in self.tts_model.text().casefold())
+        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
+        self.xtts_terms.setEnabled(
+            uses_xtts and "xtts" in self.tts_model.text().casefold()
+        )
+
+    def update_speech_backend_controls(self):
+        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
+        self.tts_model.setEnabled(uses_xtts)
+        self.tts_language.setEnabled(uses_xtts)
+        self.narrator_speaker.setEnabled(uses_xtts)
+        self.tts_profile.setEnabled(uses_xtts)
+        self.speech_rate.setEnabled(uses_xtts)
+        self.update_terms_control()
 
     def validate_and_accept(self):
         try:
@@ -285,7 +389,8 @@ class SettingsDialog(QDialog):
             )
             return
         if (
-            "xtts" in self.tts_model.text().casefold()
+            self.speech_backend.currentData() == "coqui-xtts"
+            and "xtts" in self.tts_model.text().casefold()
             and not self.xtts_terms.isChecked()
         ):
             QMessageBox.warning(
@@ -319,6 +424,7 @@ class SettingsDialog(QDialog):
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
                 "ocr_language": self.ocr_language.text().strip(),
+                "speech_backend": self.speech_backend.currentData(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
@@ -326,6 +432,9 @@ class SettingsDialog(QDialog):
                 "tts_profile": self.tts_profile.currentText(),
                 "output_volume_percent": self.output_volume.value(),
                 "speech_rate_percent": self.speech_rate.value(),
+                "auto_advance_enabled": self.auto_advance.isChecked(),
+                "auto_advance_key": self.auto_advance_key.currentData(),
+                "auto_advance_delay_ms": self.auto_advance_delay.value(),
                 "warm_up_voices": self.warm_up_voices.isChecked(),
                 "launch_at_login": self.launch_at_login.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
@@ -343,7 +452,7 @@ class SettingsDialog(QDialog):
         }
 
 
-class TrayApplication:
+class TrayApplication(QObject):
     def __init__(
         self,
         application,
@@ -352,21 +461,28 @@ class TrayApplication:
         profile_store=None,
         correction_store=None,
     ):
+        super().__init__()
         self.application = application
+        uses_saved_settings = settings is None
         self.settings = settings or load_app_settings()
         self.signals = AppSignals()
+        self.last_controller_error = None
         self.controller = controller_factory(
             self.settings,
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
             diagnostic_handler=self.signals.diagnostics_changed.emit,
-            error_handler=lambda error: self.signals.error_reported.emit(
-                format_runtime_error(error)
-            ),
+            error_handler=self.report_controller_error,
         )
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
-        self.support_log = RuntimeSupportLog()
+        self.support_log = RuntimeSupportLog(
+            path=(
+                get_local_data_directory() / "runtime.log"
+                if uses_saved_settings
+                else None
+            )
+        )
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
@@ -381,6 +497,9 @@ class TrayApplication:
         self.dialog_action.setEnabled(False)
         self.read_action = QAction("Read current dialog")
         self.live_action = QAction("Start live reading")
+        self.auto_advance_action = QAction("Auto advance dialogue")
+        self.auto_advance_action.setCheckable(True)
+        self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
         self.pause_action = QAction("Pause speech")
         self.skip_action = QAction("Skip current speech")
         self.repeat_action = QAction("Repeat last speech")
@@ -413,6 +532,7 @@ class TrayApplication:
         self.menu.addSeparator()
         self.menu.addAction(self.read_action)
         self.menu.addAction(self.live_action)
+        self.menu.addAction(self.auto_advance_action)
         self.menu.addAction(self.pause_action)
         self.menu.addAction(self.skip_action)
         self.menu.addAction(self.repeat_action)
@@ -438,6 +558,7 @@ class TrayApplication:
 
         self.read_action.triggered.connect(self.read_once)
         self.live_action.triggered.connect(self.toggle_live)
+        self.auto_advance_action.toggled.connect(self.toggle_auto_advance)
         self.pause_action.triggered.connect(self.toggle_speech_pause)
         self.skip_action.triggered.connect(self.skip_current_speech)
         self.repeat_action.triggered.connect(self.repeat_last_speech)
@@ -463,13 +584,12 @@ class TrayApplication:
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
+        self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
         self.signals.support_export_finished.connect(self.support_export_finished)
         self.application.aboutToQuit.connect(self.shutdown)
 
     def _application_icon(self):
-        return self.application.style().standardIcon(
-            QStyle.StandardPixmap.SP_MediaVolume
-        )
+        return create_application_icon(self.application.style())
 
     def start(self):
         self.tray.show()
@@ -488,10 +608,24 @@ class TrayApplication:
         ready = self.controller.start()
         self.signals.ready_changed.emit(ready)
         if ready:
-            try:
-                self.start_hotkeys()
-            except (TypeError, ValueError) as error:
-                self.signals.error_reported.emit(f"Unable to register hotkeys: {error}")
+            self.signals.hotkeys_requested.emit()
+
+    def schedule_hotkeys(self):
+        QTimer.singleShot(250, self._start_hotkeys_safely)
+
+    def _start_hotkeys_safely(self):
+        if sys.platform == "darwin":
+            self.support_log.add(
+                "warning",
+                "Global hotkeys are disabled on macOS because the current native "
+                "listener is unstable. Use the menu bar controls.",
+            )
+            self.set_status("Ready; use menu bar controls (macOS hotkeys disabled)")
+            return
+        try:
+            self.start_hotkeys()
+        except (TypeError, ValueError) as error:
+            self.show_error(f"Unable to register hotkeys: {error}")
 
     def start_hotkeys(self):
         if self.hotkey_listener is not None:
@@ -530,6 +664,11 @@ class TrayApplication:
     def toggle_live(self):
         self.signals.live_changed.emit(self.controller.toggle_live())
 
+    def toggle_auto_advance(self, enabled):
+        self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
+        self.settings.save()
+        self.controller.set_auto_advance_enabled(enabled)
+
     def toggle_speech_pause(self):
         self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
 
@@ -561,10 +700,11 @@ class TrayApplication:
         if self.diagnostics_dialog is None:
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
-            self.signals.diagnostics_changed.connect(
-                self.diagnostics_dialog.set_snapshot
-            )
+            self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
         self.diagnostics_dialog.set_permission_warnings(macos_permission_warnings())
+        snapshot = self.controller.get_latest_diagnostic()
+        if snapshot is not None:
+            self.diagnostics_dialog.set_snapshot(snapshot)
         self.diagnostics_dialog.show()
         self.diagnostics_dialog.raise_()
         self.diagnostics_dialog.activateWindow()
@@ -576,6 +716,21 @@ class TrayApplication:
                 self.signals.diagnostics_changed.emit(snapshot)
                 return
 
+        permission_status = get_macos_permission_status()
+        if permission_status["screen_capture"] is False:
+            self.signals.diagnostics_failed.emit(
+                "Screen Recording permission is missing. Open System Settings -> "
+                "Privacy & Security -> Screen & System Audio Recording, allow the "
+                "terminal or VNTTS, then quit and reopen it."
+            )
+            return
+
+        if self.diagnostics_dialog is not None:
+            self.diagnostics_dialog.conceal_for_capture()
+
+        QTimer.singleShot(200, self._capture_diagnostic_snapshot)
+
+    def _capture_diagnostic_snapshot(self):
         def inspect():
             try:
                 self.controller.inspect_current_dialog()
@@ -584,9 +739,15 @@ class TrayApplication:
 
         Thread(target=inspect, daemon=True).start()
 
+    def update_diagnostics_snapshot(self, snapshot):
+        if self.diagnostics_dialog is not None:
+            self.diagnostics_dialog.set_snapshot(snapshot)
+            self.diagnostics_dialog.restore_after_capture()
+
     def set_diagnostics_error(self, message):
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_warning(message)
+            self.diagnostics_dialog.restore_after_capture()
 
     def run_onboarding(self):
         if self.onboarding_wizard is not None:
@@ -601,7 +762,19 @@ class TrayApplication:
         wizard.cancel_requested.connect(self.cancel_onboarding_download)
         self.signals.onboarding_test_finished.connect(wizard.test_page.set_result)
         self.signals.onboarding_test_progress.connect(wizard.test_page.set_progress)
-        result = wizard.exec()
+        wizard.finished.connect(
+            lambda result, active_wizard=wizard: self.finish_onboarding(
+                active_wizard,
+                result,
+            )
+        )
+        wizard.show()
+        wizard.raise_()
+        wizard.activateWindow()
+
+    def finish_onboarding(self, wizard, result):
+        if wizard is not self.onboarding_wizard:
+            return
         self.onboarding_cancel_event.set()
         self.signals.onboarding_test_finished.disconnect(wizard.test_page.set_result)
         self.signals.onboarding_test_progress.disconnect(wizard.test_page.set_progress)
@@ -616,13 +789,9 @@ class TrayApplication:
         path = self.settings.save()
         self.controller.apply_settings(self.settings)
         self.set_ready(self.controller.is_ready)
-        try:
-            self.start_hotkeys()
-        except (TypeError, ValueError) as error:
-            self.show_error(f"Unable to register hotkeys: {error}")
-        else:
-            self.set_status(f"Setup completed; settings saved to {path}")
+        self.set_status(f"Setup completed; settings saved to {path}")
         wizard.deleteLater()
+        self.signals.hotkeys_requested.emit()
 
     def run_onboarding_test(self, settings):
         self.onboarding_cancel_event = Event()
@@ -644,11 +813,12 @@ class TrayApplication:
                     f"Model download or verification failed: {error}",
                 )
                 return
+            self.last_controller_error = None
             if not self.controller.start():
                 self.signals.onboarding_test_finished.emit(
                     False,
-                    "The speech engine could not be initialized. Check the error "
-                    "notification and try again.",
+                    self.last_controller_error
+                    or "The speech engine could not be initialized.",
                 )
                 return
             try:
@@ -684,13 +854,13 @@ class TrayApplication:
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return
         self.settings = updated_settings
+        self.auto_advance_action.blockSignals(True)
+        self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
+        self.auto_advance_action.blockSignals(False)
         path = self.settings.save()
         self._sync_active_profile()
         self.controller.apply_settings(self.settings)
-        try:
-            self.start_hotkeys()
-        except (TypeError, ValueError) as error:
-            self.show_error(f"Unable to register hotkeys: {error}")
+        self.signals.hotkeys_requested.emit()
         self.set_status(f"Settings saved to {path}")
 
     def open_profiles(self):
@@ -710,10 +880,7 @@ class TrayApplication:
         if not ready:
             self.set_status("Unable to load the selected profile")
             return
-        try:
-            self.start_hotkeys()
-        except (TypeError, ValueError) as error:
-            self.show_error(f"Unable to register hotkeys: {error}")
+        self.signals.hotkeys_requested.emit()
         profile = self.profile_store.get(self.settings.active_profile_id)
         self.set_status(f"Profile {profile.name!r} selected; settings saved to {path}")
 
@@ -849,6 +1016,11 @@ class TrayApplication:
             message,
             QSystemTrayIcon.MessageIcon.Critical,
         )
+
+    def report_controller_error(self, error):
+        message = format_runtime_error(error)
+        self.last_controller_error = message
+        self.signals.error_reported.emit(message)
 
     def shutdown(self):
         if self.diagnostics_dialog is not None:

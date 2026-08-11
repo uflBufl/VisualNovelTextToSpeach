@@ -8,7 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
-from vntts.app import SettingsDialog, TrayApplication, main  # noqa: E402
+from vntts.app import (  # noqa: E402
+    SettingsDialog,
+    TrayApplication,
+    create_application_icon,
+    main,
+)
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
@@ -83,6 +88,25 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_macos_tray_icon_is_a_distinct_adaptive_mask(self):
+        icon = create_application_icon(
+            self.application.style(),
+            platform="darwin",
+        )
+
+        self.assertFalse(icon.isNull())
+        self.assertTrue(icon.isMask())
+        self.assertFalse(icon.pixmap(64, 64).isNull())
+
+    def test_other_platforms_keep_the_native_speaker_icon(self):
+        icon = create_application_icon(
+            self.application.style(),
+            platform="win32",
+        )
+
+        self.assertFalse(icon.isNull())
+        self.assertFalse(icon.isMask())
 
     def test_saved_ocr_corrections_are_reloaded_by_controller(self):
         controller = Mock()
@@ -166,12 +190,46 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.settings().speech_rate_percent, 125)
         dialog.deleteLater()
 
+    def test_settings_expose_guarded_auto_advance_controls(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                auto_advance_enabled=True,
+                auto_advance_key="enter",
+                auto_advance_delay_ms=600,
+            )
+        )
+
+        self.assertTrue(dialog.auto_advance.isChecked())
+        self.assertEqual(dialog.auto_advance_key.currentData(), "enter")
+        self.assertEqual(dialog.auto_advance_delay.value(), 600)
+        dialog.auto_advance_key.setCurrentIndex(
+            dialog.auto_advance_key.findData("right")
+        )
+        dialog.auto_advance_delay.setValue(250)
+
+        settings = dialog.settings()
+        self.assertEqual(settings.auto_advance_key, "right")
+        self.assertEqual(settings.auto_advance_delay_ms, 250)
+        dialog.deleteLater()
+
     def test_settings_control_startup_voice_warmup(self):
         dialog = SettingsDialog(AppSettings(warm_up_voices=True))
 
         dialog.warm_up_voices.setChecked(False)
 
         self.assertFalse(dialog.settings().warm_up_voices)
+        dialog.deleteLater()
+
+    def test_settings_select_low_latency_speech_backend(self):
+        dialog = SettingsDialog(AppSettings(speech_backend="chatterbox-nano"))
+
+        self.assertEqual(dialog.speech_backend.currentData(), "chatterbox-nano")
+        self.assertFalse(dialog.tts_model.isEnabled())
+        self.assertFalse(dialog.tts_language.isEnabled())
+        self.assertFalse(dialog.narrator_speaker.isEnabled())
+        self.assertFalse(dialog.tts_profile.isEnabled())
+        self.assertFalse(dialog.speech_rate.isEnabled())
+        self.assertEqual(dialog.settings().speech_backend, "chatterbox-nano")
         dialog.deleteLater()
 
     def test_settings_control_macos_launch_at_login(self):
@@ -345,6 +403,22 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.pause_action.text(), "Resume speech")
         tray_application.shutdown()
 
+    def test_tray_can_toggle_auto_advance_without_restarting_live_mode(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(auto_advance_enabled=False),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.AppSettings.save") as save:
+            tray_application.auto_advance_action.setChecked(True)
+
+        controller.set_auto_advance_enabled.assert_called_once_with(True)
+        self.assertTrue(tray_application.settings.auto_advance_enabled)
+        save.assert_called_once_with()
+        tray_application.shutdown()
+
     def test_live_diagnostics_reuses_the_live_pipeline_snapshot(self):
         snapshot = DiagnosticSnapshot(None, text="Already captured")
         controller = Mock()
@@ -363,6 +437,56 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(observed, [snapshot])
         thread.assert_not_called()
+        tray_application.shutdown()
+
+    def test_manual_diagnostics_hides_window_before_capture(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        controller.is_live_running = False
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        diagnostics_dialog = Mock()
+        tray_application.diagnostics_dialog = diagnostics_dialog
+
+        with (
+            patch(
+                "vntts.app.get_macos_permission_status",
+                return_value={"screen_capture": True, "accessibility": True},
+            ),
+            patch(
+                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+            ),
+            patch("vntts.app.Thread", ImmediateThread),
+        ):
+            tray_application.refresh_diagnostics()
+
+        diagnostics_dialog.conceal_for_capture.assert_called_once_with()
+        controller.inspect_current_dialog.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_diagnostic_result_restores_concealed_window(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        diagnostics_dialog = Mock()
+        tray_application.diagnostics_dialog = diagnostics_dialog
+        snapshot = DiagnosticSnapshot(None, text="Visible after capture")
+
+        tray_application.update_diagnostics_snapshot(snapshot)
+
+        diagnostics_dialog.set_snapshot.assert_called_once_with(snapshot)
+        diagnostics_dialog.restore_after_capture.assert_called_once_with()
         tray_application.shutdown()
 
     def test_invalid_saved_hotkey_falls_back_without_preventing_startup(self):
@@ -390,6 +514,45 @@ class TrayApplicationTest(unittest.TestCase):
             },
         )
         listener_factory.return_value.start.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_hotkey_registration_is_deferred_on_the_qt_thread(self):
+        controller = Mock()
+        controller.start.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.QTimer.singleShot") as single_shot:
+            tray_application._initialize_controller()
+
+        single_shot.assert_called_once_with(
+            250,
+            tray_application._start_hotkeys_safely,
+        )
+        tray_application.shutdown()
+
+    def test_macos_skips_unstable_native_hotkey_listener(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+
+        with (
+            patch("vntts.app.sys.platform", "darwin"),
+            patch.object(tray_application, "start_hotkeys") as start_hotkeys,
+        ):
+            tray_application._start_hotkeys_safely()
+
+        start_hotkeys.assert_not_called()
+        self.assertIn("macOS hotkeys disabled", tray_application.status_action.text())
+        self.assertIn(
+            "listener is unstable",
+            tray_application.support_log.snapshot()[-2]["message"],
+        )
         tray_application.shutdown()
 
     def test_window_calibration_uses_selected_client_geometry(self):
@@ -480,6 +643,26 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(single_shot.call_args.args[1], tray_application.run_onboarding)
         tray_application.shutdown()
 
+    def test_onboarding_wizard_runs_without_nested_modal_event_loop(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=False),
+            controller_factory=Mock(return_value=Mock()),
+        )
+
+        tray_application.run_onboarding()
+        wizard = tray_application.onboarding_wizard
+
+        self.assertIsNotNone(wizard)
+        self.assertTrue(wizard.isVisible())
+
+        wizard.reject()
+        self.application.processEvents()
+
+        self.assertIsNone(tray_application.onboarding_wizard)
+        self.assertEqual(tray_application.status_action.text(), "Setup required")
+        tray_application.shutdown()
+
     def test_onboarding_test_runs_controller_end_to_end(self):
         class ImmediateThread:
             def __init__(self, *, target, daemon):
@@ -512,6 +695,39 @@ class TrayApplicationTest(unittest.TestCase):
         controller.test_current_dialog.assert_called_once_with()
         self.assertTrue(results[0][0])
         self.assertIn("Marcus", results[0][1])
+        tray_application.shutdown()
+
+    def test_onboarding_test_displays_the_controller_startup_error(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        controller.start.return_value = False
+        controller_factory = Mock(return_value=controller)
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=controller_factory,
+        )
+        report_error = controller_factory.call_args.kwargs["error_handler"]
+        controller.start.side_effect = lambda: (
+            report_error(RuntimeError("invalid Pioneer reference")),
+            False,
+        )[1]
+        results = []
+        tray_application.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+
+        with patch("vntts.app.Thread", ImmediateThread):
+            tray_application.run_onboarding_test(AppSettings())
+
+        self.assertFalse(results[0][0])
+        self.assertIn("invalid Pioneer reference", results[0][1])
         tray_application.shutdown()
 
     def test_package_self_test_does_not_start_qt_application(self):

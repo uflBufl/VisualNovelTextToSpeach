@@ -63,6 +63,11 @@ class ModelAssetManager:
         os.environ["TTS_HOME"] = str(self.storage_root)
         return self.storage_root
 
+    def configure_huggingface_environment(self):
+        cache_root = self.storage_root / "huggingface"
+        os.environ["HF_HOME"] = str(cache_root)
+        return cache_root
+
     def model_path(self, model_name):
         return self.coqui_cache_root / model_name.replace("/", "--")
 

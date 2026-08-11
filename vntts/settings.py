@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 9
+settings_schema_version = 11
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -72,8 +72,12 @@ class AppSettings:
     live_stability_frames: int = 2
     live_idle_flush_ms: int = 700
     live_min_chunk_characters: int = 20
+    auto_advance_enabled: bool = False
+    auto_advance_key: str = "space"
+    auto_advance_delay_ms: int = 350
     ocr_minimum_confidence: int = 60
     ocr_language: str = "eng"
+    speech_backend: str = "coqui-xtts"
     tts_model: str | None = None
     tts_speaker: str | None = None
     tts_language: str | None = None
@@ -81,7 +85,7 @@ class AppSettings:
     tts_profile: str = "stable"
     output_volume_percent: int = 100
     speech_rate_percent: int = 100
-    warm_up_voices: bool = True
+    warm_up_voices: bool = False
     launch_at_login: bool = False
     voice_manifest: str | None = None
     narrator_speaker: str | None = None
@@ -103,6 +107,8 @@ class AppSettings:
             "screenshot_directory",
             "ocr_diagnostics_directory",
             "ocr_language",
+            "auto_advance_key",
+            "speech_backend",
         )
         optional_string_fields = (
             "tts_model",
@@ -119,6 +125,7 @@ class AppSettings:
             "live_stability_frames": 2,
             "live_idle_flush_ms": 1,
             "live_min_chunk_characters": 1,
+            "auto_advance_delay_ms": 0,
             "ocr_minimum_confidence": 0,
             "output_volume_percent": 0,
             "speech_rate_percent": 50,
@@ -129,6 +136,7 @@ class AppSettings:
             "retain_uncertain_frames",
             "warm_up_voices",
             "launch_at_login",
+            "auto_advance_enabled",
         )
 
         for name in string_fields:
@@ -180,6 +188,14 @@ class AppSettings:
         else:
             warn("Invalid 'capture_mode' setting; using its default")
 
+        if parsed["auto_advance_key"] not in {"space", "enter", "right", "down"}:
+            warn("Invalid 'auto_advance_key' setting; using its default")
+            parsed["auto_advance_key"] = defaults.auto_advance_key
+
+        if parsed["speech_backend"] not in {"coqui-xtts", "chatterbox-nano"}:
+            warn("Invalid 'speech_backend' setting; using its default")
+            parsed["speech_backend"] = defaults.speech_backend
+
         return cls(**parsed)
 
     def with_environment_overrides(self, environment=None, *, warn=None):
@@ -203,6 +219,7 @@ class AppSettings:
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
             "VNTTS_OCR_LANGUAGE": "ocr_language",
+            "VNTTS_SPEECH_BACKEND": "speech_backend",
             "VNTTS_CAPTURE_MODE": "capture_mode",
             "VNTTS_GAME_WINDOW_TITLE": "game_window_title",
         }

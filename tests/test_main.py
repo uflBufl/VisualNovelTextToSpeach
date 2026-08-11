@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -6,15 +7,20 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import ANY, Mock, patch
 
+from PIL import Image, ImageDraw
+
+from vntts.diagnostics import DiagnosticSnapshot
 from vntts.live import SpeechChunk
 from vntts.main import (
     AppController,
+    CapturedDialogFrame,
     OCRError,
     OCRUncertainError,
     ScreenCaptureError,
     capture_dialog,
     create_dialog_read_scheduler,
     create_screenshot_path,
+    fingerprint_dialog_frame,
     get_live_configuration,
     get_screenshot_directory,
     get_tts_configuration,
@@ -25,6 +31,7 @@ from vntts.main import (
     read_dialog_safely,
     read_live_snapshot,
     recognize_screenshot,
+    recognize_screenshot_result,
     speak_live_chunk,
 )
 from vntts.ocr import DialogRegion, OCRResult
@@ -33,6 +40,29 @@ from vntts.settings import AppSettings
 
 
 class MainTest(unittest.TestCase):
+    def test_dialog_fingerprint_changes_when_only_the_text_changes(self):
+        first = Image.new("RGB", (1200, 240), "#202020")
+        second = first.copy()
+        ImageDraw.Draw(first).text(
+            (60, 100),
+            "The first dialogue is visible on screen.",
+            fill="white",
+        )
+        ImageDraw.Draw(second).text(
+            (60, 100),
+            "A completely different line replaced it.",
+            fill="white",
+        )
+
+        first_fingerprint = fingerprint_dialog_frame(CapturedDialogFrame(first, 0))
+        second_fingerprint = fingerprint_dialog_frame(CapturedDialogFrame(second, 0))
+
+        self.assertNotEqual(first_fingerprint, second_fingerprint)
+        self.assertEqual(
+            first_fingerprint,
+            fingerprint_dialog_frame(CapturedDialogFrame(first.copy(), 0)),
+        )
+
     def test_one_time_read_routes_text_by_detected_character(self):
         voice_router = Mock()
         image = object()
@@ -162,6 +192,31 @@ class MainTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(OCRError, "tesseract unavailable"):
                 recognize_screenshot(object())
+
+    def test_recognition_accepts_a_pluggable_ocr_backend(self):
+        backend = Mock()
+        backend.recognize.return_value = OCRResult(
+            "Marcus",
+            "Backend result.",
+            95.0,
+            "custom",
+            1,
+        )
+        image = object()
+
+        result = recognize_screenshot_result(
+            image,
+            ocr_language="eng+jpn",
+            ocr_backend=backend,
+        )
+
+        self.assertEqual(result.text, "Backend result.")
+        backend.recognize.assert_called_once_with(
+            image,
+            None,
+            minimum_confidence=60.0,
+            language="eng+jpn",
+        )
 
     def test_one_time_read_rejects_uncertain_ocr(self):
         result = OCRResult("Marcus", "Garbled text", 32.0, "balanced", 3)
@@ -420,6 +475,38 @@ class MainTest(unittest.TestCase):
         self.assertIs(voice_router.tts, tts)
         self.assertEqual(voice_router.narrator_speaker, "Claribel Dervla")
 
+    def test_voice_router_uses_discovered_local_voice_pack(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            reference = root / "fatutu.ogg"
+            reference.write_bytes(b"voice")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Fatutu",
+                                "speaker": "reverse-1999-fatutu-v2",
+                                "reference": reference.name,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "vntts.main.find_default_voice_manifest",
+                return_value=manifest,
+            ):
+                voice_router = initialize_voice_router(Mock(), AppSettings())
+
+        self.assertEqual(
+            voice_router.registry.resolve("Fatutu").speaker,
+            "reverse-1999-fatutu-v2",
+        )
+
     def test_main_reports_tts_failure_without_starting_listener(self):
         tts_factory = Mock(side_effect=RuntimeError("model unavailable"))
         output = io.StringIO()
@@ -428,6 +515,7 @@ class MainTest(unittest.TestCase):
         with (
             redirect_stdout(output),
             redirect_stderr(errors),
+            patch("vntts.main.load_app_settings", return_value=AppSettings()),
             patch("vntts.main.listen_for_hotkeys") as listen_for_hotkeys,
         ):
             result = main(tts_factory)
@@ -488,12 +576,17 @@ class MainTest(unittest.TestCase):
         tts_factory = Mock(return_value=tts)
         schedule_dialog_read = Mock()
         capture_executor = Mock()
+        ocr_executor = Mock()
         speech_executor = Mock()
+        playback_executor = Mock()
         live_reader = Mock()
         voice_router = Mock()
         model_assets = Mock()
         screenshot_directory = Path("custom/captures")
-        settings = AppSettings(screenshot_directory=str(screenshot_directory))
+        settings = AppSettings(
+            screenshot_directory=str(screenshot_directory),
+            warm_up_voices=True,
+        )
 
         with (
             redirect_stdout(io.StringIO()),
@@ -503,7 +596,12 @@ class MainTest(unittest.TestCase):
             ),
             patch(
                 "vntts.main.ThreadPoolExecutor",
-                side_effect=[capture_executor, speech_executor],
+                side_effect=[
+                    capture_executor,
+                    ocr_executor,
+                    speech_executor,
+                    playback_executor,
+                ],
             ),
             patch(
                 "vntts.main.LiveDialogReader",
@@ -563,6 +661,67 @@ class MainTest(unittest.TestCase):
 
         voice_router.warm_up.assert_not_called()
         self.assertTrue(any("voice warm-up skipped" in status for status in statuses))
+        controller.shutdown()
+
+    def test_controller_loads_only_chatterbox_when_selected(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "Chatterbox default"
+        backend_factory = Mock(return_value=backend)
+        tts_factory = Mock()
+        model_assets = Mock()
+        registry = Mock()
+        with (
+            patch("vntts.main.initialize_voice_registry", return_value=registry),
+            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.main.LiveDialogReader", return_value=Mock()),
+            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(speech_backend="chatterbox-nano"),
+                tts_factory=tts_factory,
+                chatterbox_backend_factory=backend_factory,
+                model_asset_manager_factory=Mock(return_value=model_assets),
+            )
+
+            self.assertTrue(controller.start())
+
+        tts_factory.assert_not_called()
+        model_assets.configure_environment.assert_not_called()
+        model_assets.configure_huggingface_environment.assert_called_once_with()
+        backend_factory.assert_called_once_with(
+            registry,
+            narrator_reference=None,
+            volume=1.0,
+        )
+        self.assertIs(controller.tts, backend)
+        self.assertIs(controller.voice_router, backend)
+        self.assertIs(controller.speech_backend, backend)
+        controller.shutdown()
+
+    def test_voice_warmup_failure_does_not_prevent_startup(self):
+        tts = Mock()
+        voice_router = Mock()
+        voice_router.warm_up.side_effect = RuntimeError("invalid reference")
+        statuses = []
+        errors = []
+        with (
+            patch("vntts.main.initialize_voice_router", return_value=voice_router),
+            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.main.LiveDialogReader", return_value=Mock()),
+            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(warm_up_voices=True),
+                tts_factory=Mock(return_value=tts),
+                status_handler=statuses.append,
+                error_handler=errors.append,
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertEqual(errors, [voice_router.warm_up.side_effect])
+        self.assertTrue(any("load on demand" in status for status in statuses))
         controller.shutdown()
 
     def test_main_connects_hotkeys_to_controller_and_shuts_it_down(self):
@@ -740,6 +899,25 @@ class MainTest(unittest.TestCase):
         self.assertEqual(dialogs[-1][0], "OCR uncertain")
         self.assertIn("42% (requires 60%)", dialogs[-1][1])
 
+    def test_auto_advance_pauses_when_ocr_detects_a_choice_menu(self):
+        statuses = []
+        controller = AppController(
+            AppSettings(auto_advance_enabled=True),
+            status_handler=statuses.append,
+        )
+        controller.last_diagnostic = DiagnosticSnapshot(
+            None,
+            text="Ask about the island Leave quietly",
+            choice_detected=True,
+        )
+
+        with patch("vntts.main.DialogueAdvancer") as advancer:
+            advanced = controller._auto_advance_dialog()
+
+        self.assertFalse(advanced)
+        advancer.assert_not_called()
+        self.assertIn("choice menu detected", statuses[-1])
+
     def test_controller_sets_coqui_acceptance_for_approved_xtts_use(self):
         tts = Mock()
         tts_factory = Mock(return_value=tts)
@@ -753,7 +931,10 @@ class MainTest(unittest.TestCase):
         with (
             patch.dict("os.environ", {}, clear=True),
             patch("vntts.main.initialize_voice_router", return_value=voice_router),
-            patch("vntts.main.ThreadPoolExecutor", side_effect=[Mock(), Mock()]),
+            patch(
+                "vntts.main.ThreadPoolExecutor",
+                side_effect=[Mock(), Mock(), Mock(), Mock()],
+            ),
             patch("vntts.main.LiveDialogReader", return_value=Mock()),
             patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
         ):

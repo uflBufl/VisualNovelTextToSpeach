@@ -1,8 +1,10 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 
 from vntts.assets import (
     ModelAsset,
@@ -61,6 +63,18 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    def test_configures_private_huggingface_model_cache(self):
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(storage_root=temporary_directory)
+            with patch.dict(os.environ, {}, clear=True):
+                cache_root = manager.configure_huggingface_environment()
+
+                self.assertEqual(
+                    cache_root,
+                    Path(temporary_directory).resolve() / "huggingface",
+                )
+                self.assertEqual(os.environ["HF_HOME"], str(cache_root))
+
     def create_asset(self):
         return ModelAsset(
             name="tts_models/test/dataset/model",

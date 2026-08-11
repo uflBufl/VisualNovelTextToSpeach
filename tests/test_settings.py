@@ -12,6 +12,24 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_speech_backend_can_be_selected_from_environment(self):
+        settings = AppSettings().with_environment_overrides(
+            {"VNTTS_SPEECH_BACKEND": "chatterbox-nano"}
+        )
+
+        self.assertEqual(settings.speech_backend, "chatterbox-nano")
+
+    def test_unknown_speech_backend_uses_xtts(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"speech_backend": "instant-magic"},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(settings.speech_backend, "coqui-xtts")
+        self.assertTrue(any("speech_backend" in warning for warning in warnings))
+
     def test_windows_paths_use_roaming_settings_and_local_application_data(self):
         environment = {
             "APPDATA": r"C:\Users\Ada\AppData\Roaming",
@@ -141,6 +159,18 @@ class SettingsTest(unittest.TestCase):
             AppSettings().speech_rate_percent,
         )
         self.assertEqual(len(warnings), 2)
+
+    def test_invalid_auto_advance_key_falls_back_safely(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"auto_advance_enabled": True, "auto_advance_key": "delete"},
+            warn=warnings.append,
+        )
+
+        self.assertTrue(settings.auto_advance_enabled)
+        self.assertEqual(settings.auto_advance_key, "space")
+        self.assertTrue(any("auto_advance_key" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

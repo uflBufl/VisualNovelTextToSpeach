@@ -1,8 +1,9 @@
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
+from hashlib import blake2b
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
@@ -13,6 +14,7 @@ from PIL import Image
 from pynput import keyboard
 
 from vntts.assets import ModelAssetManager
+from vntts.auto_advance import DialogueAdvancer
 from vntts.diagnostics import DiagnosticSnapshot, resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
 from vntts.history import DialogueHistory
@@ -31,6 +33,7 @@ from vntts.ocr import (
     get_dialog_region,
     recognize_dialog_image_result,
 )
+from vntts.ocr_backend import TesseractOCRBackend
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.services.tts_engine import (
     AudioPlaybackError,
@@ -40,10 +43,15 @@ from vntts.services.tts_engine import (
     get_tts_profile,
 )
 from vntts.settings import AppSettings, load_app_settings
+from vntts.speech_backend import (
+    ChatterboxNanoVoiceRouterBackend,
+    XTTSVoiceRouterBackend,
+)
 from vntts.voices import (
     CharacterVoiceRegistry,
     CharacterVoiceRouter,
     VoiceManifestError,
+    find_default_voice_manifest,
 )
 from vntts.window_capture import (
     WindowCaptureTarget,
@@ -90,6 +98,12 @@ class OCRUncertainError(OCRError):
 
 class TTSInitializationError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CapturedDialogFrame:
+    image: Image.Image
+    capture_ms: float
 
 
 def get_screenshot_directory(settings=None):
@@ -155,9 +169,11 @@ def recognize_screenshot_result(
     minimum_confidence=default_minimum_ocr_confidence,
     ocr_language="eng",
     correction_dictionary=None,
+    ocr_backend=None,
 ):
     try:
-        result = recognize_dialog_image_result(
+        backend = ocr_backend or TesseractOCRBackend(recognize_dialog_image_result)
+        result = backend.recognize(
             image,
             voice_registry,
             minimum_confidence=minimum_confidence,
@@ -170,6 +186,87 @@ def recognize_screenshot_result(
         )
     except Exception as error:
         raise OCRError(str(error)) from error
+
+
+def capture_live_frame(screenshot_directory, capture_target=None, *, clock=monotonic):
+    capture_started = clock()
+    image, _output = capture_dialog(
+        screenshot_directory,
+        save_screenshot=False,
+        capture_target=capture_target,
+    )
+    return CapturedDialogFrame(
+        image=image,
+        capture_ms=(clock() - capture_started) * 1000,
+    )
+
+
+def fingerprint_dialog_frame(frame):
+    """Cheap fingerprint that preserves small glyph changes after downsampling."""
+    grayscale = frame.image.convert("L").resize(
+        (256, 64),
+        Image.Resampling.LANCZOS,
+    )
+    # Coarse quantization ignores insignificant capture noise, while retaining
+    # several intensity levels so a new sentence cannot disappear like it did
+    # in the previous 96x54 binary mask.
+    quantized = grayscale.point(tuple((value // 16) * 16 for value in range(256)))
+    return blake2b(quantized.tobytes(), digest_size=16).digest()
+
+
+def recognize_live_frame(
+    frame,
+    voice_registry=None,
+    minimum_confidence=default_minimum_ocr_confidence,
+    uncertain_handler=None,
+    uncertain_frame_recorder=None,
+    diagnostic_handler=None,
+    voice_resolver=None,
+    ocr_language="eng",
+    correction_dictionary=None,
+    *,
+    clock=monotonic,
+):
+    ocr_started = clock()
+    result = recognize_screenshot_result(
+        frame.image,
+        voice_registry,
+        minimum_confidence,
+        ocr_language,
+        correction_dictionary,
+    )
+    ocr_ms = (clock() - ocr_started) * 1000
+    snapshot = DiagnosticSnapshot(
+        image=frame.image,
+        character=result.character or "Narrator",
+        text=result.text,
+        confidence=result.confidence,
+        preprocessing_profile=result.profile,
+        voice=(
+            voice_resolver(result.character)
+            if voice_resolver is not None
+            else "Not loaded"
+        ),
+        capture_ms=frame.capture_ms,
+        ocr_ms=ocr_ms,
+        corrections=result.corrections,
+        choice_detected=result.choice_detected,
+    )
+    if diagnostic_handler is not None:
+        diagnostic_handler(snapshot)
+    if result.text and not result.is_confident(minimum_confidence):
+        if uncertain_frame_recorder is not None:
+            uncertain_frame_recorder.record(
+                frame.image,
+                result,
+                minimum_confidence,
+            )
+        if uncertain_handler is not None:
+            uncertain_handler(result, minimum_confidence)
+        return None, ""
+    if uncertain_frame_recorder is not None:
+        uncertain_frame_recorder.reset()
+    return result.character, result.text
 
 
 def recognize_screenshot(
@@ -235,6 +332,7 @@ def analyze_dialog_snapshot(
         capture_ms=capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
+        choice_detected=result.choice_detected,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -515,12 +613,14 @@ def get_tts_configuration(settings=None):
     return configuration
 
 
-def initialize_voice_router(tts, settings=None, error_handler=None):
+def initialize_voice_registry(settings=None, error_handler=None):
     manifest_path = (
         settings.voice_manifest
         if settings is not None
         else os.environ.get("VNTTS_VOICE_MANIFEST")
     )
+    if not manifest_path:
+        manifest_path = find_default_voice_manifest()
     try:
         registry = (
             CharacterVoiceRegistry.from_file(manifest_path)
@@ -534,6 +634,13 @@ def initialize_voice_router(tts, settings=None, error_handler=None):
             error_handler(error)
         return None
 
+    return registry
+
+
+def initialize_voice_router(tts, settings=None, error_handler=None):
+    registry = initialize_voice_registry(settings, error_handler)
+    if registry is None:
+        return None
     return CharacterVoiceRouter(
         tts,
         registry,
@@ -716,12 +823,14 @@ class AppController:
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
+        chatterbox_backend_factory=ChatterboxNanoVoiceRouterBackend,
         correction_store=None,
         history=None,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
+        self.chatterbox_backend_factory = chatterbox_backend_factory
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -736,8 +845,11 @@ class AppController:
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         self.tts = None
         self.voice_router = None
+        self.speech_backend = None
         self.capture_executor = None
+        self.ocr_executor = None
         self.speech_executor = None
+        self.playback_executor = None
         self.live_reader = None
         self.schedule_dialog_read = None
         self.last_diagnostic = None
@@ -759,12 +871,29 @@ class AppController:
             return True
 
         self.shutdown_requested.clear()
-        self.status_handler("Loading TTS model...")
+        use_xtts = self.settings.speech_backend == "coqui-xtts"
+        self.status_handler(
+            "Loading TTS model..." if use_xtts else "Loading Chatterbox Nano..."
+        )
         try:
-            self.model_assets.configure_environment()
-            if self.settings.xtts_terms_accepted:
-                os.environ["COQUI_TOS_AGREED"] = "1"
-            self.tts = self.tts_factory(**get_tts_configuration(self.settings))
+            if use_xtts:
+                self.model_assets.configure_environment()
+                if self.settings.xtts_terms_accepted:
+                    os.environ["COQUI_TOS_AGREED"] = "1"
+                self.tts = self.tts_factory(**get_tts_configuration(self.settings))
+            else:
+                self.model_assets.configure_huggingface_environment()
+                registry = initialize_voice_registry(
+                    self.settings,
+                    self.error_handler,
+                )
+                if registry is None:
+                    return False
+                self.tts = self.chatterbox_backend_factory(
+                    registry,
+                    narrator_reference=self.settings.tts_speaker_wav,
+                    volume=self.settings.output_volume_percent / 100,
+                )
         except Exception as error:
             self.error_handler(TTSInitializationError(str(error)))
             return False
@@ -774,32 +903,54 @@ class AppController:
             return False
 
         try:
-            self.voice_router = initialize_voice_router(
-                self.tts,
-                self.settings,
-                self.error_handler,
-            )
-            if self.voice_router is None:
-                self._stop_tts()
-                return False
+            if use_xtts:
+                self.voice_router = initialize_voice_router(
+                    self.tts,
+                    self.settings,
+                    self.error_handler,
+                )
+                if self.voice_router is None:
+                    self._stop_tts()
+                    return False
+                self.speech_backend = XTTSVoiceRouterBackend(self.voice_router)
+            else:
+                self.voice_router = self.tts
+                self.speech_backend = self.tts
 
             if self.settings.warm_up_voices:
                 self.status_handler("Warming speech model and voices...")
-                warmed = self.voice_router.warm_up(progress=self._warmup_progress)
-                self.status_handler(f"Speech model and {warmed} voices ready")
+                try:
+                    warmed = self.voice_router.warm_up(progress=self._warmup_progress)
+                except Exception as error:
+                    self.error_handler(error)
+                    self.status_handler(
+                        "Voice warm-up was incomplete; voices will load on demand"
+                    )
+                else:
+                    self.status_handler(f"Speech model and {warmed} voices ready")
 
             self.capture_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="dialog-capture",
             )
+            self.ocr_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="dialog-ocr",
+            )
             self.speech_executor = ThreadPoolExecutor(
                 max_workers=1,
-                thread_name_prefix="dialog-speech",
+                thread_name_prefix="dialog-synthesis",
+            )
+            self.playback_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="dialog-playback",
             )
             screenshot_directory = get_screenshot_directory(self.settings)
             self.live_reader = LiveDialogReader(
                 capture_executor=self.capture_executor,
+                ocr_executor=self.ocr_executor,
                 speech_executor=self.speech_executor,
+                playback_executor=self.playback_executor,
                 read_snapshot=lambda: read_live_snapshot(
                     screenshot_directory,
                     self.voice_router.registry,
@@ -812,13 +963,24 @@ class AppController:
                     self.settings.ocr_language,
                     self.correction_dictionary,
                 ),
+                capture_frame=self._capture_live_frame,
+                recognize_frame=self._recognize_live_frame,
+                frame_fingerprint=fingerprint_dialog_frame,
                 speak_chunk=self._speak_live_chunk,
+                prepare_chunk=self._prepare_live_chunk,
+                play_prepared=self._play_live_chunk,
                 report_error=self.error_handler,
                 interrupt_speech=self._interrupt_speech,
                 dialog_observed=self._dialog_observed,
                 focus_probe=self._is_game_focused,
                 capture_state_changed=self._capture_state_changed,
                 tracker_factory=IncrementalDialogTracker,
+                auto_advance=(
+                    self._auto_advance_dialog
+                    if self.settings.auto_advance_enabled
+                    else None
+                ),
+                auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
                 **get_live_configuration(self.settings),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -842,7 +1004,7 @@ class AppController:
             return False
 
         if not self.settings.warm_up_voices:
-            self.status_handler("TTS model loaded; voice warm-up skipped")
+            self.status_handler("Speech model loaded; voice warm-up skipped")
         self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
         return True
 
@@ -895,6 +1057,17 @@ class AppController:
         self.status_handler("Speech queue cleared")
         return cleared
 
+    def set_auto_advance_enabled(self, enabled):
+        self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
+        if self.live_reader is not None:
+            self.live_reader.auto_advance = (
+                self._auto_advance_dialog if enabled else None
+            )
+        self.status_handler(
+            "Auto advance enabled" if enabled else "Auto advance disabled"
+        )
+        return bool(enabled)
+
     def available_voice_characters(self):
         if self.voice_router is None:
             return ["Narrator"]
@@ -936,6 +1109,11 @@ class AppController:
     def get_latest_diagnostic(self):
         with self.diagnostic_lock:
             return self.last_diagnostic
+
+    def get_live_pipeline_metrics(self):
+        if self.live_reader is None:
+            return None
+        return self.live_reader.get_pipeline_metrics()
 
     def inspect_current_dialog(self):
         registry = self.voice_router.registry if self.voice_router is not None else None
@@ -1025,6 +1203,12 @@ class AppController:
         live_configuration = get_live_configuration(self.settings)
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
         self.live_reader.tracker_options = live_configuration["tracker_options"]
+        self.live_reader.auto_advance = (
+            self._auto_advance_dialog if self.settings.auto_advance_enabled else None
+        )
+        self.live_reader.auto_advance_delay_seconds = (
+            self.settings.auto_advance_delay_ms / 1000
+        )
         self.schedule_dialog_read = create_dialog_read_scheduler(
             self.capture_executor,
             self.voice_router,
@@ -1053,6 +1237,25 @@ class AppController:
         if self.settings.capture_mode != "window":
             return None
         return self.capture_target_factory(self.settings.game_window_title)
+
+    def _capture_live_frame(self):
+        return capture_live_frame(
+            get_screenshot_directory(self.settings),
+            self.capture_target,
+        )
+
+    def _recognize_live_frame(self, frame):
+        return recognize_live_frame(
+            frame,
+            self.voice_router.registry,
+            self.settings.ocr_minimum_confidence,
+            self._ocr_uncertain,
+            self.uncertain_frame_recorder,
+            self._publish_diagnostic,
+            self._resolve_voice_label,
+            self.settings.ocr_language,
+            self.correction_dictionary,
+        )
 
     def _preview_voice(self, character, text):
         try:
@@ -1097,6 +1300,18 @@ class AppController:
             return True
         return self.capture_target.is_focused()
 
+    def _auto_advance_dialog(self):
+        if not self.settings.auto_advance_enabled or not self._is_game_focused():
+            return False
+        with self.diagnostic_lock:
+            snapshot = self.last_diagnostic
+        if snapshot is not None and snapshot.choice_detected:
+            self.status_handler("Auto advance paused: choice menu detected")
+            return False
+        DialogueAdvancer(self.settings.auto_advance_key).advance()
+        self.status_handler("Advanced to the next dialogue")
+        return True
+
     def _capture_state_changed(self, focused, interval_seconds):
         self.game_focused = focused
         self.capture_interval_ms = interval_seconds * 1000
@@ -1138,6 +1353,24 @@ class AppController:
         finally:
             self._refresh_diagnostic_metrics()
 
+    def _prepare_live_chunk(self, chunk):
+        print(f"Preparing {chunk.character} (live)")
+        print(chunk.text)
+        try:
+            return self.speech_backend.prepare(chunk.character, chunk.text)
+        finally:
+            self._refresh_diagnostic_metrics()
+
+    def _play_live_chunk(self, chunk, audio):
+        print(f"{chunk.character} is speaking now (live)")
+        try:
+            return self.speech_backend.play(
+                audio,
+                playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+            )
+        finally:
+            self._refresh_diagnostic_metrics()
+
     def _refresh_diagnostic_metrics(self):
         with self.diagnostic_lock:
             snapshot = self.last_diagnostic
@@ -1159,9 +1392,15 @@ class AppController:
         if self.capture_executor is not None:
             self.capture_executor.shutdown(wait=True)
             self.capture_executor = None
+        if self.ocr_executor is not None:
+            self.ocr_executor.shutdown(wait=True)
+            self.ocr_executor = None
         if self.speech_executor is not None:
             self.speech_executor.shutdown(wait=True)
             self.speech_executor = None
+        if self.playback_executor is not None:
+            self.playback_executor.shutdown(wait=True)
+            self.playback_executor = None
         self.schedule_dialog_read = None
         self._stop_tts()
 
@@ -1173,6 +1412,7 @@ class AppController:
                 self.error_handler(error)
         self.tts = None
         self.voice_router = None
+        self.speech_backend = None
 
     def _interrupt_speech(self):
         if self.tts is not None and hasattr(self.tts, "stop"):
