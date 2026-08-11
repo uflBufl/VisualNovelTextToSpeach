@@ -110,7 +110,11 @@ class Reverse1999ConfigTest(unittest.TestCase):
             "json_guide_step": [
                 [24401, 6, "talk", 0, 0, "235#236", "520301", 0, "", "kamuta_line"]
             ],
+            "json_dialog_step": [
+                [30, 30001, 1, "unknown_line", "selone_name", "521001", 1]
+            ],
         }
+        language["selone_name"] = "Selone"
 
         identities, evidence = extract_dialogue_evidence(
             language, tables, catalog=catalog
@@ -124,6 +128,7 @@ class Reverse1999ConfigTest(unittest.TestCase):
                 ("520301", "Kamuta"),
                 ("999999", None),
                 ("520301", "Kamuta"),
+                ("521001", "Selone"),
             ],
         )
         self.assertEqual(evidence[0].chapter, "24006")

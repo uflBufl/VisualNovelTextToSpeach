@@ -187,10 +187,19 @@ def extract_dialogue_evidence(language, tables, *, catalog=None):
     identities = extract_character_identities(language, tables)
     evidence = []
     table_layouts = (
-        ("json_tip_dialog", 0, 1, 4, 5),
-        ("json_guide_step", 0, 1, 6, 9),
+        ("json_tip_dialog", 0, 1, 4, 5, None),
+        ("json_guide_step", 0, 1, 6, 9, None),
+        ("json_dialog_step", 0, 1, 5, 3, 4),
+        ("json_battle_dialog", 0, 1, 6, 8, None),
     )
-    for table_name, chapter_index, sequence_index, speaker_index, key_index in table_layouts:
+    for (
+        table_name,
+        chapter_index,
+        sequence_index,
+        speaker_index,
+        key_index,
+        speaker_name_key_index,
+    ) in table_layouts:
         for row in tables.get(table_name, []):
             if not isinstance(row, list) or len(row) <= max(speaker_index, key_index):
                 continue
@@ -202,12 +211,16 @@ def extract_dialogue_evidence(language, tables, *, catalog=None):
                 sequence = int(row[sequence_index])
             except (TypeError, ValueError):
                 sequence = 0
+            direct_name = None
+            if speaker_name_key_index is not None and len(row) > speaker_name_key_index:
+                direct_name_key = row[speaker_name_key_index]
+                if isinstance(direct_name_key, str):
+                    direct_name = language.get(direct_name_key)
             evidence.append(
                 DialogueEvidence(
                     speaker_id=speaker_id,
-                    speaker_name=resolve_speaker_name(
-                        speaker_id, identities, catalog=catalog
-                    ),
+                    speaker_name=direct_name
+                    or resolve_speaker_name(speaker_id, identities, catalog=catalog),
                     chapter=str(row[chapter_index]),
                     sequence=sequence,
                     language_key=language_key,
