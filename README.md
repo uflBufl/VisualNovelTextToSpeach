@@ -162,6 +162,7 @@ Extract or convert game audio directly:
 ```sh
 uv run vntts-wwise-extract /path/to/voice.bnk output/ --convert
 uv run vntts-audio-convert input.wem output.wav
+uv run vntts-audio-score reference.wav --output quality.json
 ```
 
 Use XTTS with character-specific voices and a default narrator voice:
