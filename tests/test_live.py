@@ -1,6 +1,6 @@
 import unittest
 from concurrent.futures import Future
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import Mock
 
 from vntts.live import (
@@ -71,7 +71,10 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         )
 
     def test_short_clause_waits_but_long_clause_is_emitted(self):
-        tracker = self.create_tracker(min_chunk_characters=10)
+        tracker = self.create_tracker(
+            min_chunk_characters=10,
+            complete_sentences_only=False,
+        )
 
         tracker.observe("Alice", "Wait,")
         self.assertEqual(tracker.observe("Alice", "Wait,"), [])
@@ -79,6 +82,24 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
 
         self.assertEqual(
             tracker.observe("Alice", "Wait, this is long enough, next"),
+            [SpeechChunk(1, "Alice", "Wait, this is long enough,")],
+        )
+
+    def test_live_quality_mode_waits_instead_of_speaking_clause_fragments(self):
+        tracker = self.create_tracker(
+            min_chunk_characters=10,
+            idle_flush_seconds=0.7,
+        )
+
+        tracker.observe("Alice", "Wait, this is long enough,")
+        self.assertEqual(
+            tracker.observe("Alice", "Wait, this is long enough,"),
+            [],
+        )
+        self.clock.advance(0.8)
+
+        self.assertEqual(
+            tracker.observe("Alice", "Wait, this is long enough,"),
             [SpeechChunk(1, "Alice", "Wait, this is long enough,")],
         )
 
@@ -129,6 +150,26 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(1, "Alice", "Partial ending")],
         )
         self.assertEqual(tracker.flush(), [])
+
+    def test_noise_only_text_is_committed_without_being_spoken(self):
+        tracker = self.create_tracker()
+
+        tracker.observe("Alice", "...")
+        tracker.observe("Alice", "...")
+
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.committed_position, 3)
+
+    def test_idle_complete_requires_all_visible_text_to_be_committed(self):
+        tracker = self.create_tracker(idle_flush_seconds=0.7)
+        tracker.observe("Alice", "First sentence. Second")
+        tracker.observe("Alice", "First sentence. Second")
+        self.assertFalse(tracker.is_idle_complete())
+
+        self.clock.advance(0.8)
+        tracker.observe("Alice", "First sentence. Second")
+
+        self.assertTrue(tracker.is_idle_complete())
 
 
 class AdaptiveCapturePolicyTest(unittest.TestCase):
@@ -212,7 +253,36 @@ class LiveDialogReaderTest(unittest.TestCase):
         report_error.assert_called_once()
         self.assertEqual(str(report_error.call_args.args[0]), "audio failed")
 
-    def test_new_dialog_interrupts_speech_from_previous_generation(self):
+    def test_prepared_speech_prefetches_then_plays_on_separate_executor(self):
+        prepare_chunk = Mock(return_value="prepared audio")
+        play_prepared = Mock()
+        reader = self.create_reader(
+            playback_executor=ImmediateExecutor(),
+            prepare_chunk=prepare_chunk,
+            play_prepared=play_prepared,
+        )
+        chunk = SpeechChunk(1, "Alice", "Two-stage speech.")
+        reader.active_generation = 1
+
+        reader._schedule([chunk])
+
+        prepare_chunk.assert_called_once_with(chunk)
+        play_prepared.assert_called_once_with(chunk, "prepared audio")
+        self.assertEqual(reader.last_spoken_chunk, chunk)
+
+    def test_auto_advance_runs_once_for_ready_focused_generation(self):
+        auto_advance = Mock(return_value=True)
+        reader = self.create_reader(auto_advance=auto_advance)
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        reader._run_auto_advance(3)
+        reader._run_auto_advance(3)
+
+        auto_advance.assert_called_once_with()
+        self.assertEqual(reader.advanced_generation, 3)
+
+    def test_new_dialog_allows_active_playback_to_finish_cleanly(self):
         interrupt_speech = Mock(return_value=True)
         reader = self.create_reader(interrupt_speech=interrupt_speech)
         reader.active_generation = 1
@@ -220,8 +290,20 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         reader._set_generation(2)
 
-        interrupt_speech.assert_called_once_with()
+        interrupt_speech.assert_not_called()
         self.assertEqual(reader.active_generation, 2)
+
+    def test_new_dialog_cancels_stale_queued_speech(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        reader = self.create_reader(speech_executor=speech_executor)
+        stale_future = Future()
+        reader.active_generation = 1
+        reader.speech_futures[stale_future] = SpeechChunk(1, "Alice", "Old text.")
+
+        reader._set_generation(2)
+
+        self.assertTrue(stale_future.cancelled())
 
     def test_pause_toggle_blocks_and_releases_the_queue(self):
         reader = self.create_reader()
@@ -315,6 +397,37 @@ class LiveDialogReaderTest(unittest.TestCase):
         interrupt_speech.assert_called_once_with()
         speech_executor.submit.assert_not_called()
 
+    def test_speech_queue_is_bounded_and_merges_overflow_text(self):
+        futures = [Future(), Future(), Future()]
+        speech_executor = Mock()
+        speech_executor.submit.side_effect = futures
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            max_speech_jobs=2,
+        )
+        reader.active_generation = 1
+        chunks = [
+            SpeechChunk(1, "Alice", "One."),
+            SpeechChunk(1, "Alice", "Two."),
+            SpeechChunk(1, "Alice", "Three."),
+            SpeechChunk(1, "Alice", "Four."),
+        ]
+
+        reader._schedule(chunks)
+
+        self.assertEqual(speech_executor.submit.call_count, 2)
+        self.assertEqual(reader.deferred_chunk.text, "Three. Four.")
+        self.assertEqual(reader.get_pipeline_metrics().speech_queue_depth, 3)
+
+        reader._speech_finished(futures[0])
+
+        self.assertEqual(speech_executor.submit.call_count, 3)
+        self.assertIsNone(reader.deferred_chunk)
+        self.assertEqual(
+            speech_executor.submit.call_args.args[1].text,
+            "Three. Four.",
+        )
+
     def test_observed_dialog_is_reported_only_when_it_changes(self):
         dialog_observed = Mock()
         reader = self.create_reader(dialog_observed=dialog_observed)
@@ -361,6 +474,110 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.read_snapshot.assert_not_called()
         capture_state_changed.assert_called_once_with(False, 0.008)
         stop_event.wait.assert_called_once_with(0.008)
+
+    def test_capture_continues_while_speech_is_active(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
+        reader = self.create_reader(interval_seconds=0.2)
+        reader.current_chunk = SpeechChunk(1, "Alice", "Speaking now.")
+
+        reader._run(stop_event)
+
+        reader.read_snapshot.assert_called_once_with()
+        stop_event.wait.assert_called_once_with(0.1)
+
+    def test_split_capture_keeps_only_the_latest_unprocessed_frame(self):
+        stop_event = Event()
+        frames = []
+
+        def capture_frame():
+            frames.append(len(frames) + 1)
+            if len(frames) == 3:
+                stop_event.set()
+            return frames[-1]
+
+        reader = self.create_reader(
+            ocr_executor=Mock(),
+            capture_frame=capture_frame,
+            recognize_frame=Mock(),
+            frame_fingerprint=lambda frame: frame,
+        )
+
+        reader._run_capture(stop_event)
+
+        metrics = reader.get_pipeline_metrics()
+        self.assertEqual(metrics.captured_frames, 3)
+        self.assertEqual(metrics.replaced_frames, 2)
+        self.assertEqual(reader.latest_frame, 3)
+
+    def test_split_ocr_reuses_unchanged_frame_until_auto_advance(self):
+        stop_event = Event()
+        first_observed = Event()
+        second_observed = Event()
+
+        class Tracker:
+            generation = 1
+
+            def __init__(self):
+                self.observations = 0
+
+            def observe(self, _character, _text):
+                self.observations += 1
+                if self.observations == 1:
+                    first_observed.set()
+                elif self.observations == 2:
+                    second_observed.set()
+                else:
+                    stop_event.set()
+                return []
+
+            def flush(self):
+                return []
+
+            def is_idle_complete(self):
+                return False
+
+        recognize_frame = Mock(return_value=("Alice", "Unchanged text."))
+        reader = self.create_reader(
+            ocr_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=recognize_frame,
+            frame_fingerprint=Mock(),
+            tracker_factory=Tracker,
+        )
+        worker = Thread(target=reader._run_ocr, args=(stop_event,))
+        worker.start()
+        with reader.pause_condition:
+            reader.latest_frame = "frame one"
+            reader.latest_frame_fingerprint = "same text"
+            reader.frame_version = 1
+            reader.pause_condition.notify_all()
+        self.assertTrue(first_observed.wait(timeout=1))
+        with reader.pause_condition:
+            reader.latest_frame = "frame two with animated background"
+            reader.latest_frame_fingerprint = "same text"
+            reader.frame_version = 2
+            reader.pause_condition.notify_all()
+        self.assertTrue(second_observed.wait(timeout=1))
+        with reader.pause_condition:
+            reader.advanced_generation = reader.active_generation
+            reader.latest_frame = "first frame after auto advance"
+            reader.latest_frame_fingerprint = "same text"
+            reader.frame_version = 3
+            reader.pause_condition.notify_all()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            recognize_frame.call_args_list,
+            [
+                unittest.mock.call("frame one"),
+                unittest.mock.call("first frame after auto advance"),
+            ],
+        )
+        metrics = reader.get_pipeline_metrics()
+        self.assertEqual(metrics.recognized_frames, 2)
+        self.assertEqual(metrics.reused_frames, 1)
 
 
 if __name__ == "__main__":

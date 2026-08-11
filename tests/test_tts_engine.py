@@ -1,11 +1,17 @@
 import unittest
+import warnings
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock
+
+import numpy as np
 
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSEngine,
     TTSSynthesisError,
     get_tts_profile,
+    prepare_speech_text,
 )
 
 
@@ -25,6 +31,7 @@ class TTSEngineTest(unittest.TestCase):
         model_name="tts_models/en/vctk/vits",
         volume=1.0,
         clock=None,
+        audio_cache_size=32,
     ):
         tts = Mock()
         tts.is_multi_speaker = is_multi_speaker
@@ -55,6 +62,7 @@ class TTSEngineTest(unittest.TestCase):
             tts_factory=tts_factory,
             torch_module=torch_module,
             audio_output=audio_output,
+            audio_cache_size=audio_cache_size,
             **options,
         )
         return engine, tts, audio_output
@@ -63,6 +71,35 @@ class TTSEngineTest(unittest.TestCase):
         engine, _, _ = self.create_engine(model_name="xtts_v2")
 
         self.assertEqual(engine.synthesis_options, get_tts_profile("stable"))
+        self.assertTrue(engine.synthesis_options["split_sentences"])
+        self.assertEqual(engine.synthesis_options["repetition_penalty"], 10.0)
+
+    def test_terminal_ellipsis_is_closed_before_synthesis(self):
+        text = (
+            "Paddle out to Itiiti, circle around to Miti and Vaipuna, "
+            "then come back to Meli ..."
+        )
+
+        self.assertEqual(
+            prepare_speech_text(text),
+            "Paddle out to Itiiti, circle around to Miti and Vaipuna, "
+            "then come back to Meli.",
+        )
+        self.assertEqual(
+            prepare_speech_text("I ... don't know ... yet."),
+            "I ... don't know ... yet.",
+        )
+        self.assertEqual(
+            prepare_speech_text("Wait, this is still appearing,"),
+            "Wait, this is still appearing.",
+        )
+
+    def test_synthesize_normalizes_only_the_spoken_copy(self):
+        engine, tts, _ = self.create_engine()
+
+        engine.synthesize("Come back to Meli ...")
+
+        tts.tts.assert_called_once_with(text="Come back to Meli.")
 
     def test_non_xtts_model_has_no_profile_by_default(self):
         engine, _, _ = self.create_engine()
@@ -79,7 +116,11 @@ class TTSEngineTest(unittest.TestCase):
         engine.speak("Hello")
 
         tts.tts.assert_called_once_with(text="Hello", speaker="p225")
-        audio_output.play.assert_called_once_with(tts.tts.return_value, 48000)
+        audio_output.play.assert_called_once_with(
+            tts.tts.return_value,
+            48000,
+            latency="high",
+        )
         audio_output.wait.assert_called_once_with()
 
     def test_speak_records_synthesis_and_playback_latency(self):
@@ -101,13 +142,103 @@ class TTSEngineTest(unittest.TestCase):
         audio_output.play.assert_not_called()
         audio_output.wait.assert_not_called()
 
+    def test_repeated_line_reuses_generated_audio(self):
+        engine, tts, audio_output = self.create_engine()
+
+        engine.speak("Same line")
+        engine.speak("Same line")
+
+        tts.tts.assert_called_once_with(text="Same line")
+        self.assertEqual(audio_output.play.call_count, 2)
+        self.assertEqual(engine.last_synthesis_ms, 0.0)
+
+    def test_audio_cache_keeps_speakers_separate(self):
+        engine, tts, _ = self.create_engine(
+            is_multi_speaker=True,
+            speakers=["Alice", "Bob"],
+        )
+
+        engine.synthesize("Same line", speaker="Alice")
+        engine.synthesize("Same line", speaker="Bob")
+
+        self.assertEqual(tts.tts.call_count, 2)
+
+    def test_audio_cache_discards_least_recently_used_line(self):
+        engine, tts, _ = self.create_engine(audio_cache_size=1)
+
+        engine.synthesize("First")
+        engine.synthesize("Second")
+        engine.synthesize("First")
+
+        self.assertEqual(tts.tts.call_count, 3)
+
+    def test_named_clone_result_is_cached_without_reference_path(self):
+        engine, tts, _ = self.create_engine(
+            is_multi_speaker=True,
+            speakers=["Preset"],
+            is_multi_lingual=True,
+            languages=["en"],
+            language="en",
+        )
+
+        engine.synthesize(
+            "Same line",
+            speaker="Cloned",
+            speaker_wav="reference.wav",
+        )
+        engine.synthesize("Same line", speaker="Cloned")
+
+        tts.tts.assert_called_once_with(
+            text="Same line",
+            speaker="Cloned",
+            language="en",
+            speaker_wav="reference.wav",
+        )
+
+    def test_synthesize_suppresses_only_torchaudio_load_deprecation(self):
+        engine, tts, _ = self.create_engine()
+
+        def synthesize(**_arguments):
+            warnings.warn(
+                "In 2.9, this function's implementation will be changed to use "
+                "torchaudio.load_with_torchcodec` under the hood.",
+                UserWarning,
+            )
+            warnings.warn("A useful model warning", RuntimeWarning)
+            return [0.0]
+
+        tts.tts.side_effect = synthesize
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            engine.synthesize("Voice ready.")
+
+        self.assertEqual(
+            [str(item.message) for item in captured], ["A useful model warning"]
+        )
+
     def test_output_volume_scales_audio_before_playback(self):
         engine, tts, audio_output = self.create_engine(volume=0.4)
 
         engine.speak("Hello")
 
-        audio_output.play.assert_called_once_with([0.0, 0.2, 0.0], 24000)
+        audio_output.play.assert_called_once_with(
+            [0.0, 0.2, 0.0],
+            24000,
+            latency="high",
+        )
         self.assertEqual(tts.tts.call_count, 1)
+
+    def test_playback_fades_audio_edges_to_avoid_clicks(self):
+        engine, tts, audio_output = self.create_engine(sample_rate=1000)
+        tts.tts.return_value = np.ones(100, dtype=np.float32)
+
+        engine.speak("Hello")
+
+        prepared = audio_output.play.call_args.args[0]
+        self.assertEqual(prepared[0], 0.0)
+        self.assertEqual(prepared[-1], 0.0)
+        self.assertEqual(prepared[10], 1.0)
 
     def test_runtime_volume_and_speed_are_validated_and_updated(self):
         engine, tts, _ = self.create_engine()
@@ -287,6 +418,44 @@ class TTSEngineTest(unittest.TestCase):
         self.assertTrue(engine.has_speaker("Preset"))
         self.assertTrue(engine.has_speaker("Cloned"))
         self.assertFalse(engine.has_speaker("Unknown"))
+
+    def test_has_speaker_recognizes_voice_persisted_by_coqui(self):
+        engine, tts, _ = self.create_engine(
+            is_multi_speaker=True,
+            speakers=["Preset"],
+        )
+        with TemporaryDirectory() as directory:
+            voice_path = Path(directory) / "Saved-clone.pth"
+            tts.synthesizer.voice_dir = directory
+            tts.synthesizer.tts_model.get_voices.return_value = {
+                "Saved-clone": voice_path
+            }
+
+            self.assertTrue(engine.has_speaker("Saved-clone"))
+            self.assertIn("Saved-clone", engine.cached_speakers)
+
+    def test_persisted_voice_is_reused_without_reference_audio(self):
+        engine, tts, _ = self.create_engine(
+            is_multi_speaker=True,
+            speakers=["Preset"],
+            is_multi_lingual=True,
+            languages=["en"],
+            language="en",
+        )
+        with TemporaryDirectory() as directory:
+            voice_path = Path(directory) / "Saved-clone.pth"
+            tts.synthesizer.voice_dir = directory
+            tts.synthesizer.tts_model.get_voices.return_value = {
+                "Saved-clone": voice_path
+            }
+
+            engine.speak("Hello", speaker="Saved-clone")
+
+        tts.tts.assert_called_once_with(
+            text="Hello",
+            speaker="Saved-clone",
+            language="en",
+        )
 
 
 if __name__ == "__main__":
