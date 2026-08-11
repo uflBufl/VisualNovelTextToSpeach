@@ -13,6 +13,7 @@ from vntts.reverse1999_catalog import (
     default_catalog_path,
     normalize_name,
 )
+from vntts.settings import get_local_data_directory
 from vntts.voice_reference_quality import trim_and_normalize_voice_reference
 from vntts.wwise import (
     AudioConversionError,
@@ -23,7 +24,7 @@ from vntts.wwise import (
 )
 
 project_root = Path(__file__).resolve().parents[1]
-default_output = project_root / "data" / "reverse1999-voices"
+default_output = get_local_data_directory() / "voice-packs" / "reverse1999"
 
 
 class GameVoiceImportError(RuntimeError):

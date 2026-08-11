@@ -180,8 +180,8 @@ uv run vntts
 Each character voice uses several varied references and is cloned and cached
 when that speaker is first detected. XTTS uses `stable` by default. Select
 `stable`, `natural`, or `expressive` with `VNTTS_TTS_PROFILE`; invalid profile
-names also use `stable`. Unknown speakers use the narrator voice. Downloaded
-references under `data/reverse1999-voices/` are ignored by Git.
+names also use `stable`. Unknown speakers use the narrator voice until mapped.
+Imported recordings and user manifests are stored under application data.
 
 ## Project layout
 

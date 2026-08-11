@@ -22,6 +22,7 @@ from vntts.reverse1999_voice_import import (
     find_game_audio_directory,
     update_manifest,
 )
+from vntts.reverse1999_voice_import import default_output as default_voice_output
 from vntts.settings import get_local_data_directory
 from vntts.voice_reference_quality import (
     analyze_voice_reference,
@@ -34,7 +35,6 @@ from vntts.wwise import convert_audio, read_embedded_media, resolve_decoder
 state_version = 1
 default_state_path = get_local_data_directory() / "reverse1999" / "batch-state.json"
 default_batch_cache = get_local_data_directory() / "reverse1999" / "batch"
-default_voice_output = Path(__file__).resolve().parents[1] / "data" / "reverse1999-voices"
 
 
 class Reverse1999BatchError(RuntimeError):

@@ -19,8 +19,6 @@ sections after their implementation has been verified and committed.
 
 - [ ] Use Selone as the first assisted-import validation case, then apply the
       same workflow to all unresolved story NPCs.
-- [ ] Keep extracted copyrighted recordings local; ship only extraction tools,
-      mappings, checksums, and user-created manifests.
 
 ### P1 - Reduce remaining speech latency
 
