@@ -9,7 +9,12 @@ from vntts.reverse1999_index import (
     classify_bank,
     main,
 )
-from vntts.wwise import WwiseBankError, WwiseBankSummary
+from vntts.wwise import (
+    WwiseActionReference,
+    WwiseBankError,
+    WwiseBankSummary,
+    WwiseEventRoute,
+)
 
 
 class Reverse1999BankIndexTest(unittest.TestCase):
@@ -34,6 +39,15 @@ class Reverse1999BankIndexTest(unittest.TestCase):
             media_ids=(10, 20),
             embedded_media_bytes=1200,
             hirc_object_count=4,
+            event_routes=(
+                WwiseEventRoute(
+                    event_id=40,
+                    action_ids=(30,),
+                    actions=(WwiseActionReference(30, 0x0403, 10),),
+                    sound_ids=(10,),
+                    media_ids=(20,),
+                ),
+            ),
         )
         inspector = Mock(return_value=summary)
         with TemporaryDirectory() as temporary_directory:
@@ -56,6 +70,25 @@ class Reverse1999BankIndexTest(unittest.TestCase):
         self.assertEqual(index["banks"][0]["chapters"], [9])
         self.assertEqual(index["banks"][0]["media_count"], 2)
         self.assertEqual(saved["banks"][0]["hirc_object_count"], 4)
+        self.assertEqual(saved["banks"][0]["event_count"], 1)
+        self.assertEqual(
+            saved["banks"][0]["events"],
+            [
+                {
+                    "event_id": 40,
+                    "action_ids": [30],
+                    "actions": [
+                        {
+                            "action_id": 30,
+                            "action_type": 0x0403,
+                            "target_id": 10,
+                        }
+                    ],
+                    "sound_ids": [10],
+                    "media_ids": [20],
+                }
+            ],
+        )
         inspector.assert_called_once_with(bank.resolve())
 
     def test_reuses_unchanged_entries_and_reinspects_changed_banks(self):

@@ -10,10 +10,8 @@ from vntts.reverse1999_voice_import import find_game_audio_directory
 from vntts.settings import get_local_data_directory
 from vntts.wwise import WwiseBankError, inspect_bank
 
-index_version = 1
-default_output = (
-    get_local_data_directory() / "reverse1999" / "english-bank-index.json"
-)
+index_version = 2
+default_output = get_local_data_directory() / "reverse1999" / "english-bank-index.json"
 npc_id_pattern = re.compile(r"npc[_-]?(\d{4,})", re.IGNORECASE)
 chapter_pattern = re.compile(r"chapter[_-]?(\d+)", re.IGNORECASE)
 
@@ -103,6 +101,24 @@ def inspect_bank_entry(bank, root, *, inspector=inspect_bank):
             "media_count": summary.media_count,
             "embedded_media_bytes": summary.embedded_media_bytes,
             "hirc_object_count": summary.hirc_object_count,
+            "event_count": summary.event_count,
+            "events": [
+                {
+                    "event_id": route.event_id,
+                    "action_ids": list(route.action_ids),
+                    "actions": [
+                        {
+                            "action_id": action.action_id,
+                            "action_type": action.action_type,
+                            "target_id": action.target_id,
+                        }
+                        for action in route.actions
+                    ],
+                    "sound_ids": list(route.sound_ids),
+                    "media_ids": list(route.media_ids),
+                }
+                for route in summary.event_routes
+            ],
         }
     )
     return entry
@@ -113,10 +129,9 @@ def load_reusable_entries(path, root):
         previous = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
-    if (
-        previous.get("version") != index_version
-        or previous.get("game_audio_directory") != str(root)
-    ):
+    if previous.get("version") != index_version or previous.get(
+        "game_audio_directory"
+    ) != str(root):
         return {}
     return {
         entry["path"]: entry

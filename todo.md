@@ -17,8 +17,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Import Reverse: 1999 NPC voices
 
-- [ ] Parse Wwise HIRC event relationships, using `wwiser` where practical,
-      instead of selecting embedded media only by file size.
 - [ ] Create a versioned NPC catalog that maps display names and aliases to
       internal NPC IDs, banks, language, game version, and approved references.
 - [ ] Decode the game's dialogue configuration to map speaker names to NPC IDs;
