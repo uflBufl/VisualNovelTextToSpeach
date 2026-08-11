@@ -36,6 +36,7 @@ class ImportedReference:
     media_id: int
     source_sha256: str
     reference_sha256: str
+    bank: str | None = None
 
 
 def create_parser():
@@ -176,6 +177,7 @@ def decode_references(bank, output_directory, character, reference_count, decode
                     media_id=item.media_id,
                     source_sha256=hashlib.sha256(item.data).hexdigest(),
                     reference_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+                    bank=bank.name,
                 )
             )
     return decoded
@@ -211,7 +213,17 @@ def update_manifest(output_directory, character, references, source_bank):
             for reference in reference_paths
         ],
         "aliases": [],
-        "sources": [f"local-game-bank:{source_bank.name}"],
+        "sources": [
+            f"local-game-bank:{name}"
+            for name in sorted(
+                {
+                    reference.bank or source_bank.name
+                    for reference in references
+                    if isinstance(reference, ImportedReference)
+                }
+                or {source_bank.name}
+            )
+        ],
     }
     imported = [
         reference for reference in references if isinstance(reference, ImportedReference)
@@ -219,7 +231,7 @@ def update_manifest(output_directory, character, references, source_bank):
     if imported:
         entry["reference_metadata"] = [
             {
-                "bank": source_bank.name,
+                "bank": reference.bank or source_bank.name,
                 "media_id": reference.media_id,
                 "source_sha256": reference.source_sha256,
                 "reference_sha256": reference.reference_sha256,

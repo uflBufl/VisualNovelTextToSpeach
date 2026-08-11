@@ -150,6 +150,7 @@ brew install vgmstream  # macOS only
 uv run vntts-reverse1999-index
 uv run vntts-reverse1999-config
 uv run vntts-reverse1999-audition --search Selone
+uv run vntts-reverse1999-batch run
 uv run vntts-reverse1999-voice Kamuta
 uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
 ```
