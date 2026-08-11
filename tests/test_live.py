@@ -330,6 +330,30 @@ class LiveDialogReaderTest(unittest.TestCase):
         prepare_chunk.assert_called_once_with(chunk)
         play_prepared.assert_called_once_with(chunk, "prepared audio")
         self.assertEqual(reader.last_spoken_chunk, chunk)
+        metrics = reader.get_pipeline_metrics()
+        self.assertIsNotNone(metrics.last_generation_started_at)
+        self.assertIsNotNone(metrics.last_first_pcm_at)
+        self.assertIsNotNone(metrics.last_playback_started_at)
+        self.assertIsNotNone(metrics.last_playback_completed_at)
+
+    def test_streaming_backend_records_first_pcm_from_backend_callback(self):
+        reader = self.create_reader(first_pcm_on_prepare=False)
+
+        reader.record_first_pcm(123.5)
+
+        self.assertEqual(reader.get_pipeline_metrics().last_first_pcm_at, 123.5)
+
+    def test_observation_and_stable_sentence_record_pipeline_timestamps(self):
+        reader = self.create_reader()
+
+        reader._report_observation("Alice", "Visible text")
+        with reader.state_lock:
+            reader._record_speech_metrics_locked(sentence_ready=True)
+        metrics = reader.get_pipeline_metrics()
+
+        self.assertIsNotNone(metrics.last_text_visible_at)
+        self.assertIsNotNone(metrics.last_speaker_resolved_at)
+        self.assertIsNotNone(metrics.last_ocr_stable_at)
 
     def test_auto_advance_runs_once_for_ready_focused_generation(self):
         auto_advance = Mock(return_value=True)

@@ -1027,6 +1027,9 @@ class AppController:
                         False,
                     )
                 ),
+                first_pcm_on_prepare=not bool(
+                    getattr(backend_capabilities, "streaming", False)
+                ),
                 **get_live_configuration(self.settings),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -1455,6 +1458,7 @@ class AppController:
 
     def _play_live_chunk(self, chunk, audio):
         print(f"{chunk.character} is speaking now (live)")
+        playback_started = monotonic()
         try:
             result = self.speech_backend.play(
                 audio,
@@ -1472,6 +1476,15 @@ class AppController:
                     "Audio underrun detected; live speech prefetch disabled temporarily"
                     if underflowed
                     else "Audio playback stable; live speech prefetch restored"
+                )
+            first_audio_ms = getattr(
+                self.speech_backend, "last_first_audio_ms", None
+            )
+            if isinstance(first_audio_ms, (int, float)) and not isinstance(
+                first_audio_ms, bool
+            ):
+                self.live_reader.record_first_pcm(
+                    playback_started + first_audio_ms / 1000
                 )
             return result
         finally:

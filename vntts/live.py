@@ -27,6 +27,13 @@ class LivePipelineMetrics:
     last_synthesis_at: float | None = None
     last_playback_at: float | None = None
     last_auto_advance_at: float | None = None
+    last_text_visible_at: float | None = None
+    last_ocr_stable_at: float | None = None
+    last_speaker_resolved_at: float | None = None
+    last_generation_started_at: float | None = None
+    last_first_pcm_at: float | None = None
+    last_playback_started_at: float | None = None
+    last_playback_completed_at: float | None = None
 
 
 class AdaptiveSpeechBackpressure:
@@ -315,6 +322,7 @@ class LiveDialogReader:
         auto_advance_delay_seconds=0.35,
         max_speech_jobs=2,
         interrupt_on_dialog_replacement=False,
+        first_pcm_on_prepare=True,
     ):
         self.capture_executor = capture_executor
         self.speech_executor = speech_executor
@@ -347,6 +355,7 @@ class LiveDialogReader:
         self.interrupt_on_dialog_replacement = bool(
             interrupt_on_dialog_replacement
         )
+        self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
         self.state_lock = RLock()
         self.pause_condition = Condition(self.state_lock)
         self.stop_event = Event()
@@ -574,19 +583,11 @@ class LiveDialogReader:
                     self.latest_frame_fingerprint = fingerprint
                     self.frame_version += 1
                     metrics = self.pipeline_metrics
-                    self.pipeline_metrics = LivePipelineMetrics(
+                    self.pipeline_metrics = replace(
+                        metrics,
                         captured_frames=metrics.captured_frames + 1,
                         replaced_frames=metrics.replaced_frames + int(replaced),
-                        recognized_frames=metrics.recognized_frames,
-                        reused_frames=metrics.reused_frames,
-                        speech_queue_depth=metrics.speech_queue_depth,
-                        max_speech_queue_depth=metrics.max_speech_queue_depth,
                         last_capture_at=monotonic(),
-                        last_ocr_at=metrics.last_ocr_at,
-                        last_sentence_ready_at=metrics.last_sentence_ready_at,
-                        last_synthesis_at=metrics.last_synthesis_at,
-                        last_playback_at=metrics.last_playback_at,
-                        last_auto_advance_at=metrics.last_auto_advance_at,
                     )
                     interval = self.next_capture_interval
                     self.pause_condition.notify_all()
@@ -631,19 +632,9 @@ class LiveDialogReader:
                     character, text = cached_observation
                     with self.state_lock:
                         metrics = self.pipeline_metrics
-                        self.pipeline_metrics = LivePipelineMetrics(
-                            captured_frames=metrics.captured_frames,
-                            replaced_frames=metrics.replaced_frames,
-                            recognized_frames=metrics.recognized_frames,
+                        self.pipeline_metrics = replace(
+                            metrics,
                             reused_frames=metrics.reused_frames + 1,
-                            speech_queue_depth=metrics.speech_queue_depth,
-                            max_speech_queue_depth=metrics.max_speech_queue_depth,
-                            last_capture_at=metrics.last_capture_at,
-                            last_ocr_at=metrics.last_ocr_at,
-                            last_sentence_ready_at=metrics.last_sentence_ready_at,
-                            last_synthesis_at=metrics.last_synthesis_at,
-                            last_playback_at=metrics.last_playback_at,
-                            last_auto_advance_at=metrics.last_auto_advance_at,
                         )
                 else:
                     character, text = self.recognize_frame(frame)
@@ -651,19 +642,12 @@ class LiveDialogReader:
                     cached_observation = (character, text)
                     with self.state_lock:
                         metrics = self.pipeline_metrics
-                        self.pipeline_metrics = LivePipelineMetrics(
-                            captured_frames=metrics.captured_frames,
-                            replaced_frames=metrics.replaced_frames,
+                        now = monotonic()
+                        self.pipeline_metrics = replace(
+                            metrics,
                             recognized_frames=metrics.recognized_frames + 1,
-                            reused_frames=metrics.reused_frames,
-                            speech_queue_depth=metrics.speech_queue_depth,
-                            max_speech_queue_depth=metrics.max_speech_queue_depth,
-                            last_capture_at=metrics.last_capture_at,
-                            last_ocr_at=monotonic(),
-                            last_sentence_ready_at=metrics.last_sentence_ready_at,
-                            last_synthesis_at=metrics.last_synthesis_at,
-                            last_playback_at=metrics.last_playback_at,
-                            last_auto_advance_at=metrics.last_auto_advance_at,
+                            last_ocr_at=now,
+                            last_speaker_resolved_at=now,
                         )
                 self._report_observation(character, text)
                 chunks = tracker.observe(character, text)
@@ -802,6 +786,8 @@ class LiveDialogReader:
     def _prepare_if_current(self, chunk):
         if not self.wait_until_playable(chunk):
             return None
+        with self.state_lock:
+            self._record_speech_metrics_locked(generation_started=True)
         try:
             return self.prepare_chunk(chunk)
         except Exception as error:
@@ -811,7 +797,10 @@ class LiveDialogReader:
     def _preparation_finished(self, future):
         with self.state_lock:
             chunk = self.speech_futures.pop(future, None)
-            self._record_speech_metrics_locked(synthesis=True)
+            self._record_speech_metrics_locked(
+                synthesis=True,
+                first_pcm=self.first_pcm_on_prepare,
+            )
         if chunk is None or future.cancelled():
             return
         try:
@@ -838,12 +827,14 @@ class LiveDialogReader:
         with self.state_lock:
             self.current_chunk = chunk
             self.last_spoken_chunk = chunk
+            self._record_speech_metrics_locked(playback_started=True)
         try:
             self.play_prepared(chunk, prepared)
         except Exception as error:
             self.report_error(error)
         finally:
             with self.state_lock:
+                self._record_speech_metrics_locked(playback_completed=True)
                 if self.current_chunk == chunk:
                     self.current_chunk = None
                 self.cancelled_chunk_ids.discard(id(chunk))
@@ -854,6 +845,10 @@ class LiveDialogReader:
         with self.state_lock:
             self.current_chunk = chunk
             self.last_spoken_chunk = chunk
+            self._record_speech_metrics_locked(
+                generation_started=True,
+                playback_started=True,
+            )
 
         try:
             self.speak_chunk(chunk)
@@ -861,6 +856,7 @@ class LiveDialogReader:
             self.report_error(error)
         finally:
             with self.state_lock:
+                self._record_speech_metrics_locked(playback_completed=True)
                 if self.current_chunk == chunk:
                     self.current_chunk = None
                 self.cancelled_chunk_ids.discard(id(chunk))
@@ -875,6 +871,9 @@ class LiveDialogReader:
         if observation == self.last_observation:
             return
         self.last_observation = observation
+        if text:
+            with self.state_lock:
+                self._record_speech_metrics_locked(text_visible=True)
         self.dialog_observed(*observation)
 
     def _interrupt_speech(self):
@@ -961,6 +960,11 @@ class LiveDialogReader:
         sentence_ready=False,
         synthesis=False,
         playback=False,
+        text_visible=False,
+        generation_started=False,
+        first_pcm=False,
+        playback_started=False,
+        playback_completed=False,
     ):
         now = monotonic()
         depth = len(self.speech_futures) + int(self.deferred_chunk is not None)
@@ -974,7 +978,33 @@ class LiveDialogReader:
             ),
             last_synthesis_at=now if synthesis else metrics.last_synthesis_at,
             last_playback_at=now if playback else metrics.last_playback_at,
+            last_text_visible_at=(
+                now if text_visible else metrics.last_text_visible_at
+            ),
+            last_speaker_resolved_at=(
+                now if text_visible else metrics.last_speaker_resolved_at
+            ),
+            last_ocr_stable_at=(
+                now if sentence_ready else metrics.last_ocr_stable_at
+            ),
+            last_generation_started_at=(
+                now if generation_started else metrics.last_generation_started_at
+            ),
+            last_first_pcm_at=now if first_pcm else metrics.last_first_pcm_at,
+            last_playback_started_at=(
+                now if playback_started else metrics.last_playback_started_at
+            ),
+            last_playback_completed_at=(
+                now if playback_completed else metrics.last_playback_completed_at
+            ),
         )
+
+    def record_first_pcm(self, timestamp=None):
+        with self.state_lock:
+            self.pipeline_metrics = replace(
+                self.pipeline_metrics,
+                last_first_pcm_at=monotonic() if timestamp is None else timestamp,
+            )
 
     def _defer_chunk_locked(self, chunk):
         deferred = self.deferred_chunk

@@ -20,8 +20,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Reduce remaining speech latency
 
-- [ ] Record timestamps for text visible, OCR stable, speaker resolved,
-      generation started, first PCM, playback started, and playback completed.
 - [ ] Add a persistent exact-line audio cache keyed by backend, model, voice,
       normalized text, and synthesis settings.
 - [ ] Preload voice states for characters likely to appear in the current

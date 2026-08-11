@@ -994,6 +994,7 @@ class MainTest(unittest.TestCase):
         controller.live_reader = Mock()
         controller.speech_backend = Mock()
         controller.speech_backend.play.return_value = True
+        controller.speech_backend.last_first_audio_ms = None
         controller.speech_backend.last_playback_underrun = True
         chunk = SpeechChunk(1, "Kamuta", "A line.")
 
@@ -1010,6 +1011,21 @@ class MainTest(unittest.TestCase):
         controller._play_live_chunk(chunk, "prepared")
         self.assertEqual(controller.live_reader.max_speech_jobs, 2)
         self.assertIn("prefetch restored", statuses[-1])
+
+    def test_streaming_playback_records_reconstructed_first_pcm_timestamp(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = Mock()
+        controller.speech_backend.play.return_value = True
+        controller.speech_backend.last_playback_underrun = False
+        controller.speech_backend.last_first_audio_ms = 125.0
+        chunk = SpeechChunk(1, "Kamuta", "A line.")
+
+        controller._play_live_chunk(chunk, "prepared")
+
+        timestamp = controller.live_reader.record_first_pcm.call_args.args[0]
+        self.assertIsInstance(timestamp, float)
 
     def test_controller_primes_a_live_voice_as_soon_as_its_name_is_observed(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
