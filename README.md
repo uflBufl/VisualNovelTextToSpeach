@@ -123,6 +123,30 @@ Provision the locally cached Reverse: 1999 character references:
 uv run python examples/provision_reverse1999_voices.py
 ```
 
+For the faster English CPU engine, install its isolated runtime once, select
+Chatterbox Nano in Settings, and restart the app:
+
+```sh
+uv sync --project backends/chatterbox-nano
+```
+
+The first Nano start downloads several gigabytes of model assets.
+
+Import clean story-NPC references from an installed Reverse: 1999 game bank:
+
+```sh
+brew install vgmstream  # macOS only
+uv run vntts-reverse1999-voice Kamuta
+uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
+```
+
+Extract or convert game audio directly:
+
+```sh
+uv run vntts-wwise-extract /path/to/voice.bnk output/ --convert
+uv run vntts-audio-convert input.wem output.wav
+```
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh
