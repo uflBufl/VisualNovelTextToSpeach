@@ -7,9 +7,9 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Prototype streaming Pocket TTS
 
-- [ ] Benchmark Kamuta, Fatutu, and Selone references against Chatterbox Nano:
-      model startup, voice conditioning, first-audio latency, realtime factor,
-      speaker similarity, artifacts, RAM, and CPU use.
+- [ ] Audition Pocket TTS against Chatterbox Nano for Kamuta and Fatutu speaker
+      similarity and artifacts; add Selone to the same comparison when her
+      source recording is available.
 - [ ] Keep Pocket TTS experimental until its voice similarity and 30-minute live
       soak test pass; only then consider making it the live-mode default.
 
