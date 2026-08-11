@@ -21,6 +21,7 @@ class DiagnosticSnapshot:
     capture_interval_ms: float | None = None
     game_focused: bool | None = None
     corrections: tuple[str, ...] = ()
+    choice_detected: bool = False
 
 
 def resolve_voice_label(voice_router, character):

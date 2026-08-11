@@ -3,14 +3,21 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QSizePolicy  # noqa: E402
 
+from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.onboarding import OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.window_capture import WindowGeometry  # noqa: E402
+
+
+def granted_permissions():
+    return {"screen_capture": True, "accessibility": True}
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
@@ -40,6 +47,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 tesseract_probe=lambda: "5.5.0",
                 audio_probe=lambda: "Speakers",
                 model_path_resolver=lambda _model: model_path,
+                permission_status_provider=granted_permissions,
             )
             settings = AppSettings(
                 capture_mode="window",
@@ -64,6 +72,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
             tesseract_probe=fail_tesseract,
             audio_probe=fail_audio,
             model_path_resolver=lambda _model: Path("missing-model"),
+            permission_status_provider=granted_permissions,
         )
 
         results = diagnostics.run(AppSettings(tts_model="xtts_v2"))
@@ -99,6 +108,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 tesseract_probe=lambda: "5.5.0",
                 audio_probe=lambda: "Speakers",
                 model_path_resolver=lambda _model: Path(temporary_directory),
+                permission_status_provider=granted_permissions,
             )
 
             results = diagnostics.run(
@@ -116,6 +126,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
             tesseract_probe=lambda: "5.5.0",
             audio_probe=lambda: "Speakers",
             model_path_resolver=lambda _model: Path("missing-model"),
+            permission_status_provider=granted_permissions,
         )
 
         results = diagnostics.run(AppSettings(tts_model="xtts_v2"))
@@ -125,6 +136,33 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(voice_result.status, "error")
         self.assertIn("narrator speaker", voice_result.message)
+
+    def test_missing_macos_permissions_block_setup_with_actionable_guidance(self):
+        diagnostics = OnboardingDiagnostics(
+            tesseract_probe=lambda: "5.5.0",
+            audio_probe=lambda: "Speakers",
+            model_path_resolver=lambda _model: Path("missing-model"),
+            permission_status_provider=lambda: {
+                "screen_capture": False,
+                "accessibility": False,
+            },
+        )
+
+        results = diagnostics.run(
+            AppSettings(
+                game_window_title="Reverse: 1999",
+                tts_model="xtts_v2",
+                narrator_speaker="Narrator",
+            )
+        )
+
+        permission = next(
+            result for result in results if result.name == "macOS permissions"
+        )
+        self.assertEqual(permission.status, "error")
+        self.assertIn("Screen Recording", permission.message)
+        self.assertIn("Accessibility", permission.message)
+        self.assertIn("System Settings", permission.message)
 
 
 class OnboardingWizardTest(unittest.TestCase):
@@ -153,6 +191,61 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.accept()
 
         self.assertTrue(wizard.settings().onboarding_completed)
+
+    def test_configuration_gives_text_fields_room_to_expand(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.configuration_page
+
+        self.assertGreaterEqual(wizard.width(), 920)
+        self.assertGreaterEqual(wizard.height(), 680)
+        self.assertEqual(page.window_layout.stretch(0), 1)
+        self.assertEqual(page.manifest_layout.stretch(0), 1)
+        self.assertGreaterEqual(page.refresh_button.minimumWidth(), 120)
+        self.assertGreaterEqual(page.browse_manifest_button.minimumWidth(), 120)
+        self.assertEqual(
+            page.manage_assets_button.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Expanding,
+        )
+        wizard.deleteLater()
+
+    def test_calibration_overlay_is_shown_before_wizard_is_hidden(self):
+        target = Mock()
+        target.get_geometry.return_value = WindowGeometry(0, 0, 1000, 600)
+        with TemporaryDirectory() as temporary_directory:
+            wizard = OnboardingWizard(
+                AppSettings(
+                    capture_mode="window",
+                    game_window_title="Reverse: 1999",
+                ),
+                capture_target_factory=Mock(return_value=target),
+            )
+            overlay = DialogRegionOverlay(
+                Path(temporary_directory) / "region.json",
+                platform="darwin",
+            )
+            wizard.show()
+            self.application.processEvents()
+
+            def show_overlay(_geometry):
+                self.assertTrue(wizard.isVisible())
+                overlay.show()
+                return overlay
+
+            with patch(
+                "vntts.onboarding_ui.show_calibration_overlay",
+                side_effect=show_overlay,
+            ):
+                wizard.calibration_page.calibrate()
+
+            self.assertTrue(overlay.isVisible())
+            self.assertFalse(wizard.isVisible())
+
+            overlay.close()
+            self.application.processEvents()
+
+            self.assertTrue(wizard.isVisible())
+            wizard.close()
+            wizard.deleteLater()
 
 
 if __name__ == "__main__":

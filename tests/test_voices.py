@@ -9,6 +9,7 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     CharacterVoiceRouter,
     VoiceManifestError,
+    find_default_voice_manifest,
     normalize_character_name,
 )
 
@@ -116,6 +117,56 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
     def test_normalization_preserves_letters_and_numbers(self):
         self.assertEqual(normalize_character_name(" 37 "), "37")
         self.assertEqual(normalize_character_name("An-an Lee"), "ananlee")
+
+    def test_discovers_a_complete_provisioned_reverse_1999_voice_pack(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            pack = project_root / "data" / "reverse1999-voices"
+            references = pack / "references"
+            references.mkdir(parents=True)
+            (references / "fatutu.ogg").write_bytes(b"voice")
+            manifest = pack / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Fatutu",
+                                "speaker": "reverse-1999-fatutu-v2",
+                                "reference": "references/fatutu.ogg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                find_default_voice_manifest(project_root),
+                manifest.resolve(),
+            )
+
+    def test_ignores_an_incomplete_default_voice_pack(self):
+        with TemporaryDirectory() as temporary_directory:
+            project_root = Path(temporary_directory)
+            pack = project_root / "data" / "reverse1999-voices"
+            pack.mkdir(parents=True)
+            (pack / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Fatutu",
+                                "speaker": "reverse-1999-fatutu-v2",
+                                "reference": "references/missing.ogg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(find_default_voice_manifest(project_root))
 
 
 class CharacterVoiceRouterTest(unittest.TestCase):

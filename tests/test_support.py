@@ -41,6 +41,22 @@ class RuntimeSupportLogTest(unittest.TestCase):
             r"<home>\private\settings.json",
         )
 
+    def test_log_can_persist_redacted_json_lines(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "runtime.log"
+            log = RuntimeSupportLog(
+                clock=lambda: datetime(2026, 8, 10, tzinfo=timezone.utc),
+                path=path,
+            )
+
+            log.add("error", f"Failed under {Path.home() / 'private'}")
+
+            entry = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(entry["level"], "error")
+        self.assertIn("<home>", entry["message"])
+        self.assertNotIn(str(Path.home()), entry["message"])
+
 
 class SupportBundleBuilderTest(unittest.TestCase):
     def test_bundle_excludes_dialog_images_text_and_environment_values(self):

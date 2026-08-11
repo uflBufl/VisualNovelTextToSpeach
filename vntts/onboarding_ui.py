@@ -1,3 +1,4 @@
+import sys
 from dataclasses import asdict
 
 from PySide6.QtCore import Signal
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWizard,
     QWizardPage,
@@ -23,8 +25,10 @@ from vntts.asset_ui import AssetManagerDialog
 from vntts.calibration import show_calibration_overlay
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.settings import AppSettings
+from vntts.voices import find_default_voice_manifest
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
 default_onboarding_model = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -38,6 +42,10 @@ class ConfigurationPage(QWizardPage):
         self.setSubTitle("These values can be changed later from the tray menu.")
 
         self.capture_mode = QComboBox()
+        self.capture_mode.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self.capture_mode.addItem("Selected game window", "window")
         self.capture_mode.addItem("Calibrated screen region", "screen")
         initial_capture_mode = (
@@ -51,23 +59,31 @@ class ConfigurationPage(QWizardPage):
         if settings.game_window_title:
             self.game_window.addItem(settings.game_window_title)
             self.game_window.setCurrentText(settings.game_window_title)
-        refresh_button = QPushButton("Refresh...")
-        refresh_button.clicked.connect(self.refresh_windows)
-        window_layout = QHBoxLayout()
-        window_layout.addWidget(self.game_window)
-        window_layout.addWidget(refresh_button)
+        self.refresh_button = QPushButton("Refresh...")
+        self.refresh_button.setMinimumWidth(120)
+        self.refresh_button.clicked.connect(self.refresh_windows)
+        self.window_layout = QHBoxLayout()
+        self.window_layout.setContentsMargins(0, 0, 0, 0)
+        self.window_layout.addWidget(self.game_window, 1)
+        self.window_layout.addWidget(self.refresh_button)
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.tts_model = QLineEdit(settings.tts_model or default_onboarding_model)
         self.tts_language = QLineEdit(settings.tts_language or "en")
         self.ocr_language = QLineEdit(settings.ocr_language)
-        self.voice_manifest = QLineEdit(settings.voice_manifest or "")
-        browse_manifest = QPushButton("Browse...")
-        browse_manifest.clicked.connect(self.browse_voice_manifest)
-        manifest_layout = QHBoxLayout()
-        manifest_layout.addWidget(self.voice_manifest)
-        manifest_layout.addWidget(browse_manifest)
+        default_voice_manifest = find_default_voice_manifest()
+        self.voice_manifest = QLineEdit(
+            settings.voice_manifest
+            or (str(default_voice_manifest) if default_voice_manifest else "")
+        )
+        self.browse_manifest_button = QPushButton("Browse...")
+        self.browse_manifest_button.setMinimumWidth(120)
+        self.browse_manifest_button.clicked.connect(self.browse_voice_manifest)
+        self.manifest_layout = QHBoxLayout()
+        self.manifest_layout.setContentsMargins(0, 0, 0, 0)
+        self.manifest_layout.addWidget(self.voice_manifest, 1)
+        self.manifest_layout.addWidget(self.browse_manifest_button)
         self.narrator_speaker = QLineEdit(
             settings.narrator_speaker or "Claribel Dervla"
         )
@@ -78,21 +94,31 @@ class ConfigurationPage(QWizardPage):
             '<a href="https://coqui.ai/cpml">Read the Coqui Public Model License</a>'
         )
         license_label.setOpenExternalLinks(True)
-        manage_assets = QPushButton("Download model or import voices...")
-        manage_assets.clicked.connect(self.manage_assets)
+        self.manage_assets_button = QPushButton("Download model or import voices...")
+        self.manage_assets_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.manage_assets_button.clicked.connect(self.manage_assets)
+        self.macos_permissions_button = QPushButton("Check macOS permissions...")
+        self.macos_permissions_button.setVisible(sys.platform == "darwin")
+        self.macos_permissions_button.clicked.connect(self.open_macos_permissions)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.addRow("Capture source", self.capture_mode)
-        form.addRow("Game window", window_layout)
+        form.addRow("Game window", self.window_layout)
         form.addRow("Read once hotkey", self.read_hotkey)
         form.addRow("Live reading hotkey", self.live_hotkey)
         form.addRow("TTS model", self.tts_model)
         form.addRow("OCR language", self.ocr_language)
         form.addRow("TTS language", self.tts_language)
-        form.addRow("Voice manifest", manifest_layout)
+        form.addRow("Voice manifest", self.manifest_layout)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("", self.terms)
         form.addRow("", license_label)
-        form.addRow("Assets", manage_assets)
+        form.addRow("Assets", self.manage_assets_button)
+        if sys.platform == "darwin":
+            form.addRow("Permissions", self.macos_permissions_button)
         self.setLayout(form)
 
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
@@ -129,6 +155,9 @@ class ConfigurationPage(QWizardPage):
         settings = dialog.settings()
         self.tts_model.setText(settings.tts_model or "")
         self.voice_manifest.setText(settings.voice_manifest or "")
+
+    def open_macos_permissions(self):
+        MacOSPermissionsDialog(self).exec()
 
     def update_capture_controls(self):
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
@@ -260,10 +289,10 @@ class CalibrationPage(QWizardPage):
             except WindowCaptureError as error:
                 QMessageBox.warning(self, "Unable to calibrate", str(error))
                 return
-        self.wizard().hide()
         self.overlay = show_calibration_overlay(geometry)
         self.overlay.selected.connect(self.finish_calibration)
         self.overlay.closed.connect(self.restore_wizard)
+        self.wizard().hide()
 
     def finish_calibration(self, _region):
         self.calibrated = True
@@ -363,7 +392,8 @@ class OnboardingWizard(QWizard):
     ):
         super().__init__(parent)
         self.setWindowTitle("Visual Novel Text to Speech setup")
-        self.setMinimumSize(700, 520)
+        self.setMinimumSize(760, 580)
+        self.resize(920, 680)
         self.draft_settings = settings
         self.completed_settings = None
 

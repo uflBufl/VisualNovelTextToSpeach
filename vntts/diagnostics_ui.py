@@ -1,7 +1,6 @@
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -16,16 +15,17 @@ from PySide6.QtWidgets import (
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
 
-    def __init__(self, parent=None, *, refresh_interval_ms=750):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Live diagnostics")
-        self.resize(860, 680)
+        self.resize(700, 540)
         self.refresh_in_flight = False
+        self.concealed_for_capture = False
         self.source_pixmap = None
 
         self.preview = QLabel("Waiting for a captured dialog region...")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(280)
+        self.preview.setMinimumHeight(170)
         self.preview.setStyleSheet(
             "QLabel { background: #202124; color: #d0d0d0; border: 1px solid #555; }"
         )
@@ -33,7 +33,7 @@ class DiagnosticsDialog(QDialog):
         self.speaker = QLabel("-")
         self.text = QTextEdit()
         self.text.setReadOnly(True)
-        self.text.setMinimumHeight(90)
+        self.text.setMinimumHeight(60)
         self.confidence = QLabel("-")
         self.preprocessing = QLabel("-")
         self.voice = QLabel("-")
@@ -43,6 +43,7 @@ class DiagnosticsDialog(QDialog):
         self.playback_latency = QLabel("-")
         self.capture_interval = QLabel("-")
         self.game_focus = QLabel("-")
+        self.choice_detected = QLabel("-")
         self.corrections = QLabel("None")
         self.corrections.setWordWrap(True)
 
@@ -58,6 +59,7 @@ class DiagnosticsDialog(QDialog):
         details.addRow("Playback latency", self.playback_latency)
         details.addRow("Capture interval", self.capture_interval)
         details.addRow("Game focused", self.game_focus)
+        details.addRow("Choice menu", self.choice_detected)
         details.addRow("OCR corrections", self.corrections)
 
         self.warning = QLabel()
@@ -68,12 +70,9 @@ class DiagnosticsDialog(QDialog):
         )
         self.warning.hide()
 
-        self.auto_refresh = QCheckBox("Live preview")
-        self.auto_refresh.setChecked(True)
         self.refresh_button = QPushButton("Refresh now")
         self.refresh_button.clicked.connect(self.request_refresh)
         controls = QHBoxLayout()
-        controls.addWidget(self.auto_refresh)
         controls.addStretch()
         controls.addWidget(self.refresh_button)
 
@@ -87,19 +86,6 @@ class DiagnosticsDialog(QDialog):
         layout.addLayout(controls)
         layout.addWidget(buttons)
 
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(refresh_interval_ms)
-        self.refresh_timer.timeout.connect(self._refresh_if_enabled)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.refresh_timer.start()
-        self.request_refresh()
-
-    def hideEvent(self, event):
-        self.refresh_timer.stop()
-        super().hideEvent(event)
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._scale_preview()
@@ -111,9 +97,20 @@ class DiagnosticsDialog(QDialog):
         self.refresh_button.setEnabled(False)
         self.refresh_requested.emit()
 
-    def _refresh_if_enabled(self):
-        if self.auto_refresh.isChecked():
-            self.request_refresh()
+    def conceal_for_capture(self):
+        if not self.isVisible():
+            return False
+        self.concealed_for_capture = True
+        self.hide()
+        return True
+
+    def restore_after_capture(self):
+        if not self.concealed_for_capture:
+            return
+        self.show()
+        self.concealed_for_capture = False
+        self.raise_()
+        self.activateWindow()
 
     def set_snapshot(self, snapshot):
         self.refresh_in_flight = False
@@ -135,6 +132,7 @@ class DiagnosticsDialog(QDialog):
             if snapshot.game_focused is None
             else ("Yes" if snapshot.game_focused else "No")
         )
+        self.choice_detected.setText("Yes" if snapshot.choice_detected else "No")
         self.corrections.setText(
             "\n".join(snapshot.corrections) if snapshot.corrections else "None"
         )

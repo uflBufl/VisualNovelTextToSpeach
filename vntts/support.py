@@ -15,20 +15,29 @@ from vntts.onboarding import probe_audio_output, probe_tesseract
 
 
 class RuntimeSupportLog:
-    def __init__(self, maximum_entries=200, *, clock=None):
+    def __init__(self, maximum_entries=200, *, clock=None, path=None):
         self.entries = deque(maxlen=maximum_entries)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = RLock()
+        self.path = Path(path).expanduser() if path is not None else None
 
     def add(self, level, message):
         with self.lock:
-            self.entries.append(
-                {
-                    "recorded_at": self.clock().isoformat(),
-                    "level": str(level),
-                    "message": str(message),
-                }
-            )
+            entry = {
+                "recorded_at": self.clock().isoformat(),
+                "level": str(level),
+                "message": str(message),
+            }
+            self.entries.append(entry)
+            if self.path is not None:
+                try:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    with self.path.open("a", encoding="utf-8") as output:
+                        output.write(
+                            json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n"
+                        )
+                except OSError:
+                    pass
 
     def snapshot(self):
         with self.lock:

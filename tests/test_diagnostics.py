@@ -59,7 +59,9 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(snapshots[0].corrections, ("Mareus -> Marcus",))
 
     def test_dialog_renders_snapshot_and_latencies(self):
-        dialog = DiagnosticsDialog(refresh_interval_ms=60_000)
+        dialog = DiagnosticsDialog()
+        self.assertLessEqual(dialog.width(), 700)
+        self.assertLessEqual(dialog.height(), 540)
         snapshot = DiagnosticSnapshot(
             Image.new("RGB", (320, 100), "black"),
             character="Marcus",
@@ -91,6 +93,37 @@ class DiagnosticsTest(unittest.TestCase):
             "Mareus -> Marcus\ntiniekeeper -> timekeeper",
         )
         self.assertFalse(dialog.preview.pixmap().isNull())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_dialog_can_be_concealed_during_capture_and_restored(self):
+        dialog = DiagnosticsDialog()
+        dialog.show()
+        self.application.processEvents()
+
+        self.assertTrue(dialog.conceal_for_capture())
+        self.assertFalse(dialog.isVisible())
+        self.assertTrue(dialog.concealed_for_capture)
+
+        dialog.restore_after_capture()
+        self.application.processEvents()
+
+        self.assertTrue(dialog.isVisible())
+        self.assertFalse(dialog.concealed_for_capture)
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_opening_dialog_does_not_request_a_capture(self):
+        dialog = DiagnosticsDialog()
+        refresh_requested = Mock()
+        dialog.refresh_requested.connect(refresh_requested)
+
+        dialog.show()
+        self.application.processEvents()
+
+        refresh_requested.assert_not_called()
+        dialog.request_refresh()
+        refresh_requested.assert_called_once_with()
         dialog.close()
         dialog.deleteLater()
 

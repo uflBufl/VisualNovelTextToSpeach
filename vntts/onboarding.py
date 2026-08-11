@@ -3,6 +3,7 @@ from pathlib import Path
 
 from vntts.assets import ModelAssetManager
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.macos import get_macos_permission_status
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -24,19 +25,57 @@ class OnboardingDiagnostics:
         tesseract_probe=None,
         audio_probe=None,
         model_path_resolver=None,
+        permission_status_provider=None,
     ):
         self.tesseract_probe = tesseract_probe or probe_tesseract
         self.audio_probe = audio_probe or probe_audio_output
         self.model_path_resolver = model_path_resolver or get_model_cache_path
+        self.permission_status_provider = (
+            permission_status_provider or get_macos_permission_status
+        )
 
     def run(self, settings):
-        return (
+        results = [
             self._check_hotkeys(settings),
             self._check_capture_source(settings),
             self._check_tesseract(),
             self._check_audio(),
             self._check_model(settings),
             self._check_voice_manifest(settings),
+        ]
+        permission_result = self._check_platform_permissions()
+        if permission_result is not None:
+            results.insert(2, permission_result)
+        return tuple(results)
+
+    def _check_platform_permissions(self):
+        status = self.permission_status_provider()
+        screen_capture = status.get("screen_capture")
+        accessibility = status.get("accessibility")
+        if screen_capture is None and accessibility is None:
+            return None
+        missing = []
+        if screen_capture is False:
+            missing.append("Screen Recording for game capture")
+        if accessibility is False:
+            missing.append("Accessibility for global hotkeys")
+        if missing:
+            return DiagnosticResult(
+                "macOS permissions",
+                "error",
+                f"Missing {', '.join(missing)}. Allow the terminal or VNTTS "
+                "under System Settings -> Privacy & Security, then restart it.",
+            )
+        if screen_capture is None or accessibility is None:
+            return DiagnosticResult(
+                "macOS permissions",
+                "warning",
+                "One or more permission states could not be checked",
+            )
+        return DiagnosticResult(
+            "macOS permissions",
+            "ok",
+            "Screen Recording and Accessibility are granted",
         )
 
     def _check_hotkeys(self, settings):

@@ -11,8 +11,9 @@ class DialogRegionOverlay(QWidget):
     selected = Signal(object)
     closed = Signal()
 
-    def __init__(self, output=None):
+    def __init__(self, output=None, *, platform=None):
         super().__init__()
+        platform = sys.platform if platform is None else platform
         self.origin = None
         self.current = None
         self.output = output or get_dialog_region_file()
@@ -23,6 +24,8 @@ class DialogRegionOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        if platform == "darwin":
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.selected.connect(self.persist)
@@ -73,14 +76,27 @@ class DialogRegionOverlay(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
-        if self.origin is None or self.current is None:
-            return
-        rectangle = QRect(self.origin, self.current).normalized()
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        painter.fillRect(rectangle, Qt.GlobalColor.transparent)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        painter.setPen(QPen(QColor(0, 220, 255), 3))
-        painter.drawRect(rectangle)
+        if self.origin is not None and self.current is not None:
+            rectangle = QRect(self.origin, self.current).normalized()
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.fillRect(rectangle, Qt.GlobalColor.transparent)
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOver
+            )
+            painter.setPen(QPen(QColor(0, 220, 255), 3))
+            painter.drawRect(rectangle)
+
+        instructions = QRect(24, 24, max(0, self.width() - 48), 64)
+        painter.fillRect(instructions, QColor(0, 0, 0, 190))
+        painter.setPen(Qt.GlobalColor.white)
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            instructions.adjusted(16, 8, -16, -8),
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            "Drag around the speaker name and dialogue text. Press Esc to cancel.",
+        )
 
 
 def show_calibration_overlay(geometry=None):
@@ -99,6 +115,7 @@ def show_calibration_overlay(geometry=None):
         overlay.show()
         overlay.raise_()
     overlay.activateWindow()
+    overlay.setFocus(Qt.FocusReason.OtherFocusReason)
     return overlay
 
 

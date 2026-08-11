@@ -139,6 +139,29 @@ class CharacterVoiceRegistry:
         self.voices[normalized_name] = voice
 
 
+def find_default_voice_manifest(project_root=None):
+    project_root = (
+        Path(__file__).resolve().parents[1]
+        if project_root is None
+        else Path(project_root).expanduser().resolve()
+    )
+    manifest_path = project_root / "data" / "reverse1999-voices" / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+
+    try:
+        registry = CharacterVoiceRegistry.from_file(manifest_path)
+    except VoiceManifestError:
+        return None
+
+    voices = tuple({id(voice): voice for voice in registry.voices.values()}.values())
+    if not voices or any(
+        not reference.is_file() for voice in voices for reference in voice.references
+    ):
+        return None
+    return manifest_path.resolve()
+
+
 class CharacterVoiceRouter:
     def __init__(self, tts, registry=None, *, narrator_speaker=None):
         self.tts = tts
@@ -150,6 +173,12 @@ class CharacterVoiceRouter:
         if playback_guard is not None:
             arguments["playback_guard"] = playback_guard
         return self.tts.speak(text, **arguments)
+
+    def synthesize(self, character, text):
+        return self.tts.synthesize(text, **self._speech_arguments(character))
+
+    def play(self, audio, *, playback_guard=None):
+        return self.tts.play(audio, playback_guard=playback_guard)
 
     def warm_up(self, *, progress=None, text="Voice ready."):
         progress = progress or (lambda _current, _total, _character: None)

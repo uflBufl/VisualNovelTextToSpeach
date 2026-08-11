@@ -6,10 +6,15 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+# Keep OCR from consuming every CPU core while PortAudio is playing speech.
+# One Tesseract OpenMP worker is sufficient for the small calibrated region and
+# allows live mode to recognize the next sentence during audio playback.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
-from vntts.dialog import parse_dialog
+from vntts.dialog import is_probable_character_name, parse_dialog
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
 default_minimum_ocr_confidence = 60.0
@@ -90,6 +95,7 @@ class OCRResult:
     profile: str
     attempts: int
     corrections: tuple[str, ...] = ()
+    choice_detected: bool = False
 
     def is_confident(self, minimum=default_minimum_ocr_confidence):
         return bool(self.text.strip()) and self.confidence >= minimum
@@ -298,31 +304,51 @@ def _recognize_preprocessed_dialog(
         lang=language,
     )
 
-    if voice_registry is not None:
-        speaker = recognize_speaker_from_data(data, voice_registry)
-        if speaker is not None:
-            voice, speaker_line = speaker
-            dialog_image = crop_dialog_text(image, speaker_line)
-            dialog_text = recognize_text(
+    speaker = recognize_speaker_from_data(
+        data,
+        voice_registry,
+        image_width=image.width,
+        image_height=image.height,
+    )
+    if speaker is None and _has_ocr_geometry(data):
+        # PSM 6 is reliable for paragraph text but can merge a long decorative
+        # separator into the short nameplate above it. Sparse-layout analysis
+        # keeps those regions independent and recovers names such as Fatutu.
+        sparse_data = recognize_data(
+            image,
+            config="--psm 11",
+            output_type=pytesseract.Output.DICT,
+            lang=language,
+        )
+        speaker = recognize_speaker_from_data(
+            sparse_data,
+            voice_registry,
+            image_width=image.width,
+            image_height=image.height,
+        )
+    if speaker is not None:
+        character, speaker_line = speaker
+        dialog_image = crop_dialog_text(image, speaker_line)
+        dialog_text = recognize_text(
+            dialog_image,
+            config="--psm 6",
+            lang=language,
+        )
+        dialog_lines = clean_dialog_lines(dialog_text)
+        if dialog_lines:
+            dialog_data = recognize_data(
                 dialog_image,
                 config="--psm 6",
+                output_type=pytesseract.Output.DICT,
                 lang=language,
             )
-            dialog_lines = clean_dialog_lines(dialog_text)
-            if dialog_lines:
-                dialog_data = recognize_data(
-                    dialog_image,
-                    config="--psm 6",
-                    output_type=pytesseract.Output.DICT,
-                    lang=language,
-                )
-                return OCRResult(
-                    voice.character,
-                    " ".join(dialog_lines),
-                    calculate_ocr_confidence(dialog_data),
-                    profile_name,
-                    attempt,
-                )
+            return OCRResult(
+                character,
+                " ".join(dialog_lines),
+                calculate_ocr_confidence(dialog_data),
+                profile_name,
+                attempt,
+            )
 
     recognized_text = recognize_text(
         image,
@@ -336,7 +362,43 @@ def _recognize_preprocessed_dialog(
         calculate_ocr_confidence(data),
         profile_name,
         attempt,
+        choice_detected=detect_choice_layout(
+            data,
+            image_width=image.width,
+        ),
     )
+
+
+def detect_choice_layout(data, *, image_width=None):
+    """Recognize separated short response rows without guessing their text."""
+    if not _has_ocr_geometry(data):
+        return False
+    lines = [line for line in extract_ocr_lines(data) if len(line.text) >= 2]
+    if not 2 <= len(lines) <= 6:
+        return False
+
+    normalized = [line.text.lstrip() for line in lines]
+    marked = sum(
+        text.startswith((">", "•", "-", "1.", "2.", "3.", "A.", "B."))
+        for text in normalized
+    )
+    if marked >= 2:
+        return True
+
+    heights = sorted(max(1, line.bottom - line.top) for line in lines)
+    median_height = heights[len(heights) // 2]
+    separated_rows = sum(
+        following.top - current.bottom >= median_height * 0.75
+        for current, following in zip(lines, lines[1:])
+    )
+    if separated_rows == 0:
+        return False
+
+    if image_width is None:
+        image_width = max(line.right for line in lines)
+    short_rows = sum(line.right - line.left <= image_width * 0.8 for line in lines)
+    aligned = max(line.left for line in lines) - min(line.left for line in lines)
+    return short_rows == len(lines) and aligned <= image_width * 0.2
 
 
 def recognize_speaker(image, voice_registry, recognize_data):
@@ -345,17 +407,84 @@ def recognize_speaker(image, voice_registry, recognize_data):
         config="--psm 6",
         output_type=pytesseract.Output.DICT,
     )
-    return recognize_speaker_from_data(data, voice_registry)
+    return recognize_speaker_from_data(
+        data,
+        voice_registry,
+        image_width=image.width,
+        image_height=image.height,
+    )
 
 
-def recognize_speaker_from_data(data, voice_registry):
-    for line in extract_ocr_lines(data)[:6]:
+def recognize_speaker_from_data(
+    data,
+    voice_registry=None,
+    *,
+    image_width=None,
+    image_height=None,
+):
+    if not _has_ocr_geometry(data):
+        return None
+    lines = extract_ocr_lines(data)[:6]
+
+    if voice_registry is not None:
+        for line in lines:
+            if len(line.text) > 40:
+                continue
+            voice = voice_registry.resolve_closest(line.text)
+            if voice is not None and _has_dialog_below(line, lines):
+                return voice.character, line
+
+    candidates = []
+    for position, line in enumerate(lines[:-1]):
         if len(line.text) > 40:
             continue
-        voice = voice_registry.resolve_closest(line.text)
-        if voice is not None:
-            return voice, line
-    return None
+        if not is_probable_character_name(line.text):
+            continue
+        if image_height is not None and line.top > image_height * 0.6:
+            continue
+
+        dialog_lines = [
+            candidate
+            for candidate in lines[position + 1 :]
+            if candidate.top > line.bottom
+        ]
+        if not dialog_lines:
+            continue
+        first_dialog_line = dialog_lines[0]
+        if len(first_dialog_line.text) < 12:
+            continue
+        if image_width is not None:
+            if line.right - line.left > image_width * 0.45:
+                continue
+            if abs(line.left - first_dialog_line.left) > image_width * 0.15:
+                continue
+
+        score = len(first_dialog_line.text)
+        if len(line.text.split()) == 1 and line.text.istitle():
+            score += 100
+        score -= position
+        candidates.append((score, line))
+
+    if not candidates:
+        return None
+    _score, speaker_line = max(candidates, key=lambda candidate: candidate[0])
+    return speaker_line.text.strip(), speaker_line
+
+
+def _has_dialog_below(speaker_line, lines):
+    return any(line.top > speaker_line.bottom and len(line.text) >= 3 for line in lines)
+
+
+def _has_ocr_geometry(data):
+    return {
+        "block_num",
+        "par_num",
+        "line_num",
+        "left",
+        "top",
+        "width",
+        "height",
+    }.issubset(data)
 
 
 def calculate_ocr_confidence(data):
@@ -428,7 +557,7 @@ def crop_dialog_text(image, speaker_line):
         (
             max(0, speaker_line.left - horizontal_margin),
             min(image.height, speaker_line.bottom + vertical_margin),
-            round(image.width * 0.95),
+            image.width,
             image.height,
         )
     )
@@ -437,7 +566,7 @@ def crop_dialog_text(image, speaker_line):
 def clean_dialog_lines(text):
     lines = []
     for line in (text or "").splitlines():
-        line = line.strip()
+        line = _strip_trailing_ocr_glyphs(line.strip())
         alphanumeric_characters = sum(character.isalnum() for character in line)
         if alphanumeric_characters >= 3 or (
             alphanumeric_characters >= 2 and len(line.split()) == 1
@@ -446,19 +575,34 @@ def clean_dialog_lines(text):
     return lines
 
 
-def parse_recognized_dialog(text, voice_registry=None):
-    if voice_registry is None:
-        return parse_dialog(text)
+def _strip_trailing_ocr_glyphs(line):
+    tokens = line.split()
+    while tokens:
+        token = tokens[-1]
+        if any(character.isalnum() for character in token):
+            break
+        if token and all(character in ".!?…" for character in token):
+            break
+        tokens.pop()
+    return " ".join(tokens)
 
+
+def parse_recognized_dialog(text, voice_registry=None):
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    for position, line in enumerate(lines[:6]):
-        if len(line) > 40:
-            continue
-        voice = voice_registry.resolve_closest(line)
-        if voice is None:
-            continue
-        dialog_lines = clean_dialog_lines("\n".join(lines[position + 1 :]))
+    if voice_registry is not None:
+        for position, line in enumerate(lines[:6]):
+            if len(line) > 40:
+                continue
+            voice = voice_registry.resolve_closest(line)
+            if voice is None:
+                continue
+            dialog_lines = clean_dialog_lines("\n".join(lines[position + 1 :]))
+            if dialog_lines:
+                return voice.character, " ".join(dialog_lines)
+
+    if len(lines) >= 2 and is_probable_character_name(lines[0]):
+        dialog_lines = clean_dialog_lines("\n".join(lines[1:]))
         if dialog_lines:
-            return voice.character, " ".join(dialog_lines)
+            return lines[0], " ".join(dialog_lines)
 
     return parse_dialog(text)

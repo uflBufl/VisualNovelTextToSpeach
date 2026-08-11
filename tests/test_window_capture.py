@@ -8,6 +8,7 @@ from vntts.window_capture import (
     LinuxX11WindowBackend,
     MacOSWindowBackend,
     WaylandWindowBackend,
+    WindowCaptureError,
     WindowCaptureTarget,
     WindowCaptureUnavailableError,
     WindowGeometry,
@@ -46,6 +47,15 @@ class FakeQuartz:
         if option & self.kCGWindowListOptionOnScreenOnly:
             return [window for window in self.windows if window["onscreen"]]
         return self.windows
+
+    def CGGetActiveDisplayList(self, _maximum, _displays, _count):
+        return 0, (1,), 1
+
+    def CGDisplayBounds(self, _display_id):
+        return SimpleNamespace(
+            origin=SimpleNamespace(x=0, y=0),
+            size=SimpleNamespace(width=1920, height=1080),
+        )
 
 
 class FakeX11Window:
@@ -209,6 +219,19 @@ class MacOSWindowBackendTest(unittest.TestCase):
             backend.get_client_geometry(10),
             WindowGeometry(120, 80, 1600, 900),
         )
+
+    def test_rejects_window_on_another_macos_desktop(self):
+        window = self.window(10, "Reverse: 1999")
+        window["bounds"] = {
+            "X": 1919,
+            "Y": 1079,
+            "Width": 1600,
+            "Height": 900,
+        }
+        backend = MacOSWindowBackend(FakeQuartz([window]))
+
+        with self.assertRaisesRegex(WindowCaptureError, "another macOS desktop"):
+            backend.get_client_geometry(10)
 
     def test_frontmost_quartz_window_is_used_for_focus(self):
         quartz = FakeQuartz(
