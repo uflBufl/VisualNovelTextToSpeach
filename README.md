@@ -148,6 +148,7 @@ Import clean story-NPC references from an installed Reverse: 1999 game bank:
 ```sh
 brew install vgmstream  # macOS only
 uv run vntts-reverse1999-index
+uv run vntts-reverse1999-config
 uv run vntts-reverse1999-voice Kamuta
 uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
 ```
