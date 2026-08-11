@@ -2,13 +2,14 @@ import argparse
 import json
 import platform
 from difflib import SequenceMatcher
+from importlib import metadata
 from pathlib import Path
 from statistics import median
-from time import perf_counter
+from time import perf_counter, process_time
 
 from PIL import Image
 
-from vntts.ocr_backend import TesseractOCRBackend
+from vntts.ocr_backend import RapidOCRBackend, TesseractOCRBackend
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -36,6 +37,20 @@ def load_expectations(path):
     return document
 
 
+def distribution_size_mb(names):
+    paths = set()
+    for name in names:
+        try:
+            distribution = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            continue
+        for relative_path in distribution.files or ():
+            path = Path(distribution.locate_file(relative_path))
+            if path.is_file():
+                paths.add(path.resolve())
+    return sum(path.stat().st_size for path in paths) / (1024 * 1024)
+
+
 def benchmark_ocr(
     image_paths,
     *,
@@ -47,6 +62,7 @@ def benchmark_ocr(
     language="eng",
     expectations=None,
     clock=perf_counter,
+    cpu_clock=process_time,
 ):
     if repeats < 1 or warmups < 0:
         raise ValueError("OCR benchmark repeats must be positive and warmups non-negative")
@@ -66,15 +82,18 @@ def benchmark_ocr(
                 language=language,
             )
         latencies = []
+        cpu_times = []
         result = None
         for _index in range(repeats):
             started = clock()
+            cpu_started = cpu_clock()
             result = backend.recognize(
                 image,
                 registry,
                 minimum_confidence=minimum_confidence,
                 language=language,
             )
+            cpu_times.append((cpu_clock() - cpu_started) * 1000)
             latencies.append((clock() - started) * 1000)
         all_latencies.extend(latencies)
         expected = expectations.get(image_path.name, {})
@@ -91,6 +110,11 @@ def benchmark_ocr(
                     "median": median(latencies),
                     "p95": _percentile(latencies, 0.95),
                     "runs": latencies,
+                },
+                "cpu_ms": {
+                    "median": median(cpu_times),
+                    "p95": _percentile(cpu_times, 0.95),
+                    "runs": cpu_times,
                 },
                 "speaker": result.character,
                 "text": result.text,
@@ -120,10 +144,22 @@ def benchmark_ocr(
         "language": language,
         "warmups": warmups,
         "repeats": repeats,
+        "installed_python_package_size_mb": distribution_size_mb(
+            getattr(backend, "distribution_names", ())
+        ),
         "summary": {
             "images": len(samples),
             "median_latency_ms": median(all_latencies) if all_latencies else None,
             "p95_latency_ms": _percentile(all_latencies, 0.95),
+            "median_cpu_utilization_percent": median(
+                cpu_ms / wall_ms * 100
+                for sample in samples
+                for cpu_ms, wall_ms in zip(
+                    sample["cpu_ms"]["runs"],
+                    sample["latency_ms"]["runs"],
+                )
+                if wall_ms > 0
+            ),
         },
         "samples": samples,
     }
@@ -142,13 +178,18 @@ def write_report(report, output=default_output):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Benchmark the Tesseract OCR path")
+    parser = argparse.ArgumentParser(description="Benchmark an OCR backend")
     parser.add_argument("images", nargs="+", type=Path)
     parser.add_argument("--expectations", type=Path)
     parser.add_argument("--output", type=Path, default=default_output)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--language", default="eng")
+    parser.add_argument(
+        "--backend",
+        choices=("tesseract", "rapidocr"),
+        default="tesseract",
+    )
     return parser
 
 
@@ -156,8 +197,14 @@ def main(argv=None):
     arguments = build_parser().parse_args(argv)
     manifest = find_default_voice_manifest()
     registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
+    backend = (
+        RapidOCRBackend()
+        if arguments.backend == "rapidocr"
+        else TesseractOCRBackend()
+    )
     report = benchmark_ocr(
         arguments.images,
+        backend=backend,
         registry=registry,
         repeats=arguments.repeats,
         warmups=arguments.warmups,
@@ -167,7 +214,7 @@ def main(argv=None):
     output = write_report(report, arguments.output)
     summary = report["summary"]
     print(
-        f"Tesseract: {summary['images']} image(s), median "
+        f"{report['backend']}: {summary['images']} image(s), median "
         f"{summary['median_latency_ms']:.1f} ms, p95 "
         f"{summary['p95_latency_ms']:.1f} ms"
     )

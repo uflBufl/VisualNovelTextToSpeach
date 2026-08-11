@@ -22,6 +22,7 @@ class OCRBenchmarkTest(unittest.TestCase):
             image_path = Path(temporary_directory) / "dialog.png"
             Image.new("RGB", (640, 160), "black").save(image_path)
             times = iter([1.0, 1.1, 2.0, 2.3])
+            cpu_times = iter([10.0, 10.05, 20.0, 20.2])
 
             report = benchmark_ocr(
                 [image_path],
@@ -35,10 +36,15 @@ class OCRBenchmarkTest(unittest.TestCase):
                     }
                 },
                 clock=lambda: next(times),
+                cpu_clock=lambda: next(cpu_times),
             )
 
         self.assertAlmostEqual(report["summary"]["median_latency_ms"], 200.0)
         self.assertAlmostEqual(report["summary"]["p95_latency_ms"], 300.0)
+        self.assertAlmostEqual(
+            report["summary"]["median_cpu_utilization_percent"],
+            58.33333333333333,
+        )
         self.assertTrue(report["samples"][0]["speaker_match"])
         self.assertEqual(report["samples"][0]["text_similarity"], 1.0)
 

@@ -45,9 +45,8 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Evaluate OCR replacement only after pipeline optimization
 
-- [ ] If changed-frame OCR still exceeds the latency target, prototype RapidOCR
-      with ONNX Runtime behind an OCR-backend interface and compare speaker-name
-      accuracy, dialogue accuracy, CPU use, package size, and Windows deployment.
+- [ ] Validate the optional RapidOCR backend in the Windows portable build and
+      compare it with Tesseract on the target Windows hardware.
 
 ### P1 - Live-mode integration and safety tests
 

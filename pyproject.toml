@@ -35,6 +35,12 @@ dependencies = [
     # "pyttsx3>=2.90",
 ]
 
+[project.optional-dependencies]
+rapidocr = [
+    "rapidocr>=3.8.1,<4",
+    "onnxruntime>=1.23,<2",
+]
+
 [project.scripts]
 vntts = "vntts.main:main"
 vntts-app = "vntts.app:main"
