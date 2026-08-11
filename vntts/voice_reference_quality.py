@@ -3,10 +3,15 @@ import json
 import math
 import sys
 import wave
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
+
+from vntts.settings import get_local_data_directory
+
+default_review_path = get_local_data_directory() / "reverse1999" / "clip-reviews.json"
 
 
 class VoiceReferenceQualityError(RuntimeError):
@@ -153,6 +158,103 @@ def analyze_voice_reference(path, *, silence_dbfs=-42.0, frame_ms=20):
         quality_score=max(0, score),
         technical_flags=tuple(flags),
     )
+
+
+def review_voice_reference(metrics, *, music_or_sfx, multiple_speakers):
+    if not isinstance(music_or_sfx, bool) or not isinstance(multiple_speakers, bool):
+        raise VoiceReferenceQualityError(
+            "Music/SFX and multiple-speaker review decisions are required"
+        )
+    return replace(
+        metrics,
+        music_or_sfx=music_or_sfx,
+        multiple_speakers=multiple_speakers,
+    )
+
+
+def record_clip_review(
+    metrics,
+    *,
+    speaker_name,
+    npc_id,
+    bank,
+    media_id,
+    chapter,
+    path=default_review_path,
+):
+    if not metrics.review_complete:
+        raise VoiceReferenceQualityError("Listen to and review the clip before saving")
+    path = Path(path).expanduser().resolve()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        document = {"version": 1, "clips": []}
+    except (OSError, json.JSONDecodeError) as error:
+        raise VoiceReferenceQualityError(f"Unable to read clip reviews: {error}")
+    clips = document.get("clips")
+    if document.get("version") != 1 or not isinstance(clips, list):
+        raise VoiceReferenceQualityError("Clip review file has an unsupported format")
+    bank_name = Path(bank).name
+    clips[:] = [
+        item
+        for item in clips
+        if not (
+            item.get("bank") == bank_name and item.get("media_id") == int(media_id)
+        )
+    ]
+    item = {
+        "speaker_name": speaker_name.strip(),
+        "npc_id": str(npc_id).strip(),
+        "bank": bank_name,
+        "media_id": int(media_id),
+        "chapter": str(chapter),
+        "approved": metrics.approved,
+        "metrics": asdict(metrics),
+    }
+    clips.append(item)
+    clips.sort(
+        key=lambda value: (
+            value["speaker_name"].casefold(),
+            value["bank"].casefold(),
+            value["media_id"],
+        )
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+    return path
+
+
+def select_reference_set(
+    clips,
+    speaker_name,
+    *,
+    minimum_clips=3,
+    maximum_clips=5,
+    minimum_seconds=15.0,
+    maximum_seconds=30.0,
+):
+    approved = [
+        item
+        for item in clips
+        if item.get("approved")
+        and str(item.get("speaker_name", "")).casefold() == speaker_name.casefold()
+    ]
+    best = None
+    target_seconds = (minimum_seconds + maximum_seconds) / 2
+    for count in range(minimum_clips, min(maximum_clips, len(approved)) + 1):
+        for selection in combinations(approved, count):
+            total = sum(item["metrics"]["duration_seconds"] for item in selection)
+            if not minimum_seconds <= total <= maximum_seconds:
+                continue
+            score = sum(item["metrics"]["quality_score"] for item in selection)
+            ranking = (score, -abs(total - target_seconds))
+            if best is None or ranking > best[0]:
+                best = ranking, selection
+    return list(best[1]) if best is not None else []
 
 
 def write_quality_report(metrics, output):

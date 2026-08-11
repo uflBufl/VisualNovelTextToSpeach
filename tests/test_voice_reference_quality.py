@@ -9,6 +9,9 @@ import numpy as np
 from vntts.voice_reference_quality import (
     VoiceReferenceQualityError,
     analyze_voice_reference,
+    record_clip_review,
+    review_voice_reference,
+    select_reference_set,
     write_quality_report,
 )
 
@@ -78,6 +81,37 @@ class VoiceReferenceQualityTest(unittest.TestCase):
         self.assertEqual(document["version"], 1)
         self.assertEqual(document["clips"][0]["quality_score"], 100)
         self.assertIn("never approve", document["review_note"])
+
+    def test_records_manual_content_review_and_selects_reference_set(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            review_path = root / "reviews.json"
+            for index, seconds in enumerate((5.0, 5.5, 6.0, 2.0), start=1):
+                path = root / f"clip-{index}.wav"
+                time = np.arange(round(16000 * seconds)) / 16000
+                write_wav(path, 0.25 * np.sin(2 * np.pi * 220 * time))
+                metrics = review_voice_reference(
+                    analyze_voice_reference(path),
+                    music_or_sfx=False,
+                    multiple_speakers=False,
+                )
+                record_clip_review(
+                    metrics,
+                    speaker_name="Selone",
+                    npc_id="521001",
+                    bank="selone.bnk",
+                    media_id=index,
+                    chapter="24006",
+                    path=review_path,
+                )
+            document = json.loads(review_path.read_text(encoding="utf-8"))
+            selected = select_reference_set(document["clips"], "Selone")
+
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(
+            sum(item["metrics"]["duration_seconds"] for item in selected), 18.5
+        )
+        self.assertTrue(all(item["approved"] for item in selected))
 
 
 if __name__ == "__main__":

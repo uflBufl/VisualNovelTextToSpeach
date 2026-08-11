@@ -3,6 +3,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,6 +16,7 @@ from vntts.reverse1999_audition import (  # noqa: E402
     save_speaker_mapping,
 )
 from vntts.reverse1999_audition_ui import Reverse1999AuditionDialog  # noqa: E402
+from vntts.voice_reference_quality import VoiceReferenceMetrics  # noqa: E402
 
 
 class Reverse1999AuditionTest(unittest.TestCase):
@@ -117,6 +119,67 @@ class Reverse1999AuditionTest(unittest.TestCase):
         self.assertEqual(dialog.banks.count(), 1)
         self.assertEqual(dialog.npc_id.text(), "624901")
         self.assertEqual(dialog.media.currentData(), 42)
+        dialog.deleteLater()
+
+    def test_dialog_records_reviewed_clip(self):
+        dialogue_index = {
+            "dialogue": [
+                {
+                    "chapter": "24006",
+                    "sequence": 3,
+                    "speaker_id": "521001",
+                    "speaker_name": "Selone",
+                    "text": "Here, I'll give you a hand!",
+                }
+            ]
+        }
+        bank_index = {
+            "game_audio_directory": "/game",
+            "banks": [
+                {
+                    "path": "selone.bnk",
+                    "filename": "activityvoc_npc521001_2_4.bnk",
+                    "npc_ids": ["521001"],
+                    "events": [{"media_ids": [42]}],
+                }
+            ],
+        }
+        metrics = VoiceReferenceMetrics(
+            path="/cache/42.wav",
+            duration_seconds=5.0,
+            peak_dbfs=-2.0,
+            rms_dbfs=-18.0,
+            silence_ratio=0.1,
+            leading_silence_seconds=0.1,
+            trailing_silence_seconds=0.1,
+            clipping_ratio=0.0,
+            quality_score=100,
+            technical_flags=(),
+        )
+        recorded = []
+        dialog = Reverse1999AuditionDialog(
+            dialogue_index,
+            bank_index,
+            clip_preparer=lambda _bank, _media_id: Path("/cache/42.wav"),
+            quality_analyzer=lambda _path: metrics,
+            review_recorder=lambda reviewed, **metadata: recorded.append(
+                (reviewed, metadata)
+            )
+            or Path("/reviews.json"),
+        )
+        dialog.dialogue.selectRow(0)
+        self.application.processEvents()
+        dialog.player = Mock()
+        dialog.play_clip()
+        dialog.music_or_sfx.setCurrentIndex(1)
+        dialog.multiple_speakers.setCurrentIndex(1)
+
+        dialog.save_clip_review()
+
+        self.assertEqual(len(recorded), 1)
+        self.assertTrue(recorded[0][0].approved)
+        self.assertEqual(recorded[0][1]["media_id"], 42)
+        self.assertIn("approved", dialog.status.text())
         dialog.deleteLater()
 
 

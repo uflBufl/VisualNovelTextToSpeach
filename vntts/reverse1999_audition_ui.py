@@ -32,6 +32,11 @@ from vntts.reverse1999_audition import (
     prepare_audition_clip,
     save_speaker_mapping,
 )
+from vntts.voice_reference_quality import (
+    analyze_voice_reference,
+    record_clip_review,
+    review_voice_reference,
+)
 
 
 class Reverse1999AuditionDialog(QDialog):
@@ -42,6 +47,8 @@ class Reverse1999AuditionDialog(QDialog):
         *,
         clip_preparer=prepare_audition_clip,
         mapping_saver=save_speaker_mapping,
+        quality_analyzer=analyze_voice_reference,
+        review_recorder=record_clip_review,
         parent=None,
     ):
         super().__init__(parent)
@@ -49,7 +56,10 @@ class Reverse1999AuditionDialog(QDialog):
         self.bank_index = bank_index
         self.clip_preparer = clip_preparer
         self.mapping_saver = mapping_saver
+        self.quality_analyzer = quality_analyzer
+        self.review_recorder = review_recorder
         self.candidates = []
+        self.current_clip = None
         self.setWindowTitle("Reverse: 1999 speaker audition")
         self.setMinimumSize(1000, 650)
 
@@ -92,11 +102,30 @@ class Reverse1999AuditionDialog(QDialog):
         player_actions.addWidget(self.play_button)
         player_actions.addWidget(self.stop_button)
 
+        self.quality = QLabel("Play a clip to calculate its technical score.")
+        self.quality.setWordWrap(True)
+        self.music_or_sfx = QComboBox()
+        self.music_or_sfx.addItem("Not reviewed", None)
+        self.music_or_sfx.addItem("No music or SFX", False)
+        self.music_or_sfx.addItem("Contains music or SFX", True)
+        self.multiple_speakers = QComboBox()
+        self.multiple_speakers.addItem("Not reviewed", None)
+        self.multiple_speakers.addItem("One speaker", False)
+        self.multiple_speakers.addItem("Multiple speakers", True)
+        self.save_review_button = QPushButton("Save clip review")
+        self.save_review_button.clicked.connect(self.save_clip_review)
+        review_form = QFormLayout()
+        review_form.addRow("Technical quality", self.quality)
+        review_form.addRow("Music / SFX", self.music_or_sfx)
+        review_form.addRow("Speakers", self.multiple_speakers)
+        review_form.addRow("", self.save_review_button)
+
         bank_panel = QWidget()
         bank_layout = QVBoxLayout(bank_panel)
         bank_layout.addWidget(QLabel("Chapter-aware voice-bank candidates"))
         bank_layout.addWidget(self.banks, 1)
         bank_layout.addLayout(player_actions)
+        bank_layout.addLayout(review_form)
 
         evidence_panel = QWidget()
         evidence_layout = QVBoxLayout(evidence_panel)
@@ -159,6 +188,7 @@ class Reverse1999AuditionDialog(QDialog):
         self.status.setText(f"Showing {len(rows)} dialogue evidence row(s).")
         self.banks.clear()
         self.media.clear()
+        self.current_clip = None
 
     def dialogue_selected(self):
         selected = self.dialogue.selectedItems()
@@ -185,6 +215,10 @@ class Reverse1999AuditionDialog(QDialog):
 
     def bank_selected(self, index):
         self.media.clear()
+        self.current_clip = None
+        self.quality.setText("Play a clip to calculate its technical score.")
+        self.music_or_sfx.setCurrentIndex(0)
+        self.multiple_speakers.setCurrentIndex(0)
         if index < 0 or index >= len(self.candidates):
             return
         candidate = self.candidates[index]
@@ -208,9 +242,15 @@ class Reverse1999AuditionDialog(QDialog):
         root = Path(self.bank_index["game_audio_directory"])
         try:
             output = self.clip_preparer(root / candidate.path, media_id)
+            metrics = self.quality_analyzer(output)
         except Exception as error:
             self.status.setText(f"Unable to prepare clip: {error}")
             return
+        self.current_clip = (candidate, media_id, output, metrics)
+        flags = ", ".join(metrics.technical_flags) or "no technical flags"
+        self.quality.setText(
+            f"{metrics.quality_score}/100; {metrics.duration_seconds:.1f}s; {flags}"
+        )
         self.player.setSource(QUrl.fromLocalFile(str(output)))
         self.player.play()
         self.status.setText(f"Playing {candidate.filename} / {media_id}")
@@ -218,6 +258,38 @@ class Reverse1999AuditionDialog(QDialog):
     def stop_clip(self):
         self.player.stop()
         self.status.setText("Playback stopped.")
+
+    def save_clip_review(self):
+        if self.current_clip is None:
+            self.status.setText("Play and listen to the selected clip first.")
+            return
+        music_or_sfx = self.music_or_sfx.currentData()
+        multiple_speakers = self.multiple_speakers.currentData()
+        if music_or_sfx is None or multiple_speakers is None:
+            self.status.setText("Review both music/SFX and speaker count first.")
+            return
+        candidate, media_id, _output, metrics = self.current_clip
+        selected = self.dialogue.selectedItems()
+        chapter = selected[0].data(256).get("chapter") if selected else ""
+        try:
+            reviewed = review_voice_reference(
+                metrics,
+                music_or_sfx=music_or_sfx,
+                multiple_speakers=multiple_speakers,
+            )
+            path = self.review_recorder(
+                reviewed,
+                speaker_name=self.speaker_name.text(),
+                npc_id=self.npc_id.text(),
+                bank=candidate.filename,
+                media_id=media_id,
+                chapter=chapter,
+            )
+        except Exception as error:
+            self.status.setText(f"Unable to save clip review: {error}")
+            return
+        decision = "approved" if reviewed.approved else "rejected"
+        self.status.setText(f"Clip {decision}; saved review to {path}")
 
     def save_mapping(self):
         candidate = self.selected_bank()

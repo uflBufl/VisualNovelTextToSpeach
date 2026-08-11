@@ -19,8 +19,6 @@ sections after their implementation has been verified and committed.
 
 - [ ] Use Selone as the first assisted-import validation case, then apply the
       same workflow to all unresolved story NPCs.
-- [ ] Add music/SFX and multiple-speaker review to technical clip scoring; choose
-      3-5 clean references totalling 15-30 seconds.
 - [ ] Normalize and trim approved references, record their bank/media IDs and
       checksums, and update the voice manifest atomically and idempotently.
 - [ ] Add a resumable `scan -> map -> extract -> score -> review -> import`
