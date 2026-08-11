@@ -52,8 +52,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Live-mode integration and safety tests
 
-- [ ] Add deterministic coverage for emergency cancellation during every
-      pipeline stage.
 - [ ] Add real Windows and macOS soak tests covering CPU and GPU speech, animated
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.

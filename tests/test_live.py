@@ -517,6 +517,46 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader._schedule([SpeechChunk(5, "Bob", "Explicit new read.")])
         speech_executor.submit.assert_called_once()
 
+    def test_emergency_stop_cancels_capture_and_delayed_auto_advance(self):
+        reader = self.create_reader()
+        reader.capture_future = Mock()
+        reader.capture_future.done.return_value = False
+        timer = Mock()
+        reader.auto_advance_timer = timer
+
+        self.assertTrue(reader.emergency_stop())
+
+        self.assertTrue(reader.stop_event.is_set())
+        timer.cancel.assert_called_once_with()
+        self.assertIsNone(reader.auto_advance_timer)
+
+    def test_emergency_stop_cancels_queued_synthesis(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        reader = self.create_reader(speech_executor=speech_executor)
+        pending = Future()
+        reader.speech_futures[pending] = SpeechChunk(
+            3,
+            "Alice",
+            "Not synthesized yet.",
+        )
+
+        self.assertTrue(reader.emergency_stop())
+
+        self.assertTrue(pending.cancelled())
+
+    def test_emergency_stop_interrupts_playback_and_invalidates_guard(self):
+        interrupt_speech = Mock(return_value=True)
+        reader = self.create_reader(interrupt_speech=interrupt_speech)
+        chunk = SpeechChunk(7, "Alice", "Currently playing.")
+        reader.active_generation = 7
+        reader.current_chunk = chunk
+
+        self.assertTrue(reader.emergency_stop())
+
+        interrupt_speech.assert_called_once_with()
+        self.assertFalse(reader.wait_until_playable(chunk))
+
     def test_speech_queue_is_bounded_and_merges_overflow_text(self):
         futures = [Future(), Future(), Future()]
         speech_executor = Mock()
