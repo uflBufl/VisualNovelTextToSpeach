@@ -47,6 +47,7 @@ vntts-reverse1999-config = "vntts.reverse1999_config:main"
 vntts-reverse1999-audition = "vntts.reverse1999_audition_ui:main"
 vntts-audio-score = "vntts.voice_reference_quality:main"
 vntts-reverse1999-batch = "vntts.reverse1999_batch:main"
+vntts-benchmark-ocr = "vntts.ocr_benchmark:main"
 
 [tool.uv.sources]
 torch = [

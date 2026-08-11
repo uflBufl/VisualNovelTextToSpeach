@@ -45,7 +45,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Evaluate OCR replacement only after pipeline optimization
 
-- [ ] Benchmark the optimized Tesseract path before adding another OCR runtime.
 - [ ] If changed-frame OCR still exceeds the latency target, prototype RapidOCR
       with ONNX Runtime behind an OCR-backend interface and compare speaker-name
       accuracy, dialogue accuracy, CPU use, package size, and Windows deployment.
