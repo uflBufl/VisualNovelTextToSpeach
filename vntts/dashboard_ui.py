@@ -1,5 +1,9 @@
-from PySide6.QtCore import Qt, Signal
+import ctypes
+import sys
+
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -26,6 +30,7 @@ class ControlDashboard(QMainWindow):
     voices_requested = Signal()
     diagnostics_requested = Signal()
     settings_requested = Signal()
+    compact_requested = Signal()
     quit_requested = Signal()
     hidden_to_background = Signal()
 
@@ -126,7 +131,12 @@ class ControlDashboard(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        layout.addWidget(self.status)
+        header = QHBoxLayout()
+        header.addWidget(self.status, 1)
+        self.compact_button = QPushButton("Compact controls")
+        self.compact_button.clicked.connect(self.compact_requested.emit)
+        header.addWidget(self.compact_button)
+        layout.addLayout(header)
         layout.addLayout(details)
         layout.addWidget(card)
         layout.addLayout(primary)
@@ -219,3 +229,157 @@ class ControlDashboard(QMainWindow):
             self._quitting = True
             self.quit_requested.emit()
         super().closeEvent(event)
+
+
+class CompactController(QWidget):
+    """Small floating controller that can accompany a fullscreen game."""
+
+    read_requested = Signal()
+    live_requested = Signal()
+    pause_requested = Signal()
+    skip_requested = Signal()
+    stop_requested = Signal()
+    full_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._live = False
+        self.setWindowTitle("VNTTS controls")
+        self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setMinimumWidth(500)
+
+        self.mode = QLabel("Starting...")
+        self.mode.setStyleSheet("font-weight: 600;")
+        self.speaker = QLabel("Narrator")
+        self.speaker.setMinimumWidth(80)
+        self.speaker.setMaximumWidth(130)
+        self.speaker.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
+        self.read_button = QPushButton("Read")
+        self.live_button = QPushButton("Start live")
+        self.pause_button = QPushButton("Pause")
+        self.skip_button = QPushButton("Skip")
+        self.stop_button = QPushButton("Stop")
+        self.full_button = QPushButton("Full")
+        self.stop_button.setStyleSheet(
+            "QPushButton { color: #a21818; font-weight: 600; }"
+        )
+        self.read_button.clicked.connect(self.read_requested.emit)
+        self.live_button.clicked.connect(self.live_requested.emit)
+        self.pause_button.clicked.connect(self.pause_requested.emit)
+        self.skip_button.clicked.connect(self.skip_requested.emit)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        self.full_button.clicked.connect(self.full_requested.emit)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+        layout.addWidget(self.mode)
+        layout.addWidget(self.speaker)
+        layout.addWidget(self.read_button)
+        layout.addWidget(self.live_button)
+        layout.addWidget(self.pause_button)
+        layout.addWidget(self.skip_button)
+        layout.addWidget(self.stop_button)
+        layout.addWidget(self.full_button)
+        self.set_ready(False)
+
+    def show_for_game(self, geometry=None):
+        self.show()
+        QTimer.singleShot(0, lambda: self._finish_show(geometry))
+
+    def _finish_show(self, geometry):
+        configure_floating_window(self)
+        self.adjustSize()
+        screen = None
+        if geometry is not None:
+            center = QPoint(
+                geometry.left + geometry.width // 2,
+                geometry.top + geometry.height // 2,
+            )
+            screen = QApplication.screenAt(center)
+        screen = screen or self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        right = (
+            min(geometry.left + geometry.width, available.right() + 1)
+            if geometry is not None
+            else available.right() + 1
+        )
+        top = (
+            max(geometry.top, available.top())
+            if geometry is not None
+            else available.top()
+        )
+        x = max(available.left(), right - self.width() - 12)
+        y = min(max(available.top(), top + 12), available.bottom() - self.height())
+        self.move(x, y)
+        self.raise_()
+
+    def set_status(self, message):
+        if not self._live:
+            self.mode.setText(message)
+        self.setToolTip(message)
+
+    def set_dialogue(self, speaker, _text):
+        self.speaker.setText(speaker or "Narrator")
+
+    def set_ready(self, ready):
+        for button in (
+            self.read_button,
+            self.live_button,
+            self.pause_button,
+            self.skip_button,
+            self.stop_button,
+        ):
+            button.setEnabled(bool(ready))
+
+    def set_live(self, running):
+        self._live = bool(running)
+        self.mode.setText("Live" if running else "Stopped")
+        self.live_button.setText("Stop live" if running else "Start live")
+
+    def set_paused(self, paused):
+        self.mode.setText("Paused" if paused else ("Live" if self._live else "Stopped"))
+        self.pause_button.setText("Resume" if paused else "Pause")
+
+
+def configure_floating_window(window, *, platform=None):
+    """Keep compact controls usable in fullscreen and out of system capture."""
+    platform = sys.platform if platform is None else platform
+    try:
+        native_id = int(window.winId())
+        if platform == "darwin":
+            if QApplication.platformName() != "cocoa":
+                return False
+            import AppKit
+            import objc
+
+            native_view = objc.objc_object(c_void_p=native_id)
+            native_window = native_view.window()
+            behavior = native_window.collectionBehavior()
+            behavior &= ~AppKit.NSWindowCollectionBehaviorMoveToActiveSpace
+            behavior &= ~AppKit.NSWindowCollectionBehaviorFullScreenPrimary
+            behavior |= AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            behavior |= AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+            native_window.setCollectionBehavior_(behavior)
+            native_window.setLevel_(AppKit.NSFloatingWindowLevel)
+            native_window.setSharingType_(AppKit.NSWindowSharingNone)
+            return True
+        if platform == "win32":
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            affinity = getattr(user32, "SetWindowDisplayAffinity", None)
+            if affinity is None:
+                return False
+            affinity.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            affinity.restype = ctypes.c_bool
+            # Windows 10 2004+: omit the controller from screenshots/capture.
+            return bool(affinity(ctypes.c_void_p(native_id), 0x11))
+    except Exception:
+        return False
+    return False

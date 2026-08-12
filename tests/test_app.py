@@ -93,6 +93,35 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
 
+    def test_compact_controls_replace_dashboard_and_persist_preference(self):
+        controller = Mock()
+        controller.get_capture_geometry.return_value = WindowGeometry(
+            100, 200, 1600, 900
+        )
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.AppSettings.save") as save:
+            tray_application.show_compact_controls()
+            self.application.processEvents()
+
+        self.assertFalse(tray_application.dashboard.isVisible())
+        self.assertTrue(tray_application.compact_controller.isVisible())
+        self.assertTrue(tray_application.settings.compact_controls)
+        save.assert_called_once_with()
+
+        with patch("vntts.app.AppSettings.save") as save:
+            tray_application.show_dashboard()
+
+        self.assertTrue(tray_application.dashboard.isVisible())
+        self.assertFalse(tray_application.compact_controller.isVisible())
+        self.assertFalse(tray_application.settings.compact_controls)
+        save.assert_called_once_with()
+        tray_application.shutdown()
+
     def test_unknown_speaker_adds_mapping_action_and_notification(self):
         controller = Mock()
         tray_application = TrayApplication(

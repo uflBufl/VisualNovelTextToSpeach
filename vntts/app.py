@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
-from vntts.dashboard_ui import ControlDashboard
+from vntts.dashboard_ui import CompactController, ControlDashboard
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.history_ui import DialogueHistoryDialog
@@ -514,7 +514,9 @@ class TrayApplication(QObject):
         self.support_dialog = None
         self.onboarding_cancel_event = Event()
         self.pending_unknown_speaker = None
+        self.restore_compact_after_calibration = False
         self.dashboard = ControlDashboard(self.settings)
+        self.compact_controller = CompactController()
 
         self.tray = QSystemTrayIcon(self._application_icon(), application)
         self.menu = QMenu()
@@ -524,6 +526,7 @@ class TrayApplication(QObject):
         self.dialog_action.setEnabled(False)
         self.read_action = QAction("Read current dialog")
         self.show_dashboard_action = QAction("Open control window")
+        self.show_compact_action = QAction("Compact floating controls")
         self.live_action = QAction("Start live reading")
         self.auto_advance_action = QAction("Auto advance dialogue")
         self.auto_advance_action.setCheckable(True)
@@ -559,6 +562,7 @@ class TrayApplication(QObject):
         self.emergency_stop_action.setEnabled(False)
         self.voice_preview_action.setEnabled(False)
         self.menu.addAction(self.show_dashboard_action)
+        self.menu.addAction(self.show_compact_action)
         self.menu.addAction(self.status_action)
         self.menu.addAction(self.dialog_action)
         self.menu.addSeparator()
@@ -592,6 +596,7 @@ class TrayApplication(QObject):
 
         self.read_action.triggered.connect(self.read_once)
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
+        self.show_compact_action.triggered.connect(self.show_compact_controls)
         self.live_action.triggered.connect(self.toggle_live)
         self.auto_advance_action.toggled.connect(self.toggle_auto_advance)
         self.pause_action.triggered.connect(self.toggle_speech_pause)
@@ -637,8 +642,15 @@ class TrayApplication(QObject):
         self.dashboard.voices_requested.connect(self.open_speaker_mapping)
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
+        self.dashboard.compact_requested.connect(self.show_compact_controls)
         self.dashboard.quit_requested.connect(self.application.quit)
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
+        self.compact_controller.read_requested.connect(self.read_once)
+        self.compact_controller.live_requested.connect(self.toggle_live)
+        self.compact_controller.pause_requested.connect(self.toggle_speech_pause)
+        self.compact_controller.skip_requested.connect(self.skip_current_speech)
+        self.compact_controller.stop_requested.connect(self.emergency_stop)
+        self.compact_controller.full_requested.connect(self.show_dashboard)
 
     def _application_icon(self):
         return create_application_icon(self.application.style())
@@ -649,7 +661,10 @@ class TrayApplication(QObject):
         else:
             self.settings = self.settings.updated(keep_running_on_close=False)
             self.dashboard.set_configuration(self.settings)
-        self.show_dashboard()
+        if self.settings.compact_controls and self.settings.onboarding_completed:
+            self.show_compact_controls()
+        else:
+            self.show_dashboard()
         if self.settings.launch_at_login:
             try:
                 configure_macos_launch_at_login(True)
@@ -752,7 +767,9 @@ class TrayApplication(QObject):
         except WindowCaptureError as error:
             self.show_error(str(error))
             return
+        self.restore_compact_after_calibration = self.compact_controller.isVisible()
         self.dashboard.hide()
+        self.compact_controller.hide()
         if self.readiness_dialog is not None:
             self.readiness_dialog.hide()
         QTimer.singleShot(200, lambda: self._open_calibration_overlay(geometry))
@@ -761,12 +778,19 @@ class TrayApplication(QObject):
         try:
             self.calibration_overlay = show_calibration_overlay(geometry)
         except Exception as error:
-            self.show_dashboard()
+            self.restore_control_window()
             self.show_error(f"Unable to capture a calibration preview: {error}")
             return
-        self.calibration_overlay.closed.connect(self.show_dashboard)
+        self.calibration_overlay.closed.connect(self.restore_control_window)
         if self.settings.active_profile_id:
             self.calibration_overlay.selected.connect(self.update_profile_region)
+
+    def restore_control_window(self):
+        if self.restore_compact_after_calibration:
+            self.show_compact_controls()
+        else:
+            self.show_dashboard()
+        self.restore_compact_after_calibration = False
 
     def update_profile_region(self, region):
         profile_id = self.settings.active_profile_id
@@ -945,9 +969,28 @@ class TrayApplication(QObject):
             self.readiness_dialog.update_settings(self.settings)
 
     def show_dashboard(self):
+        self.compact_controller.hide()
         self.dashboard.show()
         self.dashboard.raise_()
         self.dashboard.activateWindow()
+        self._save_compact_preference(False)
+
+    def show_compact_controls(self):
+        geometry = None
+        try:
+            geometry = self.controller.get_capture_geometry()
+        except WindowCaptureError:
+            pass
+        self.dashboard.hide()
+        self.compact_controller.show_for_game(geometry)
+        self._save_compact_preference(True)
+
+    def _save_compact_preference(self, enabled):
+        enabled = bool(enabled)
+        if self.settings.compact_controls == enabled:
+            return
+        self.settings = self.settings.updated(compact_controls=enabled)
+        self.settings.save()
 
     def notify_background_mode(self):
         self.tray.showMessage(
@@ -1166,14 +1209,17 @@ class TrayApplication(QObject):
         self.status_action.setText(message)
         self.tray.setToolTip(f"{application_name}\n{message}")
         self.dashboard.set_status(message)
+        self.compact_controller.set_status(message)
 
     def set_dialog(self, character, text):
         if not text:
             self.dialog_action.setText("No dialog detected")
             self.dashboard.set_dialogue(character, "")
+            self.compact_controller.set_dialogue(character, "")
             return
         self.dialog_action.setText(f"{character}: {text}")
         self.dashboard.set_dialogue(character, text)
+        self.compact_controller.set_dialogue(character, text)
 
     def set_ready(self, ready):
         self.read_action.setEnabled(ready)
@@ -1185,6 +1231,7 @@ class TrayApplication(QObject):
         self.emergency_stop_action.setEnabled(ready)
         self.voice_preview_action.setEnabled(ready)
         self.dashboard.set_ready(ready)
+        self.compact_controller.set_ready(ready)
         if not ready:
             self.set_status("Unable to start")
 
@@ -1193,10 +1240,12 @@ class TrayApplication(QObject):
             "Stop live reading" if running else "Start live reading"
         )
         self.dashboard.set_live(running)
+        self.compact_controller.set_live(running)
 
     def set_speech_paused(self, paused):
         self.pause_action.setText("Resume speech" if paused else "Pause speech")
         self.dashboard.set_paused(paused)
+        self.compact_controller.set_paused(paused)
 
     def show_error(self, message):
         self.support_log.add("error", message)
@@ -1216,6 +1265,7 @@ class TrayApplication(QObject):
         self.dashboard.keep_running_on_close = False
         self.dashboard._quitting = True
         self.dashboard.close()
+        self.compact_controller.close()
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.close()
         if self.hotkey_listener is not None:

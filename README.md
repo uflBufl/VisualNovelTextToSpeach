@@ -89,7 +89,10 @@ dialog every 200 ms and queues stable sentences or phrases without waiting for
 the whole dialog to finish. One-time reads are ignored while live mode is on.
 
 Use the control window to start live reading, read once, pause, skip, replay,
-or emergency-stop speech. On Windows, `Ctrl+Shift+P` pauses or resumes,
+or emergency-stop speech. Select **Compact controls** to replace it with a
+small always-on-top strip for borderless/fullscreen play; **Full** restores the
+main window, and the selected view is used on the next launch. On Windows,
+`Ctrl+Shift+P` pauses or resumes,
 `Ctrl+Shift+S` skips, `Ctrl+Shift+R` repeats, and `Ctrl+Shift+X` clears the
 queue. Shortcuts can be changed in Settings.
 

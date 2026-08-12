@@ -3,9 +3,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from vntts.dashboard_ui import ControlDashboard  # noqa: E402
+from vntts.dashboard_ui import CompactController, ControlDashboard  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
@@ -64,6 +65,25 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard._quitting = True
         dashboard.close()
         dashboard.deleteLater()
+
+    def test_compact_controller_exposes_play_controls_and_state(self):
+        controller = CompactController()
+        requests = []
+        controller.live_requested.connect(lambda: requests.append("live"))
+        controller.set_ready(True)
+        controller.set_dialogue("Selone", "I have returned.")
+        controller.set_live(True)
+        controller.set_paused(True)
+
+        controller.live_button.click()
+
+        self.assertEqual(requests, ["live"])
+        self.assertEqual(controller.speaker.text(), "Selone")
+        self.assertEqual(controller.mode.text(), "Paused")
+        self.assertEqual(controller.live_button.text(), "Stop live")
+        self.assertTrue(controller.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        controller.close()
+        controller.deleteLater()
 
     def test_short_window_scrolls_instead_of_clipping_controls(self):
         dashboard = ControlDashboard(
