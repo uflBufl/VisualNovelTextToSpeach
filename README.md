@@ -165,6 +165,44 @@ NPC mappings and approved reference metadata are stored in
 `data/reverse1999-voices/`; it is not committed. The catalog validation command
 checks those local files against the committed checksums.
 
+For confidence-gated bulk preparation, run:
+
+```sh
+uv run vntts-reverse1999-batch auto
+```
+
+`auto` accepts only speaker IDs with a stable unique dialogue name, at least two
+dialogue lines, and a dedicated bank containing at least three clips. It scans
+at most two preferred banks per speaker, scores the extracted audio, chooses
+three technically clean references totaling at least 15 seconds, and writes the
+review queue shown in the command output. Conflicting names, shared names, weak
+dialogue evidence, and unsuitable banks stay in the mapping-review queue in the
+resumable state file.
+
+The generated clips are never approved automatically. Listen to each queued WAV
+and set both `music_or_sfx` and `multiple_speakers` to `false` or `true` in the
+review JSON. Entries left as `null` remain pending. An existing local Whisper
+model can add offline transcripts as another rejection signal without allowing
+downloads:
+
+```sh
+uv run vntts-reverse1999-batch auto \
+  --whisper-model /absolute/path/to/local/whisper-model
+```
+
+After reviewing, import the approved sets and update the versioned catalog
+atomically:
+
+```sh
+uv run vntts-reverse1999-batch finish \
+  --output data/reverse1999-voices \
+  --reference-root data
+uv run vntts-reverse1999-catalog
+```
+
+`finish` validates every reference path and checksum before replacing the
+catalog. Running it again is idempotent.
+
 Extract or convert game audio directly:
 
 ```sh
