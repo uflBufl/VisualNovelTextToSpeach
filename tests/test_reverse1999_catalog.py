@@ -83,6 +83,7 @@ class Reverse1999NpcCatalogTest(unittest.TestCase):
         self.assertEqual(catalog.resolve("Selone").npc_id, "521001")
         self.assertEqual(catalog.resolve("Sternova").npc_id, "529801")
         self.assertEqual(catalog.resolve("Tang Ji").npc_id, "626301")
+        self.assertEqual(catalog.resolve("Creius").npc_id, "523701")
         self.assertEqual(
             catalog.resolve("Selone").banks,
             ("activityvoc_story_npc521001_diqiu.bnk",),

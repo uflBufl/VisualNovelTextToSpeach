@@ -143,6 +143,57 @@
           "reference_sha256": "b8e89d4eeff2b1f160c8edda09e7fb359af0e55d0814e8a25fdd4c43032f4616"
         }
       ]
+    },
+    {
+      "id": "523701",
+      "display_name": "Creius",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "plotvoc_npc523701chapter10.bnk",
+        "plotvoc_npc523701chapter11_part01.bnk",
+        "plotvoc_npc523701chapter11_part02.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "plotvoc_npc523701chapter10.bnk",
+          "media_id": 389290092,
+          "source_sha256": "5ab4ab0d6126e09525a3cdf02398f0e5f328974d6793277f5a031e27e3e9123c",
+          "reference": "reverse1999-voices/references/creius-game-01.wav",
+          "reference_sha256": "5ba113a0dfd71fd8f8d138be8ece563181ed200d72d335d5b4df9db2c51a07d2"
+        },
+        {
+          "bank": "plotvoc_npc523701chapter10.bnk",
+          "media_id": 14181803,
+          "source_sha256": "42e78b249cf1f2805591e57fb118c5f87dd99c499f2fc6d3e585633d75f62fdc",
+          "reference": "reverse1999-voices/references/creius-game-02.wav",
+          "reference_sha256": "d3d33bd79346038c23e2ba9793329d73f5b32fcef603ade58b14fece502bcf34"
+        },
+        {
+          "bank": "plotvoc_npc523701chapter10.bnk",
+          "media_id": 262699046,
+          "source_sha256": "2725bb11dc56cc4c32aff0a076235a164bd6581ba1691ceaaec3d96ab16d1702",
+          "reference": "reverse1999-voices/references/creius-game-03.wav",
+          "reference_sha256": "2e11eaef4e643634c981f15224a408999872830be3450baf1780c3a65bcfbe0e"
+        },
+        {
+          "bank": "plotvoc_npc523701chapter10.bnk",
+          "media_id": 349289864,
+          "source_sha256": "1248531ea13e2784afbdbdb0b44783b50ed689bfbe562af49c7f13c9f7f50bcd",
+          "reference": "reverse1999-voices/references/creius-game-04.wav",
+          "reference_sha256": "597c592ea5c6900ea3eb6be5d83cb43c32820783d0890cbd60c85020c6cb2aa9"
+        },
+        {
+          "bank": "plotvoc_npc523701chapter10.bnk",
+          "media_id": 885528701,
+          "source_sha256": "5ddb696de00d2d76b291ccad15a211ddbd76b5337d8852e812a30bce68fb92ab",
+          "reference": "reverse1999-voices/references/creius-game-05.wav",
+          "reference_sha256": "7eda23b9ad24f7664fc0e84dbaeff7ad6c352cc29533f5f1ddd5c1c0265da429"
+        }
+      ]
     }
   ]
 }
