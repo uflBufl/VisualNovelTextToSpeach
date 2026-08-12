@@ -444,7 +444,7 @@ def convert_audio(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     result = runner(
-        [resolve_decoder(decoder), "-o", str(output), str(source)],
+        [resolve_decoder(decoder), "-i", "-o", str(output), str(source)],
         capture_output=True,
         text=True,
     )

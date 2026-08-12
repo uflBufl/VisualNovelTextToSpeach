@@ -82,6 +82,60 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
 
         self.assertEqual(resolved, bank.resolve())
 
+    def test_reviewed_media_ids_are_imported_in_requested_order(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            bank = directory / "voice.bnk"
+            bank.write_bytes(b"bank")
+            output = directory / "pack"
+            with (
+                patch.object(
+                    importer,
+                    "read_embedded_media",
+                    return_value=[
+                        EmbeddedMedia(10, b"short"),
+                        EmbeddedMedia(20, b"much-longer"),
+                    ],
+                ),
+                patch.object(
+                    importer,
+                    "convert_audio",
+                    side_effect=lambda _source, destination, **_options: write_wav(
+                        destination
+                    ),
+                ),
+            ):
+                references = importer.decode_references(
+                    bank,
+                    output,
+                    "Tang Ji",
+                    3,
+                    "decoder",
+                    media_ids=[10, 20],
+                )
+
+        self.assertEqual([reference.media_id for reference in references], [10, 20])
+
+    def test_missing_reviewed_media_id_is_rejected(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            bank = directory / "voice.bnk"
+            bank.write_bytes(b"bank")
+            with patch.object(
+                importer,
+                "read_embedded_media",
+                return_value=[EmbeddedMedia(10, b"voice")],
+            ):
+                with self.assertRaisesRegex(importer.GameVoiceImportError, "media ID"):
+                    importer.decode_references(
+                        bank,
+                        directory / "pack",
+                        "Tang Ji",
+                        3,
+                        "decoder",
+                        media_ids=[99],
+                    )
+
     def test_manifest_adds_story_npc_without_losing_existing_voices(self):
         with TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)

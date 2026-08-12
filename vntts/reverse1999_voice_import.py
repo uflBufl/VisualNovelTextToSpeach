@@ -80,6 +80,16 @@ def create_parser():
         help="Maximum clean clips to import from the bank.",
     )
     parser.add_argument(
+        "--media-id",
+        type=int,
+        action="append",
+        dest="media_ids",
+        help=(
+            "Reviewed embedded media ID to import. Repeat for multiple clips; "
+            "when omitted, the largest clips are selected."
+        ),
+    )
+    parser.add_argument(
         "--decoder",
         default="vgmstream-cli",
         help="Path or command name for vgmstream-cli.",
@@ -144,13 +154,31 @@ def resolve_bank(
     return bank
 
 
-def decode_references(bank, output_directory, character, reference_count, decoder):
+def decode_references(
+    bank,
+    output_directory,
+    character,
+    reference_count,
+    decoder,
+    *,
+    media_ids=None,
+):
     if reference_count <= 0:
         raise GameVoiceImportError("--references must be positive")
     media = read_embedded_media(bank)
-    selected = sorted(media, key=lambda entry: entry.size, reverse=True)[
-        :reference_count
-    ]
+    if media_ids:
+        by_id = {entry.media_id: entry for entry in media}
+        missing = [media_id for media_id in media_ids if media_id not in by_id]
+        if missing:
+            joined = ", ".join(str(media_id) for media_id in missing)
+            raise GameVoiceImportError(
+                f"Voice bank {bank.name} does not contain media ID(s): {joined}"
+            )
+        selected = [by_id[media_id] for media_id in dict.fromkeys(media_ids)]
+    else:
+        selected = sorted(media, key=lambda entry: entry.size, reverse=True)[
+            :reference_count
+        ]
     if not selected:
         raise GameVoiceImportError(f"Voice bank contains no embedded media: {bank}")
 
@@ -227,7 +255,9 @@ def update_manifest(output_directory, character, references, source_bank):
         ],
     }
     imported = [
-        reference for reference in references if isinstance(reference, ImportedReference)
+        reference
+        for reference in references
+        if isinstance(reference, ImportedReference)
     ]
     if imported:
         entry["reference_metadata"] = [
@@ -270,6 +300,7 @@ def main(arguments=None):
             arguments.character,
             arguments.references,
             decoder,
+            media_ids=arguments.media_ids,
         )
         manifest = update_manifest(
             output_directory,

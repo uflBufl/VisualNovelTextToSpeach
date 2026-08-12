@@ -204,15 +204,21 @@ class AudioConversionTest(unittest.TestCase):
             source = directory / "voice.wem"
             output = directory / "voice.wav"
             source.write_bytes(b"voice")
+            commands = []
 
             def run(command, **_options):
-                Path(command[2]).write_bytes(b"wav")
+                commands.append(command)
+                Path(command[3]).write_bytes(b"wav")
                 return CompletedProcess(command, 0, "", "")
 
             with patch("vntts.wwise.resolve_decoder", return_value="decoder"):
                 result = convert_audio(source, output, runner=run)
 
         self.assertEqual(result, output.resolve())
+        self.assertEqual(
+            commands,
+            [["decoder", "-i", "-o", str(output.resolve()), str(source.resolve())]],
+        )
 
     def test_decoder_failure_includes_reported_error(self):
         with TemporaryDirectory() as temporary_directory:
