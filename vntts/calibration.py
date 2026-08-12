@@ -1,22 +1,128 @@
 import sys
 
+import mss
+from PIL import Image
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
-from vntts.ocr import DialogRegion, get_dialog_region_file, save_dialog_region
+from vntts.ocr import (
+    DialogRegion,
+    get_dialog_region_file,
+    recognize_dialog_image_result,
+    save_dialog_region,
+)
+
+
+def capture_calibration_background(geometry=None):
+    with mss.mss() as capture:
+        monitor = (
+            capture.monitors[1]
+            if geometry is None
+            else {
+                "left": geometry.left,
+                "top": geometry.top,
+                "width": geometry.width,
+                "height": geometry.height,
+            }
+        )
+        screenshot = capture.grab(monitor)
+    return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+
+
+def pixmap_from_pil(image):
+    image = image.convert("RGB")
+    qimage = QImage(
+        image.tobytes("raw", "RGB"),
+        image.width,
+        image.height,
+        image.width * 3,
+        QImage.Format.Format_RGB888,
+    ).copy()
+    return QPixmap.fromImage(qimage)
+
+
+class CalibrationReviewDialog(QDialog):
+    def __init__(self, image, parent=None, *, recognizer=recognize_dialog_image_result):
+        super().__init__(parent)
+        self.setWindowTitle("Confirm dialogue capture")
+        self.resize(760, 460)
+        preview = QLabel()
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview.setPixmap(
+            pixmap_from_pil(image).scaled(
+                720,
+                260,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        result_text = QTextEdit()
+        result_text.setReadOnly(True)
+        try:
+            result = recognizer(image)
+            speaker = result.character or "Narrator"
+            result_text.setPlainText(
+                f"Speaker: {speaker}\nOCR confidence: {result.confidence:.1f}%\n\n"
+                f"{result.text or '(No dialogue recognized)'}"
+            )
+        except Exception as error:
+            result_text.setPlainText(f"OCR preview failed: {error}")
+        note = QLabel(
+            "Confirm only when the speaker name and complete dialogue are inside "
+            "the preview. Retry to draw the area again."
+        )
+        note.setWordWrap(True)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Retry
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Save region")
+        buttons.button(QDialogButtonBox.StandardButton.Retry).setText("Draw again")
+        buttons.accepted.connect(self.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Retry).clicked.connect(
+            self.reject
+        )
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(preview)
+        layout.addWidget(result_text)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
 
 
 class DialogRegionOverlay(QWidget):
     selected = Signal(object)
     closed = Signal()
 
-    def __init__(self, output=None, *, platform=None):
+    def __init__(self, output=None, *, platform=None, background=None, reviewer=None):
         super().__init__()
         platform = sys.platform if platform is None else platform
         self.origin = None
         self.current = None
         self.output = output or get_dialog_region_file()
+        self.background = background
+        self.background_pixmap = (
+            pixmap_from_pil(background) if background is not None else None
+        )
+        self.reviewer = reviewer or CalibrationReviewDialog
         self.setWindowTitle("Select the visual-novel dialog region")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -55,15 +161,38 @@ class DialogRegionOverlay(QWidget):
             self.current = None
             self.update()
             return
-        self.selected.emit(
-            DialogRegion(
-                rectangle.left() / self.width(),
-                rectangle.top() / self.height(),
-                rectangle.width() / self.width(),
-                rectangle.height() / self.height(),
+        region = DialogRegion(
+            rectangle.left() / self.width(),
+            rectangle.top() / self.height(),
+            rectangle.width() / self.width(),
+            rectangle.height() / self.height(),
+        )
+        if self.background is None:
+            # Keeps the overlay directly usable in tests and by callers that
+            # deliberately opt out of the frozen preview workflow.
+            self.selected.emit(region)
+            self.close()
+            return
+        crop = self.background.crop(
+            (
+                round(region.x * self.background.width),
+                round(region.y * self.background.height),
+                round((region.x + region.width) * self.background.width),
+                round((region.y + region.height) * self.background.height),
             )
         )
-        self.close()
+        self.hide()
+        review = self.reviewer(crop)
+        if review.exec() == QDialog.DialogCode.Accepted:
+            self.selected.emit(region)
+            self.close()
+            return
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.origin = None
+        self.current = None
+        self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Escape:
@@ -75,6 +204,8 @@ class DialogRegionOverlay(QWidget):
 
     def paintEvent(self, _event):
         painter = QPainter(self)
+        if self.background_pixmap is not None:
+            painter.drawPixmap(self.rect(), self.background_pixmap)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
         if self.origin is not None and self.current is not None:
             rectangle = QRect(self.origin, self.current).normalized()
@@ -99,8 +230,10 @@ class DialogRegionOverlay(QWidget):
         )
 
 
-def show_calibration_overlay(geometry=None):
-    overlay = DialogRegionOverlay()
+def show_calibration_overlay(geometry=None, *, background=None):
+    if background is None:
+        background = capture_calibration_background(geometry)
+    overlay = DialogRegionOverlay(background=background)
     if geometry is None:
         overlay.showFullScreen()
     else:
