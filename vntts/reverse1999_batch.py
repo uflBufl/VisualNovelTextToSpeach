@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.reverse1999_aliases import canonical_voice_name
 from vntts.reverse1999_audition import default_mapping_path
 from vntts.reverse1999_catalog import (
     Reverse1999CatalogError,
@@ -59,6 +60,7 @@ def new_state():
         "bank_index": str(default_bank_index),
         "mappings": [],
         "mapping_review_queue": [],
+        "alias_resolutions": [],
         "unidentified_npc_ids": [],
         "unresolved_npc_ids": [],
         "clips": [],
@@ -257,6 +259,7 @@ def discover_auto_mappings(
     mappings = []
     review_queue = []
     unidentified = []
+    alias_resolutions = []
 
     for npc_id in sorted(installed_ids - cataloged_ids):
         names = names_by_id.get(npc_id, Counter())
@@ -274,6 +277,22 @@ def discover_auto_mappings(
                 reasons.append("speaker-name-shared-by-multiple-ids")
             if sum(names.values()) < minimum_dialogue_lines:
                 reasons.append("insufficient-dialogue-evidence")
+
+        canonical_name = canonical_voice_name(display_name)
+        if (
+            not reasons
+            and canonical_name is not None
+            and normalize_name(canonical_name) != normalize_name(display_name)
+        ):
+            alias_resolutions.append(
+                {
+                    "npc_id": npc_id,
+                    "observed_name": display_name,
+                    "canonical_name": canonical_name,
+                    "dialogue_lines": sum(names.values()),
+                }
+            )
+            continue
 
         banks = _rank_auto_banks(bank_index, npc_id, maximum_banks=maximum_banks)
         if not banks:
@@ -309,10 +328,12 @@ def discover_auto_mappings(
         mappings, key=lambda item: (item["speaker_name"].casefold(), item["npc_id"])
     )
     state["mapping_review_queue"] = review_queue
+    state["alias_resolutions"] = alias_resolutions
     state["unidentified_npc_ids"] = unidentified
-    state["unresolved_npc_ids"] = sorted(
-        installed_ids - cataloged_ids - {item["npc_id"] for item in mappings}
-    )
+    covered_ids = {item["npc_id"] for item in mappings} | {
+        item["npc_id"] for item in alias_resolutions
+    }
+    state["unresolved_npc_ids"] = sorted(installed_ids - cataloged_ids - covered_ids)
     return state
 
 
@@ -810,6 +831,7 @@ def stage_counts(state):
     return {
         "mapped": len(state.get("mappings", [])),
         "mapping_review": len(state.get("mapping_review_queue", [])),
+        "alias_resolved": len(state.get("alias_resolutions", [])),
         "unidentified": len(state.get("unidentified_npc_ids", [])),
         "unresolved": len(state.get("unresolved_npc_ids", [])),
         "extracted": len(state.get("clips", [])),

@@ -126,7 +126,7 @@ class Reverse1999BatchTest(unittest.TestCase):
             catalog = root / "catalog.json"
             npc_banks = {
                 npc_id: [f"story_npc{npc_id}.bnk"]
-                for npc_id in ("100", "200", "300", "400", "500")
+                for npc_id in ("100", "200", "300", "400", "500", "600")
             }
             bank_index.write_text(
                 json.dumps(
@@ -194,6 +194,16 @@ class Reverse1999BatchTest(unittest.TestCase):
                                 "speaker_name": "Brief",
                                 "chapter": "5",
                             },
+                            {
+                                "speaker_id": "600",
+                                "speaker_name": "Slouch Hat",
+                                "chapter": "6",
+                            },
+                            {
+                                "speaker_id": "600",
+                                "speaker_name": "Slouch Hat",
+                                "chapter": "6",
+                            },
                         ]
                     }
                 ),
@@ -220,6 +230,17 @@ class Reverse1999BatchTest(unittest.TestCase):
         self.assertIn("speaker-name-shared-by-multiple-ids", reasons["300"])
         self.assertIn("speaker-name-shared-by-multiple-ids", reasons["400"])
         self.assertIn("insufficient-dialogue-evidence", reasons["500"])
+        self.assertEqual(
+            state["alias_resolutions"],
+            [
+                {
+                    "npc_id": "600",
+                    "observed_name": "Slouch Hat",
+                    "canonical_name": "Brimley",
+                    "dialogue_lines": 2,
+                }
+            ],
+        )
 
     def test_auto_preselection_writes_pending_review_queue(self):
         with TemporaryDirectory() as temporary_directory:

@@ -210,6 +210,21 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
             ],
         )
 
+    def test_manifest_includes_known_story_identity_alias(self):
+        with TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            references = output / "references"
+            references.mkdir()
+            path = references / "brimley-game-01.wav"
+            path.write_bytes(b"voice")
+
+            manifest_path = importer.update_manifest(
+                output, "Brimley", [path], Path("brimley.bnk")
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["voices"][0]["aliases"], ["Slouch Hat"])
+
 
 def write_wav(path):
     path = Path(path)

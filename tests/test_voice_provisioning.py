@@ -58,6 +58,26 @@ class Reverse1999VoiceProvisioningTest(unittest.TestCase):
         self.assertEqual(voice["sources"], ["https://example.invalid/voice"])
         download.assert_called_once()
 
+    def test_known_story_identity_is_written_as_voice_alias(self):
+        media = {
+            "url": "https://example.invalid/brimley.ogg",
+            "descriptionurl": "https://example.invalid/brimley",
+            "mime": "audio/ogg",
+        }
+        with TemporaryDirectory() as temporary_directory:
+            with (
+                patch.object(
+                    provisioner, "voice_line_images", return_value=["brimley.ogg"]
+                ),
+                patch.object(provisioner, "resolve_media", return_value=media),
+                patch.object(provisioner, "download"),
+            ):
+                voice = provisioner.provision_character(
+                    "Brimley", Path(temporary_directory), 1
+                )
+
+        self.assertEqual(voice["aliases"], ["Slouch Hat"])
+
 
 if __name__ == "__main__":
     unittest.main()

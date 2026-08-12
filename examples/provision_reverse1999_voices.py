@@ -8,6 +8,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from vntts.reverse1999_aliases import aliases_for_character
+
 project_root = Path(__file__).resolve().parents[1]
 default_output = project_root / "data" / "reverse1999-voices"
 wiki_api = "https://reverse1999.fandom.com/api.php"
@@ -246,7 +248,7 @@ def provision_character(character, references_directory, reference_count):
         "character": character,
         "speaker": f"reverse-1999-{slug}-v2",
         "references": references,
-        "aliases": [],
+        "aliases": list(aliases_for_character(character)),
         "sources": sources,
     }
 
@@ -281,6 +283,14 @@ def main():
         == arguments.references
     )
     voices = existing_manifest.get("voices", []) if can_resume else []
+    for voice in voices:
+        aliases = list(voice.get("aliases", []))
+        aliases.extend(
+            alias
+            for alias in aliases_for_character(str(voice.get("character", "")))
+            if alias not in aliases
+        )
+        voice["aliases"] = aliases
     existing_skipped = read_json(skipped_path, {}).get("characters", [])
     skipped = existing_skipped if can_resume else []
     completed_characters = {

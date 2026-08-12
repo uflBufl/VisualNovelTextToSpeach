@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.reverse1999_aliases import aliases_for_character
 from vntts.reverse1999_catalog import (
     Reverse1999CatalogError,
     Reverse1999NpcCatalog,
@@ -241,7 +242,7 @@ def update_manifest(output_directory, character, references, source_bank):
             reference.relative_to(output_directory).as_posix()
             for reference in reference_paths
         ],
-        "aliases": [],
+        "aliases": list(aliases_for_character(character)),
         "sources": [
             f"local-game-bank:{name}"
             for name in sorted(
