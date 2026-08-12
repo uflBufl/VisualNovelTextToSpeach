@@ -352,9 +352,7 @@ class LiveDialogReader:
         if max_speech_jobs < 1:
             raise ValueError("max_speech_jobs must be positive")
         self.max_speech_jobs = max_speech_jobs
-        self.interrupt_on_dialog_replacement = bool(
-            interrupt_on_dialog_replacement
-        )
+        self.interrupt_on_dialog_replacement = bool(interrupt_on_dialog_replacement)
         self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
         self.state_lock = RLock()
         self.pause_condition = Condition(self.state_lock)
@@ -534,7 +532,9 @@ class LiveDialogReader:
 
     def emergency_stop(self):
         with self.pause_condition:
-            was_running = self.capture_future is not None and not self.capture_future.done()
+            was_running = (
+                self.capture_future is not None and not self.capture_future.done()
+            )
             self.emergency_stopped = True
             self.stop_event.set()
             self._cancel_auto_advance_locked()
@@ -822,25 +822,32 @@ class LiveDialogReader:
                 synthesis=True,
                 first_pcm=self.first_pcm_on_prepare,
             )
-        if chunk is None or future.cancelled():
-            return
         try:
-            prepared = future.result()
-        except Exception as error:
-            self.report_error(error)
-            return
-        if prepared is None or not self.wait_until_playable(chunk):
-            return
-        playback_future = self.playback_executor.submit(
-            self._play_if_current,
-            chunk,
-            prepared,
-        )
-        with self.state_lock:
-            self.speech_futures[playback_future] = chunk
-            self._record_speech_metrics_locked()
-        playback_future.add_done_callback(self._speech_finished)
-        self._schedule_deferred_if_possible()
+            if chunk is None or future.cancelled():
+                return
+            try:
+                prepared = future.result()
+            except Exception as error:
+                self.report_error(error)
+                return
+            if prepared is None or not self.wait_until_playable(chunk):
+                return
+            playback_future = self.playback_executor.submit(
+                self._play_if_current,
+                chunk,
+                prepared,
+            )
+            with self.state_lock:
+                self.speech_futures[playback_future] = chunk
+                self._record_speech_metrics_locked()
+            playback_future.add_done_callback(self._speech_finished)
+        finally:
+            # A rapidly advancing game can replace a dialogue while its audio
+            # is still being prepared. The old result is then intentionally
+            # discarded, but the newest deferred dialogue must still be
+            # scheduled or live mode remains running with a permanently stuck
+            # queue.
+            self._schedule_deferred_if_possible()
 
     def _play_if_current(self, chunk, prepared):
         if not self.wait_until_playable(chunk):
@@ -1005,9 +1012,7 @@ class LiveDialogReader:
             last_speaker_resolved_at=(
                 now if text_visible else metrics.last_speaker_resolved_at
             ),
-            last_ocr_stable_at=(
-                now if sentence_ready else metrics.last_ocr_stable_at
-            ),
+            last_ocr_stable_at=(now if sentence_ready else metrics.last_ocr_stable_at),
             last_generation_started_at=(
                 now if generation_started else metrics.last_generation_started_at
             ),

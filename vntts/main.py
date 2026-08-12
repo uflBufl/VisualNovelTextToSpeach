@@ -1472,6 +1472,7 @@ class AppController:
 
     def _capture_state_changed(self, focused, interval_seconds):
         lost_focus = self.game_focused and not focused
+        regained_focus = not self.game_focused and focused
         self.game_focused = focused
         self.capture_interval_ms = interval_seconds * 1000
         with self.diagnostic_lock:
@@ -1485,9 +1486,10 @@ class AppController:
                 self.last_diagnostic = snapshot
         if snapshot is not None:
             self.diagnostic_handler(snapshot)
-        if lost_focus and self.live_reader is not None:
-            self.live_reader.clear_queue()
-            self.status_handler("Game focus lost; pending speech and input cancelled")
+        if lost_focus:
+            self.status_handler("Game focus lost; live capture and auto advance paused")
+        elif regained_focus:
+            self.status_handler("Game focus restored; live reading resumed")
 
     def _publish_diagnostic(self, snapshot):
         pipeline_metrics = self.get_live_pipeline_metrics()

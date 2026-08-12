@@ -1142,7 +1142,7 @@ class MainTest(unittest.TestCase):
         self.assertIn("42% (requires 60%)", dialogs[-1][1])
         controller.live_reader.clear_queue.assert_called_once_with()
 
-    def test_focus_loss_cancels_pending_speech_and_auto_advance(self):
+    def test_focus_loss_pauses_capture_without_suppressing_live_speech(self):
         statuses = []
         controller = AppController(
             AppSettings(),
@@ -1153,9 +1153,16 @@ class MainTest(unittest.TestCase):
 
         controller._capture_state_changed(False, 1.0)
         controller._capture_state_changed(False, 1.0)
+        controller._capture_state_changed(True, 0.2)
 
-        controller.live_reader.clear_queue.assert_called_once_with()
-        self.assertIn("pending speech and input cancelled", statuses[-1])
+        controller.live_reader.clear_queue.assert_not_called()
+        self.assertEqual(
+            statuses,
+            [
+                "Game focus lost; live capture and auto advance paused",
+                "Game focus restored; live reading resumed",
+            ],
+        )
 
     def test_auto_advance_pauses_when_ocr_detects_a_choice_menu(self):
         statuses = []

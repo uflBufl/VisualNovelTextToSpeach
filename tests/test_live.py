@@ -405,6 +405,37 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertTrue(stale_future.cancelled())
 
+    def test_rapid_dialog_replacement_schedules_latest_after_stale_preparation(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            playback_executor=Mock(),
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            max_speech_jobs=1,
+        )
+        old_chunk = SpeechChunk(1, "Alice", "Old dialogue.")
+        old_preparation = Future()
+        old_preparation.set_running_or_notify_cancel()
+        reader.active_generation = 1
+        reader.speech_futures[old_preparation] = old_chunk
+
+        reader._set_generation(2)
+        reader._schedule([SpeechChunk(2, "Bob", "Skipped dialogue.")])
+        reader._set_generation(3)
+        newest_chunk = SpeechChunk(3, "Carol", "Newest dialogue.")
+        reader._schedule([newest_chunk])
+        old_preparation.set_result("stale audio")
+
+        reader._preparation_finished(old_preparation)
+
+        speech_executor.submit.assert_called_once_with(
+            reader._prepare_if_current,
+            newest_chunk,
+        )
+        self.assertIsNone(reader.deferred_chunk)
+
     def test_pause_toggle_blocks_and_releases_the_queue(self):
         reader = self.create_reader()
 
