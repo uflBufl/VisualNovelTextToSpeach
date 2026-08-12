@@ -1,7 +1,7 @@
 # Visual Novel Text to Speech
 
 Captures a visual novel dialog box, recognizes its text with Tesseract, and
-reads it aloud with Coqui TTS.
+reads it aloud with Pocket TTS or another configured speech engine.
 
 ## Requirements
 
@@ -61,10 +61,11 @@ uv sync --no-dev
 uv run vntts-app
 ```
 
-The application runs in the system tray. Its settings are stored in the
-current user's application-data directory. On first launch, complete the setup
+The application opens a compact control window and can optionally keep running
+in the system tray. Its settings are stored in the current user's application-data
+directory. On first launch, complete the setup
 wizard to select the game, verify OCR and audio, calibrate the dialogue area,
-and run an OCR-to-speech test. Use **Manage models and voices** in the tray to
+and run an OCR-to-speech test. Use **Manage models and voices** in the app to
 download or verify the speech model and import local character voice references.
 On Windows, models and imported voice packs are stored under
 `%LOCALAPPDATA%\VisualNovelTextToSpeech\`. Run the terminal interface for
@@ -87,10 +88,10 @@ Set `VNTTS_LIVE_HOTKEY` to change this shortcut. Live mode recognizes the
 dialog every 200 ms and queues stable sentences or phrases without waiting for
 the whole dialog to finish. One-time reads are ignored while live mode is on.
 
-Use `Ctrl+Shift+P` to pause or resume speech, `Ctrl+Shift+S` to skip the current
-line, `Ctrl+Shift+R` to repeat it, and `Ctrl+Shift+X` to clear the queue. These
-shortcuts can be changed in Settings. The tray shows the latest recognized
-speaker and text.
+Use the control window to start live reading, read once, pause, skip, replay,
+or emergency-stop speech. On Windows, `Ctrl+Shift+P` pauses or resumes,
+`Ctrl+Shift+S` skips, `Ctrl+Shift+R` repeats, and `Ctrl+Shift+X` clears the
+queue. Shortcuts can be changed in Settings.
 
 Tune live reading with `VNTTS_LIVE_INTERVAL_MS`,
 `VNTTS_LIVE_STABILITY_FRAMES`, `VNTTS_LIVE_IDLE_FLUSH_MS`, and

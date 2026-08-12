@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
+from vntts.dashboard_ui import ControlDashboard
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.history_ui import DialogueHistoryDialog
@@ -61,10 +62,12 @@ from vntts.main import (
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.ocr_review_ui import OCRReviewDialog
+from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
+from vntts.readiness_ui import ReadinessDialog
 from vntts.release_smoke_test import (
     default_smoke_test_model,
     run_release_smoke_test,
@@ -79,6 +82,7 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.support import RuntimeSupportLog, SupportBundleBuilder
+from vntts.support_ui import SupportCenterDialog
 from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.voices import find_default_voice_manifest
 from vntts.window_capture import (
@@ -232,6 +236,10 @@ class SettingsDialog(QDialog):
         self.launch_at_login = QCheckBox("Launch automatically when I sign in")
         self.launch_at_login.setChecked(settings.launch_at_login)
         self.launch_at_login.setEnabled(sys.platform == "darwin")
+        self.keep_running_on_close = QCheckBox(
+            "Keep reading in the background when the control window closes"
+        )
+        self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
@@ -275,6 +283,7 @@ class SettingsDialog(QDialog):
         form.addRow("Advance delay", self.auto_advance_delay)
         form.addRow("Startup readiness", self.warm_up_voices)
         form.addRow("macOS startup", self.launch_at_login)
+        form.addRow("Closing the window", self.keep_running_on_close)
         form.addRow("XTTS license", self.xtts_terms)
 
         note = QLabel(
@@ -448,6 +457,7 @@ class SettingsDialog(QDialog):
                 "auto_advance_delay_ms": self.auto_advance_delay.value(),
                 "warm_up_voices": self.warm_up_voices.isChecked(),
                 "launch_at_login": self.launch_at_login.isChecked(),
+                "keep_running_on_close": self.keep_running_on_close.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
             }
         )
@@ -500,8 +510,11 @@ class TrayApplication(QObject):
         self.calibration_overlay = None
         self.onboarding_wizard = None
         self.diagnostics_dialog = None
+        self.readiness_dialog = None
+        self.support_dialog = None
         self.onboarding_cancel_event = Event()
         self.pending_unknown_speaker = None
+        self.dashboard = ControlDashboard(self.settings)
 
         self.tray = QSystemTrayIcon(self._application_icon(), application)
         self.menu = QMenu()
@@ -510,6 +523,7 @@ class TrayApplication(QObject):
         self.dialog_action = QAction("No dialog detected")
         self.dialog_action.setEnabled(False)
         self.read_action = QAction("Read current dialog")
+        self.show_dashboard_action = QAction("Open control window")
         self.live_action = QAction("Start live reading")
         self.auto_advance_action = QAction("Auto advance dialogue")
         self.auto_advance_action.setCheckable(True)
@@ -528,10 +542,9 @@ class TrayApplication(QObject):
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.voice_preview_action = QAction("Preview voices...")
-        self.speaker_mapping_action = QAction("Map detected speaker...")
-        self.speaker_mapping_action.setVisible(False)
+        self.speaker_mapping_action = QAction("Manage character voices...")
         self.history_action = QAction("Dialogue history...")
-        self.support_action = QAction("Export support bundle...")
+        self.support_action = QAction("Diagnostics and logs...")
         self.macos_permissions_action = QAction("macOS permissions...")
         self.macos_permissions_action.setVisible(sys.platform == "darwin")
         self.settings_folder_action = QAction("Open settings folder")
@@ -545,6 +558,7 @@ class TrayApplication(QObject):
         self.clear_queue_action.setEnabled(False)
         self.emergency_stop_action.setEnabled(False)
         self.voice_preview_action.setEnabled(False)
+        self.menu.addAction(self.show_dashboard_action)
         self.menu.addAction(self.status_action)
         self.menu.addAction(self.dialog_action)
         self.menu.addSeparator()
@@ -577,6 +591,7 @@ class TrayApplication(QObject):
         self.tray.setToolTip(application_name)
 
         self.read_action.triggered.connect(self.read_once)
+        self.show_dashboard_action.triggered.connect(self.show_dashboard)
         self.live_action.triggered.connect(self.toggle_live)
         self.auto_advance_action.toggled.connect(self.toggle_auto_advance)
         self.pause_action.triggered.connect(self.toggle_speech_pause)
@@ -595,7 +610,7 @@ class TrayApplication(QObject):
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
         self.speaker_mapping_action.triggered.connect(self.open_speaker_mapping)
         self.history_action.triggered.connect(self.open_history)
-        self.support_action.triggered.connect(self.export_support_bundle)
+        self.support_action.triggered.connect(self.open_support_center)
         self.macos_permissions_action.triggered.connect(self.open_macos_permissions)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
         self.quit_action.triggered.connect(self.application.quit)
@@ -605,17 +620,36 @@ class TrayApplication(QObject):
         self.signals.live_changed.connect(self.set_live)
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
+        self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
         self.signals.support_export_finished.connect(self.support_export_finished)
         self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
         self.application.aboutToQuit.connect(self.shutdown)
+        self.dashboard.read_requested.connect(self.read_once)
+        self.dashboard.live_requested.connect(self.toggle_live)
+        self.dashboard.pause_requested.connect(self.toggle_speech_pause)
+        self.dashboard.skip_requested.connect(self.skip_current_speech)
+        self.dashboard.repeat_requested.connect(self.repeat_last_speech)
+        self.dashboard.stop_requested.connect(self.emergency_stop)
+        self.dashboard.readiness_requested.connect(self.open_readiness)
+        self.dashboard.calibration_requested.connect(self.calibrate)
+        self.dashboard.voices_requested.connect(self.open_speaker_mapping)
+        self.dashboard.diagnostics_requested.connect(self.open_support_center)
+        self.dashboard.settings_requested.connect(self.open_settings)
+        self.dashboard.quit_requested.connect(self.application.quit)
+        self.dashboard.hidden_to_background.connect(self.notify_background_mode)
 
     def _application_icon(self):
         return create_application_icon(self.application.style())
 
     def start(self):
-        self.tray.show()
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.show()
+        else:
+            self.settings = self.settings.updated(keep_running_on_close=False)
+            self.dashboard.set_configuration(self.settings)
+        self.show_dashboard()
         if self.settings.launch_at_login:
             try:
                 configure_macos_launch_at_login(True)
@@ -641,9 +675,9 @@ class TrayApplication(QObject):
             self.support_log.add(
                 "warning",
                 "Global hotkeys are disabled on macOS because the current native "
-                "listener is unstable. Use the menu bar controls.",
+                "listener is unstable. Use the control window.",
             )
-            self.set_status("Ready; use menu bar controls (macOS hotkeys disabled)")
+            self.set_status("Ready; use the control window (macOS hotkeys disabled)")
             return
         try:
             self.start_hotkeys()
@@ -718,7 +752,19 @@ class TrayApplication(QObject):
         except WindowCaptureError as error:
             self.show_error(str(error))
             return
-        self.calibration_overlay = show_calibration_overlay(geometry)
+        self.dashboard.hide()
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.hide()
+        QTimer.singleShot(200, lambda: self._open_calibration_overlay(geometry))
+
+    def _open_calibration_overlay(self, geometry):
+        try:
+            self.calibration_overlay = show_calibration_overlay(geometry)
+        except Exception as error:
+            self.show_dashboard()
+            self.show_error(f"Unable to capture a calibration preview: {error}")
+            return
+        self.calibration_overlay.closed.connect(self.show_dashboard)
         if self.settings.active_profile_id:
             self.calibration_overlay.selected.connect(self.update_profile_region)
 
@@ -731,7 +777,6 @@ class TrayApplication(QObject):
         if self.diagnostics_dialog is None:
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
-            self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
         self.diagnostics_dialog.set_permission_warnings(macos_permission_warnings())
         snapshot = self.controller.get_latest_diagnostic()
         if snapshot is not None:
@@ -771,6 +816,7 @@ class TrayApplication(QObject):
         Thread(target=inspect, daemon=True).start()
 
     def update_diagnostics_snapshot(self, snapshot):
+        self.dashboard.set_diagnostic(snapshot)
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_snapshot(snapshot)
             self.diagnostics_dialog.restore_after_capture()
@@ -829,21 +875,22 @@ class TrayApplication(QObject):
 
         def run_test():
             self.controller.apply_settings(settings)
-            try:
-                self.controller.model_assets.download(
-                    settings.tts_model,
-                    progress=self.signals.onboarding_test_progress.emit,
-                    cancel_event=self.onboarding_cancel_event,
-                )
-            except ModelDownloadCancelled as error:
-                self.signals.onboarding_test_finished.emit(False, str(error))
-                return
-            except Exception as error:
-                self.signals.onboarding_test_finished.emit(
-                    False,
-                    f"Model download or verification failed: {error}",
-                )
-                return
+            if settings.speech_backend == "coqui-xtts":
+                try:
+                    self.controller.model_assets.download(
+                        settings.tts_model,
+                        progress=self.signals.onboarding_test_progress.emit,
+                        cancel_event=self.onboarding_cancel_event,
+                    )
+                except ModelDownloadCancelled as error:
+                    self.signals.onboarding_test_finished.emit(False, str(error))
+                    return
+                except Exception as error:
+                    self.signals.onboarding_test_finished.emit(
+                        False,
+                        f"Model download or verification failed: {error}",
+                    )
+                    return
             self.last_controller_error = None
             if not self.controller.start():
                 self.signals.onboarding_test_finished.emit(
@@ -885,6 +932,7 @@ class TrayApplication(QObject):
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return
         self.settings = updated_settings
+        self.dashboard.set_configuration(self.settings)
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
         self.auto_advance_action.blockSignals(False)
@@ -893,6 +941,40 @@ class TrayApplication(QObject):
         self.controller.apply_settings(self.settings)
         self.signals.hotkeys_requested.emit()
         self.set_status(f"Settings saved to {path}")
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.update_settings(self.settings)
+
+    def show_dashboard(self):
+        self.dashboard.show()
+        self.dashboard.raise_()
+        self.dashboard.activateWindow()
+
+    def notify_background_mode(self):
+        self.tray.showMessage(
+            application_name,
+            "VNTTS is still running in the background. Use the tray/menu-bar icon "
+            "to reopen it or quit.",
+            QSystemTrayIcon.MessageIcon.Information,
+        )
+
+    def open_readiness(self):
+        if self.readiness_dialog is None:
+            self.readiness_dialog = ReadinessDialog(
+                self.settings,
+                OnboardingDiagnostics(),
+                self.dashboard,
+            )
+            self.readiness_dialog.settings_requested.connect(self.open_settings)
+            self.readiness_dialog.permissions_requested.connect(
+                self.open_macos_permissions
+            )
+            self.readiness_dialog.calibration_requested.connect(self.calibrate)
+            self.readiness_dialog.voices_requested.connect(self.open_speaker_mapping)
+        else:
+            self.readiness_dialog.update_settings(self.settings)
+        self.readiness_dialog.show()
+        self.readiness_dialog.raise_()
+        self.readiness_dialog.activateWindow()
 
     def open_profiles(self):
         dialog = GameProfilesDialog(
@@ -960,8 +1042,7 @@ class TrayApplication(QObject):
 
     def offer_speaker_mapping(self, speaker):
         self.pending_unknown_speaker = speaker
-        self.speaker_mapping_action.setText(f"Map voice for {speaker}...")
-        self.speaker_mapping_action.setVisible(True)
+        self.speaker_mapping_action.setText(f"Manage voice for {speaker}...")
         self.tray.showMessage(
             "Character voice not mapped",
             f"{speaker} is using the narrator voice. Open the tray menu to map it.",
@@ -972,16 +1053,62 @@ class TrayApplication(QObject):
         try:
             dialogue_index, bank_index = load_audition_data()
         except Exception as error:
-            self.show_error(
-                f"Unable to open voice mapping: {error}. Run the Reverse: 1999 "
-                "index and config commands first."
+            answer = QMessageBox.question(
+                self.dashboard,
+                "Voice index required",
+                f"Voice mapping data is not available yet: {error}\n\n"
+                "Scan the installed Reverse: 1999 audio and configuration now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.run_reverse1999_scan()
             return
-        dialog = Reverse1999AuditionDialog(dialogue_index, bank_index)
+        dialog = Reverse1999AuditionDialog(
+            dialogue_index, bank_index, parent=self.dashboard
+        )
         if self.pending_unknown_speaker:
             dialog.search.setText(self.pending_unknown_speaker)
             dialog.speaker_name.setText(self.pending_unknown_speaker)
+        dialog.voice_imported.connect(self.voice_imported)
         dialog.exec()
+
+    def run_reverse1999_scan(self):
+        self.set_status("Scanning installed Reverse: 1999 voices and dialogue...")
+
+        def scan():
+            try:
+                from vntts.reverse1999_batch import new_state, scan_installed_game
+
+                scan_installed_game(new_state())
+                load_audition_data()
+            except Exception as error:
+                self.signals.error_reported.emit(
+                    f"Unable to scan Reverse: 1999: {error}"
+                )
+                return
+            self.signals.status_changed.emit(
+                "Voice scan complete; open Manage voices again"
+            )
+
+        Thread(target=scan, daemon=True).start()
+
+    def voice_imported(self, manifest):
+        self.settings = self.settings.updated(voice_manifest=manifest)
+        self.settings.save()
+        self.dashboard.set_configuration(self.settings)
+        self.set_status("Voice imported; restart VNTTS to load the updated voice pack")
+
+    def open_support_center(self):
+        if self.support_dialog is None:
+            self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
+            self.support_dialog.diagnostics_requested.connect(self.open_diagnostics)
+            self.support_dialog.export_requested.connect(self.export_support_bundle)
+            self.support_dialog.settings_folder_requested.connect(
+                self.open_settings_folder
+            )
+        self.support_dialog.show()
+        self.support_dialog.raise_()
+        self.support_dialog.activateWindow()
 
     def open_history(self):
         dialog = DialogueHistoryDialog(
@@ -1038,12 +1165,15 @@ class TrayApplication(QObject):
         self.support_log.add("status", message)
         self.status_action.setText(message)
         self.tray.setToolTip(f"{application_name}\n{message}")
+        self.dashboard.set_status(message)
 
     def set_dialog(self, character, text):
         if not text:
             self.dialog_action.setText("No dialog detected")
+            self.dashboard.set_dialogue(character, "")
             return
         self.dialog_action.setText(f"{character}: {text}")
+        self.dashboard.set_dialogue(character, text)
 
     def set_ready(self, ready):
         self.read_action.setEnabled(ready)
@@ -1054,6 +1184,7 @@ class TrayApplication(QObject):
         self.clear_queue_action.setEnabled(ready)
         self.emergency_stop_action.setEnabled(ready)
         self.voice_preview_action.setEnabled(ready)
+        self.dashboard.set_ready(ready)
         if not ready:
             self.set_status("Unable to start")
 
@@ -1061,9 +1192,11 @@ class TrayApplication(QObject):
         self.live_action.setText(
             "Stop live reading" if running else "Start live reading"
         )
+        self.dashboard.set_live(running)
 
     def set_speech_paused(self, paused):
         self.pause_action.setText("Resume speech" if paused else "Pause speech")
+        self.dashboard.set_paused(paused)
 
     def show_error(self, message):
         self.support_log.add("error", message)
@@ -1080,6 +1213,9 @@ class TrayApplication(QObject):
         self.signals.error_reported.emit(message)
 
     def shutdown(self):
+        self.dashboard.keep_running_on_close = False
+        self.dashboard._quitting = True
+        self.dashboard.close()
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.close()
         if self.hotkey_listener is not None:
@@ -1125,10 +1261,6 @@ def main(argv=None):
     application = QApplication.instance() or QApplication(application_arguments)
     application.setApplicationName(application_name)
     application.setQuitOnLastWindowClosed(False)
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        QMessageBox.critical(None, application_name, "The system tray is unavailable.")
-        return 1
-
     tray_application = TrayApplication(application)
     tray_application.start()
     return application.exec()

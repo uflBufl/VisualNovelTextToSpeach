@@ -147,6 +147,9 @@ def sanitize_diagnostic(snapshot):
         "capture_interval_ms": snapshot.capture_interval_ms,
         "game_focused": snapshot.game_focused,
         "automatic_correction_count": len(snapshot.corrections),
+        "speech_queue_depth": snapshot.speech_queue_depth,
+        "max_speech_queue_depth": snapshot.max_speech_queue_depth,
+        "last_first_audio_ms": snapshot.last_first_audio_ms,
     }
 
 

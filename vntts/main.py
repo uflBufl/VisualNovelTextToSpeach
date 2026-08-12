@@ -1483,16 +1483,24 @@ class AppController:
             self.status_handler("Game focus lost; pending speech and input cancelled")
 
     def _publish_diagnostic(self, snapshot):
+        pipeline_metrics = self.get_live_pipeline_metrics()
         snapshot = replace(
             snapshot,
             capture_interval_ms=self.capture_interval_ms,
             game_focused=self.game_focused,
+            speech_queue_depth=(
+                pipeline_metrics.speech_queue_depth if pipeline_metrics else 0
+            ),
+            max_speech_queue_depth=(
+                pipeline_metrics.max_speech_queue_depth if pipeline_metrics else 0
+            ),
         )
         if self.tts is not None:
             snapshot = replace(
                 snapshot,
                 synthesis_ms=getattr(self.tts, "last_synthesis_ms", None),
                 playback_ms=getattr(self.tts, "last_playback_ms", None),
+                last_first_audio_ms=getattr(self.tts, "last_first_audio_ms", None),
             )
         with self.diagnostic_lock:
             self.last_diagnostic = snapshot
@@ -1537,9 +1545,7 @@ class AppController:
                     if underflowed
                     else "Audio playback stable; live speech prefetch restored"
                 )
-            first_audio_ms = getattr(
-                self.speech_backend, "last_first_audio_ms", None
-            )
+            first_audio_ms = getattr(self.speech_backend, "last_first_audio_ms", None)
             if isinstance(first_audio_ms, (int, float)) and not isinstance(
                 first_audio_ms, bool
             ):

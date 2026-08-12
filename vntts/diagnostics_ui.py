@@ -42,6 +42,8 @@ class DiagnosticsDialog(QDialog):
         self.synthesis_latency = QLabel("-")
         self.playback_latency = QLabel("-")
         self.capture_interval = QLabel("-")
+        self.first_audio = QLabel("-")
+        self.queue_depth = QLabel("0")
         self.game_focus = QLabel("-")
         self.choice_detected = QLabel("-")
         self.corrections = QLabel("None")
@@ -58,6 +60,8 @@ class DiagnosticsDialog(QDialog):
         details.addRow("Synthesis latency", self.synthesis_latency)
         details.addRow("Playback latency", self.playback_latency)
         details.addRow("Capture interval", self.capture_interval)
+        details.addRow("First audio", self.first_audio)
+        details.addRow("Speech queue", self.queue_depth)
         details.addRow("Game focused", self.game_focus)
         details.addRow("Choice menu", self.choice_detected)
         details.addRow("OCR corrections", self.corrections)
@@ -126,6 +130,11 @@ class DiagnosticsDialog(QDialog):
         self.playback_latency.setText(self._format_latency(snapshot.playback_ms))
         self.capture_interval.setText(
             self._format_latency(snapshot.capture_interval_ms)
+        )
+        self.first_audio.setText(self._format_latency(snapshot.last_first_audio_ms))
+        self.queue_depth.setText(
+            f"{snapshot.speech_queue_depth} pending "
+            f"(session peak {snapshot.max_speech_queue_depth})"
         )
         self.game_focus.setText(
             "-"

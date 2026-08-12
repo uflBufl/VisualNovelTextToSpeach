@@ -4,6 +4,10 @@ from pathlib import Path
 from vntts.assets import ModelAssetManager
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
+from vntts.speech_backend import (
+    activate_chatterbox_runtime,
+    activate_pocket_tts_runtime,
+)
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -119,6 +123,21 @@ class OnboardingDiagnostics:
         return DiagnosticResult("Audio output", "ok", str(device))
 
     def _check_model(self, settings):
+        isolated_runtime = {
+            "pocket-tts": ("Pocket TTS runtime", activate_pocket_tts_runtime),
+            "chatterbox-nano": (
+                "Chatterbox Nano runtime",
+                activate_chatterbox_runtime,
+            ),
+        }.get(settings.speech_backend)
+        if isolated_runtime is not None:
+            name, probe = isolated_runtime
+            try:
+                runtime = probe()
+            except Exception as error:
+                return DiagnosticResult(name, "error", str(error))
+            return DiagnosticResult(name, "ok", f"Installed at {runtime}")
+
         model_name = settings.tts_model
         if not model_name:
             return DiagnosticResult("Speech model", "error", "No model configured")

@@ -75,7 +75,9 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
             permission_status_provider=granted_permissions,
         )
 
-        results = diagnostics.run(AppSettings(tts_model="xtts_v2"))
+        results = diagnostics.run(
+            AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
+        )
         errors = {
             result.name: result.message for result in results if not result.passed
         }
@@ -170,10 +172,13 @@ class OnboardingWizardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_new_setup_defaults_to_window_capture_and_xtts(self):
+    def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):
         wizard = OnboardingWizard(AppSettings())
 
         self.assertEqual(wizard.configuration_page.capture_mode.currentData(), "window")
+        self.assertEqual(
+            wizard.configuration_page.speech_backend.currentData(), "pocket-tts"
+        )
         self.assertIn("xtts", wizard.configuration_page.tts_model.text())
         self.assertEqual(wizard.configuration_page.tts_language.text(), "en")
         self.assertEqual(
@@ -208,7 +213,7 @@ class OnboardingWizardTest(unittest.TestCase):
         )
         wizard.deleteLater()
 
-    def test_calibration_overlay_is_shown_before_wizard_is_hidden(self):
+    def test_calibration_hides_wizard_before_frozen_overlay_capture(self):
         target = Mock()
         target.get_geometry.return_value = WindowGeometry(0, 0, 1000, 600)
         with TemporaryDirectory() as temporary_directory:
@@ -223,17 +228,20 @@ class OnboardingWizardTest(unittest.TestCase):
                 Path(temporary_directory) / "region.json",
                 platform="darwin",
             )
-            wizard.show()
-            self.application.processEvents()
 
             def show_overlay(_geometry):
-                self.assertTrue(wizard.isVisible())
                 overlay.show()
                 return overlay
 
-            with patch(
-                "vntts.onboarding_ui.show_calibration_overlay",
-                side_effect=show_overlay,
+            with (
+                patch(
+                    "vntts.onboarding_ui.show_calibration_overlay",
+                    side_effect=show_overlay,
+                ),
+                patch(
+                    "vntts.onboarding_ui.QTimer.singleShot",
+                    side_effect=lambda _delay, callback: callback(),
+                ),
             ):
                 wizard.calibration_page.calibrate()
 

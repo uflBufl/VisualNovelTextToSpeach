@@ -49,7 +49,9 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.clear_queue_action.text(),
             "Clear speech queue",
         )
-        self.assertEqual(tray_application.emergency_stop_action.text(), "Emergency stop")
+        self.assertEqual(
+            tray_application.emergency_stop_action.text(), "Emergency stop"
+        )
         self.assertEqual(
             tray_application.calibrate_action.text(),
             "Calibrate dialog region",
@@ -72,14 +74,14 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
-        self.assertFalse(tray_application.speaker_mapping_action.isVisible())
+        self.assertTrue(tray_application.speaker_mapping_action.isVisible())
         self.assertEqual(
             tray_application.voice_preview_action.text(), "Preview voices..."
         )
         self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
         self.assertEqual(
             tray_application.support_action.text(),
-            "Export support bundle...",
+            "Diagnostics and logs...",
         )
         self.assertEqual(
             tray_application.macos_permissions_action.text(),
@@ -105,7 +107,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertTrue(tray_application.speaker_mapping_action.isVisible())
         self.assertEqual(
-            tray_application.speaker_mapping_action.text(), "Map voice for Selone..."
+            tray_application.speaker_mapping_action.text(), "Manage voice for Selone..."
         )
         self.assertIn("narrator voice", notification.call_args.args[1])
         tray_application.shutdown()
@@ -598,7 +600,13 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        with patch("vntts.app.show_calibration_overlay") as show_overlay:
+        with (
+            patch("vntts.app.show_calibration_overlay") as show_overlay,
+            patch(
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, callback: callback(),
+            ),
+        ):
             tray_application.calibrate()
 
         show_overlay.assert_called_once_with(geometry)
@@ -718,7 +726,9 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(AppSettings())
+            tray_application.run_onboarding_test(
+                AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
+            )
 
         controller.apply_settings.assert_called_once()
         controller.model_assets.download.assert_called_once()

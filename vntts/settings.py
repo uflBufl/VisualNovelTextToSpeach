@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 13
+settings_schema_version = 14
 
 
 def get_config_directory(*, environment=None, platform=None, home=None):
@@ -88,6 +88,7 @@ class AppSettings:
     speech_rate_percent: int = 100
     warm_up_voices: bool = False
     launch_at_login: bool = False
+    keep_running_on_close: bool = False
     voice_manifest: str | None = None
     narrator_speaker: str | None = None
     active_profile_id: str | None = None
@@ -141,6 +142,7 @@ class AppSettings:
             "retain_uncertain_frames",
             "warm_up_voices",
             "launch_at_login",
+            "keep_running_on_close",
             "auto_advance_enabled",
         )
 
