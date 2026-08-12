@@ -33,9 +33,7 @@ def load_index(path, label):
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
-        raise Reverse1999AuditionError(
-            f"{label} does not exist: {path}"
-        ) from error
+        raise Reverse1999AuditionError(f"{label} does not exist: {path}") from error
     except (OSError, json.JSONDecodeError) as error:
         raise Reverse1999AuditionError(f"Unable to read {label}: {error}") from error
     if not isinstance(document, dict):
@@ -197,4 +195,52 @@ def load_audition_data(
     return (
         load_index(dialogue_index, "Dialogue index"),
         load_index(bank_index, "Bank index"),
+    )
+
+
+def load_speaker_mappings(path=default_mapping_path):
+    path = Path(path).expanduser().resolve()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except (OSError, json.JSONDecodeError) as error:
+        raise Reverse1999AuditionError(f"Unable to read speaker mappings: {error}")
+    mappings = document.get("mappings", [])
+    if document.get("version") != 1 or not isinstance(mappings, list):
+        raise Reverse1999AuditionError("Speaker mapping file has an unsupported format")
+    return tuple(item for item in mappings if isinstance(item, dict))
+
+
+def voice_coverage(dialogue_index, mappings=()):
+    mapped_ids = {str(item.get("npc_id", "")) for item in mappings}
+    mapped_names = {
+        str(item.get("display_name", "")).strip().casefold() for item in mappings
+    }
+    speakers = {}
+    for row in dialogue_index.get("dialogue", []):
+        speaker_id = str(row.get("speaker_id", "")).strip()
+        name = str(row.get("speaker_name") or "").strip()
+        key = speaker_id or name.casefold()
+        if not key:
+            continue
+        item = speakers.setdefault(
+            key,
+            {
+                "speaker_id": speaker_id,
+                "speaker_name": name or None,
+                "dialogue_count": 0,
+                "mapped": False,
+            },
+        )
+        item["dialogue_count"] += 1
+        item["mapped"] = speaker_id in mapped_ids or name.casefold() in mapped_names
+    return tuple(
+        sorted(
+            speakers.values(),
+            key=lambda item: (
+                item["mapped"],
+                (item["speaker_name"] or item["speaker_id"]).casefold(),
+            ),
+        )
     )

@@ -14,6 +14,7 @@ from vntts.reverse1999_audition import (  # noqa: E402
     chapter_tokens,
     filter_dialogue,
     save_speaker_mapping,
+    voice_coverage,
 )
 from vntts.reverse1999_audition_ui import Reverse1999AuditionDialog  # noqa: E402
 from vntts.voice_reference_quality import VoiceReferenceMetrics  # noqa: E402
@@ -23,6 +24,16 @@ class Reverse1999AuditionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.application.processEvents()
+
+    def tearDown(self):
+        for widget in self.application.topLevelWidgets():
+            if isinstance(widget, Reverse1999AuditionDialog):
+                widget.close()
+                widget.deleteLater()
+        self.application.processEvents()
 
     def test_filters_dialogue_by_chapter_and_selone_mention(self):
         dialogue = [
@@ -68,12 +79,8 @@ class Reverse1999AuditionTest(unittest.TestCase):
     def test_saves_mapping_atomically_and_replaces_same_speaker(self):
         with TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "mappings.json"
-            save_speaker_mapping(
-                "Selone", "624901", "part01.bnk", "24006", path=output
-            )
-            save_speaker_mapping(
-                "Selone", "624901", "part02.bnk", "24007", path=output
-            )
+            save_speaker_mapping("Selone", "624901", "part01.bnk", "24006", path=output)
+            save_speaker_mapping("Selone", "624901", "part02.bnk", "24007", path=output)
             document = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(
@@ -87,6 +94,24 @@ class Reverse1999AuditionTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_voice_coverage_prioritizes_unmapped_speakers(self):
+        index = {
+            "dialogue": [
+                {"speaker_id": "1", "speaker_name": "Kamuta"},
+                {"speaker_id": "1", "speaker_name": "Kamuta"},
+                {"speaker_id": "2", "speaker_name": "Selone"},
+            ]
+        }
+
+        coverage = voice_coverage(
+            index,
+            [{"display_name": "Kamuta", "npc_id": "1"}],
+        )
+
+        self.assertEqual(coverage[0]["speaker_name"], "Selone")
+        self.assertFalse(coverage[0]["mapped"])
+        self.assertEqual(coverage[1]["dialogue_count"], 2)
 
     def test_dialog_selects_chapter_candidates_and_prefills_npc_id(self):
         dialogue_index = {
@@ -113,8 +138,15 @@ class Reverse1999AuditionTest(unittest.TestCase):
         }
         dialog = Reverse1999AuditionDialog(dialogue_index, bank_index)
         dialog.search.setText("Selone")
-        dialog.dialogue.selectRow(0)
-        self.application.processEvents()
+        dialog.speaker_name.setText("Selone")
+        dialog.npc_id.setText("624901")
+        dialog.candidates = candidate_banks(
+            bank_index, chapter="24006", speaker_id="310918"
+        )
+        for candidate in dialog.candidates:
+            dialog.banks.addItem(candidate.filename)
+        dialog.banks.setCurrentRow(0)
+        dialog.bank_selected(0)
 
         self.assertEqual(dialog.banks.count(), 1)
         self.assertEqual(dialog.npc_id.text(), "624901")
@@ -162,13 +194,19 @@ class Reverse1999AuditionTest(unittest.TestCase):
             bank_index,
             clip_preparer=lambda _bank, _media_id: Path("/cache/42.wav"),
             quality_analyzer=lambda _path: metrics,
-            review_recorder=lambda reviewed, **metadata: recorded.append(
-                (reviewed, metadata)
-            )
-            or Path("/reviews.json"),
+            review_recorder=lambda reviewed, **metadata: (
+                recorded.append((reviewed, metadata)) or Path("/reviews.json")
+            ),
         )
-        dialog.dialogue.selectRow(0)
-        self.application.processEvents()
+        dialog.speaker_name.setText("Selone")
+        dialog.npc_id.setText("521001")
+        dialog.candidates = candidate_banks(
+            bank_index, chapter="24006", speaker_id="521001"
+        )
+        for candidate in dialog.candidates:
+            dialog.banks.addItem(candidate.filename)
+        dialog.banks.setCurrentRow(0)
+        dialog.bank_selected(0)
         dialog.player = Mock()
         dialog.play_clip()
         dialog.music_or_sfx.setCurrentIndex(1)
@@ -181,6 +219,86 @@ class Reverse1999AuditionTest(unittest.TestCase):
         self.assertEqual(recorded[0][1]["media_id"], 42)
         self.assertIn("approved", dialog.status.text())
         dialog.deleteLater()
+
+    def test_approved_clip_can_be_imported_into_voice_manifest(self):
+        dialogue_index = {
+            "dialogue": [
+                {
+                    "chapter": "24006",
+                    "sequence": 1,
+                    "speaker_id": "520513",
+                    "speaker_name": "Selone",
+                    "text": "I have returned.",
+                }
+            ]
+        }
+        bank_index = {
+            "game_audio_directory": "/game",
+            "banks": [
+                {
+                    "path": "selone.bnk",
+                    "filename": "selone.bnk",
+                    "npc_ids": ["520513"],
+                    "events": [{"media_ids": [42]}],
+                }
+            ],
+        }
+        metrics = VoiceReferenceMetrics(
+            path="/cache/42.wav",
+            duration_seconds=5.0,
+            peak_dbfs=-2.0,
+            rms_dbfs=-18.0,
+            silence_ratio=0.1,
+            leading_silence_seconds=0.1,
+            trailing_silence_seconds=0.1,
+            clipping_ratio=0.0,
+            quality_score=100,
+            technical_flags=(),
+        )
+        imported = []
+        with TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "42.wav"
+            source.write_bytes(b"voice")
+            metrics = metrics.__class__(**{**metrics.__dict__, "path": str(source)})
+            dialog = Reverse1999AuditionDialog(
+                dialogue_index,
+                bank_index,
+                clip_preparer=lambda _bank, _media_id: source,
+                quality_analyzer=lambda _path: metrics,
+                review_recorder=lambda reviewed, **metadata: (
+                    Path(temporary_directory) / "reviews.json"
+                ),
+                mapping_loader=lambda: (),
+                voice_output=Path(temporary_directory) / "voice-pack",
+                reference_processor=lambda input_path, output_path: (
+                    output_path.write_bytes(input_path.read_bytes())
+                ),
+                manifest_updater=lambda directory, character, references, bank: (
+                    imported.append((directory, character, references, bank))
+                    or directory / "manifest.json"
+                ),
+            )
+            dialog.speaker_name.setText("Selone")
+            dialog.npc_id.setText("520513")
+            dialog.candidates = candidate_banks(
+                bank_index, chapter="24006", speaker_id="520513"
+            )
+            for candidate in dialog.candidates:
+                dialog.banks.addItem(candidate.filename)
+            dialog.banks.setCurrentRow(0)
+            dialog.bank_selected(0)
+            dialog.player = Mock()
+            dialog.play_clip()
+            dialog.music_or_sfx.setCurrentIndex(1)
+            dialog.multiple_speakers.setCurrentIndex(1)
+            dialog.save_clip_review()
+
+            dialog.import_voice()
+
+            self.assertEqual(imported[0][1], "Selone")
+            self.assertEqual(imported[0][2][0].bank, "selone.bnk")
+            self.assertIn("Imported Selone", dialog.status.text())
+            dialog.deleteLater()
 
 
 if __name__ == "__main__":

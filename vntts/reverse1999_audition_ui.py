@@ -1,8 +1,9 @@
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,17 +30,27 @@ from vntts.reverse1999_audition import (
     default_dialogue_index,
     filter_dialogue,
     load_audition_data,
+    load_speaker_mappings,
     prepare_audition_clip,
     save_speaker_mapping,
+    voice_coverage,
+)
+from vntts.reverse1999_voice_import import (
+    ImportedReference,
+    default_output,
+    update_manifest,
 )
 from vntts.voice_reference_quality import (
     analyze_voice_reference,
     record_clip_review,
     review_voice_reference,
+    trim_and_normalize_voice_reference,
 )
 
 
 class Reverse1999AuditionDialog(QDialog):
+    voice_imported = Signal(str)
+
     def __init__(
         self,
         dialogue_index,
@@ -49,6 +60,10 @@ class Reverse1999AuditionDialog(QDialog):
         mapping_saver=save_speaker_mapping,
         quality_analyzer=analyze_voice_reference,
         review_recorder=record_clip_review,
+        mapping_loader=load_speaker_mappings,
+        manifest_updater=update_manifest,
+        voice_output=default_output,
+        reference_processor=trim_and_normalize_voice_reference,
         parent=None,
     ):
         super().__init__(parent)
@@ -58,9 +73,13 @@ class Reverse1999AuditionDialog(QDialog):
         self.mapping_saver = mapping_saver
         self.quality_analyzer = quality_analyzer
         self.review_recorder = review_recorder
+        self.mapping_loader = mapping_loader
+        self.manifest_updater = manifest_updater
+        self.voice_output = Path(voice_output).expanduser().resolve()
+        self.reference_processor = reference_processor
         self.candidates = []
         self.current_clip = None
-        self.setWindowTitle("Reverse: 1999 speaker audition")
+        self.setWindowTitle("Reverse: 1999 voice mapping manager")
         self.setMinimumSize(1000, 650)
 
         self.search = QLineEdit()
@@ -80,6 +99,9 @@ class Reverse1999AuditionDialog(QDialog):
         filters.addWidget(self.search, 2)
         filters.addWidget(QLabel("Chapter"))
         filters.addWidget(self.chapter, 1)
+
+        self.coverage = QLabel()
+        self.coverage.setWordWrap(True)
 
         self.dialogue = QTableWidget(0, 4)
         self.dialogue.setHorizontalHeaderLabels(
@@ -119,6 +141,10 @@ class Reverse1999AuditionDialog(QDialog):
         review_form.addRow("Music / SFX", self.music_or_sfx)
         review_form.addRow("Speakers", self.multiple_speakers)
         review_form.addRow("", self.save_review_button)
+        self.import_button = QPushButton("Import reviewed clip as character voice")
+        self.import_button.setEnabled(False)
+        self.import_button.clicked.connect(self.import_voice)
+        review_form.addRow("", self.import_button)
 
         bank_panel = QWidget()
         bank_layout = QVBoxLayout(bank_panel)
@@ -155,6 +181,7 @@ class Reverse1999AuditionDialog(QDialog):
         buttons.rejected.connect(self.close)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.coverage)
         layout.addLayout(filters)
         layout.addWidget(splitter, 1)
         layout.addLayout(mapping)
@@ -164,7 +191,21 @@ class Reverse1999AuditionDialog(QDialog):
         self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio_output)
+        self.current_review = None
+        self.refresh_coverage()
         self.refresh_dialogue()
+
+    def refresh_coverage(self):
+        mappings = self.mapping_loader()
+        coverage = voice_coverage(self.dialogue_index, mappings)
+        mapped = sum(item["mapped"] for item in coverage)
+        named = sum(bool(item["speaker_name"]) for item in coverage)
+        unresolved = len(coverage) - mapped
+        self.coverage.setText(
+            f"Assisted mappings: {mapped}/{len(coverage)} detected speaker IDs; "
+            f"{named} have names; {unresolved} still need review. Search by a name, "
+            "NPC ID, or dialogue, then preview and import a clean clip."
+        )
 
     def refresh_dialogue(self):
         rows = filter_dialogue(
@@ -189,6 +230,8 @@ class Reverse1999AuditionDialog(QDialog):
         self.banks.clear()
         self.media.clear()
         self.current_clip = None
+        self.current_review = None
+        self.import_button.setEnabled(False)
 
     def dialogue_selected(self):
         selected = self.dialogue.selectedItems()
@@ -216,6 +259,8 @@ class Reverse1999AuditionDialog(QDialog):
     def bank_selected(self, index):
         self.media.clear()
         self.current_clip = None
+        self.current_review = None
+        self.import_button.setEnabled(False)
         self.quality.setText("Play a clip to calculate its technical score.")
         self.music_or_sfx.setCurrentIndex(0)
         self.multiple_speakers.setCurrentIndex(0)
@@ -289,7 +334,57 @@ class Reverse1999AuditionDialog(QDialog):
             self.status.setText(f"Unable to save clip review: {error}")
             return
         decision = "approved" if reviewed.approved else "rejected"
+        self.current_review = reviewed
+        self.import_button.setEnabled(reviewed.approved)
         self.status.setText(f"Clip {decision}; saved review to {path}")
+
+    def import_voice(self):
+        if self.current_clip is None or self.current_review is None:
+            self.status.setText("Review and approve a clip before importing it.")
+            return
+        if not self.current_review.approved:
+            self.status.setText(
+                "Only an approved clean single-speaker clip can be imported."
+            )
+            return
+        character = self.speaker_name.text().strip()
+        if not character:
+            self.status.setText("Enter the in-game speaker name first.")
+            return
+        candidate, media_id, output, metrics = self.current_clip
+        if Path(output).resolve() != Path(metrics.path).resolve():
+            self.status.setText(
+                "The reviewed clip no longer matches the selected audio."
+            )
+            return
+        destination = (
+            self.voice_output
+            / "references"
+            / (f"{character.casefold().replace(' ', '-')}-{media_id}.wav")
+        )
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            self.reference_processor(output, destination)
+            imported = ImportedReference(
+                path=destination,
+                media_id=int(media_id),
+                source_sha256=hashlib.sha256(Path(output).read_bytes()).hexdigest(),
+                reference_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+                bank=candidate.filename,
+            )
+            manifest = self.manifest_updater(
+                self.voice_output,
+                character,
+                [imported],
+                Path(candidate.filename),
+            )
+        except Exception as error:
+            self.status.setText(f"Unable to import voice: {error}")
+            return
+        self.voice_imported.emit(str(manifest))
+        self.status.setText(
+            f"Imported {character} into {manifest}. Restart speech to load it."
+        )
 
     def save_mapping(self):
         candidate = self.selected_bank()
@@ -309,6 +404,7 @@ class Reverse1999AuditionDialog(QDialog):
             self.status.setText(f"Unable to save mapping: {error}")
             return
         self.status.setText(f"Saved local speaker mapping to {path}")
+        self.refresh_coverage()
 
 
 def create_parser():
