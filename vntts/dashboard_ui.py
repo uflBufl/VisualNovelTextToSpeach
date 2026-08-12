@@ -4,8 +4,11 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMainWindow,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +36,8 @@ class ControlDashboard(QMainWindow):
         self._live = False
         self.setWindowTitle("Visual Novel Text to Speech")
         self.setMinimumWidth(620)
-        self.resize(720, 430)
+        self.setMinimumHeight(340)
+        self.resize(760, 520)
 
         self.status = QLabel("Starting...")
         self.status.setWordWrap(True)
@@ -45,6 +49,19 @@ class ControlDashboard(QMainWindow):
         self.latency = QLabel("-")
         self.configuration = QLabel()
         self.configuration.setWordWrap(True)
+        self.configuration.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.configuration.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.configuration.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.configuration.setMinimumHeight(
+            self.configuration.fontMetrics().lineSpacing() * 3
+        )
         self.dialogue = QLabel("No dialogue detected")
         self.dialogue.setWordWrap(True)
         self.dialogue.setMinimumHeight(52)
@@ -108,12 +125,21 @@ class ControlDashboard(QMainWindow):
 
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         layout.addWidget(self.status)
         layout.addLayout(details)
         layout.addWidget(card)
         layout.addLayout(primary)
         layout.addLayout(setup)
-        self.setCentralWidget(central)
+
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.content_scroll.setWidget(central)
+        self.setCentralWidget(self.content_scroll)
         self.set_ready(False)
         self.set_configuration(settings)
 
@@ -125,7 +151,9 @@ class ControlDashboard(QMainWindow):
             else "Calibrated screen region"
         )
         self.configuration.setText(
-            f"{settings.speech_backend}; {capture}; OCR {settings.ocr_language}"
+            f"Backend: {settings.speech_backend}\n"
+            f"Capture: {capture}\n"
+            f"OCR: {settings.ocr_language}"
         )
 
     def set_status(self, message):

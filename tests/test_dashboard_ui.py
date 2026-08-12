@@ -65,6 +65,29 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.close()
         dashboard.deleteLater()
 
+    def test_short_window_scrolls_instead_of_clipping_controls(self):
+        dashboard = ControlDashboard(
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999 with a long window title",
+            )
+        )
+        dashboard.setMinimumHeight(200)
+        dashboard.resize(720, 200)
+        dashboard.show()
+        self.application.processEvents()
+
+        self.assertGreater(dashboard.content_scroll.verticalScrollBar().maximum(), 0)
+        self.assertTrue(dashboard.configuration.text().endswith("OCR: eng"))
+        self.assertGreaterEqual(
+            dashboard.configuration.minimumHeight(),
+            dashboard.configuration.fontMetrics().lineSpacing() * 3,
+        )
+
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
