@@ -178,14 +178,14 @@ class SettingsDialog(QDialog):
         window_layout.addWidget(refresh_windows_button)
         self.tts_model = QLineEdit(settings.tts_model or "")
         self.speech_backend = QComboBox()
+        self.speech_backend.addItem(
+            "Pocket TTS (default streaming)",
+            "pocket-tts",
+        )
         self.speech_backend.addItem("XTTS (compatible)", "coqui-xtts")
         self.speech_backend.addItem(
             "Chatterbox Nano (faster English CPU)",
             "chatterbox-nano",
-        )
-        self.speech_backend.addItem(
-            "Pocket TTS (experimental streaming)",
-            "pocket-tts",
         )
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))

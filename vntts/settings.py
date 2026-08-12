@@ -78,7 +78,7 @@ class AppSettings:
     auto_advance_delay_ms: int = 350
     ocr_minimum_confidence: int = 60
     ocr_language: str = "eng"
-    speech_backend: str = "coqui-xtts"
+    speech_backend: str = "pocket-tts"
     tts_model: str | None = None
     tts_speaker: str | None = None
     tts_language: str | None = None

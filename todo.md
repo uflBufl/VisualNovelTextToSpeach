@@ -5,23 +5,10 @@ sections after their implementation has been verified and committed.
 
 ## Live mode
 
-### P0 - Prototype streaming Pocket TTS
-
-- [ ] Audition Pocket TTS against Chatterbox Nano for Kamuta and Fatutu speaker
-      similarity and artifacts; add Selone to the same comparison when her
-      source recording is available.
-- [ ] Keep Pocket TTS experimental until its voice similarity and 30-minute live
-      soak test pass; only then consider making it the live-mode default.
-
 ### P0 - Import Reverse: 1999 NPC voices
 
 - [ ] Use Selone as the first assisted-import validation case, then apply the
       same workflow to all unresolved story NPCs.
-
-### P1 - Reduce remaining speech latency
-
-- [ ] Evaluate MLX-Audio on Apple Silicon if Pocket TTS voice similarity is not
-      sufficient, and evaluate F5-TTS/TensorRT for the Windows NVIDIA build.
 
 ### P0 - Validate performance and resilience
 

@@ -45,7 +45,10 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.speech_backend, "pocket-tts")
 
-    def test_unknown_speech_backend_uses_xtts(self):
+    def test_pocket_tts_is_the_default_backend(self):
+        self.assertEqual(AppSettings().speech_backend, "pocket-tts")
+
+    def test_unknown_speech_backend_uses_default(self):
         warnings = []
 
         settings = AppSettings.from_mapping(
@@ -53,7 +56,7 @@ class SettingsTest(unittest.TestCase):
             warn=warnings.append,
         )
 
-        self.assertEqual(settings.speech_backend, "coqui-xtts")
+        self.assertEqual(settings.speech_backend, "pocket-tts")
         self.assertTrue(any("speech_backend" in warning for warning in warnings))
 
     def test_windows_paths_use_roaming_settings_and_local_application_data(self):

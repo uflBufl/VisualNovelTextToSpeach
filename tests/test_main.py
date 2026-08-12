@@ -516,7 +516,10 @@ class MainTest(unittest.TestCase):
         with (
             redirect_stdout(output),
             redirect_stderr(errors),
-            patch("vntts.main.load_app_settings", return_value=AppSettings()),
+            patch(
+                "vntts.main.load_app_settings",
+                return_value=AppSettings(speech_backend="coqui-xtts"),
+            ),
             patch("vntts.main.listen_for_hotkeys") as listen_for_hotkeys,
         ):
             result = main(tts_factory)
@@ -587,6 +590,7 @@ class MainTest(unittest.TestCase):
         settings = AppSettings(
             screenshot_directory=str(screenshot_directory),
             warm_up_voices=True,
+            speech_backend="coqui-xtts",
         )
 
         with (
@@ -760,7 +764,10 @@ class MainTest(unittest.TestCase):
             patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
-                AppSettings(warm_up_voices=True),
+                AppSettings(
+                    warm_up_voices=True,
+                    speech_backend="coqui-xtts",
+                ),
                 tts_factory=Mock(return_value=tts),
                 status_handler=statuses.append,
                 error_handler=errors.append,
@@ -1154,6 +1161,7 @@ class MainTest(unittest.TestCase):
         settings = AppSettings(
             tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
             xtts_terms_accepted=True,
+            speech_backend="coqui-xtts",
         )
 
         with (

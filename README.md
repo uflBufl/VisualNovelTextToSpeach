@@ -132,8 +132,8 @@ uv sync --project backends/chatterbox-nano
 
 The first Nano start downloads several gigabytes of model assets.
 
-For experimental streaming speech, install its isolated runtime once, select
-Pocket TTS in Settings, and restart the app:
+Pocket TTS is the default speech engine. Install its isolated runtime once and
+restart the app:
 
 ```sh
 uv sync --project backends/pocket-tts
