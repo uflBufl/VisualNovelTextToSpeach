@@ -1,12 +1,15 @@
 import hashlib
 import json
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from vntts.reverse1999_catalog import (
     Reverse1999CatalogError,
     Reverse1999NpcCatalog,
+    main,
 )
 
 
@@ -75,7 +78,7 @@ class Reverse1999NpcCatalogTest(unittest.TestCase):
 
             self.assertTrue(catalog.validate_reference_files(root))
 
-    def test_shipped_catalog_matches_approved_local_references(self):
+    def test_shipped_catalog_contains_approved_reference_metadata(self):
         catalog = Reverse1999NpcCatalog.load()
 
         self.assertEqual(catalog.version, 1)
@@ -98,7 +101,56 @@ class Reverse1999NpcCatalogTest(unittest.TestCase):
                 "plotvoc_npc529801chapter12_part02.bnk",
             ),
         )
-        self.assertTrue(catalog.validate_reference_files())
+        for npc in catalog.npcs:
+            self.assertTrue(npc.approved_references)
+
+    def test_validation_command_checks_locally_provisioned_references(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            references = root / "references"
+            references.mkdir()
+            reference = references / "kamuta.wav"
+            reference.write_bytes(b"voice")
+            document = catalog_document()
+            document["npcs"][0]["approved_references"][0]["reference_sha256"] = (
+                hashlib.sha256(b"voice").hexdigest()
+            )
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(document), encoding="utf-8")
+            output = StringIO()
+
+            with redirect_stdout(output):
+                result = main(
+                    [
+                        "--catalog",
+                        str(catalog_path),
+                        "--reference-root",
+                        str(root),
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertIn("Validated 1 approved reference", output.getvalue())
+
+    def test_validation_command_reports_missing_local_reference(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog_document()), encoding="utf-8")
+            error = StringIO()
+
+            with redirect_stderr(error):
+                result = main(
+                    [
+                        "--catalog",
+                        str(catalog_path),
+                        "--reference-root",
+                        str(root),
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertIn("Approved reference does not exist", error.getvalue())
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 .idea/
 .ipynb_checkpoints/
 *.egg-info/
 build/
 dist/
 logs/
+/samples/generated_voices/
 /data/reverse1999-voices/

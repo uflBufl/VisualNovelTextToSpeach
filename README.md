@@ -157,10 +157,13 @@ uv run vntts-reverse1999-audition --search Selone
 uv run vntts-reverse1999-batch run
 uv run vntts-reverse1999-voice Kamuta
 uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
+uv run vntts-reverse1999-catalog
 ```
 
 NPC mappings and approved reference metadata are stored in
-`data/reverse1999-npc-catalog.json`.
+`data/reverse1999-npc-catalog.json`. Extracted game audio stays local under
+`data/reverse1999-voices/`; it is not committed. The catalog validation command
+checks those local files against the committed checksums.
 
 Extract or convert game audio directly:
 

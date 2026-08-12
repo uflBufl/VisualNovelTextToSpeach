@@ -4,11 +4,11 @@ from pathlib import Path
 import torch
 from TTS.api import TTS
 
+from vntts.settings import get_local_data_directory
+
 project_root = Path(__file__).resolve().parents[1]
 default_reference = project_root / "samples" / "speakers" / "01.wav"
-default_output = (
-    project_root / "samples" / "generated_voices" / "xtts-reference-clone.wav"
-)
+default_output = get_local_data_directory() / "generated" / "xtts-reference-clone.wav"
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 default_voice_id = "vntts-reference"
 

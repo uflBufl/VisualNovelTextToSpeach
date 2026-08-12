@@ -53,6 +53,7 @@ vntts-reverse1999-config = "vntts.reverse1999_config:main"
 vntts-reverse1999-audition = "vntts.reverse1999_audition_ui:main"
 vntts-audio-score = "vntts.voice_reference_quality:main"
 vntts-reverse1999-batch = "vntts.reverse1999_batch:main"
+vntts-reverse1999-catalog = "vntts.reverse1999_catalog:main"
 vntts-benchmark-ocr = "vntts.ocr_benchmark:main"
 vntts-benchmark-tts = "vntts.tts_benchmark:main"
 

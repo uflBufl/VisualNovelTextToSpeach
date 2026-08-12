@@ -1,6 +1,8 @@
+import argparse
 import hashlib
 import json
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,3 +208,38 @@ class Reverse1999NpcCatalog:
             reference=reference.strip(),
             reference_sha256=reference_sha256,
         )
+
+
+def create_parser():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate locally provisioned Reverse: 1999 voice references against "
+            "the versioned catalog metadata."
+        )
+    )
+    parser.add_argument("--catalog", type=Path, default=default_catalog_path)
+    parser.add_argument(
+        "--reference-root",
+        type=Path,
+        default=project_root / "data",
+        help="Directory used as the base for catalog reference paths.",
+    )
+    return parser
+
+
+def main(arguments=None):
+    arguments = create_parser().parse_args(arguments)
+    try:
+        catalog = Reverse1999NpcCatalog.load(arguments.catalog)
+        catalog.validate_reference_files(arguments.reference_root)
+    except Reverse1999CatalogError as error:
+        print(error, file=sys.stderr)
+        return 1
+    reference_count = sum(len(npc.approved_references) for npc in catalog.npcs)
+    suffix = "" if reference_count == 1 else "s"
+    print(f"Validated {reference_count} approved reference{suffix}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
