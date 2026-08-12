@@ -107,6 +107,42 @@
           "reference_sha256": "36d95c38f7c79f2f59f51943ff8ef6424d96fd9d773bc68fa0597d3c7f044d18"
         }
       ]
+    },
+    {
+      "id": "626301",
+      "display_name": "Tang Ji",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_npc626301_2_0_feichi.bnk",
+        "activityvoc_npc626301a_s02_langchao.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_npc626301_2_0_feichi.bnk",
+          "media_id": 768726303,
+          "source_sha256": "30bba65e9c2b6cc6baf2307a7439ccb9eca6ef2d054bba3704ec6190ec39a7d2",
+          "reference": "reverse1999-voices/references/tang-ji-game-01.wav",
+          "reference_sha256": "3c732d3fd3bcfe4f229dc02ec494b14e9bd4f08b8dcaf6e0044ff79cd227cc7e"
+        },
+        {
+          "bank": "activityvoc_npc626301_2_0_feichi.bnk",
+          "media_id": 600753554,
+          "source_sha256": "ec636d86819a281b190a016375169503a4e4c77184fe8364936a0adc5a9f0d6c",
+          "reference": "reverse1999-voices/references/tang-ji-game-02.wav",
+          "reference_sha256": "5bc347179174f5ece82ceb3b8a3c4540129e710e7672cca6deaa3ef1c132c9ff"
+        },
+        {
+          "bank": "activityvoc_npc626301_2_0_feichi.bnk",
+          "media_id": 725614355,
+          "source_sha256": "544b997ee5d1fed6b8826ff11b5b6a326065e13e4c3a06368043a15945ec6b27",
+          "reference": "reverse1999-voices/references/tang-ji-game-03.wav",
+          "reference_sha256": "b8e89d4eeff2b1f160c8edda09e7fb359af0e55d0814e8a25fdd4c43032f4616"
+        }
+      ]
     }
   ]
 }
