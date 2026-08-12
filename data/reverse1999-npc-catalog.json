@@ -230,6 +230,43 @@
           "reference_sha256": "9014af6302773e7b4304c796c13d3a2f11dc0feced60dedf62eb2afdfb961221"
         }
       ]
+    },
+    {
+      "id": "625701",
+      "display_name": "Hollick",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_npc625701_2_0_feichi.bnk",
+        "activityvoc_story_npc625701_feichi.bnk",
+        "npc625701_level_feichi2_0.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_npc625701_2_0_feichi.bnk",
+          "media_id": 781024502,
+          "source_sha256": "63f3f9d3991db0f44c046f9e1f8dc8793eb128f05e18098bef61b8cb2d7d1125",
+          "reference": "reverse1999-voices/references/hollick-game-01.wav",
+          "reference_sha256": "407c292d45c6afa25dd3c6259deb1f85d269d35b2b6bb8d8534c8447494c5dd1"
+        },
+        {
+          "bank": "activityvoc_npc625701_2_0_feichi.bnk",
+          "media_id": 630994328,
+          "source_sha256": "4e06ed68b9dcf97503b996615c121f44cea3fefb0d96e595ee7534599a0175eb",
+          "reference": "reverse1999-voices/references/hollick-game-02.wav",
+          "reference_sha256": "5651e07bac39031e845e690d6c7d9b1cc2781d1e45c9e1685bd631a7667c1dbc"
+        },
+        {
+          "bank": "activityvoc_npc625701_2_0_feichi.bnk",
+          "media_id": 494302669,
+          "source_sha256": "acb25c34acfb6ccbcaf5c47a2f03dba0667f36135c9c9091b467db2fc439bb19",
+          "reference": "reverse1999-voices/references/hollick-game-03.wav",
+          "reference_sha256": "8b8ca2e247dd456e12564e13a54ac4590cd4d11ccfee9bb6594e64a325d5fd63"
+        }
+      ]
     }
   ]
 }
