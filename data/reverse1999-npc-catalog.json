@@ -337,6 +337,41 @@
           "reference_sha256": "f63220f51abdb054dff65859311179d2a99c298bcf141c5bdcb5786ce5d82673"
         }
       ]
+    },
+    {
+      "id": "517801",
+      "display_name": "Santos",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "plotvoc_npc517801chapter8_part02.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "plotvoc_npc517801chapter8_part02.bnk",
+          "media_id": 126150039,
+          "source_sha256": "032d3a75371d2a9770a16aeff10971965e36ac44233e7171701853ead84e723d",
+          "reference": "reverse1999-voices/references/517801-01.wav",
+          "reference_sha256": "612a542f28f298051356278247266f19afb97d81ef195b51defa084abc96e7b7"
+        },
+        {
+          "bank": "plotvoc_npc517801chapter8_part02.bnk",
+          "media_id": 369299647,
+          "source_sha256": "f137345625827b72a8040cb1b314abb9a9e9d1cbc52f329812fb839b38e285fb",
+          "reference": "reverse1999-voices/references/517801-02.wav",
+          "reference_sha256": "9deb98c28eebc417f6189a0a0d7411536aeba1416cf17a4baf2979895de502e0"
+        },
+        {
+          "bank": "plotvoc_npc517801chapter8_part02.bnk",
+          "media_id": 776928834,
+          "source_sha256": "be62c0d13a1bedf2bb26eea2c3b872bc4ceaaf301492b8be185e8438b032175f",
+          "reference": "reverse1999-voices/references/517801-03.wav",
+          "reference_sha256": "7215e9553551fd276c0634bae8201272255f72f38162d5336b53fec1daebbed7"
+        }
+      ]
     }
   ]
 }
