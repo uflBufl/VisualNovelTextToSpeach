@@ -308,9 +308,7 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
         self.assertEqual(first_model.prepared_references, [str(reference)])
         self.assertEqual(second_model.prepared_references, [])
-        self.assertTrue(
-            second_backend.conditionals["alice"].value.endswith("@cpu")
-        )
+        self.assertTrue(second_backend.conditionals["alice"].value.endswith("@cpu"))
 
     def test_repeated_line_uses_audio_cache(self):
         backend, model = self.create_backend(CharacterVoiceRegistry())
@@ -524,9 +522,7 @@ class PocketTTSBackendTest(unittest.TestCase):
     def test_locked_voice_cloning_reports_actionable_setup(self):
         model = FakePocketModel()
         model.get_state_for_audio_prompt = Mock(
-            side_effect=ValueError(
-                "accept the terms before using voice cloning"
-            )
+            side_effect=ValueError("accept the terms before using voice cloning")
         )
         backend, _model, _output = self.create_backend(model=model)
 

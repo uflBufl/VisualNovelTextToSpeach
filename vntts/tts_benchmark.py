@@ -166,8 +166,7 @@ def benchmark_backend(
                     "first_audio_ms": first_audio_ms,
                     "generation_wall_ms": generation_wall_ms,
                     "generation_cpu_ms": generation_cpu_ms,
-                    "realtime_factor": generation_wall_ms
-                    / (duration_seconds * 1000),
+                    "realtime_factor": generation_wall_ms / (duration_seconds * 1000),
                     "cached_replay_ms": cached_replay_ms,
                     "speaker_similarity_rating": None,
                     "artifact_rating": None,

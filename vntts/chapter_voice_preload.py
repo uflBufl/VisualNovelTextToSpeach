@@ -82,11 +82,9 @@ class ChapterVoicePreloader:
 
         current_speaker = _normalize(character)
         chapter_rows = self.by_chapter.get(match.chapter, ())
-        nearby = [
-            row
-            for row in chapter_rows
-            if row.sequence >= match.sequence
-        ][: self.lookahead_rows]
+        nearby = [row for row in chapter_rows if row.sequence >= match.sequence][
+            : self.lookahead_rows
+        ]
         ranked = []
         seen = {current_speaker, "narrator", ""}
         for row in nearby:
@@ -99,9 +97,7 @@ class ChapterVoicePreloader:
                 return tuple(ranked)
 
         frequency = Counter(
-            row.speaker
-            for row in chapter_rows
-            if _normalize(row.speaker) not in seen
+            row.speaker for row in chapter_rows if _normalize(row.speaker) not in seen
         )
         ranked.extend(speaker for speaker, _count in frequency.most_common())
         return tuple(ranked[:limit])

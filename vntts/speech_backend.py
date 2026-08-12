@@ -56,9 +56,7 @@ def _voice_source_identity(voice_key, source):
     source_path = Path(str(source)).expanduser()
     try:
         stat = source_path.stat()
-        source_identity = (
-            f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
-        )
+        source_identity = f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
     except OSError:
         source_identity = str(source)
     return f"{voice_key}:{source_identity}"
@@ -91,9 +89,7 @@ class XTTSVoiceRouterBackend:
 
     @property
     def last_playback_underrun(self):
-        return bool(
-            getattr(self.voice_router.tts, "last_playback_underrun", False)
-        )
+        return bool(getattr(self.voice_router.tts, "last_playback_underrun", False))
 
 
 class ChatterboxNanoVoiceRouterBackend:
@@ -504,7 +500,10 @@ def _install_pocket_generation_cancellation(model, cancel_event_provider):
                     break
                 if is_eos.item() and eos_step is None:
                     eos_step = generation_step
-                if eos_step is not None and generation_step >= eos_step + frames_after_eos:
+                if (
+                    eos_step is not None
+                    and generation_step >= eos_step + frames_after_eos
+                ):
                     break
                 latents_queue.put(next_latent)
                 backbone_input = next_latent
@@ -572,10 +571,7 @@ class PocketTTSVoiceRouterBackend:
         self.voice_states = {}
         self.voice_state_cache_directory = Path(
             voice_state_cache_directory
-            or get_local_data_directory()
-            / "models"
-            / "pocket-tts"
-            / "voices"
+            or get_local_data_directory() / "models" / "pocket-tts" / "voices"
         ).expanduser()
         self.model_lock = Lock()
         self.playback_lock = Lock()
@@ -795,8 +791,8 @@ class PocketTTSVoiceRouterBackend:
                 self.last_synthesis_ms = first_audio_ms
                 self.last_first_audio_ms = first_audio_ms
             underflowed = stream.write(self._prepare_audio(raw).reshape(-1, 1))
-            self.last_playback_underrun = (
-                self.last_playback_underrun or bool(underflowed)
+            self.last_playback_underrun = self.last_playback_underrun or bool(
+                underflowed
             )
             wrote_audio = True
         if cancelled:
@@ -804,7 +800,6 @@ class PocketTTSVoiceRouterBackend:
         if not wrote_audio:
             raise TTSSynthesisError("Pocket TTS generated no audio")
         return True
-
 
     def _resolve_voice_state(self, character):
         voice_key, source = self._resolve_voice_source(character)
@@ -964,11 +959,18 @@ def get_torch_thread_count(torch_module):
 
 
 def activate_chatterbox_runtime(runtime_directory=None):
-    runtime_directory = Path(
-        runtime_directory
-        or os.environ.get("VNTTS_CHATTERBOX_RUNTIME", "")
-        or Path(__file__).resolve().parents[1] / "backends" / "chatterbox-nano" / ".venv"
-    ).expanduser().resolve()
+    runtime_directory = (
+        Path(
+            runtime_directory
+            or os.environ.get("VNTTS_CHATTERBOX_RUNTIME", "")
+            or Path(__file__).resolve().parents[1]
+            / "backends"
+            / "chatterbox-nano"
+            / ".venv"
+        )
+        .expanduser()
+        .resolve()
+    )
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
     else:
@@ -990,11 +992,15 @@ def activate_chatterbox_runtime(runtime_directory=None):
 
 
 def activate_pocket_tts_runtime(runtime_directory=None):
-    runtime_directory = Path(
-        runtime_directory
-        or os.environ.get("VNTTS_POCKET_TTS_RUNTIME", "")
-        or Path(__file__).resolve().parents[1] / "backends" / "pocket-tts" / ".venv"
-    ).expanduser().resolve()
+    runtime_directory = (
+        Path(
+            runtime_directory
+            or os.environ.get("VNTTS_POCKET_TTS_RUNTIME", "")
+            or Path(__file__).resolve().parents[1] / "backends" / "pocket-tts" / ".venv"
+        )
+        .expanduser()
+        .resolve()
+    )
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
     else:

@@ -73,7 +73,9 @@ def read_pcm_wav(path):
             compression = audio.getcomptype()
             raw = audio.readframes(audio.getnframes())
     except (OSError, wave.Error) as error:
-        raise VoiceReferenceQualityError(f"Unable to read WAV {path}: {error}") from error
+        raise VoiceReferenceQualityError(
+            f"Unable to read WAV {path}: {error}"
+        ) from error
     if compression != "NONE":
         raise VoiceReferenceQualityError(f"WAV must contain uncompressed PCM: {path}")
     if channels <= 0 or sample_rate <= 0:
@@ -186,7 +188,9 @@ def trim_and_normalize_voice_reference(
     active = _frame_rms(samples, frame_size) > 10 ** (silence_dbfs / 20.0)
     active_frames = np.flatnonzero(active)
     if not len(active_frames):
-        raise VoiceReferenceQualityError(f"WAV contains no speech-level audio: {source}")
+        raise VoiceReferenceQualityError(
+            f"WAV contains no speech-level audio: {source}"
+        )
     padding = round(sample_rate * padding_ms / 1000)
     start = max(0, int(active_frames[0]) * frame_size - padding)
     end = min(len(samples), (int(active_frames[-1]) + 1) * frame_size + padding)
@@ -248,9 +252,7 @@ def record_clip_review(
     clips[:] = [
         item
         for item in clips
-        if not (
-            item.get("bank") == bank_name and item.get("media_id") == int(media_id)
-        )
+        if not (item.get("bank") == bank_name and item.get("media_id") == int(media_id))
     ]
     item = {
         "speaker_name": speaker_name.strip(),

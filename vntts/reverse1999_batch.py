@@ -104,9 +104,7 @@ def scan_installed_game(
         raise Reverse1999BatchError(
             "Unable to find installed game audio and configs; pass both directories"
         )
-    bank_index, bank_index_path = build_bank_index(
-        audio_root, output=bank_index_path
-    )
+    bank_index, bank_index_path = build_bank_index(audio_root, output=bank_index_path)
     dialogue_index = build_dialogue_index(config_root)
     dialogue_index_path = write_dialogue_index(dialogue_index, dialogue_index_path)
     state["game_audio_directory"] = str(Path(audio_root).resolve())
@@ -283,22 +281,16 @@ def import_approved_references(
             review["speaker_name"] = speaker_name
             selection_input.append(review)
         selected_reviews = select_reference_set(selection_input, speaker_name)
-        selected_keys = {
-            (item["bank"], item["media_id"]) for item in selected_reviews
-        }
+        selected_keys = {(item["bank"], item["media_id"]) for item in selected_reviews}
         selected = [
-            clip
-            for clip in clips
-            if (clip["bank"], clip["media_id"]) in selected_keys
+            clip for clip in clips if (clip["bank"], clip["media_id"]) in selected_keys
         ]
         if not selected:
             continue
         imported = []
         for index, clip in enumerate(selected, start=1):
             destination = (
-                output_directory
-                / "references"
-                / f"{clip['npc_id']}-{index:02d}.wav"
+                output_directory / "references" / f"{clip['npc_id']}-{index:02d}.wav"
             )
             trim_and_normalize_voice_reference(clip["wav"], destination)
             imported.append(
@@ -306,7 +298,9 @@ def import_approved_references(
                     path=destination,
                     media_id=clip["media_id"],
                     source_sha256=clip["source_sha256"],
-                    reference_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+                    reference_sha256=hashlib.sha256(
+                        destination.read_bytes()
+                    ).hexdigest(),
                     bank=clip["bank"],
                 )
             )
@@ -341,8 +335,7 @@ def stage_counts(state):
         "unresolved": len(state.get("unresolved_npc_ids", [])),
         "extracted": len(state.get("clips", [])),
         "scored": sum(
-            statuses[value]
-            for value in ("scored", "approved", "rejected", "imported")
+            statuses[value] for value in ("scored", "approved", "rejected", "imported")
         ),
         "pending_review": statuses["scored"],
         "rejected": statuses["rejected"],
@@ -382,30 +375,49 @@ def main(arguments=None):
             save_state(state, arguments.state)
 
         stages = (
-            ("scan", lambda: scan_installed_game(
-                state,
-                game_audio_directory=arguments.game_audio_directory,
-                game_config_directory=arguments.game_config_directory,
-            )),
-            ("map", lambda: map_speakers(
-                state, catalog_path=arguments.catalog, mapping_path=arguments.mappings
-            )),
-            ("extract", lambda: extract_mapped_clips(
-                state, decoder=arguments.decoder, checkpoint=checkpoint
-            )),
+            (
+                "scan",
+                lambda: scan_installed_game(
+                    state,
+                    game_audio_directory=arguments.game_audio_directory,
+                    game_config_directory=arguments.game_config_directory,
+                ),
+            ),
+            (
+                "map",
+                lambda: map_speakers(
+                    state,
+                    catalog_path=arguments.catalog,
+                    mapping_path=arguments.mappings,
+                ),
+            ),
+            (
+                "extract",
+                lambda: extract_mapped_clips(
+                    state, decoder=arguments.decoder, checkpoint=checkpoint
+                ),
+            ),
             ("score", lambda: score_extracted_clips(state, checkpoint=checkpoint)),
-            ("review", lambda: merge_clip_reviews(state, review_path=arguments.reviews)),
-            ("import", lambda: import_approved_references(
-                state, output_directory=arguments.output
-            )),
+            (
+                "review",
+                lambda: merge_clip_reviews(state, review_path=arguments.reviews),
+            ),
+            (
+                "import",
+                lambda: import_approved_references(
+                    state, output_directory=arguments.output
+                ),
+            ),
         )
         for name, action in stages:
             if arguments.stage in {name, "run"}:
                 action()
                 checkpoint()
-                if arguments.stage == "run" and name == "review" and stage_counts(
-                    state
-                )["pending_review"]:
+                if (
+                    arguments.stage == "run"
+                    and name == "review"
+                    and stage_counts(state)["pending_review"]
+                ):
                     break
     except Exception as error:
         print(error, file=sys.stderr)

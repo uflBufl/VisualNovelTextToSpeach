@@ -65,9 +65,7 @@ class Reverse1999ConfigTest(unittest.TestCase):
                 encrypt_config(["language_en", [["line", "Hello"]]])
             )
             (root / "datacfg_1.dat").write_bytes(
-                encrypt_config(
-                    {"json_tip_dialog": json.dumps(["json_tip_dialog", []])}
-                )
+                encrypt_config({"json_tip_dialog": json.dumps(["json_tip_dialog", []])})
             )
 
             language, tables = load_config_directory(root)

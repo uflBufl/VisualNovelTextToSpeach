@@ -50,9 +50,7 @@ def decrypt_config_data(data):
             "Encrypted config payload is not aligned to an AES block"
         )
     try:
-        decryptor = Cipher(
-            algorithms.AES(config_key), modes.CBC(config_iv)
-        ).decryptor()
+        decryptor = Cipher(algorithms.AES(config_key), modes.CBC(config_iv)).decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()
         unpadder = PKCS7(128).unpadder()
         return unpadder.update(padded) + unpadder.finalize()
@@ -70,7 +68,9 @@ def load_encrypted_json(path):
     except FileNotFoundError as error:
         raise Reverse1999ConfigError(f"Config does not exist: {path}") from error
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise Reverse1999ConfigError(f"Unable to read config {path}: {error}") from error
+        raise Reverse1999ConfigError(
+            f"Unable to read config {path}: {error}"
+        ) from error
 
 
 def parse_language_document(document):
@@ -175,7 +175,8 @@ def resolve_speaker_name(speaker_id, identities, catalog=None):
     matching_ids = [
         character_id
         for character_id in identities
-        if speaker_id.startswith(character_id) and len(speaker_id) - len(character_id) <= 2
+        if speaker_id.startswith(character_id)
+        and len(speaker_id) - len(character_id) <= 2
     ]
     if matching_ids:
         return identities[max(matching_ids, key=len)].display_name
@@ -229,7 +230,12 @@ def extract_dialogue_evidence(language, tables, *, catalog=None):
                 )
             )
     evidence.sort(
-        key=lambda item: (item.chapter, item.sequence, item.source_table, item.speaker_id)
+        key=lambda item: (
+            item.chapter,
+            item.sequence,
+            item.source_table,
+            item.speaker_id,
+        )
     )
     return identities, evidence
 
@@ -237,9 +243,7 @@ def extract_dialogue_evidence(language, tables, *, catalog=None):
 def build_dialogue_index(config_directory, *, catalog_path=default_catalog_path):
     language, tables = load_config_directory(config_directory)
     catalog = Reverse1999NpcCatalog.load(catalog_path)
-    identities, evidence = extract_dialogue_evidence(
-        language, tables, catalog=catalog
-    )
+    identities, evidence = extract_dialogue_evidence(language, tables, catalog=catalog)
     return {
         "version": index_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -285,9 +289,7 @@ def main(arguments=None):
         )
         return 1
     try:
-        index = build_dialogue_index(
-            config_directory, catalog_path=arguments.catalog
-        )
+        index = build_dialogue_index(config_directory, catalog_path=arguments.catalog)
         output = write_dialogue_index(index, arguments.output)
     except Reverse1999ConfigError as error:
         print(error, file=sys.stderr)

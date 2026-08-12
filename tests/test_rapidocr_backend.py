@@ -21,9 +21,11 @@ class RapidOCRBackendTest(unittest.TestCase):
             txts=("These old ones can carry everyone.", "Kamuta"),
             scores=(0.92, 0.98),
         )
+
         def engine(image, **options):
             del image, options
             return output
+
         registry = CharacterVoiceRegistry([CharacterVoice("Kamuta", "kamuta")])
 
         result = RapidOCRBackend(engine).recognize(

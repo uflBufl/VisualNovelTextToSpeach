@@ -65,7 +65,9 @@ def benchmark_ocr(
     cpu_clock=process_time,
 ):
     if repeats < 1 or warmups < 0:
-        raise ValueError("OCR benchmark repeats must be positive and warmups non-negative")
+        raise ValueError(
+            "OCR benchmark repeats must be positive and warmups non-negative"
+        )
     backend = backend or TesseractOCRBackend()
     expectations = expectations or {}
     samples = []
@@ -198,9 +200,7 @@ def main(argv=None):
     manifest = find_default_voice_manifest()
     registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
     backend = (
-        RapidOCRBackend()
-        if arguments.backend == "rapidocr"
-        else TesseractOCRBackend()
+        RapidOCRBackend() if arguments.backend == "rapidocr" else TesseractOCRBackend()
     )
     report = benchmark_ocr(
         arguments.images,
