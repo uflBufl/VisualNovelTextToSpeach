@@ -71,6 +71,42 @@
           "reference_sha256": "5a19c4597f54a9f3eeb62f5c3b5a31b6e85ee496da60e94cbd5846d3744371f7"
         }
       ]
+    },
+    {
+      "id": "529801",
+      "display_name": "Sternova",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "plotvoc_npc529801chapter12_part01.bnk",
+        "plotvoc_npc529801chapter12_part02.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "plotvoc_npc529801chapter12_part02.bnk",
+          "media_id": 507522535,
+          "source_sha256": "d71f9caea186a62e3515973374bdf583c7f16131014339a91911319f328eac31",
+          "reference": "reverse1999-voices/references/sternova-game-01.wav",
+          "reference_sha256": "95759a8e35b4b622898df868aee2a3773e54d2b8d8681ecdff8d1dd2d977ddb0"
+        },
+        {
+          "bank": "plotvoc_npc529801chapter12_part02.bnk",
+          "media_id": 594723301,
+          "source_sha256": "34b8b95a1388783b462b2b6214346675662de31a6f6e1feb91f8f30d72d447f0",
+          "reference": "reverse1999-voices/references/sternova-game-02.wav",
+          "reference_sha256": "a82f6dd8e4bdd8b9e45f15ab618a460b7dc2dd02a1c62c287c220db0e26cf5e3"
+        },
+        {
+          "bank": "plotvoc_npc529801chapter12_part02.bnk",
+          "media_id": 896159702,
+          "source_sha256": "fda4b1b99a0fa134f0f871db4ced526fd54510ece6394ea17532e5c4b5e7b40d",
+          "reference": "reverse1999-voices/references/sternova-game-03.wav",
+          "reference_sha256": "36d95c38f7c79f2f59f51943ff8ef6424d96fd9d773bc68fa0597d3c7f044d18"
+        }
+      ]
     }
   ]
 }
