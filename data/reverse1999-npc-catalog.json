@@ -267,6 +267,41 @@
           "reference_sha256": "8b8ca2e247dd456e12564e13a54ac4590cd4d11ccfee9bb6594e64a325d5fd63"
         }
       ]
+    },
+    {
+      "id": "509101",
+      "display_name": "Special Prosecutor",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "plotvoc_npc509101.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "plotvoc_npc509101.bnk",
+          "media_id": 492427903,
+          "source_sha256": "588a7dfefe048cd21f71d0577c93dd7cf83e6d2026092023d5add5254eafe70e",
+          "reference": "reverse1999-voices/references/special-prosecutor-game-01.wav",
+          "reference_sha256": "47b2d0f13bb20e701805d104f0f74aa38742fba595db20a6296a55643778c7e7"
+        },
+        {
+          "bank": "plotvoc_npc509101.bnk",
+          "media_id": 352516702,
+          "source_sha256": "2265fb89e89534985e32e2f40a746fdea8c153984db205fda3955f9b8b580eb1",
+          "reference": "reverse1999-voices/references/special-prosecutor-game-02.wav",
+          "reference_sha256": "3235000acbb6075cbe4af56886140617b42e0829b0c8cc6e694e689f651f84f4"
+        },
+        {
+          "bank": "plotvoc_npc509101.bnk",
+          "media_id": 228790236,
+          "source_sha256": "c277c842f3b028d9894964b911946553feecbb2f83f1141bd2930e88c9e8e66c",
+          "reference": "reverse1999-voices/references/special-prosecutor-game-03.wav",
+          "reference_sha256": "b41a73f9262267aa45ceea92cf4c2924782647593e386cce23dd75bc3d2ef485"
+        }
+      ]
     }
   ]
 }
