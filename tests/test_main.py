@@ -993,6 +993,29 @@ class MainTest(unittest.TestCase):
             [True, False],
         )
 
+    def test_live_mode_checks_window_capture_before_starting(self):
+        statuses = []
+        errors = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+            error_handler=errors.append,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.capture_target = Mock()
+        controller.capture_target.get_geometry.side_effect = RuntimeError(
+            "Selected game window is not visible"
+        )
+
+        self.assertFalse(controller.toggle_live())
+
+        controller.live_reader.toggle.assert_not_called()
+        self.assertEqual(statuses, ["Live reading could not start"])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ScreenCaptureError)
+        self.assertEqual(str(errors[0]), "Selected game window is not visible")
+
     def test_live_underflow_temporarily_disables_then_restores_prefetch(self):
         statuses = []
         now = [0.0]

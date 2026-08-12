@@ -242,48 +242,8 @@ class MacOSWindowBackend:
                 raise WindowCaptureError(
                     "Selected game window has no visible capture area"
                 )
-            if not self._geometry_is_on_active_display(geometry):
-                raise WindowCaptureError(
-                    "The selected game window is on another macOS desktop or "
-                    "almost entirely off-screen. Move the game and VNTTS to the "
-                    "same desktop, then select the game window again."
-                )
             return geometry
         raise WindowNotFoundError("Selected macOS game window is no longer available")
-
-    def _geometry_is_on_active_display(self, geometry):
-        quartz = self.quartz
-        if not all(
-            hasattr(quartz, name)
-            for name in ("CGGetActiveDisplayList", "CGDisplayBounds")
-        ):
-            return True
-        error, display_ids, display_count = quartz.CGGetActiveDisplayList(
-            32,
-            None,
-            None,
-        )
-        if error != 0 or not display_count:
-            return True
-        visible_area = 0
-        for display_id in display_ids[:display_count]:
-            bounds = quartz.CGDisplayBounds(display_id)
-            display_left = float(bounds.origin.x)
-            display_top = float(bounds.origin.y)
-            display_right = display_left + float(bounds.size.width)
-            display_bottom = display_top + float(bounds.size.height)
-            intersection_width = max(
-                0,
-                min(geometry.left + geometry.width, display_right)
-                - max(geometry.left, display_left),
-            )
-            intersection_height = max(
-                0,
-                min(geometry.top + geometry.height, display_bottom)
-                - max(geometry.top, display_top),
-            )
-            visible_area += intersection_width * intersection_height
-        return visible_area >= geometry.width * geometry.height * 0.1
 
     def get_foreground_handle(self):
         quartz = self.quartz

@@ -1092,6 +1092,13 @@ class AppController:
     def toggle_live(self):
         if not self.is_ready:
             return False
+        if not self.live_reader.is_running and self.capture_target is not None:
+            try:
+                self.capture_target.get_geometry()
+            except Exception as error:
+                self.error_handler(ScreenCaptureError(str(error)))
+                self.status_handler("Live reading could not start")
+                return False
         running = self.live_reader.toggle()
         if running:
             self.live_reader.max_speech_jobs = self.live_speech_backpressure.reset()

@@ -8,7 +8,6 @@ from vntts.window_capture import (
     LinuxX11WindowBackend,
     MacOSWindowBackend,
     WaylandWindowBackend,
-    WindowCaptureError,
     WindowCaptureTarget,
     WindowCaptureUnavailableError,
     WindowGeometry,
@@ -220,7 +219,7 @@ class MacOSWindowBackendTest(unittest.TestCase):
             WindowGeometry(120, 80, 1600, 900),
         )
 
-    def test_rejects_window_on_another_macos_desktop(self):
+    def test_accepts_fullscreen_window_coordinates_outside_primary_display(self):
         window = self.window(10, "Reverse: 1999")
         window["bounds"] = {
             "X": 1919,
@@ -230,8 +229,10 @@ class MacOSWindowBackendTest(unittest.TestCase):
         }
         backend = MacOSWindowBackend(FakeQuartz([window]))
 
-        with self.assertRaisesRegex(WindowCaptureError, "another macOS desktop"):
-            backend.get_client_geometry(10)
+        self.assertEqual(
+            backend.get_client_geometry(10),
+            WindowGeometry(1919, 1079, 1600, 900),
+        )
 
     def test_frontmost_quartz_window_is_used_for_focus(self):
         quartz = FakeQuartz(
