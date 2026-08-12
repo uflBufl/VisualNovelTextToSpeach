@@ -36,6 +36,41 @@
           "reference_sha256": "1ba6f48dfb59bc911ab5a9c5a87e0aa16fe1e5363257ebba24fa30b6b1a9d728"
         }
       ]
+    },
+    {
+      "id": "521001",
+      "display_name": "Selone",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_story_npc521001_diqiu.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_story_npc521001_diqiu.bnk",
+          "media_id": 383876077,
+          "source_sha256": "0abd91a5c8ef1894a79814df9988de07c03993e15734e6dfaa1347c0454a4a4c",
+          "reference": "reverse1999-voices/references/selone-game-01.wav",
+          "reference_sha256": "d8a44da113255dff5c0ab00550da78010346a5e1fc29407558e27af14b306236"
+        },
+        {
+          "bank": "activityvoc_story_npc521001_diqiu.bnk",
+          "media_id": 1065039155,
+          "source_sha256": "533a713a09e01d340d4cf08c753b99409e6c5689e113348ef5e276984c210984",
+          "reference": "reverse1999-voices/references/selone-game-02.wav",
+          "reference_sha256": "a9967bc2bdcac3f421fbbab33664b3dadb541c645003778b9a53e62d7959b58e"
+        },
+        {
+          "bank": "activityvoc_story_npc521001_diqiu.bnk",
+          "media_id": 916113030,
+          "source_sha256": "2079b46872bf75a16f2e040e743493e9c6b66bf2e14a54e545301a16147fd0e4",
+          "reference": "reverse1999-voices/references/selone-game-03.wav",
+          "reference_sha256": "5a19c4597f54a9f3eeb62f5c3b5a31b6e85ee496da60e94cbd5846d3744371f7"
+        }
+      ]
     }
   ]
 }

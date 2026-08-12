@@ -80,6 +80,11 @@ class Reverse1999NpcCatalogTest(unittest.TestCase):
 
         self.assertEqual(catalog.version, 1)
         self.assertEqual(catalog.resolve("Kamuta").npc_id, "520301")
+        self.assertEqual(catalog.resolve("Selone").npc_id, "521001")
+        self.assertEqual(
+            catalog.resolve("Selone").banks,
+            ("activityvoc_story_npc521001_diqiu.bnk",),
+        )
         self.assertTrue(catalog.validate_reference_files())
 
 

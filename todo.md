@@ -7,8 +7,8 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Import Reverse: 1999 NPC voices
 
-- [ ] Download The Sea Breeze Still Whispers assets, use Selone to validate the
-      in-app assisted mapping/import flow, then process all unresolved story NPCs.
+- [ ] Process the remaining unresolved story NPCs with the validated assisted
+      mapping and voice-import workflow.
 
 ### P0 - Validate performance and resilience
 
