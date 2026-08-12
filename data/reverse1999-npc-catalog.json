@@ -194,6 +194,42 @@
           "reference_sha256": "7eda23b9ad24f7664fc0e84dbaeff7ad6c352cc29533f5f1ddd5c1c0265da429"
         }
       ]
+    },
+    {
+      "id": "526401",
+      "display_name": "Yermolai",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "plotvoc_npc526401chapter11.bnk",
+        "plotvoc_npc526401chapter12.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "plotvoc_npc526401chapter12.bnk",
+          "media_id": 123257317,
+          "source_sha256": "4d924f88a047c2c96b0703047cd9844fcd881bda8b9470b9daa938773ef902fa",
+          "reference": "reverse1999-voices/references/yermolai-game-01.wav",
+          "reference_sha256": "a92f90d91593ce19267f2bdf6f7e048dbab244a2fdfbb7d066c4fa16211773e8"
+        },
+        {
+          "bank": "plotvoc_npc526401chapter12.bnk",
+          "media_id": 397236186,
+          "source_sha256": "4891d88ea0ce136912df91cb9aa01109ad0a889130eab7f2ea927cc163c5f5aa",
+          "reference": "reverse1999-voices/references/yermolai-game-02.wav",
+          "reference_sha256": "76f5d44e21052f7425fd414130e3fe6e2a5c66954b60ff2eccceba0cbdd31d0c"
+        },
+        {
+          "bank": "plotvoc_npc526401chapter12.bnk",
+          "media_id": 690277371,
+          "source_sha256": "76a9223d480dc939b5cbe6f141c7cee28df5380061bcfa6e9a80e42248416042",
+          "reference": "reverse1999-voices/references/yermolai-game-03.wav",
+          "reference_sha256": "9014af6302773e7b4304c796c13d3a2f11dc0feced60dedf62eb2afdfb961221"
+        }
+      ]
     }
   ]
 }
