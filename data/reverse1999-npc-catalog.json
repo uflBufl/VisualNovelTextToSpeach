@@ -302,6 +302,41 @@
           "reference_sha256": "b41a73f9262267aa45ceea92cf4c2924782647593e386cce23dd75bc3d2ef485"
         }
       ]
+    },
+    {
+      "id": "631501",
+      "display_name": "Vigil Officer",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_npc631501_2_5_tangren.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_npc631501_2_5_tangren.bnk",
+          "media_id": 137824322,
+          "source_sha256": "21d79000eb1738e1f86950588890503a55200bd367b5d3abbadfb33140113e39",
+          "reference": "reverse1999-voices/references/vigil-officer-game-01.wav",
+          "reference_sha256": "2d2c55692d347464319cd9ecddf8d01f3b480df50d4b6c48f407523a21868614"
+        },
+        {
+          "bank": "activityvoc_npc631501_2_5_tangren.bnk",
+          "media_id": 351798621,
+          "source_sha256": "2485ecab0123030e73390a3dd9600b592ba73ce710d2e17206bac007581fdd02",
+          "reference": "reverse1999-voices/references/vigil-officer-game-02.wav",
+          "reference_sha256": "85e43a147cfb7a4ace46b3049ea883acf9c6bc669b9fc9845750aec1af33063e"
+        },
+        {
+          "bank": "activityvoc_npc631501_2_5_tangren.bnk",
+          "media_id": 361583690,
+          "source_sha256": "ec5d08545acaa49effc627e92ef7a69adbe38aa2519b6c70faa4534bd9d82f02",
+          "reference": "reverse1999-voices/references/vigil-officer-game-03.wav",
+          "reference_sha256": "f63220f51abdb054dff65859311179d2a99c298bcf141c5bdcb5786ce5d82673"
+        }
+      ]
     }
   ]
 }
