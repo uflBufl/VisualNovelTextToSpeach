@@ -1,10 +1,9 @@
-import json
 import re
 from dataclasses import replace
 from pathlib import Path
 
-from vntts.atomic_io import atomic_write_json
 from vntts.settings import get_config_directory
+from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 corrections_schema_version = 1
 
@@ -63,34 +62,34 @@ class OCRCorrectionStore:
     def load(cls, path=None, *, warn=None):
         warn = (lambda _message: None) if warn is None else warn
         store = cls(path)
-        if not store.path.is_file():
-            return store
-        try:
-            payload = json.loads(store.path.read_text(encoding="utf-8"))
-            if payload.get("schema_version") != corrections_schema_version:
-                raise ValueError("unsupported OCR corrections schema version")
+
+        def decode(payload):
             store.global_entries = normalize_correction_entries(payload["global"])
             store.profile_entries = {
                 str(profile_id): normalize_correction_entries(entries)
                 for profile_id, entries in payload["profiles"].items()
             }
-        except (
-            OSError,
-            KeyError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as error:
-            warn(f"Unable to load OCR corrections from {store.path}: {error}")
+            return store
+
+        def fallback():
             store.global_entries = {}
             store.profile_entries = {}
-        return store
+            return store
+
+        return load_versioned_json(
+            store.path,
+            schema_version=corrections_schema_version,
+            document_name="OCR corrections",
+            decode=decode,
+            fallback=fallback,
+            warn=warn,
+        )
 
     def save(self):
-        atomic_write_json(
+        write_versioned_json(
             self.path,
+            corrections_schema_version,
             {
-                "schema_version": corrections_schema_version,
                 "global": self.global_entries,
                 "profiles": self.profile_entries,
             },

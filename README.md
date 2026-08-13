@@ -63,7 +63,9 @@ uv run vntts-app
 
 The application opens a compact control window and can optionally keep running
 in the system tray. Its settings are stored in the current user's application-data
-directory. On first launch, complete the setup
+directory. Settings, game profiles, OCR corrections, and OCR review metadata
+use versioned JSON documents with shared compatibility checks, damaged-file
+fallback, and atomic publication. On first launch, complete the setup
 wizard to select the game, verify OCR and audio, calibrate the dialogue area,
 and run an OCR-to-speech test. Use **Manage models and voices** in the app to
 download or verify the speech model and import local character voice references.

@@ -12,7 +12,9 @@ from threading import RLock
 
 from vntts.atomic_io import atomic_output_path
 from vntts.diagnostics import macos_permission_warnings
+from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract
+from vntts.versioned_json import read_versioned_json
 
 
 class RuntimeSupportLog:
@@ -159,7 +161,12 @@ def collect_ocr_metrics(directory):
     if directory.is_dir():
         for path in directory.glob("uncertain-*.json"):
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = read_versioned_json(
+                    path,
+                    schema_version=OCR_REVIEW_SCHEMA_VERSION,
+                    document_name="OCR review metadata",
+                    allow_unversioned=True,
+                )
                 confidences.append(float(payload.get("confidence", 0)))
                 attempts.append(int(payload.get("attempts", 0)))
                 profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1

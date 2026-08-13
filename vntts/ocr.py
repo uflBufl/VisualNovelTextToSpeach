@@ -12,6 +12,8 @@ from pytesseract import pytesseract as pytesseract_runtime
 
 from vntts.atomic_io import atomic_output_group, atomic_write_json
 from vntts.dialog import is_probable_character_name, parse_dialog
+from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
+from vntts.versioned_json import write_versioned_json
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
 default_minimum_ocr_confidence = 60.0
@@ -149,8 +151,9 @@ class UncertainFrameRecorder:
                 temporary_metadata,
             ):
                 image.save(temporary_image, format="PNG")
-                atomic_write_json(
+                write_versioned_json(
                     temporary_metadata,
+                    OCR_REVIEW_SCHEMA_VERSION,
                     {
                         "image": image_path.name,
                         "character": result.character,

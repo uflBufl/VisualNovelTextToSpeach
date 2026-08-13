@@ -1,9 +1,14 @@
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts.atomic_io import atomic_write_json
+from vntts.versioned_json import (
+    load_versioned_json,
+    read_versioned_json,
+    write_versioned_json,
+)
+
+OCR_REVIEW_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -36,18 +41,26 @@ class OCRReviewStore:
         return samples
 
     def mark_resolved(self, sample, *, scope=None, corrections=None):
-        payload = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
+        payload = read_versioned_json(
+            sample.metadata_path,
+            schema_version=OCR_REVIEW_SCHEMA_VERSION,
+            document_name="OCR review metadata",
+            allow_unversioned=True,
+        )
         payload["resolved"] = True
         payload["resolved_at"] = datetime.now(timezone.utc).isoformat()
         if scope:
             payload["correction_scope"] = scope
         if corrections:
             payload["corrections"] = dict(corrections)
-        atomic_write_json(sample.metadata_path, payload)
+        write_versioned_json(
+            sample.metadata_path,
+            OCR_REVIEW_SCHEMA_VERSION,
+            payload,
+        )
 
     def _load_sample(self, metadata_path):
-        try:
-            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        def decode(payload):
             if payload.get("resolved") is True:
                 return None
             image_path = metadata_path.parent / payload["image"]
@@ -65,5 +78,12 @@ class OCRReviewStore:
                 ),
                 attempts=int(payload.get("attempts", 0)),
             )
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-            return None
+
+        return load_versioned_json(
+            metadata_path,
+            schema_version=OCR_REVIEW_SCHEMA_VERSION,
+            document_name="OCR review metadata",
+            decode=decode,
+            fallback=lambda: None,
+            allow_unversioned=True,
+        )

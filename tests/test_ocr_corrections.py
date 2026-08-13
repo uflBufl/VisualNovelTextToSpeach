@@ -129,6 +129,21 @@ class OCRCorrectionStoreTest(unittest.TestCase):
         self.assertEqual(store.profile_entries, {})
         self.assertIn("Unable to load OCR corrections", warnings[0])
 
+    def test_future_schema_falls_back_to_empty_dictionary(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "ocr-corrections.json"
+            path.write_text(
+                json.dumps({"schema_version": 2, "global": {}, "profiles": {}}),
+                encoding="utf-8",
+            )
+            warnings = []
+
+            store = OCRCorrectionStore.load(path, warn=warnings.append)
+
+        self.assertEqual(store.global_entries, {})
+        self.assertEqual(store.profile_entries, {})
+        self.assertIn("unsupported OCR corrections schema version", warnings[0])
+
 
 class OCRCorrectionPipelineTest(unittest.TestCase):
     def test_recognized_result_is_corrected_before_use(self):

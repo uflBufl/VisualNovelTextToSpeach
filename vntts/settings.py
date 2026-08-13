@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 from dataclasses import asdict, dataclass, field, replace
@@ -6,8 +5,8 @@ from pathlib import Path
 
 from platformdirs import user_config_path, user_data_path
 
-from vntts.atomic_io import atomic_write_json
 from vntts.hotkeys import default_hotkey
+from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
 settings_schema_version = 16
@@ -261,7 +260,7 @@ class AppSettings:
 
     def save(self, path=None):
         path = get_settings_path() if path is None else Path(path).expanduser()
-        atomic_write_json(path, asdict(self))
+        write_versioned_json(path, settings_schema_version, asdict(self))
         return path
 
     def updated(self, **changes):
@@ -273,16 +272,15 @@ def load_app_settings(path=None, *, environment=None, warn=None):
     warn = (lambda message: print(message, file=sys.stderr)) if warn is None else warn
     path = get_settings_path(environment=environment) if path is None else Path(path)
 
-    if not path.is_file():
-        settings = AppSettings()
-    else:
-        try:
-            values = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(values, dict):
-                raise ValueError("settings root must be an object")
-            settings = AppSettings.from_mapping(values, warn=warn)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            warn(f"Unable to load settings from {path}: {error}; using defaults")
-            settings = AppSettings()
+    settings = load_versioned_json(
+        path,
+        schema_version=settings_schema_version,
+        document_name="settings",
+        decode=lambda values: AppSettings.from_mapping(values, warn=warn),
+        fallback=AppSettings,
+        warn=warn,
+        allow_older=True,
+        allow_unversioned=True,
+    )
 
     return settings.with_environment_overrides(environment, warn=warn)

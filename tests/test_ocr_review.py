@@ -12,7 +12,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
-from vntts.ocr_review import OCRReviewStore  # noqa: E402
+from vntts.ocr_review import (  # noqa: E402
+    OCR_REVIEW_SCHEMA_VERSION,
+    OCRReviewStore,
+)
 from vntts.ocr_review_ui import OCRReviewDialog  # noqa: E402
 
 
@@ -50,6 +53,7 @@ class OCRReviewStoreTest(unittest.TestCase):
         self.assertTrue(metadata["resolved"])
         self.assertEqual(metadata["correction_scope"], "game")
         self.assertEqual(metadata["corrections"], {"Mareus": "Marcus"})
+        self.assertEqual(metadata["schema_version"], OCR_REVIEW_SCHEMA_VERSION)
         self.assertIn("resolved_at", metadata)
 
     def test_skips_invalid_metadata_and_missing_images(self):
@@ -65,6 +69,52 @@ class OCRReviewStoreTest(unittest.TestCase):
             )
 
             self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+
+    def test_future_metadata_schema_is_not_offered_for_review(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            image_path = directory / "future.png"
+            image_path.write_bytes(b"image")
+            (directory / "uncertain-future.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": OCR_REVIEW_SCHEMA_VERSION + 1,
+                        "image": image_path.name,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+
+    def test_legacy_unversioned_metadata_is_upgraded_when_resolved(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            image_path = directory / "legacy.png"
+            image_path.write_bytes(b"image")
+            metadata_path = directory / "uncertain-legacy.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "image": image_path.name,
+                        "character": "Narrator",
+                        "text": "Legacy sample",
+                        "confidence": 40,
+                        "minimum_confidence": 60,
+                        "preprocessing_profile": "balanced",
+                        "attempts": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = OCRReviewStore(directory)
+
+            sample = store.pending_samples()[0]
+            store.mark_resolved(sample)
+            upgraded = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(upgraded["schema_version"], OCR_REVIEW_SCHEMA_VERSION)
+        self.assertTrue(upgraded["resolved"])
 
 
 class OCRReviewDialogTest(unittest.TestCase):

@@ -10,6 +10,7 @@ from vntts.settings import (
     get_config_directory,
     get_local_data_directory,
     load_app_settings,
+    settings_schema_version,
 )
 
 
@@ -118,6 +119,25 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.read_hotkey, AppSettings().read_hotkey)
         self.assertIn("Unable to load settings", warnings[0])
+
+    def test_future_settings_schema_uses_defaults(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": settings_schema_version + 1,
+                        "read_hotkey": "<ctrl>+future",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            settings = load_app_settings(path, environment={}, warn=warnings.append)
+
+        self.assertEqual(settings, AppSettings())
+        self.assertIn("unsupported settings schema version", warnings[0])
 
     def test_invalid_fields_and_environment_values_do_not_prevent_startup(self):
         warnings = []

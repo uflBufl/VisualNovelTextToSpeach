@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from pathlib import Path
@@ -59,6 +60,20 @@ class GameProfileStoreTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "already exists"):
                 store.create("game", AppSettings())
+
+    def test_future_profile_schema_falls_back_to_empty_store(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps({"schema_version": 2, "profiles": []}),
+                encoding="utf-8",
+            )
+
+            store = GameProfileStore.load(path, warn=warnings.append)
+
+        self.assertEqual(store.profiles, [])
+        self.assertIn("unsupported game profiles schema version", warnings[0])
 
 
 class GameProfilesDialogTest(unittest.TestCase):

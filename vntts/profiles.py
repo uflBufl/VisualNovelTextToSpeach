@@ -1,11 +1,10 @@
-import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
-from vntts.atomic_io import atomic_write_json
 from vntts.ocr import DialogRegion, get_dialog_region
 from vntts.settings import get_config_directory
+from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 profiles_schema_version = 1
 
@@ -97,32 +96,32 @@ class GameProfileStore:
     def load(cls, path=None, *, warn=None):
         warn = (lambda _message: None) if warn is None else warn
         store = cls(path)
-        if not store.path.is_file():
-            return store
-        try:
-            payload = json.loads(store.path.read_text(encoding="utf-8"))
-            if payload.get("schema_version") != profiles_schema_version:
-                raise ValueError("unsupported profiles schema version")
+
+        def decode(payload):
             store.profiles = [
                 GameProfile.from_mapping(profile) for profile in payload["profiles"]
             ]
             store._ensure_unique_names()
-        except (
-            OSError,
-            KeyError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as error:
-            warn(f"Unable to load game profiles from {store.path}: {error}")
+            return store
+
+        def fallback():
             store.profiles = []
-        return store
+            return store
+
+        return load_versioned_json(
+            store.path,
+            schema_version=profiles_schema_version,
+            document_name="game profiles",
+            decode=decode,
+            fallback=fallback,
+            warn=warn,
+        )
 
     def save(self):
-        atomic_write_json(
+        write_versioned_json(
             self.path,
+            profiles_schema_version,
             {
-                "schema_version": profiles_schema_version,
                 "profiles": [profile.to_mapping() for profile in self.profiles],
             },
         )
