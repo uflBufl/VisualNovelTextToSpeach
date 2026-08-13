@@ -407,6 +407,41 @@
           "reference_sha256": "3d0c2028b59c51eaddaa2981ad7429fdadfd9e431e122e7f117f9167f4810fc3"
         }
       ]
+    },
+    {
+      "id": "615301",
+      "display_name": "Newsstand Owner",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_npc615301_1_5_wulu.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_npc615301_1_5_wulu.bnk",
+          "media_id": 86045561,
+          "source_sha256": "cc8b71a0d0de9f7be65538fa060b82f20e0e17d19d21ff4e5b864d373cbc8849",
+          "reference": "reverse1999-voices/references/615301-01.wav",
+          "reference_sha256": "26178db35870d82798ebc63bbbc5537932a97ada5d036865b8b1a4095e3d6dab"
+        },
+        {
+          "bank": "activityvoc_npc615301_1_5_wulu.bnk",
+          "media_id": 660954413,
+          "source_sha256": "da4a6aef80cd1f26d86fb923aaf2eeae98bc7024ccbc8c89e3a934d3e4f6ff7a",
+          "reference": "reverse1999-voices/references/615301-02.wav",
+          "reference_sha256": "3ffca7db5236cf1dc9e398db28570eab1e88f317b4f5ad5bda5fcaea0b9394ab"
+        },
+        {
+          "bank": "activityvoc_npc615301_1_5_wulu.bnk",
+          "media_id": 972340017,
+          "source_sha256": "255e03a41449f31d6caf8c071249bb22cae18182c9446d9ddb3bc3ee0b7dd0f5",
+          "reference": "reverse1999-voices/references/615301-03.wav",
+          "reference_sha256": "af6f045a3198ed62c57ddb7a0d51d85dbcb703e5dfe5c23bac10f78d12fa93e7"
+        }
+      ]
     }
   ]
 }
