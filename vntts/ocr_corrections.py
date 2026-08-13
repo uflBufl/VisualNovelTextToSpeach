@@ -3,6 +3,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+from vntts.atomic_io import atomic_write_json
 from vntts.settings import get_config_directory
 
 corrections_schema_version = 1
@@ -86,22 +87,14 @@ class OCRCorrectionStore:
         return store
 
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": corrections_schema_version,
-                    "global": self.global_entries,
-                    "profiles": self.profile_entries,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        atomic_write_json(
+            self.path,
+            {
+                "schema_version": corrections_schema_version,
+                "global": self.global_entries,
+                "profiles": self.profile_entries,
+            },
         )
-        temporary_path.replace(self.path)
         return self.path
 
     def dictionary_for(self, profile_id=None):

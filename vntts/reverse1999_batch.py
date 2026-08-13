@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from vntts.atomic_io import atomic_write_json
 from vntts.reverse1999_aliases import canonical_voice_name
 from vntts.reverse1999_audition import default_mapping_path
 from vntts.reverse1999_catalog import (
@@ -92,12 +93,7 @@ def load_state(path=default_state_path):
 
 def save_state(state, path=default_state_path):
     path = Path(path).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(path)
+    atomic_write_json(path, state)
     return path
 
 
@@ -676,12 +672,7 @@ def _write_auto_review_queue(selections, output):
             "values are never imported."
         ),
     }
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(output)
+    atomic_write_json(output, document)
     return output
 
 
@@ -1056,12 +1047,7 @@ def update_catalog_from_imports(
             raise Reverse1999BatchError(
                 f"Generated NPC catalog is invalid: {error}"
             ) from error
-        temporary = catalog_path.with_suffix(f"{catalog_path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(catalog_path)
+        atomic_write_json(catalog_path, document)
     state["catalog_updates"] = updates
     return state
 

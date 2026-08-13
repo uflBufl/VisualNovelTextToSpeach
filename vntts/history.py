@@ -6,6 +6,8 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from vntts.atomic_io import atomic_write_text
+
 
 @dataclass(frozen=True)
 class DialogueHistoryEntry:
@@ -92,10 +94,7 @@ class DialogueHistory:
                 f"[{entry.recorded_at}] {entry.character}\n{entry.text}"
                 for entry in entries
             )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-        temporary_path.write_text(content + ("\n" if content else ""), encoding="utf-8")
-        temporary_path.replace(path)
+        atomic_write_text(path, content + ("\n" if content else ""))
         return path
 
     def _active_entry(self):

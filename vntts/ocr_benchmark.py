@@ -9,6 +9,7 @@ from time import perf_counter, process_time
 
 from PIL import Image
 
+from vntts.atomic_io import atomic_write_json
 from vntts.ocr_backend import RapidOCRBackend, TesseractOCRBackend
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
@@ -169,13 +170,7 @@ def benchmark_ocr(
 
 def write_report(report, output=default_output):
     output = Path(output).expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(output)
+    atomic_write_json(output, report)
     return output
 
 

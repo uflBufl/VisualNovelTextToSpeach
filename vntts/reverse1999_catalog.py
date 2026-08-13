@@ -1,11 +1,12 @@
 import argparse
-import hashlib
 import json
 import re
 import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+
+from vntts.file_integrity import sha256_file
 
 project_root = Path(__file__).resolve().parents[1]
 default_catalog_path = project_root / "data" / "reverse1999-npc-catalog.json"
@@ -76,7 +77,7 @@ class Reverse1999NpcCatalog:
                     raise Reverse1999CatalogError(
                         f"Approved reference does not exist: {reference}"
                     )
-                checksum = hashlib.sha256(reference.read_bytes()).hexdigest()
+                checksum = sha256_file(reference)
                 if checksum != approved.reference_sha256:
                     raise Reverse1999CatalogError(
                         f"Approved reference checksum does not match: {reference}"

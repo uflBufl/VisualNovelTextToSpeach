@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
+from vntts.atomic_io import atomic_output_path
 from vntts.diagnostics import macos_permission_warnings
 from vntts.onboarding import probe_audio_output, probe_tesseract
 
@@ -82,8 +83,7 @@ class SupportBundleBuilder:
             "diagnostics.json": sanitize_diagnostic(self.diagnostic),
             "dependencies.json": self.dependency_probe(),
         }
-        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-        try:
+        with atomic_output_path(path) as temporary_path:
             with zipfile.ZipFile(
                 temporary_path,
                 "w",
@@ -94,10 +94,6 @@ class SupportBundleBuilder:
                         filename,
                         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     )
-            temporary_path.replace(path)
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-            raise
         return path
 
 

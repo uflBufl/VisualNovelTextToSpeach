@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.atomic_io import atomic_write_json
+from vntts.file_integrity import sha256_file
 from vntts.reverse1999_aliases import aliases_for_character
 from vntts.reverse1999_catalog import (
     Reverse1999CatalogError,
@@ -219,7 +221,7 @@ def decode_references(
                     path=output,
                     media_id=item.media_id,
                     source_sha256=hashlib.sha256(item.data).hexdigest(),
-                    reference_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+                    reference_sha256=sha256_file(output),
                     bank=bank.name,
                 )
             )
@@ -287,12 +289,7 @@ def update_manifest(output_directory, character, references, source_bank):
     voices.sort(key=lambda voice: voice["character"].casefold())
     manifest["version"] = 2
     manifest["voices"] = voices
-    temporary = manifest_path.with_suffix(f"{manifest_path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(manifest_path)
+    atomic_write_json(manifest_path, manifest)
     return manifest_path
 
 

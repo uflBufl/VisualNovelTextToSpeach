@@ -10,6 +10,7 @@ import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
 
+from vntts.atomic_io import atomic_output_path, atomic_write_json
 from vntts.dialog import is_probable_character_name, parse_dialog
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
@@ -140,32 +141,23 @@ class UncertainFrameRecorder:
         with self.lock:
             if fingerprint == self.last_fingerprint:
                 return None
-            self.directory.mkdir(parents=True, exist_ok=True)
             stem = f"uncertain-{datetime.now():%Y-%m-%d-%H-%M-%S}-{uuid4().hex}"
             image_path = self.directory / f"{stem}.png"
             metadata_path = self.directory / f"{stem}.json"
-            temporary_image = image_path.with_suffix(".png.tmp")
-            temporary_metadata = metadata_path.with_suffix(".json.tmp")
-            image.save(temporary_image, format="PNG")
-            temporary_metadata.write_text(
-                json.dumps(
-                    {
-                        "image": image_path.name,
-                        "character": result.character,
-                        "text": result.text,
-                        "confidence": result.confidence,
-                        "minimum_confidence": minimum_confidence,
-                        "preprocessing_profile": result.profile,
-                        "attempts": result.attempts,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
+            with atomic_output_path(image_path) as temporary_image:
+                image.save(temporary_image, format="PNG")
+            atomic_write_json(
+                metadata_path,
+                {
+                    "image": image_path.name,
+                    "character": result.character,
+                    "text": result.text,
+                    "confidence": result.confidence,
+                    "minimum_confidence": minimum_confidence,
+                    "preprocessing_profile": result.profile,
+                    "attempts": result.attempts,
+                },
             )
-            temporary_image.replace(image_path)
-            temporary_metadata.replace(metadata_path)
             self.last_fingerprint = fingerprint
             return image_path
 

@@ -1,10 +1,10 @@
 import importlib
-import json
 import subprocess
 import sys
 import traceback
 from pathlib import Path
 
+from vntts.atomic_io import atomic_write_json
 from vntts.onboarding import probe_tesseract
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
@@ -151,11 +151,5 @@ def run_package_self_test(
         if report_path is None
         else Path(report_path).expanduser()
     )
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = report_path.with_suffix(f"{report_path.suffix}.tmp")
-    temporary_path.write_text(
-        json.dumps(report, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(report_path)
+    atomic_write_json(report_path, report)
     return successful, report_path

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from vntts.atomic_io import atomic_output_path
 from vntts.audio_cache import PersistentAudioCache
 from vntts.services.tts_engine import (
     AudioPlaybackError,
@@ -399,11 +400,9 @@ class ChatterboxNanoVoiceRouterBackend:
         save = getattr(conditionals, "save", None)
         if not callable(save):
             return False
-        temporary_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            save(temporary_path)
-            temporary_path.replace(cache_path)
+            with atomic_output_path(cache_path) as temporary_path:
+                save(temporary_path)
         except (OSError, RuntimeError, TypeError, ValueError):
             return False
         return True
@@ -867,13 +866,9 @@ class PocketTTSVoiceRouterBackend:
     def _save_voice_state(self, state, cache_path):
         if not callable(self.state_exporter):
             return False
-        temporary_path = cache_path.with_name(
-            f"{cache_path.stem}.tmp{cache_path.suffix}"
-        )
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_exporter(state, temporary_path)
-            temporary_path.replace(cache_path)
+            with atomic_output_path(cache_path) as temporary_path:
+                self.state_exporter(state, temporary_path)
         except (OSError, RuntimeError, TypeError, ValueError):
             return False
         return True

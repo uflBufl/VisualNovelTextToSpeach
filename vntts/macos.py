@@ -2,6 +2,7 @@ import plistlib
 import sys
 from pathlib import Path
 
+from vntts.atomic_io import atomic_output_path
 from vntts.settings import get_local_data_directory
 
 launch_agent_label = "io.github.visualnoveltexttospeech.login"
@@ -47,10 +48,9 @@ class MacOSLaunchAtLogin:
             "StandardOutPath": str(self.log_directory / "launch-agent.log"),
             "StandardErrorPath": str(self.log_directory / "launch-agent-error.log"),
         }
-        temporary_path = self.path.with_suffix(".plist.tmp")
-        with temporary_path.open("wb") as output:
-            plistlib.dump(payload, output)
-        temporary_path.replace(self.path)
+        with atomic_output_path(self.path) as temporary_path:
+            with temporary_path.open("wb") as output:
+                plistlib.dump(payload, output)
         return self.path
 
 

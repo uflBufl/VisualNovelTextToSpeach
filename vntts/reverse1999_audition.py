@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.atomic_io import atomic_write_json
 from vntts.reverse1999_config import default_output as default_dialogue_index
 from vntts.reverse1999_index import default_output as default_bank_index
 from vntts.settings import get_local_data_directory
@@ -180,12 +181,7 @@ def save_speaker_mapping(
         }
     )
     mappings.sort(key=lambda item: item["display_name"].casefold())
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(path)
+    atomic_write_json(path, document)
     return path
 
 

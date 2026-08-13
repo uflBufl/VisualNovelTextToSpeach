@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from vntts.atomic_io import atomic_output_path, atomic_write_json
 from vntts.settings import get_local_data_directory
 
 default_review_path = get_local_data_directory() / "reverse1999" / "clip-reviews.json"
@@ -213,10 +214,8 @@ def trim_and_normalize_voice_reference(
         normalized[-fade_samples:] *= fade[::-1]
 
     output = Path(output).expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    _write_pcm_wav(temporary, normalized, sample_rate)
-    temporary.replace(output)
+    with atomic_output_path(output) as temporary:
+        _write_pcm_wav(temporary, normalized, sample_rate)
     return output
 
 
@@ -290,12 +289,7 @@ def record_clip_review(
             value["media_id"],
         )
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(path)
+    atomic_write_json(path, document)
     return path
 
 
@@ -339,11 +333,7 @@ def write_quality_report(metrics, output):
             "after listening; technical metrics alone never approve a reference."
         ),
     }
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(output)
+    atomic_write_json(output, document)
     return output
 
 

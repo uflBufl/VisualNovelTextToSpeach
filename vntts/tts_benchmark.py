@@ -1,5 +1,4 @@
 import argparse
-import json
 import platform
 import sys
 import wave
@@ -8,6 +7,8 @@ from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 
 import numpy as np
+
+from vntts.atomic_io import atomic_output_path, atomic_write_json
 
 try:
     import resource
@@ -68,16 +69,14 @@ def _rss_mb():
 
 def write_wav(path, audio, sample_rate):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     samples = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
     pcm = np.round(samples * 32767).astype("<i2")
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    with wave.open(str(temporary), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(int(sample_rate))
-        output.writeframes(pcm.tobytes())
-    temporary.replace(path)
+    with atomic_output_path(path) as temporary:
+        with wave.open(str(temporary), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(int(sample_rate))
+            output.writeframes(pcm.tobytes())
     return path
 
 
@@ -191,12 +190,7 @@ def write_report(report, output_directory):
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     path = output_directory / f"{report['backend']}.json"
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    atomic_write_json(path, report)
     return path
 
 

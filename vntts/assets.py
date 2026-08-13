@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -11,6 +10,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from vntts.atomic_io import atomic_write_json
+from vntts.file_integrity import sha256_file
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -436,14 +437,6 @@ def load_coqui_model_asset(model_name):
     )
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def slugify(value):
     normalized = unicodedata.normalize("NFKD", value or "")
     ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
@@ -459,11 +452,4 @@ def read_json(path, default):
 
 
 def write_json_atomic(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    return atomic_write_json(path, value)

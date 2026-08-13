@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.file_integrity import sha256_file
 from vntts.reverse1999_audition import (
     candidate_banks,
     default_bank_index,
@@ -382,8 +382,8 @@ class Reverse1999AuditionDialog(QDialog):
             imported = ImportedReference(
                 path=destination,
                 media_id=int(media_id),
-                source_sha256=hashlib.sha256(Path(output).read_bytes()).hexdigest(),
-                reference_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+                source_sha256=sha256_file(Path(output)),
+                reference_sha256=sha256_file(destination),
                 bank=candidate.filename,
             )
             manifest = self.manifest_updater(

@@ -9,6 +9,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
+from vntts.atomic_io import atomic_write_json
 from vntts.reverse1999_catalog import Reverse1999NpcCatalog, default_catalog_path
 from vntts.settings import get_local_data_directory
 
@@ -257,12 +258,7 @@ def build_dialogue_index(config_directory, *, catalog_path=default_catalog_path)
 
 def write_dialogue_index(index, output=default_output):
     output = Path(output).expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(output)
+    atomic_write_json(output, index)
     return output
 
 

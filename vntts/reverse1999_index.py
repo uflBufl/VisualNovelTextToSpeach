@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vntts.atomic_io import atomic_write_json
 from vntts.reverse1999_voice_import import (
     find_game_audio_directory,
     is_scene_audio_bank,
@@ -207,13 +208,7 @@ def build_bank_index(
         "npc_banks": dict(sorted(npc_banks.items())),
         "banks": entries,
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(f"{output.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(output)
+    atomic_write_json(output, index)
     return index, output
 
 

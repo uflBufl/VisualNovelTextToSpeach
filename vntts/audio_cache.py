@@ -1,9 +1,10 @@
 import json
 from hashlib import blake2b
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
+
+from vntts.atomic_io import atomic_output_path
 
 
 class PersistentAudioCache:
@@ -46,16 +47,13 @@ class PersistentAudioCache:
         audio = np.atleast_1d(np.asarray(audio, dtype=np.float32).squeeze())
         if audio.ndim != 1 or audio.size == 0 or not np.all(np.isfinite(audio)):
             return None
-        self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / f"{key}.npy"
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
-            with temporary.open("wb") as destination:
-                np.save(destination, audio, allow_pickle=False)
-            temporary.replace(path)
+            with atomic_output_path(path) as temporary:
+                with temporary.open("wb") as destination:
+                    np.save(destination, audio, allow_pickle=False)
             self._prune()
         except OSError:
-            temporary.unlink(missing_ok=True)
             return None
         return path
 

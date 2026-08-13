@@ -1,8 +1,8 @@
-import json
 from pathlib import Path
 
 from PIL import Image
 
+from vntts.atomic_io import atomic_write_json
 from vntts.ocr import (
     default_dialog_region,
     default_minimum_ocr_confidence,
@@ -22,13 +22,7 @@ def _write_report(report, report_path):
         if report_path is None
         else Path(report_path).expanduser()
     )
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = report_path.with_suffix(f"{report_path.suffix}.tmp")
-    temporary_path.write_text(
-        json.dumps(report, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(report_path)
+    atomic_write_json(report_path, report)
     return report_path
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from platformdirs import user_config_path, user_data_path
 
+from vntts.atomic_io import atomic_write_json
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
@@ -257,13 +258,7 @@ class AppSettings:
 
     def save(self, path=None):
         path = get_settings_path() if path is None else Path(path).expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-        temporary_path.write_text(
-            json.dumps(asdict(self), indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(path)
+        atomic_write_json(path, asdict(self))
         return path
 
     def updated(self, **changes):

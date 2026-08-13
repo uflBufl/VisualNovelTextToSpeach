@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vntts.atomic_io import atomic_write_json
+
 
 @dataclass(frozen=True)
 class OCRReviewSample:
@@ -41,12 +43,7 @@ class OCRReviewStore:
             payload["correction_scope"] = scope
         if corrections:
             payload["corrections"] = dict(corrections)
-        temporary_path = sample.metadata_path.with_suffix(".json.tmp")
-        temporary_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(sample.metadata_path)
+        atomic_write_json(sample.metadata_path, payload)
 
     def _load_sample(self, metadata_path):
         try:

@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
+from vntts.atomic_io import atomic_write_json
 from vntts.ocr import DialogRegion, get_dialog_region
 from vntts.settings import get_config_directory
 
@@ -113,20 +114,13 @@ class GameProfileStore:
         return store
 
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": profiles_schema_version,
-                    "profiles": [profile.to_mapping() for profile in self.profiles],
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        atomic_write_json(
+            self.path,
+            {
+                "schema_version": profiles_schema_version,
+                "profiles": [profile.to_mapping() for profile in self.profiles],
+            },
         )
-        temporary_path.replace(self.path)
         return self.path
 
     def get(self, profile_id):
