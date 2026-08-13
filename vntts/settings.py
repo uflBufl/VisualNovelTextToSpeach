@@ -10,7 +10,7 @@ from vntts.atomic_io import atomic_write_json
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 15
+settings_schema_version = 16
 
 
 def _platform_app_name():
@@ -78,6 +78,7 @@ class AppSettings:
     keep_running_on_close: bool = False
     compact_controls: bool = False
     voice_manifest: str | None = None
+    story_index: str | None = None
     narrator_speaker: str | None = None
     active_profile_id: str | None = None
 
@@ -110,6 +111,7 @@ class AppSettings:
             "tts_language",
             "tts_speaker_wav",
             "voice_manifest",
+            "story_index",
             "narrator_speaker",
             "game_window_title",
             "active_profile_id",
@@ -224,6 +226,7 @@ class AppSettings:
             "VNTTS_TTS_SPEAKER_WAV": "tts_speaker_wav",
             "VNTTS_TTS_PROFILE": "tts_profile",
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
+            "VNTTS_STORY_INDEX": "story_index",
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
             "VNTTS_OCR_LANGUAGE": "ocr_language",
             "VNTTS_SPEECH_BACKEND": "speech_backend",

@@ -195,7 +195,8 @@ class AppController:
         )
         self.history = history or DialogueHistory()
         self.chapter_voice_preloader = (
-            chapter_voice_preloader or ChapterVoicePreloader.load_optional()
+            chapter_voice_preloader
+            or ChapterVoicePreloader.load_optional(self.settings.story_index)
         )
         self.tts_factory = tts_factory
         self.status_handler = status_handler
@@ -597,6 +598,9 @@ class AppController:
             self.live_reader.wait()
 
         self.settings = settings
+        self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
+            self.settings.story_index
+        )
         self.refresh_corrections()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()

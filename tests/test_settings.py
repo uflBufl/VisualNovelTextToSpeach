@@ -22,13 +22,13 @@ class SettingsTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(settings.schema_version, 15)
+        self.assertEqual(settings.schema_version, 16)
         self.assertEqual(settings.live_idle_flush_ms, 400)
 
     def test_current_schema_preserves_an_explicit_idle_delay(self):
         settings = AppSettings.from_mapping(
             {
-                "schema_version": 15,
+                "schema_version": 16,
                 "live_idle_flush_ms": 700,
             }
         )

@@ -121,12 +121,6 @@ uv run vntts-calibrate
 One-time screenshots are retained until manually deleted. Live-mode frames are
 not stored. Generated files under `logs/` are ignored by Git.
 
-Provision the locally cached Reverse: 1999 character references:
-
-```sh
-uv run python examples/provision_reverse1999_voices.py
-```
-
 For the faster English CPU engine, install its isolated runtime once, select
 Chatterbox Nano in Settings, and restart the app:
 
@@ -147,81 +141,17 @@ Character voice cloning also requires accepting the model terms at
 <https://huggingface.co/kyutai/pocket-tts> and authenticating once with
 `uvx hf auth login`.
 
-Import clean story-NPC references from an installed Reverse: 1999 game bank:
+Game-specific extraction lives in a separate repository. An extractor may
+produce two local, game-agnostic artifacts for VNTTS:
 
-```sh
-brew install vgmstream  # macOS only
-uv run vntts-reverse1999-index
-uv run vntts-reverse1999-config
-uv run vntts-reverse1999-audition --search Selone
-uv run vntts-reverse1999-batch run
-uv run vntts-reverse1999-voice Kamuta
-uv run vntts-reverse1999-voice "NPC name" --bank /path/to/english-voice.bnk
-uv run vntts-reverse1999-catalog
-```
+- a character voice `manifest.json`;
+- a versioned `vntts.story-index` JSONL file for chapter detection and likely
+  next-speaker preloading.
 
-NPC mappings and approved reference metadata are stored in
-`data/reverse1999-npc-catalog.json`. Extracted game audio stays local under
-`data/reverse1999-voices/`; it is not committed. The catalog validation command
-checks those local files against the committed checksums.
-
-For confidence-gated bulk preparation, run:
-
-```sh
-uv run vntts-reverse1999-batch auto
-```
-
-`auto` accepts only speaker IDs with a stable unique dialogue name, at least two
-dialogue lines, and a dedicated bank containing at least three clips. Scene-audio
-banks such as `activityvoc_story_*` are quarantined because they may contain TV,
-radio, crowd, or unrelated voices even when their filename includes an NPC ID.
-It scans at most two preferred speaker banks per character, scores the extracted
-audio, chooses three technically clean references totaling at least 15 seconds,
-and writes the review queue shown in the command output. Conflicting names,
-shared names, weak dialogue evidence, and unsuitable banks stay in the
-mapping-review queue in the resumable state file.
-
-The generated clips are never approved automatically. Listen to each queued WAV
-and set `music_or_sfx`, `multiple_speakers`, and `matches_expected_speaker` to
-`false` or `true` in the review JSON. Entries left as `null` remain pending. An
-existing local Whisper model adds an offline transcript-to-character dialogue
-identity gate without allowing downloads:
-
-```sh
-uv run vntts-reverse1999-batch auto \
-  --whisper-model /absolute/path/to/local/whisper-model
-```
-
-An existing local WavLM x-vector model can additionally reject candidate sets
-whose clips do not form one consistent speaker cluster. For cataloged characters,
-it also compares candidates with their already approved reference voice:
-
-```sh
-uv run vntts-reverse1999-batch auto \
-  --whisper-model /absolute/path/to/local/whisper-model \
-  --speaker-model /absolute/path/to/local/wavlm-xvector-model
-```
-
-After reviewing, import the approved sets and update the versioned catalog
-atomically:
-
-```sh
-uv run vntts-reverse1999-batch finish \
-  --output data/reverse1999-voices \
-  --reference-root data
-uv run vntts-reverse1999-catalog
-```
-
-`finish` validates every reference path and checksum before replacing the
-catalog. Running it again is idempotent.
-
-Extract or convert game audio directly:
-
-```sh
-uv run vntts-wwise-extract /path/to/voice.bnk output/ --convert
-uv run vntts-audio-convert input.wem output.wav
-uv run vntts-audio-score reference.wav --output quality.json
-```
+Select both in Settings or store them in a game profile. VNTTS does not decrypt
+game configuration, parse engine assets, inspect audio banks, or distribute
+extracted game content. The Reverse: 1999 implementation and its local-only
+story/voice workflow are in the sibling `reverse1999-extractor` project.
 
 Use XTTS with character-specific voices and a default narrator voice:
 
@@ -229,7 +159,8 @@ Use XTTS with character-specific voices and a default narrator voice:
 VNTTS_TTS_MODEL='tts_models/multilingual/multi-dataset/xtts_v2' \
 VNTTS_TTS_LANGUAGE='en' \
 VNTTS_TTS_PROFILE='stable' \
-VNTTS_VOICE_MANIFEST='data/reverse1999-voices/manifest.json' \
+VNTTS_VOICE_MANIFEST='/path/to/voice-pack/manifest.json' \
+VNTTS_STORY_INDEX='/path/to/story-index.jsonl' \
 VNTTS_NARRATOR_SPEAKER='Claribel Dervla' \
 uv run vntts
 ```

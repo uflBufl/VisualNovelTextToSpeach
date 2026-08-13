@@ -63,8 +63,6 @@ from vntts.release_smoke_test import (
     default_smoke_test_model,
     run_release_smoke_test,
 )
-from vntts.reverse1999_audition import load_audition_data
-from vntts.reverse1999_audition_ui import Reverse1999AuditionDialog
 from vntts.runtime_config import (
     get_clear_queue_hotkey,
     get_emergency_stop_hotkey,
@@ -205,6 +203,7 @@ class SettingsDialog(QDialog):
             settings.voice_manifest
             or (str(default_voice_manifest) if default_voice_manifest else "")
         )
+        self.story_index = QLineEdit(settings.story_index or "")
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
@@ -274,6 +273,7 @@ class SettingsDialog(QDialog):
         form.addRow("XTTS model", self.tts_model)
         form.addRow("TTS language", self.tts_language)
         form.addRow("Voice manifest", self.voice_manifest)
+        form.addRow("Story index", self.story_index)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("Voice profile", self.tts_profile)
         form.addRow("Output volume", self.output_volume)
@@ -448,6 +448,7 @@ class SettingsDialog(QDialog):
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
+                "story_index": optional_text(self.story_index),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "tts_profile": self.tts_profile.currentText(),
                 "output_volume_percent": self.output_volume.value(),
@@ -1093,53 +1094,7 @@ class TrayApplication(QObject):
         )
 
     def open_speaker_mapping(self):
-        try:
-            dialogue_index, bank_index = load_audition_data()
-        except Exception as error:
-            answer = QMessageBox.question(
-                self.dashboard,
-                "Voice index required",
-                f"Voice mapping data is not available yet: {error}\n\n"
-                "Scan the installed Reverse: 1999 audio and configuration now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self.run_reverse1999_scan()
-            return
-        dialog = Reverse1999AuditionDialog(
-            dialogue_index, bank_index, parent=self.dashboard
-        )
-        if self.pending_unknown_speaker:
-            dialog.search.setText(self.pending_unknown_speaker)
-            dialog.speaker_name.setText(self.pending_unknown_speaker)
-        dialog.voice_imported.connect(self.voice_imported)
-        dialog.exec()
-
-    def run_reverse1999_scan(self):
-        self.set_status("Scanning installed Reverse: 1999 voices and dialogue...")
-
-        def scan():
-            try:
-                from vntts.reverse1999_batch import new_state, scan_installed_game
-
-                scan_installed_game(new_state())
-                load_audition_data()
-            except Exception as error:
-                self.signals.error_reported.emit(
-                    f"Unable to scan Reverse: 1999: {error}"
-                )
-                return
-            self.signals.status_changed.emit(
-                "Voice scan complete; open Manage voices again"
-            )
-
-        Thread(target=scan, daemon=True).start()
-
-    def voice_imported(self, manifest):
-        self.settings = self.settings.updated(voice_manifest=manifest)
-        self.settings.save()
-        self.dashboard.set_configuration(self.settings)
-        self.set_status("Voice imported; restart VNTTS to load the updated voice pack")
+        self.open_assets()
 
     def open_support_center(self):
         if self.support_dialog is None:

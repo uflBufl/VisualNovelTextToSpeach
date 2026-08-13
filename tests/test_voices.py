@@ -118,22 +118,22 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
         self.assertEqual(normalize_character_name(" 37 "), "37")
         self.assertEqual(normalize_character_name("An-an Lee"), "ananlee")
 
-    def test_discovers_a_complete_provisioned_reverse_1999_voice_pack(self):
+    def test_discovers_a_complete_default_voice_pack(self):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
-            pack = project_root / "data" / "reverse1999-voices"
+            pack = project_root / "data" / "voice-packs" / "default"
             references = pack / "references"
             references.mkdir(parents=True)
-            (references / "fatutu.ogg").write_bytes(b"voice")
+            (references / "ada.ogg").write_bytes(b"voice")
             manifest = pack / "manifest.json"
             manifest.write_text(
                 json.dumps(
                     {
                         "voices": [
                             {
-                                "character": "Fatutu",
-                                "speaker": "reverse-1999-fatutu-v2",
-                                "reference": "references/fatutu.ogg",
+                                "character": "Ada",
+                                "speaker": "ada-v2",
+                                "reference": "references/ada.ogg",
                             }
                         ]
                     }
@@ -149,15 +149,15 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
     def test_ignores_an_incomplete_default_voice_pack(self):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
-            pack = project_root / "data" / "reverse1999-voices"
+            pack = project_root / "data" / "voice-packs" / "default"
             pack.mkdir(parents=True)
             (pack / "manifest.json").write_text(
                 json.dumps(
                     {
                         "voices": [
                             {
-                                "character": "Fatutu",
-                                "speaker": "reverse-1999-fatutu-v2",
+                                "character": "Ada",
+                                "speaker": "ada-v2",
                                 "reference": "references/missing.ogg",
                             }
                         ]

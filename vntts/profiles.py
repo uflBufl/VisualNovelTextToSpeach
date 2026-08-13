@@ -23,6 +23,7 @@ class GameProfile:
     dialog_region: DialogRegion
     ocr_language: str
     voice_manifest: str | None
+    story_index: str | None
 
     @classmethod
     def from_settings(cls, name, settings, *, region=None, profile_id=None):
@@ -34,6 +35,7 @@ class GameProfile:
             dialog_region=region or get_dialog_region(),
             ocr_language=settings.ocr_language,
             voice_manifest=settings.voice_manifest,
+            story_index=settings.story_index,
         )
 
     @classmethod
@@ -56,6 +58,7 @@ class GameProfile:
             ),
             ocr_language=str(values.get("ocr_language") or "eng").strip(),
             voice_manifest=_optional_text(values.get("voice_manifest")),
+            story_index=_optional_text(values.get("story_index")),
         )
 
     def to_mapping(self):
@@ -70,6 +73,7 @@ class GameProfile:
             game_window_title=self.game_window_title,
             ocr_language=self.ocr_language,
             voice_manifest=self.voice_manifest,
+            story_index=self.story_index,
         )
 
     def updated_from_settings(self, settings, *, region=None):
@@ -80,6 +84,7 @@ class GameProfile:
             dialog_region=region or get_dialog_region(),
             ocr_language=settings.ocr_language,
             voice_manifest=settings.voice_manifest,
+            story_index=settings.story_index,
         )
 
 

@@ -145,7 +145,7 @@ def find_default_voice_manifest(project_root=None):
         if project_root is None
         else Path(project_root).expanduser().resolve()
     )
-    manifest_path = project_root / "data" / "reverse1999-voices" / "manifest.json"
+    manifest_path = project_root / "data" / "voice-packs" / "default" / "manifest.json"
     if not manifest_path.is_file():
         return None
 

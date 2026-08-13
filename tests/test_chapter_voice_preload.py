@@ -37,6 +37,30 @@ def dialogue_document():
     }
 
 
+def story_index_document():
+    records = [
+        {
+            "record_type": "metadata",
+            "schema": "vntts.story-index",
+            "schema_version": 1,
+            "line_count": len(dialogue_document()["dialogue"]),
+        }
+    ]
+    for position, dialogue in enumerate(dialogue_document()["dialogue"]):
+        records.append(
+            {
+                "record_type": "line",
+                "line_id": f"test:{position}",
+                "chapter": dialogue["chapter"],
+                "sequence": dialogue["sequence"],
+                "speaker": dialogue["speaker_name"],
+                "text": dialogue["text"],
+                "kind": "dialogue",
+            }
+        )
+    return "\n".join(json.dumps(record) for record in records) + "\n"
+
+
 class ChapterVoicePreloaderTest(unittest.TestCase):
     def test_ranks_upcoming_unique_speakers_after_matching_partial_dialogue(self):
         preloader = ChapterVoicePreloader.from_document(dialogue_document())
@@ -67,7 +91,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
             path.write_text("not json", encoding="utf-8")
             self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
-            path.write_text(json.dumps(dialogue_document()), encoding="utf-8")
+            path.write_text(story_index_document(), encoding="utf-8")
             self.assertEqual(len(ChapterVoicePreloader.load_optional(path).dialogue), 4)
 
 

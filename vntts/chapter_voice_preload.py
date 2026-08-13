@@ -1,11 +1,9 @@
-import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from pathlib import Path
 
-from vntts.reverse1999_config import default_output as default_dialogue_index
+from vntts.story_index import StoryIndexError, load_story_index
 
 
 def _normalize(value):
@@ -61,13 +59,18 @@ class ChapterVoicePreloader:
         return cls(rows, lookahead_rows=lookahead_rows)
 
     @classmethod
-    def load_optional(cls, path=default_dialogue_index, *, lookahead_rows=80):
-        path = Path(path).expanduser()
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    def load_optional(cls, path=None, *, lookahead_rows=80):
+        if not path:
             return cls(lookahead_rows=lookahead_rows)
-        return cls.from_document(document, lookahead_rows=lookahead_rows)
+        try:
+            _metadata, indexed_lines = load_story_index(path)
+        except StoryIndexError:
+            return cls(lookahead_rows=lookahead_rows)
+        rows = (
+            ChapterDialogue(line.chapter, line.sequence, line.speaker, line.text)
+            for line in indexed_lines
+        )
+        return cls(rows, lookahead_rows=lookahead_rows)
 
     def recommend(self, character, text, *, limit=3):
         if limit <= 0 or not self.dialogue:
