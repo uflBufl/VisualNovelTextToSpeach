@@ -41,6 +41,12 @@ sections after their implementation has been verified and committed.
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.
 
+### P2 - Preserve atomic OCR review records
+
+- [ ] Stage both the uncertain-frame PNG and its JSON metadata before publishing
+      either artifact. Add a failure-path test proving that metadata
+      serialization or persistence cannot leave an orphan image.
+
 ## Windows application
 
 ### P2 - Windows distribution
