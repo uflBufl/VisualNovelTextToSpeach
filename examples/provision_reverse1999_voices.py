@@ -1,14 +1,15 @@
 import argparse
 import json
 import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from vntts.atomic_io import atomic_output_path, atomic_write_json
 from vntts.reverse1999_aliases import aliases_for_character
+from vntts.text_utils import slugify
 
 project_root = Path(__file__).resolve().parents[1]
 default_output = project_root / "data" / "reverse1999-voices"
@@ -178,32 +179,9 @@ def download(url, output):
     if output.is_file():
         return
     request = Request(url, headers={"User-Agent": user_agent})
-    temporary_output = output.with_suffix(f"{output.suffix}.part")
-    with urlopen(request, timeout=60) as response:
-        temporary_output.write_bytes(response.read())
-    temporary_output.replace(output)
-
-
-def slugify(value):
-    ascii_value = (
-        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    )
-    slug = "-".join(
-        part
-        for part in "".join(
-            character if character.isalnum() else " " for character in ascii_value
-        )
-        .casefold()
-        .split()
-    )
-    return slug or "character"
-
-
-def write_json(path, value):
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    with atomic_output_path(output) as temporary_output:
+        with urlopen(request, timeout=60) as response:
+            temporary_output.write_bytes(response.read())
 
 
 def read_json(path, default):
@@ -218,7 +196,7 @@ def provision_character(character, references_directory, reference_count):
     if not images:
         raise WikiAPIError("no archived voice recordings")
 
-    slug = slugify(character)
+    slug = slugify(character, fallback="character")
     last_error = None
     references = []
     sources = []
@@ -337,7 +315,7 @@ def main():
             print(
                 f"[{len(completed_characters)}/{len(characters)}] {character}: {result}"
             )
-            write_json(
+            atomic_write_json(
                 manifest_path,
                 {
                     "version": 2,
@@ -345,7 +323,7 @@ def main():
                     "voices": voices,
                 },
             )
-            write_json(skipped_path, {"characters": skipped})
+            atomic_write_json(skipped_path, {"characters": skipped})
 
     print(f"Provisioned {len(voices)} voices in {output_directory}")
     print(f"Skipped {len(skipped)} characters; details are in {skipped_path}")

@@ -1,9 +1,6 @@
 import os
-import re
 import sys
-from collections import OrderedDict
 from dataclasses import dataclass
-from hashlib import blake2b
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
@@ -21,6 +18,13 @@ from vntts.services.tts_engine import (
     match_output_sample_rate,
 )
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend_runtime import (
+    BoundedCache,
+    SpeechCacheKeyFactory,
+    validate_speed,
+    validate_volume,
+    voice_artifact_cache_path,
+)
 from vntts.voices import is_narrator, normalize_character_name
 
 
@@ -51,16 +55,6 @@ class PocketTTSPreparedSpeech:
     cache_key: tuple[str, str]
     persistent_cache_key: str
     cached_audio: np.ndarray | None = None
-
-
-def _voice_source_identity(voice_key, source):
-    source_path = Path(str(source)).expanduser()
-    try:
-        stat = source_path.stat()
-        source_identity = f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
-    except OSError:
-        source_identity = str(source)
-    return f"{voice_key}:{source_identity}"
 
 
 class XTTSVoiceRouterBackend:
@@ -181,12 +175,17 @@ class ChatterboxNanoVoiceRouterBackend:
         self.last_playback_underrun = False
         self.last_synthesis_ms = None
         self.last_playback_ms = None
-        self.audio_cache_size = max(0, int(audio_cache_size))
-        self.audio_cache = OrderedDict()
+        self.audio_cache = BoundedCache(audio_cache_size)
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
-            max_entries=max(64, self.audio_cache_size * 8),
+            max_entries=max(64, self.audio_cache.max_entries * 8),
+        )
+        self.persistent_cache_keys = SpeechCacheKeyFactory(
+            self.persistent_audio_cache,
+            backend=self.name,
+            model=self.model,
+            sample_rate=self.sample_rate,
         )
         self.set_volume(volume)
         self.set_speed(1.0)
@@ -210,15 +209,14 @@ class ChatterboxNanoVoiceRouterBackend:
         normalized_character = normalize_character_name(character) or "narrator"
         cache_key = normalized_character, " ".join((text or "").split())
         with self.synthesis_lock:
-            if cache_key in self.audio_cache:
-                audio = self.audio_cache.pop(cache_key)
-                self.audio_cache[cache_key] = audio
+            audio = self.audio_cache.get(cache_key)
+            if audio is not None:
                 self.last_synthesis_ms = 0.0
                 return audio
             persistent_key = self._persistent_cache_key(character, cache_key[1])
             persistent_audio = self.persistent_audio_cache.get(persistent_key)
             if persistent_audio is not None:
-                self._cache_audio(cache_key, persistent_audio)
+                self.audio_cache.put(cache_key, persistent_audio)
                 self.last_synthesis_ms = 0.0
                 return persistent_audio
 
@@ -232,7 +230,7 @@ class ChatterboxNanoVoiceRouterBackend:
                 self.last_synthesis_ms = (self.clock() - started) * 1000
 
             audio = np.asarray(audio, dtype=np.float32).squeeze()
-            self._cache_audio(cache_key, audio)
+            self.audio_cache.put(cache_key, audio)
             self.persistent_audio_cache.put(persistent_key, audio)
             return audio
 
@@ -287,19 +285,11 @@ class ChatterboxNanoVoiceRouterBackend:
         return len(characters)
 
     def set_volume(self, volume):
-        if isinstance(volume, bool) or not isinstance(volume, (int, float)):
-            raise TTSConfigurationError("Volume must be a number from 0 to 1")
-        if not 0 <= volume <= 1:
-            raise TTSConfigurationError("Volume must be between 0 and 1")
-        self.volume = float(volume)
+        self.volume = validate_volume(volume)
 
     def set_speed(self, speed):
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)):
-            raise TTSConfigurationError("Speech speed must be a number")
-        if not 0.5 <= speed <= 1.5:
-            raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
         # Nano does not currently expose a pitch-preserving speed control.
-        self.speed = float(speed)
+        self.speed = validate_speed(speed)
 
     def set_live_mode_active(self, active):
         self.live_mode_active = bool(active)
@@ -369,21 +359,17 @@ class ChatterboxNanoVoiceRouterBackend:
 
     def _conditioning_cache_path(self, key, reference):
         reference = Path(reference).expanduser().resolve()
-        try:
-            stat = reference.stat()
-            identity = f"{reference}:{stat.st_size}:{stat.st_mtime_ns}"
-        except OSError:
-            identity = str(reference)
         model_identity = (
             f"{type(self.model).__module__}.{type(self.model).__qualname__}:"
             f"{getattr(self.model, 'model_label', 'nano')}:{self.sample_rate}"
         )
-        digest = blake2b(
-            f"{model_identity}:{identity}".encode(),
-            digest_size=12,
-        ).hexdigest()
-        safe_key = re.sub(r"[^a-z0-9]+", "-", str(key).casefold()).strip("-")
-        return self.conditioning_cache_directory / f"{safe_key or 'voice'}-{digest}.pt"
+        return voice_artifact_cache_path(
+            self.conditioning_cache_directory,
+            voice_key=key,
+            source=reference,
+            model_identity=model_identity,
+            suffix=".pt",
+        )
 
     def _load_conditionals(self, cache_path):
         if not cache_path.is_file() or self.default_conditionals is None:
@@ -407,16 +393,7 @@ class ChatterboxNanoVoiceRouterBackend:
             return False
         return True
 
-    def _cache_audio(self, key, audio):
-        if self.audio_cache_size == 0:
-            return
-        self.audio_cache.pop(key, None)
-        self.audio_cache[key] = audio
-        while len(self.audio_cache) > self.audio_cache_size:
-            self.audio_cache.popitem(last=False)
-
     def _persistent_cache_key(self, character, text):
-        model = f"{self.model.__class__.__module__}.{self.model.__class__.__qualname__}"
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
             voice_key = "narrator"
@@ -424,12 +401,11 @@ class ChatterboxNanoVoiceRouterBackend:
         else:
             voice_key = voice.speaker
             source = voice.references[0] if voice.references else "missing-reference"
-        return self.persistent_audio_cache.key(
-            backend=self.name,
-            model=model,
-            voice=_voice_source_identity(voice_key, source),
+        return self.persistent_cache_keys.key(
+            voice_key=voice_key,
+            source=source,
             text=text,
-            settings={"sample_rate": self.sample_rate, "speed": self.speed},
+            speed=self.speed,
         )
 
     def _prepare_audio(self, audio, fade_seconds=0.01):
@@ -588,12 +564,17 @@ class PocketTTSVoiceRouterBackend:
         self.last_synthesis_ms = None
         self.last_first_audio_ms = None
         self.last_playback_ms = None
-        self.audio_cache_size = max(0, int(audio_cache_size))
-        self.audio_cache = OrderedDict()
+        self.audio_cache = BoundedCache(audio_cache_size)
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
-            max_entries=max(64, self.audio_cache_size * 8),
+            max_entries=max(64, self.audio_cache.max_entries * 8),
+        )
+        self.persistent_cache_keys = SpeechCacheKeyFactory(
+            self.persistent_audio_cache,
+            backend=self.name,
+            model=self.model,
+            sample_rate=self.sample_rate,
         )
         self.cached_stream_chunk_samples = max(
             1,
@@ -608,12 +589,10 @@ class PocketTTSVoiceRouterBackend:
         cache_key = voice_key, spoken_text
         persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
         cached_audio = self.audio_cache.get(cache_key)
-        if cached_audio is not None:
-            self.audio_cache.move_to_end(cache_key)
-        else:
+        if cached_audio is None:
             cached_audio = self.persistent_audio_cache.get(persistent_key)
             if cached_audio is not None:
-                self._cache_audio(cache_key, cached_audio)
+                self.audio_cache.put(cache_key, cached_audio)
         voice_state = None
         if cached_audio is None:
             with self.model_lock:
@@ -695,7 +674,7 @@ class PocketTTSVoiceRouterBackend:
                             )
                 if completed and raw_chunks:
                     complete_audio = np.concatenate(raw_chunks)
-                    self._cache_audio(prepared.cache_key, complete_audio)
+                    self.audio_cache.put(prepared.cache_key, complete_audio)
                     self.persistent_audio_cache.put(
                         prepared.persistent_cache_key,
                         complete_audio,
@@ -727,19 +706,11 @@ class PocketTTSVoiceRouterBackend:
         return len(characters)
 
     def set_volume(self, volume):
-        if isinstance(volume, bool) or not isinstance(volume, (int, float)):
-            raise TTSConfigurationError("Volume must be a number from 0 to 1")
-        if not 0 <= volume <= 1:
-            raise TTSConfigurationError("Volume must be between 0 and 1")
-        self.volume = float(volume)
+        self.volume = validate_volume(volume)
 
     def set_speed(self, speed):
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)):
-            raise TTSConfigurationError("Speech speed must be a number")
-        if not 0.5 <= speed <= 1.5:
-            raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
         # Pocket TTS 2.1 has no pitch-preserving speed control.
-        self.speed = float(speed)
+        self.speed = validate_speed(speed)
 
     def set_live_mode_active(self, active):
         return bool(active)
@@ -844,23 +815,16 @@ class PocketTTSVoiceRouterBackend:
         return voice.speaker, voice.references[0]
 
     def _voice_state_cache_path(self, voice_key, source):
-        source_path = Path(str(source)).expanduser()
-        try:
-            stat = source_path.stat()
-            identity = f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
-        except OSError:
-            identity = str(source)
         model_identity = (
             f"{type(self.model).__module__}.{type(self.model).__qualname__}:"
             f"{self.sample_rate}"
         )
-        digest = blake2b(
-            f"{model_identity}:{identity}".encode(),
-            digest_size=12,
-        ).hexdigest()
-        safe_key = re.sub(r"[^a-z0-9]+", "-", voice_key.casefold()).strip("-")
-        return self.voice_state_cache_directory / (
-            f"{safe_key or 'voice'}-{digest}.safetensors"
+        return voice_artifact_cache_path(
+            self.voice_state_cache_directory,
+            voice_key=voice_key,
+            source=source,
+            model_identity=model_identity,
+            suffix=".safetensors",
         )
 
     def _save_voice_state(self, state, cache_path):
@@ -873,22 +837,12 @@ class PocketTTSVoiceRouterBackend:
             return False
         return True
 
-    def _cache_audio(self, key, audio):
-        if self.audio_cache_size == 0:
-            return
-        self.audio_cache.pop(key, None)
-        self.audio_cache[key] = np.asarray(audio, dtype=np.float32)
-        while len(self.audio_cache) > self.audio_cache_size:
-            self.audio_cache.popitem(last=False)
-
     def _persistent_cache_key(self, voice_key, text, source):
-        model = f"{self.model.__class__.__module__}.{self.model.__class__.__qualname__}"
-        return self.persistent_audio_cache.key(
-            backend=self.name,
-            model=model,
-            voice=_voice_source_identity(voice_key, source),
+        return self.persistent_cache_keys.key(
+            voice_key=voice_key,
+            source=source,
             text=text,
-            settings={"sample_rate": self.sample_rate, "speed": self.speed},
+            speed=self.speed,
         )
 
     def _cached_chunks(self, audio):
