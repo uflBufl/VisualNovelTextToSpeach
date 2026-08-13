@@ -2,7 +2,6 @@ import argparse
 import hashlib
 import json
 import sys
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +16,7 @@ from vntts.reverse1999_catalog import (
     normalize_name,
 )
 from vntts.settings import get_local_data_directory
+from vntts.text_utils import slugify
 from vntts.voice_reference_quality import trim_and_normalize_voice_reference
 from vntts.wwise import (
     AudioConversionError,
@@ -46,9 +46,7 @@ class ImportedReference:
 def is_scene_audio_bank(bank):
     """Return whether a bank is a scene-audio container, not a speaker bank."""
     stem = Path(bank).stem.casefold()
-    return stem.startswith("activityvoc_story_") or stem.startswith(
-        "plotvoc_story_"
-    )
+    return stem.startswith("activityvoc_story_") or stem.startswith("plotvoc_story_")
 
 
 def create_parser():
@@ -106,23 +104,6 @@ def create_parser():
         help="Path or command name for vgmstream-cli.",
     )
     return parser
-
-
-def slugify(value):
-    ascii_value = (
-        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    )
-    return (
-        "-".join(
-            part
-            for part in "".join(
-                character if character.isalnum() else " " for character in ascii_value
-            )
-            .casefold()
-            .split()
-        )
-        or "character"
-    )
 
 
 def find_game_audio_directory(home=None):
@@ -200,7 +181,7 @@ def decode_references(
 
     references_directory = output_directory / "references"
     references_directory.mkdir(parents=True, exist_ok=True)
-    slug = slugify(character)
+    slug = slugify(character, fallback="character")
     decoded = []
     with TemporaryDirectory(prefix="vntts-game-voice-") as temporary_directory:
         temporary_directory = Path(temporary_directory)
@@ -252,7 +233,7 @@ def update_manifest(output_directory, character, references, source_bank):
     ]
     entry = {
         "character": character.strip(),
-        "speaker": f"reverse-1999-{slugify(character)}-game-v1",
+        "speaker": f"reverse-1999-{slugify(character, fallback='character')}-game-v1",
         "references": [
             reference.relative_to(output_directory).as_posix()
             for reference in reference_paths

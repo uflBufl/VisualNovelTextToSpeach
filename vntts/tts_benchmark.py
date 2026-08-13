@@ -1,14 +1,14 @@
 import argparse
 import platform
 import sys
-import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 
 import numpy as np
 
-from vntts.atomic_io import atomic_output_path, atomic_write_json
+from vntts.atomic_io import atomic_write_json
+from vntts.audio_io import write_pcm16_wav
 
 try:
     import resource
@@ -68,16 +68,7 @@ def _rss_mb():
 
 
 def write_wav(path, audio, sample_rate):
-    path = Path(path)
-    samples = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
-    pcm = np.round(samples * 32767).astype("<i2")
-    with atomic_output_path(path) as temporary:
-        with wave.open(str(temporary), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(int(sample_rate))
-            output.writeframes(pcm.tobytes())
-    return path
+    return write_pcm16_wav(path, audio, sample_rate)
 
 
 def create_backend(name, registry, cache_root):

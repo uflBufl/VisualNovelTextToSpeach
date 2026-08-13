@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts.atomic_io import atomic_output_path, atomic_write_json, atomic_write_text
+from vntts.atomic_io import (
+    atomic_output_group,
+    atomic_output_path,
+    atomic_write_json,
+    atomic_write_text,
+)
 
 
 class AtomicIoTest(unittest.TestCase):
@@ -32,6 +37,23 @@ class AtomicIoTest(unittest.TestCase):
             self.assertEqual(
                 [path.name for path in destination.parent.iterdir()], [destination.name]
             )
+
+    def test_failed_group_publishes_nothing(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = root / "first.bin"
+            second = root / "second.json"
+            with self.assertRaises(RuntimeError):
+                with atomic_output_group(first, second) as (
+                    staged_first,
+                    staged_second,
+                ):
+                    staged_first.write_bytes(b"ready")
+                    staged_second.write_text("{}", encoding="utf-8")
+                    raise RuntimeError("producer failed")
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertEqual(list(root.iterdir()), [])
 
 
 if __name__ == "__main__":

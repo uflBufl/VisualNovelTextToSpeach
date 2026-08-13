@@ -1,8 +1,6 @@
 import json
 import os
-import re
 import shutil
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -13,6 +11,7 @@ from uuid import uuid4
 from vntts.atomic_io import atomic_write_json
 from vntts.file_integrity import sha256_file
 from vntts.settings import get_local_data_directory
+from vntts.text_utils import slugify
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 asset_manifest_name = "vntts-asset.json"
@@ -262,7 +261,7 @@ class ModelAssetManager:
                 "size": path.stat().st_size,
                 "sha256": sha256_file(path),
             }
-        write_json_atomic(
+        atomic_write_json(
             model_path / asset_manifest_name,
             {"version": 1, "model": asset.name, "files": files},
         )
@@ -281,7 +280,7 @@ class VoicePackManager:
         if not character:
             raise VoiceManifestError("Character name is required")
         references = self._validate_reference_files(reference_files)
-        pack_path = self.storage_root / slugify(pack)
+        pack_path = self.storage_root / slugify(pack, fallback="asset")
         references_path = pack_path / "references"
         references_path.mkdir(parents=True, exist_ok=True)
         manifest_path = pack_path / "manifest.json"
@@ -294,7 +293,8 @@ class VoicePackManager:
         try:
             for source in references:
                 filename = (
-                    f"{slugify(character)}-{uuid4().hex[:10]}{source.suffix.casefold()}"
+                    f"{slugify(character, fallback='asset')}-{uuid4().hex[:10]}"
+                    f"{source.suffix.casefold()}"
                 )
                 output = references_path / filename
                 shutil.copy2(source, output)
@@ -306,7 +306,7 @@ class VoicePackManager:
 
         voice = {
             "character": character,
-            "speaker": f"local-{slugify(character)}-v2",
+            "speaker": f"local-{slugify(character, fallback='asset')}-v2",
             "aliases": [alias.strip() for alias in aliases if alias.strip()],
             "references": [f"references/{path.name}" for path in copied],
         }
@@ -317,7 +317,7 @@ class VoicePackManager:
         ]
         voices.append(voice)
         voices.sort(key=lambda item: item["character"].casefold())
-        write_json_atomic(
+        atomic_write_json(
             manifest_path,
             {"version": 2, "voices": voices},
         )
@@ -329,7 +329,7 @@ class VoicePackManager:
         source_manifest = Path(source_manifest).expanduser().resolve()
         registry = CharacterVoiceRegistry.from_file(source_manifest)
         pack_name = pack_name or source_manifest.parent.name
-        pack_path = self.storage_root / slugify(pack_name)
+        pack_path = self.storage_root / slugify(pack_name, fallback="asset")
         references_path = pack_path / "references"
         references_path.mkdir(parents=True, exist_ok=True)
 
@@ -345,7 +345,7 @@ class VoicePackManager:
                         f"Voice reference does not exist: {reference}"
                     )
                 output = references_path / (
-                    f"{slugify(voice.character)}-{uuid4().hex[:10]}"
+                    f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
                     f"{reference.suffix.casefold()}"
                 )
                 shutil.copy2(reference, output)
@@ -360,7 +360,7 @@ class VoicePackManager:
             )
         entries.sort(key=lambda item: item["character"].casefold())
         output_manifest = pack_path / "manifest.json"
-        write_json_atomic(output_manifest, {"version": 2, "voices": entries})
+        atomic_write_json(output_manifest, {"version": 2, "voices": entries})
         CharacterVoiceRegistry.from_file(output_manifest)
         self._write_voice_checksums(pack_path, output_manifest)
         return output_manifest
@@ -405,7 +405,7 @@ class VoicePackManager:
             for voice in voices
             for reference in voice.references
         }
-        write_json_atomic(
+        atomic_write_json(
             pack_path / asset_manifest_name,
             {
                 "version": 1,
@@ -437,19 +437,8 @@ def load_coqui_model_asset(model_name):
     )
 
 
-def slugify(value):
-    normalized = unicodedata.normalize("NFKD", value or "")
-    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_value).strip("-").casefold()
-    return slug or "asset"
-
-
 def read_json(path, default):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default
-
-
-def write_json_atomic(path, value):
-    return atomic_write_json(path, value)

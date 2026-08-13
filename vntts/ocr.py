@@ -10,7 +10,7 @@ import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
 
-from vntts.atomic_io import atomic_output_path, atomic_write_json
+from vntts.atomic_io import atomic_output_group, atomic_write_json
 from vntts.dialog import is_probable_character_name, parse_dialog
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
@@ -144,20 +144,23 @@ class UncertainFrameRecorder:
             stem = f"uncertain-{datetime.now():%Y-%m-%d-%H-%M-%S}-{uuid4().hex}"
             image_path = self.directory / f"{stem}.png"
             metadata_path = self.directory / f"{stem}.json"
-            with atomic_output_path(image_path) as temporary_image:
+            with atomic_output_group(image_path, metadata_path) as (
+                temporary_image,
+                temporary_metadata,
+            ):
                 image.save(temporary_image, format="PNG")
-            atomic_write_json(
-                metadata_path,
-                {
-                    "image": image_path.name,
-                    "character": result.character,
-                    "text": result.text,
-                    "confidence": result.confidence,
-                    "minimum_confidence": minimum_confidence,
-                    "preprocessing_profile": result.profile,
-                    "attempts": result.attempts,
-                },
-            )
+                atomic_write_json(
+                    temporary_metadata,
+                    {
+                        "image": image_path.name,
+                        "character": result.character,
+                        "text": result.text,
+                        "confidence": result.confidence,
+                        "minimum_confidence": minimum_confidence,
+                        "preprocessing_profile": result.profile,
+                        "attempts": result.attempts,
+                    },
+                )
             self.last_fingerprint = fingerprint
             return image_path
 
@@ -205,11 +208,7 @@ def load_dialog_region(path):
 
 def save_dialog_region(region, path):
     path = Path(path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(region.to_json(), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(path, region.to_json())
 
 
 def get_dialog_region():

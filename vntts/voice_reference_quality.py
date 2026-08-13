@@ -9,7 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from vntts.atomic_io import atomic_output_path, atomic_write_json
+from vntts.atomic_io import atomic_write_json
+from vntts.audio_io import write_pcm16_wav
 from vntts.settings import get_local_data_directory
 
 default_review_path = get_local_data_directory() / "reverse1999" / "clip-reviews.json"
@@ -92,15 +93,6 @@ def read_pcm_wav(path):
         raise VoiceReferenceQualityError(f"WAV has an incomplete audio frame: {path}")
     samples = samples.reshape(-1, channels).mean(axis=1)
     return samples, sample_rate
-
-
-def _write_pcm_wav(path, samples, sample_rate):
-    pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
-    with wave.open(str(path), "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(sample_rate)
-        audio.writeframes(pcm.tobytes())
 
 
 def _dbfs(value):
@@ -214,8 +206,7 @@ def trim_and_normalize_voice_reference(
         normalized[-fade_samples:] *= fade[::-1]
 
     output = Path(output).expanduser().resolve()
-    with atomic_output_path(output) as temporary:
-        _write_pcm_wav(temporary, normalized, sample_rate)
+    write_pcm16_wav(output, normalized, sample_rate)
     return output
 
 

@@ -29,6 +29,40 @@ def atomic_output_path(path):
         raise
 
 
+@contextmanager
+def atomic_output_group(*paths):
+    """Stage new sibling files and publish all, removing partial publication."""
+    destinations = tuple(Path(path) for path in paths)
+    if not destinations or len(set(destinations)) != len(destinations):
+        raise ValueError("atomic output destinations must be unique and non-empty")
+    if any(destination.exists() for destination in destinations):
+        raise FileExistsError("atomic output group only supports new destinations")
+    temporaries = []
+    try:
+        for destination in destinations:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination.parent,
+                prefix=f".{destination.stem}.",
+                suffix=f".tmp{destination.suffix}",
+            )
+            os.close(descriptor)
+            temporaries.append(Path(temporary_name))
+        yield tuple(temporaries)
+        published = []
+        try:
+            for temporary, destination in zip(temporaries, destinations, strict=True):
+                os.replace(temporary, destination)
+                published.append(destination)
+        except Exception:
+            for destination in published:
+                destination.unlink(missing_ok=True)
+            raise
+    finally:
+        for temporary in temporaries:
+            temporary.unlink(missing_ok=True)
+
+
 def atomic_write_bytes(path, content):
     """Publish bytes without exposing a partial destination file."""
     with atomic_output_path(path) as temporary:

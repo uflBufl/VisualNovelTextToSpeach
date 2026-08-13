@@ -344,6 +344,17 @@ class RecognizedDialogTest(unittest.TestCase):
             recorder.reset()
             self.assertIsNotNone(recorder.record(image, result, 60))
 
+    def test_uncertain_frame_recorder_does_not_publish_image_when_metadata_fails(self):
+        result = OCRResult("Marcus", "Maybe this text", 41.5, "balanced", 3)
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            recorder = UncertainFrameRecorder(directory)
+
+            with self.assertRaises(TypeError):
+                recorder.record(Image.new("RGB", (32, 16), "black"), result, object())
+
+            self.assertEqual(list(directory.iterdir()), [])
+
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_screenshots_resolve_speaker_and_dialog(self):
         samples = Path(__file__).resolve().parents[1] / "samples"
