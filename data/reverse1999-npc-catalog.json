@@ -372,6 +372,41 @@
           "reference_sha256": "7215e9553551fd276c0634bae8201272255f72f38162d5336b53fec1daebbed7"
         }
       ]
+    },
+    {
+      "id": "505701",
+      "display_name": "Professor",
+      "aliases": [],
+      "language": "en",
+      "game_versions": [
+        "3.6.5"
+      ],
+      "banks": [
+        "activityvoc_npc505701_2_4_diqiu.bnk"
+      ],
+      "approved_references": [
+        {
+          "bank": "activityvoc_npc505701_2_4_diqiu.bnk",
+          "media_id": 132873373,
+          "source_sha256": "bc743b652bf20f1444dfe942b52e9b4e7e16fe414a110e46130887eeee2d5d03",
+          "reference": "reverse1999-voices/references/505701-01.wav",
+          "reference_sha256": "ecab2a22576fdb4fc6956525d0fd62f64662dca2cc1c10ed2506264dbaf5b5fa"
+        },
+        {
+          "bank": "activityvoc_npc505701_2_4_diqiu.bnk",
+          "media_id": 484413086,
+          "source_sha256": "91e8adb6924e6369124965c234423dd767f234654236fa323e6bb3d8a94558f1",
+          "reference": "reverse1999-voices/references/505701-02.wav",
+          "reference_sha256": "31880bc4c0105ccfb6f790117abd02aebea2f3d7eab128540aa623d1dc2805ce"
+        },
+        {
+          "bank": "activityvoc_npc505701_2_4_diqiu.bnk",
+          "media_id": 612839057,
+          "source_sha256": "093a959033871653a8613c03c9c0c6d663e9999e0c3b49d4597ad4f432076619",
+          "reference": "reverse1999-voices/references/505701-03.wav",
+          "reference_sha256": "3d0c2028b59c51eaddaa2981ad7429fdadfd9e431e122e7f117f9167f4810fc3"
+        }
+      ]
     }
   ]
 }
