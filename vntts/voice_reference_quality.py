@@ -32,10 +32,15 @@ class VoiceReferenceMetrics:
     technical_flags: tuple[str, ...]
     music_or_sfx: bool | None = None
     multiple_speakers: bool | None = None
+    matches_expected_speaker: bool | None = None
 
     @property
     def review_complete(self):
-        return self.music_or_sfx is not None and self.multiple_speakers is not None
+        return (
+            self.music_or_sfx is not None
+            and self.multiple_speakers is not None
+            and self.matches_expected_speaker is not None
+        )
 
     @property
     def approved(self):
@@ -43,6 +48,7 @@ class VoiceReferenceMetrics:
             not self.technical_flags
             and self.music_or_sfx is False
             and self.multiple_speakers is False
+            and self.matches_expected_speaker is True
         )
 
 
@@ -214,15 +220,25 @@ def trim_and_normalize_voice_reference(
     return output
 
 
-def review_voice_reference(metrics, *, music_or_sfx, multiple_speakers):
-    if not isinstance(music_or_sfx, bool) or not isinstance(multiple_speakers, bool):
+def review_voice_reference(
+    metrics,
+    *,
+    music_or_sfx,
+    multiple_speakers,
+    matches_expected_speaker,
+):
+    if not all(
+        isinstance(value, bool)
+        for value in (music_or_sfx, multiple_speakers, matches_expected_speaker)
+    ):
         raise VoiceReferenceQualityError(
-            "Music/SFX and multiple-speaker review decisions are required"
+            "Music/SFX, speaker count, and expected-speaker decisions are required"
         )
     return replace(
         metrics,
         music_or_sfx=music_or_sfx,
         multiple_speakers=multiple_speakers,
+        matches_expected_speaker=matches_expected_speaker,
     )
 
 
@@ -261,6 +277,9 @@ def record_clip_review(
         "media_id": int(media_id),
         "chapter": str(chapter),
         "approved": metrics.approved,
+        "music_or_sfx": metrics.music_or_sfx,
+        "multiple_speakers": metrics.multiple_speakers,
+        "matches_expected_speaker": metrics.matches_expected_speaker,
         "metrics": asdict(metrics),
     }
     clips.append(item)
@@ -316,8 +335,8 @@ def write_quality_report(metrics, output):
         "version": 1,
         "clips": [asdict(item) for item in metrics],
         "review_note": (
-            "Set music_or_sfx and multiple_speakers after listening; technical "
-            "metrics alone never approve a reference."
+            "Set music_or_sfx, multiple_speakers, and matches_expected_speaker "
+            "after listening; technical metrics alone never approve a reference."
         ),
     }
     temporary = output.with_suffix(f"{output.suffix}.tmp")

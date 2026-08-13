@@ -172,22 +172,34 @@ uv run vntts-reverse1999-batch auto
 ```
 
 `auto` accepts only speaker IDs with a stable unique dialogue name, at least two
-dialogue lines, and a dedicated bank containing at least three clips. It scans
-at most two preferred banks per speaker, scores the extracted audio, chooses
-three technically clean references totaling at least 15 seconds, and writes the
-review queue shown in the command output. Conflicting names, shared names, weak
-dialogue evidence, and unsuitable banks stay in the mapping-review queue in the
-resumable state file.
+dialogue lines, and a dedicated bank containing at least three clips. Scene-audio
+banks such as `activityvoc_story_*` are quarantined because they may contain TV,
+radio, crowd, or unrelated voices even when their filename includes an NPC ID.
+It scans at most two preferred speaker banks per character, scores the extracted
+audio, chooses three technically clean references totaling at least 15 seconds,
+and writes the review queue shown in the command output. Conflicting names,
+shared names, weak dialogue evidence, and unsuitable banks stay in the
+mapping-review queue in the resumable state file.
 
 The generated clips are never approved automatically. Listen to each queued WAV
-and set both `music_or_sfx` and `multiple_speakers` to `false` or `true` in the
-review JSON. Entries left as `null` remain pending. An existing local Whisper
-model can add offline transcripts as another rejection signal without allowing
-downloads:
+and set `music_or_sfx`, `multiple_speakers`, and `matches_expected_speaker` to
+`false` or `true` in the review JSON. Entries left as `null` remain pending. An
+existing local Whisper model adds an offline transcript-to-character dialogue
+identity gate without allowing downloads:
 
 ```sh
 uv run vntts-reverse1999-batch auto \
   --whisper-model /absolute/path/to/local/whisper-model
+```
+
+An existing local WavLM x-vector model can additionally reject candidate sets
+whose clips do not form one consistent speaker cluster. For cataloged characters,
+it also compares candidates with their already approved reference voice:
+
+```sh
+uv run vntts-reverse1999-batch auto \
+  --whisper-model /absolute/path/to/local/whisper-model \
+  --speaker-model /absolute/path/to/local/wavlm-xvector-model
 ```
 
 After reviewing, import the approved sets and update the versioned catalog

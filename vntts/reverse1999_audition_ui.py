@@ -134,12 +134,17 @@ class Reverse1999AuditionDialog(QDialog):
         self.multiple_speakers.addItem("Not reviewed", None)
         self.multiple_speakers.addItem("One speaker", False)
         self.multiple_speakers.addItem("Multiple speakers", True)
+        self.matches_expected_speaker = QComboBox()
+        self.matches_expected_speaker.addItem("Not reviewed", None)
+        self.matches_expected_speaker.addItem("Matches expected speaker", True)
+        self.matches_expected_speaker.addItem("Different / uncertain speaker", False)
         self.save_review_button = QPushButton("Save clip review")
         self.save_review_button.clicked.connect(self.save_clip_review)
         review_form = QFormLayout()
         review_form.addRow("Technical quality", self.quality)
         review_form.addRow("Music / SFX", self.music_or_sfx)
         review_form.addRow("Speakers", self.multiple_speakers)
+        review_form.addRow("Speaker identity", self.matches_expected_speaker)
         review_form.addRow("", self.save_review_button)
         self.import_button = QPushButton("Import reviewed clip as character voice")
         self.import_button.setEnabled(False)
@@ -264,6 +269,7 @@ class Reverse1999AuditionDialog(QDialog):
         self.quality.setText("Play a clip to calculate its technical score.")
         self.music_or_sfx.setCurrentIndex(0)
         self.multiple_speakers.setCurrentIndex(0)
+        self.matches_expected_speaker.setCurrentIndex(0)
         if index < 0 or index >= len(self.candidates):
             return
         candidate = self.candidates[index]
@@ -310,8 +316,15 @@ class Reverse1999AuditionDialog(QDialog):
             return
         music_or_sfx = self.music_or_sfx.currentData()
         multiple_speakers = self.multiple_speakers.currentData()
-        if music_or_sfx is None or multiple_speakers is None:
-            self.status.setText("Review both music/SFX and speaker count first.")
+        matches_expected_speaker = self.matches_expected_speaker.currentData()
+        if (
+            music_or_sfx is None
+            or multiple_speakers is None
+            or matches_expected_speaker is None
+        ):
+            self.status.setText(
+                "Review music/SFX, speaker count, and expected speaker first."
+            )
             return
         candidate, media_id, _output, metrics = self.current_clip
         selected = self.dialogue.selectedItems()
@@ -321,6 +334,7 @@ class Reverse1999AuditionDialog(QDialog):
                 metrics,
                 music_or_sfx=music_or_sfx,
                 multiple_speakers=multiple_speakers,
+                matches_expected_speaker=matches_expected_speaker,
             )
             path = self.review_recorder(
                 reviewed,

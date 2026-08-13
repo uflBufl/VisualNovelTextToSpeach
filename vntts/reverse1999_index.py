@@ -6,11 +6,14 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts.reverse1999_voice_import import find_game_audio_directory
+from vntts.reverse1999_voice_import import (
+    find_game_audio_directory,
+    is_scene_audio_bank,
+)
 from vntts.settings import get_local_data_directory
 from vntts.wwise import WwiseBankError, inspect_bank
 
-index_version = 2
+index_version = 3
 default_output = get_local_data_directory() / "reverse1999" / "english-bank-index.json"
 npc_id_pattern = re.compile(r"npc[_-]?(\d{4,})", re.IGNORECASE)
 chapter_pattern = re.compile(r"chapter[_-]?(\d+)", re.IGNORECASE)
@@ -57,9 +60,13 @@ def classify_bank(filename):
         tags.append("activity")
     if "voc" in stem or "voice" in stem:
         tags.append("voice")
+    if is_scene_audio_bank(filename):
+        tags.append("scene-audio")
 
     tag_set = set(tags)
-    if {"npc", "activity"} <= tag_set:
+    if "scene-audio" in tag_set:
+        category = "scene-audio-npc"
+    elif {"npc", "activity"} <= tag_set:
         category = "activity-npc"
     elif {"npc", "story"} <= tag_set:
         category = "story-npc"

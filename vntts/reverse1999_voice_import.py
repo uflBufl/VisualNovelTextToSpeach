@@ -41,6 +41,14 @@ class ImportedReference:
     bank: str | None = None
 
 
+def is_scene_audio_bank(bank):
+    """Return whether a bank is a scene-audio container, not a speaker bank."""
+    stem = Path(bank).stem.casefold()
+    return stem.startswith("activityvoc_story_") or stem.startswith(
+        "plotvoc_story_"
+    )
+
+
 def create_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -166,6 +174,11 @@ def decode_references(
 ):
     if reference_count <= 0:
         raise GameVoiceImportError("--references must be positive")
+    if not media_ids and is_scene_audio_bank(bank):
+        raise GameVoiceImportError(
+            f"Scene-audio bank {Path(bank).name} may contain TV, radio, crowd, or "
+            "unrelated voices; pass explicitly reviewed --media-id values"
+        )
     media = read_embedded_media(bank)
     if media_ids:
         by_id = {entry.media_id: entry for entry in media}

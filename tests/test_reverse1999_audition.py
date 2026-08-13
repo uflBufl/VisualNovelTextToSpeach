@@ -211,6 +211,7 @@ class Reverse1999AuditionTest(unittest.TestCase):
         dialog.play_clip()
         dialog.music_or_sfx.setCurrentIndex(1)
         dialog.multiple_speakers.setCurrentIndex(1)
+        dialog.matches_expected_speaker.setCurrentIndex(1)
 
         dialog.save_clip_review()
 
@@ -291,6 +292,7 @@ class Reverse1999AuditionTest(unittest.TestCase):
             dialog.play_clip()
             dialog.music_or_sfx.setCurrentIndex(1)
             dialog.multiple_speakers.setCurrentIndex(1)
+            dialog.matches_expected_speaker.setCurrentIndex(1)
             dialog.save_clip_review()
 
             dialog.import_voice()

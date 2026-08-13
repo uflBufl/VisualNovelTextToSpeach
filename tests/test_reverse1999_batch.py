@@ -247,6 +247,22 @@ class Reverse1999BatchTest(unittest.TestCase):
             root = Path(temporary_directory)
             queue = root / "queue.json"
             state = new_state()
+            dialogue_index = root / "dialogue.json"
+            dialogue_index.write_text(
+                json.dumps(
+                    {
+                        "dialogue": [
+                            {
+                                "speaker_id": "100",
+                                "speaker_name": "Safe",
+                                "text": "One clean sentence.",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state["dialogue_index"] = str(dialogue_index)
             state["mappings"] = [
                 {
                     "speaker_name": "Safe",
@@ -283,6 +299,7 @@ class Reverse1999BatchTest(unittest.TestCase):
             document = json.loads(queue.read_text(encoding="utf-8"))
             document["clips"][0]["music_or_sfx"] = False
             document["clips"][0]["multiple_speakers"] = False
+            document["clips"][0]["matches_expected_speaker"] = True
             queue.write_text(json.dumps(document), encoding="utf-8")
             preselect_auto_references(state, review_queue_path=queue)
             resumed = json.loads(queue.read_text(encoding="utf-8"))
@@ -298,6 +315,220 @@ class Reverse1999BatchTest(unittest.TestCase):
         self.assertIn("never imported", document["review_note"])
         self.assertFalse(resumed["clips"][0]["music_or_sfx"])
         self.assertFalse(resumed["clips"][0]["multiple_speakers"])
+        self.assertTrue(resumed["clips"][0]["matches_expected_speaker"])
+
+    def test_scene_audio_bank_is_quarantined_even_with_clean_clips(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            queue = root / "queue.json"
+            dialogue_index = root / "dialogue.json"
+            dialogue_index.write_text(
+                json.dumps(
+                    {
+                        "dialogue": [
+                            {
+                                "speaker_id": "505701",
+                                "speaker_name": "Professor",
+                                "text": "Knowledge has no divisions.",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = new_state()
+            state["dialogue_index"] = str(dialogue_index)
+            state["mappings"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "chapter": "20",
+                    "banks": ["activityvoc_story_npc505701_feichi.bnk"],
+                }
+            ]
+            state["clips"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "bank": "activityvoc_story_npc505701_feichi.bnk",
+                    "media_id": media_id,
+                    "wav": str(root / f"{media_id}.wav"),
+                    "status": "scored",
+                    "metrics": {
+                        "duration_seconds": 5.0,
+                        "quality_score": 100,
+                        "technical_flags": [],
+                    },
+                }
+                for media_id in (176156650, 251690830, 392147139, 682090872)
+            ]
+
+            preselect_auto_references(state, review_queue_path=queue)
+
+        self.assertEqual(state["auto_selections"], [])
+        self.assertEqual(
+            {tuple(clip["identity_flags"]) for clip in state["clips"]},
+            {("scene-audio-bank",)},
+        )
+
+    def test_transcript_must_match_expected_character_dialogue(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            queue = root / "queue.json"
+            dialogue_index = root / "dialogue.json"
+            dialogue_index.write_text(
+                json.dumps(
+                    {
+                        "dialogue": [
+                            {
+                                "speaker_id": "505701",
+                                "speaker_name": "Professor",
+                                "text": "Knowledge has no divisions.",
+                            },
+                            {
+                                "speaker_id": "999",
+                                "speaker_name": "Television",
+                                "text": "Good for you, Bianca!",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = new_state()
+            state["dialogue_index"] = str(dialogue_index)
+            state["mappings"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "chapter": "20",
+                    "banks": ["activityvoc_npc505701_2_4.bnk"],
+                }
+            ]
+            state["clips"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "bank": "activityvoc_npc505701_2_4.bnk",
+                    "media_id": media_id,
+                    "wav": str(root / f"{media_id}.wav"),
+                    "status": "scored",
+                    "metrics": {
+                        "duration_seconds": 5.0,
+                        "quality_score": 100,
+                        "technical_flags": [],
+                    },
+                }
+                for media_id in (1, 2, 3)
+            ]
+
+            preselect_auto_references(
+                state,
+                review_queue_path=queue,
+                transcriber=lambda _path: "Good for you, Bianca!",
+            )
+
+        self.assertEqual(state["auto_selections"], [])
+        self.assertTrue(
+            all(
+                clip["identity_flags"] == ["dialogue-speaker-mismatch"]
+                for clip in state["clips"]
+            )
+        )
+
+    def test_speaker_embeddings_keep_only_one_consistent_cluster(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            queue = root / "queue.json"
+            state = new_state()
+            state["mappings"] = [
+                {
+                    "speaker_name": "Safe",
+                    "npc_id": "100",
+                    "chapter": "1",
+                    "banks": ["safe.bnk"],
+                }
+            ]
+            state["clips"] = [
+                {
+                    "speaker_name": "Safe",
+                    "npc_id": "100",
+                    "bank": "safe.bnk",
+                    "media_id": media_id,
+                    "wav": str(root / f"{media_id}.wav"),
+                    "status": "scored",
+                    "metrics": {
+                        "duration_seconds": 5.0,
+                        "quality_score": 100,
+                        "technical_flags": [],
+                    },
+                }
+                for media_id in (1, 2, 3, 4)
+            ]
+            embeddings = {
+                "1": [1.0, 0.0],
+                "2": [0.99, 0.01],
+                "3": [0.98, 0.02],
+                "4": [0.0, 1.0],
+            }
+
+            preselect_auto_references(
+                state,
+                review_queue_path=queue,
+                speaker_embedder=lambda path: embeddings[Path(path).stem],
+            )
+
+        selected = state["auto_selections"][0]["clips"]
+        self.assertEqual([clip["media_id"] for clip in selected], [1, 2, 3])
+        self.assertEqual(
+            state["clips"][3]["identity_flags"],
+            ["inconsistent-speaker-embedding"],
+        )
+
+    def test_known_speaker_anchor_rejects_a_consistent_wrong_voice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            queue = root / "queue.json"
+            state = new_state()
+            state["mappings"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "chapter": "20",
+                    "banks": ["activityvoc_npc505701_2_4.bnk"],
+                }
+            ]
+            state["clips"] = [
+                {
+                    "speaker_name": "Professor",
+                    "npc_id": "505701",
+                    "bank": "activityvoc_npc505701_2_4.bnk",
+                    "media_id": media_id,
+                    "wav": str(root / f"{media_id}.wav"),
+                    "status": "scored",
+                    "metrics": {
+                        "duration_seconds": 5.0,
+                        "quality_score": 100,
+                        "technical_flags": [],
+                    },
+                }
+                for media_id in (1, 2, 3)
+            ]
+
+            preselect_auto_references(
+                state,
+                review_queue_path=queue,
+                speaker_embedder=lambda _path: [0.0, 1.0],
+                speaker_anchors={"505701": [1.0, 0.0]},
+            )
+
+        self.assertEqual(state["auto_selections"], [])
+        self.assertTrue(
+            all(
+                clip["identity_flags"] == ["known-speaker-mismatch"]
+                for clip in state["clips"]
+            )
+        )
 
     def test_pending_auto_review_is_ignored_until_content_flags_are_set(self):
         with TemporaryDirectory() as temporary_directory:
@@ -310,6 +541,7 @@ class Reverse1999BatchTest(unittest.TestCase):
                 "approved": None,
                 "music_or_sfx": None,
                 "multiple_speakers": None,
+                "matches_expected_speaker": None,
                 "metrics": {"technical_flags": []},
             }
             path.write_text(
@@ -329,12 +561,44 @@ class Reverse1999BatchTest(unittest.TestCase):
 
             review["music_or_sfx"] = False
             review["multiple_speakers"] = False
+            review["matches_expected_speaker"] = True
             path.write_text(
                 json.dumps({"version": 1, "clips": [review]}), encoding="utf-8"
             )
             merge_clip_reviews(state, review_path=path)
 
         self.assertEqual(state["clips"][0]["status"], "approved")
+
+    def test_approved_shortcut_cannot_bypass_identity_review(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "reviews.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "clips": [
+                            {
+                                "bank": "scene.bnk",
+                                "media_id": 1,
+                                "approved": True,
+                                "music_or_sfx": False,
+                                "multiple_speakers": False,
+                                "matches_expected_speaker": None,
+                                "metrics": {"technical_flags": []},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = new_state()
+            state["clips"] = [
+                {"bank": "scene.bnk", "media_id": 1, "status": "scored"}
+            ]
+
+            merge_clip_reviews(state, review_path=path)
+
+        self.assertEqual(state["clips"][0]["status"], "scored")
 
     def test_catalog_update_is_validated_atomic_and_idempotent(self):
         with TemporaryDirectory() as temporary_directory:

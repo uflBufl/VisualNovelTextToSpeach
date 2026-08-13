@@ -113,6 +113,7 @@ class VoiceReferenceQualityTest(unittest.TestCase):
                     analyze_voice_reference(path),
                     music_or_sfx=False,
                     multiple_speakers=False,
+                    matches_expected_speaker=True,
                 )
                 record_clip_review(
                     metrics,

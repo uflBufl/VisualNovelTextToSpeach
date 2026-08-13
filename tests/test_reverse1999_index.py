@@ -28,6 +28,13 @@ class Reverse1999BankIndexTest(unittest.TestCase):
             ("activity-npc", ["npc", "story", "activity", "voice"]),
         )
         self.assertEqual(
+            classify_bank("activityvoc_story_npc505701_feichi.bnk"),
+            (
+                "scene-audio-npc",
+                ["npc", "story", "activity", "voice", "scene-audio"],
+            ),
+        )
+        self.assertEqual(
             classify_bank("plotvoc_npcnoname218chapter11.bnk"),
             ("story-npc", ["npc", "story", "voice"]),
         )

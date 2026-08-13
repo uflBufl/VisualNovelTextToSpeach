@@ -5,8 +5,12 @@ import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict
+from difflib import SequenceMatcher
+from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+import numpy as np
 
 from vntts.reverse1999_aliases import canonical_voice_name
 from vntts.reverse1999_audition import default_mapping_path
@@ -28,6 +32,7 @@ from vntts.reverse1999_index import default_output as default_bank_index
 from vntts.reverse1999_voice_import import (
     ImportedReference,
     find_game_audio_directory,
+    is_scene_audio_bank,
     update_manifest,
 )
 from vntts.reverse1999_voice_import import default_output as default_voice_output
@@ -35,6 +40,7 @@ from vntts.settings import get_local_data_directory
 from vntts.voice_reference_quality import (
     analyze_voice_reference,
     default_review_path,
+    read_pcm_wav,
     select_reference_set,
     trim_and_normalize_voice_reference,
 )
@@ -220,9 +226,9 @@ def _rank_auto_banks(bank_index, npc_id, *, maximum_banks=2):
         if media_count < 3:
             continue
         folded = str(entry.get("filename", bank)).casefold()
+        if is_scene_audio_bank(folded):
+            continue
         score = 0
-        if "story" in folded:
-            score += 40
         if "activityvoc" in folded:
             score += 30
         if "plotvoc" in folded:
@@ -465,6 +471,50 @@ def create_local_whisper_transcriber(model_path):
     return transcribe
 
 
+def create_local_speaker_embedder(model_path):
+    """Create an offline WavLM x-vector embedder from an existing local model."""
+    model_path = Path(model_path).expanduser().resolve()
+    if not model_path.is_dir():
+        raise Reverse1999BatchError(
+            f"Local speaker model directory does not exist: {model_path}"
+        )
+    try:
+        import torch
+        from transformers import AutoFeatureExtractor, WavLMForXVector
+
+        extractor = AutoFeatureExtractor.from_pretrained(
+            model_path, local_files_only=True
+        )
+        model = WavLMForXVector.from_pretrained(model_path, local_files_only=True)
+        model.eval()
+    except Exception as error:
+        raise Reverse1999BatchError(
+            f"Unable to load local speaker model {model_path}: {error}"
+        ) from error
+
+    target_rate = int(getattr(extractor, "sampling_rate", 16000))
+
+    def embed(path):
+        samples, sample_rate = read_pcm_wav(path)
+        if sample_rate != target_rate:
+            duration = len(samples) / sample_rate
+            old_points = np.linspace(0.0, duration, len(samples), endpoint=False)
+            new_length = max(1, round(duration * target_rate))
+            new_points = np.linspace(0.0, duration, new_length, endpoint=False)
+            samples = np.interp(new_points, old_points, samples).astype(np.float32)
+        inputs = extractor(
+            samples, sampling_rate=target_rate, return_tensors="pt", padding=True
+        )
+        with torch.inference_mode():
+            embedding = model(**inputs).embeddings[0].detach().cpu().numpy()
+        norm = float(np.linalg.norm(embedding))
+        if norm <= 1e-9:
+            raise Reverse1999BatchError(f"Speaker model returned an empty vector: {path}")
+        return (embedding / norm).astype(float).tolist()
+
+    return embed
+
+
 def _transcript_flags(transcript):
     transcript = str(transcript or "").strip()
     words = re.findall(r"[A-Za-z0-9']+", transcript)
@@ -480,6 +530,94 @@ def _transcript_flags(transcript):
     if len(words) >= 6 and len({word.casefold() for word in words}) <= 2:
         flags.append("transcript-repetitive")
     return flags
+
+
+def _normalized_transcript(value):
+    return " ".join(re.findall(r"[a-z0-9']+", str(value).casefold()))
+
+
+def _text_similarity(left, right):
+    left = _normalized_transcript(left)
+    right = _normalized_transcript(right)
+    if not left or not right:
+        return 0.0
+    sequence = SequenceMatcher(None, left, right).ratio()
+    left_words = set(left.split())
+    right_words = set(right.split())
+    overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
+    return max(sequence, overlap)
+
+
+def _dialogue_identity(transcript, expected_lines, other_lines):
+    expected_score = max(
+        (_text_similarity(transcript, line) for line in expected_lines), default=0.0
+    )
+    other_score = max(
+        (_text_similarity(transcript, line) for line in other_lines), default=0.0
+    )
+    matches = expected_score >= 0.58 and expected_score >= other_score + 0.05
+    return {
+        "matches_expected_speaker": matches,
+        "expected_score": round(expected_score, 4),
+        "other_speaker_score": round(other_score, 4),
+    }
+
+
+def _cosine_similarity(left, right):
+    left = np.asarray(left, dtype=np.float32)
+    right = np.asarray(right, dtype=np.float32)
+    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+    if denominator <= 1e-9:
+        return 0.0
+    return float(np.dot(left, right) / denominator)
+
+
+def _largest_consistent_cluster(clips, *, minimum_similarity=0.72):
+    with_embeddings = [clip for clip in clips if clip.get("speaker_embedding")]
+    for size in range(len(with_embeddings), 2, -1):
+        for selection in combinations(with_embeddings, size):
+            similarities = [
+                _cosine_similarity(left["speaker_embedding"], right["speaker_embedding"])
+                for left, right in combinations(selection, 2)
+            ]
+            if similarities and min(similarities) >= minimum_similarity:
+                return list(selection), min(similarities)
+    return [], 0.0
+
+
+def _catalog_speaker_anchors(catalog_path, reference_root, speaker_embedder):
+    catalog = Reverse1999NpcCatalog.load(catalog_path)
+    reference_root = Path(reference_root).expanduser().resolve()
+    anchors = {}
+    for npc in catalog.npcs:
+        embeddings = []
+        for reference in npc.approved_references:
+            path = reference_root / reference.reference
+            if path.is_file():
+                embeddings.append(
+                    np.asarray(speaker_embedder(path), dtype=np.float32)
+                )
+        if not embeddings:
+            continue
+        centroid = np.mean(embeddings, axis=0)
+        norm = float(np.linalg.norm(centroid))
+        if norm > 1e-9:
+            anchors[npc.npc_id] = (centroid / norm).astype(float).tolist()
+    return anchors
+
+
+def _dialogue_lines_by_speaker(dialogue_index):
+    by_speaker = defaultdict(list)
+    all_lines = []
+    for row in dialogue_index.get("dialogue", []):
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        npc_id = str(row.get("speaker_id") or "").strip()
+        if text and npc_id:
+            by_speaker[npc_id].append(text)
+            all_lines.append((npc_id, text))
+    return by_speaker, all_lines
 
 
 def _write_auto_review_queue(selections, output):
@@ -509,13 +647,23 @@ def _write_auto_review_queue(selections, output):
                 "chapter": selection.get("chapter", ""),
                 "wav": clip["wav"],
                 "transcript": clip.get("transcript"),
+                "dialogue_identity": clip.get("dialogue_identity"),
+                "speaker_similarity": clip.get("speaker_similarity"),
+                "speaker_anchor_similarity": clip.get(
+                    "speaker_anchor_similarity"
+                ),
                 "music_or_sfx": None,
                 "multiple_speakers": None,
+                "matches_expected_speaker": None,
                 "approved": None,
                 "metrics": clip["metrics"],
             }
             previous = existing.get((clip["bank"], clip["media_id"]), {})
-            for key in ("music_or_sfx", "multiple_speakers", "approved"):
+            for key in (
+                "music_or_sfx",
+                "multiple_speakers",
+                "matches_expected_speaker",
+            ):
                 if isinstance(previous.get(key), bool):
                     item[key] = previous[key]
             clips.append(item)
@@ -524,7 +672,8 @@ def _write_auto_review_queue(selections, output):
         "clips": clips,
         "review_note": (
             "Listen to every clip, then set music_or_sfx and multiple_speakers "
-            "to true or false. Pending values are never imported."
+            "to true or false, and confirm matches_expected_speaker. Pending "
+            "values are never imported."
         ),
     }
     temporary = output.with_suffix(f"{output.suffix}.tmp")
@@ -541,12 +690,20 @@ def preselect_auto_references(
     *,
     review_queue_path=default_auto_review_path,
     transcriber=None,
+    speaker_embedder=None,
+    speaker_anchors=None,
     candidate_limit=8,
 ):
     """Preselect technically clean clips without approving their content."""
     if candidate_limit < 3:
         raise Reverse1999BatchError("Auto candidate limit must be at least three")
     mappings = {item["npc_id"]: item for item in state.get("mappings", [])}
+    speaker_anchors = speaker_anchors or {}
+    dialogue_by_speaker = {}
+    all_dialogue = []
+    if transcriber is not None:
+        dialogue_index = _load_json(state["dialogue_index"], "Dialogue index")
+        dialogue_by_speaker, all_dialogue = _dialogue_lines_by_speaker(dialogue_index)
     by_npc = defaultdict(list)
     for clip in state.get("clips", []):
         if clip.get("status") != "scored":
@@ -570,6 +727,9 @@ def preselect_auto_references(
         )[:candidate_limit]
         eligible = []
         for clip in candidates:
+            if is_scene_audio_bank(clip["bank"]):
+                clip["identity_flags"] = ["scene-audio-bank"]
+                continue
             if transcriber is not None and "transcript" not in clip:
                 try:
                     clip["transcript"] = transcriber(clip["wav"])
@@ -580,6 +740,33 @@ def preselect_auto_references(
                     clip["transcription_error"] = str(error)
             if clip.get("transcript_flags"):
                 continue
+            if transcriber is not None:
+                expected_lines = dialogue_by_speaker.get(npc_id, [])
+                other_lines = [
+                    text for owner, text in all_dialogue if owner != npc_id
+                ]
+                clip["dialogue_identity"] = _dialogue_identity(
+                    clip.get("transcript", ""), expected_lines, other_lines
+                )
+                if not clip["dialogue_identity"]["matches_expected_speaker"]:
+                    clip["identity_flags"] = ["dialogue-speaker-mismatch"]
+                    continue
+            if speaker_embedder is not None:
+                try:
+                    embedding = speaker_embedder(clip["wav"])
+                except Exception as error:
+                    clip["identity_flags"] = ["speaker-embedding-error"]
+                    clip["speaker_embedding_error"] = str(error)
+                    continue
+                anchor = speaker_anchors.get(npc_id)
+                if anchor is not None:
+                    anchor_similarity = _cosine_similarity(embedding, anchor)
+                    clip["speaker_anchor_similarity"] = round(anchor_similarity, 4)
+                    if anchor_similarity < 0.72:
+                        clip["identity_flags"] = ["known-speaker-mismatch"]
+                        continue
+            else:
+                embedding = None
             review = {
                 "speaker_name": mapping["speaker_name"],
                 "approved": True,
@@ -587,10 +774,36 @@ def preselect_auto_references(
                 "media_id": clip["media_id"],
                 "metrics": clip["metrics"],
             }
-            eligible.append((clip, review))
+            eligible.append((clip, review, embedding))
+
+        if speaker_embedder is not None:
+            embedding_clips = [
+                {
+                    "bank": clip["bank"],
+                    "media_id": clip["media_id"],
+                    "speaker_embedding": embedding,
+                }
+                for clip, _review, embedding in eligible
+            ]
+            consistent, minimum_similarity = _largest_consistent_cluster(
+                embedding_clips
+            )
+            consistent_keys = {
+                (clip["bank"], clip["media_id"]) for clip in consistent
+            }
+            for clip, _review, _embedding in eligible:
+                if (clip["bank"], clip["media_id"]) in consistent_keys:
+                    clip["speaker_similarity"] = round(minimum_similarity, 4)
+                else:
+                    clip["identity_flags"] = ["inconsistent-speaker-embedding"]
+            eligible = [
+                (clip, review, embedding)
+                for clip, review, embedding in eligible
+                if (clip["bank"], clip["media_id"]) in consistent_keys
+            ]
 
         selected_reviews = select_reference_set(
-            [review for _, review in eligible],
+            [review for _, review, _embedding in eligible],
             mapping["speaker_name"],
             maximum_clips=3,
         )
@@ -599,7 +812,7 @@ def preselect_auto_references(
         }
         selected = [
             clip
-            for clip, _ in eligible
+            for clip, _review, _embedding in eligible
             if (clip["bank"], clip["media_id"]) in selected_keys
         ]
         if not selected:
@@ -627,6 +840,25 @@ def preselect_auto_references(
                         if "transcript" in clip
                         else {}
                     )
+                    | (
+                        {"dialogue_identity": clip["dialogue_identity"]}
+                        if "dialogue_identity" in clip
+                        else {}
+                    )
+                    | (
+                        {"speaker_similarity": clip["speaker_similarity"]}
+                        if "speaker_similarity" in clip
+                        else {}
+                    )
+                    | (
+                        {
+                            "speaker_anchor_similarity": clip[
+                                "speaker_anchor_similarity"
+                            ]
+                        }
+                        if "speaker_anchor_similarity" in clip
+                        else {}
+                    )
                     for clip in selected
                 ],
             }
@@ -640,15 +872,25 @@ def preselect_auto_references(
 
 
 def _review_decision(review):
-    approved = review.get("approved")
-    if isinstance(approved, bool):
-        return approved
     music_or_sfx = review.get("music_or_sfx")
     multiple_speakers = review.get("multiple_speakers")
-    if not isinstance(music_or_sfx, bool) or not isinstance(multiple_speakers, bool):
+    matches_expected_speaker = review.get("matches_expected_speaker")
+    if not all(
+        isinstance(value, bool)
+        for value in (
+            music_or_sfx,
+            multiple_speakers,
+            matches_expected_speaker,
+        )
+    ):
         return None
     technical_flags = review.get("metrics", {}).get("technical_flags", [])
-    return not technical_flags and not music_or_sfx and not multiple_speakers
+    return (
+        not technical_flags
+        and not music_or_sfx
+        and not multiple_speakers
+        and matches_expected_speaker
+    )
 
 
 def merge_clip_reviews(state, *, review_path=default_review_path):
@@ -898,6 +1140,14 @@ def create_parser():
             "when omitted, transcription is left for manual review."
         ),
     )
+    parser.add_argument(
+        "--speaker-model",
+        type=Path,
+        help=(
+            "Existing local WavLM x-vector model directory used to reject "
+            "cross-clip speaker changes. No model is downloaded."
+        ),
+    )
     return parser
 
 
@@ -906,18 +1156,32 @@ def main(arguments=None):
     try:
         state = load_state(arguments.state)
         transcriber = None
+        speaker_embedder = None
 
         def checkpoint():
             save_state(state, arguments.state)
 
         def preselect():
-            nonlocal transcriber
+            nonlocal speaker_embedder, transcriber
             if arguments.whisper_model is not None and transcriber is None:
                 transcriber = create_local_whisper_transcriber(arguments.whisper_model)
+            if arguments.speaker_model is not None and speaker_embedder is None:
+                speaker_embedder = create_local_speaker_embedder(arguments.speaker_model)
+            speaker_anchors = (
+                _catalog_speaker_anchors(
+                    arguments.catalog,
+                    arguments.reference_root,
+                    speaker_embedder,
+                )
+                if speaker_embedder is not None
+                else None
+            )
             return preselect_auto_references(
                 state,
                 review_queue_path=arguments.auto_review_queue,
                 transcriber=transcriber,
+                speaker_embedder=speaker_embedder,
+                speaker_anchors=speaker_anchors,
                 candidate_limit=arguments.candidate_limit,
             )
 

@@ -136,6 +136,23 @@ class Reverse1999GameVoiceImportTest(unittest.TestCase):
                         media_ids=[99],
                     )
 
+    def test_scene_audio_bank_requires_explicit_reviewed_media_ids(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            bank = directory / "activityvoc_story_npc505701_feichi.bnk"
+            bank.write_bytes(b"bank")
+
+            with self.assertRaisesRegex(
+                importer.GameVoiceImportError, "Scene-audio bank"
+            ):
+                importer.decode_references(
+                    bank,
+                    directory / "pack",
+                    "Professor",
+                    3,
+                    "decoder",
+                )
+
     def test_manifest_adds_story_npc_without_losing_existing_voices(self):
         with TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
