@@ -4,40 +4,26 @@ import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
+from platformdirs import user_config_path, user_data_path
+
 from vntts.hotkeys import default_hotkey
 
 application_directory_name = "VisualNovelTextToSpeech"
 settings_schema_version = 15
 
 
-def get_config_directory(*, environment=None, platform=None, home=None):
-    environment = os.environ if environment is None else environment
-    platform = sys.platform if platform is None else platform
-    home = Path.home() if home is None else Path(home)
-
-    if platform == "win32":
-        return (
-            Path(environment.get("APPDATA", home / "AppData" / "Roaming"))
-            / application_directory_name
-        )
-    if platform == "darwin":
-        return home / "Library" / "Application Support" / application_directory_name
-    return Path(environment.get("XDG_CONFIG_HOME", home / ".config")) / "vntts"
+def _platform_app_name():
+    return (
+        application_directory_name if sys.platform in {"darwin", "win32"} else "vntts"
+    )
 
 
-def get_local_data_directory(*, environment=None, platform=None, home=None):
-    environment = os.environ if environment is None else environment
-    platform = sys.platform if platform is None else platform
-    home = Path.home() if home is None else Path(home)
+def get_config_directory():
+    return user_config_path(_platform_app_name(), appauthor=False, roaming=True)
 
-    if platform == "win32":
-        return (
-            Path(environment.get("LOCALAPPDATA", home / "AppData" / "Local"))
-            / application_directory_name
-        )
-    if platform == "darwin":
-        return home / "Library" / "Application Support" / application_directory_name
-    return Path(environment.get("XDG_DATA_HOME", home / ".local" / "share")) / "vntts"
+
+def get_local_data_directory():
+    return user_data_path(_platform_app_name(), appauthor=False)
 
 
 def get_settings_path(*, environment=None):
@@ -45,7 +31,7 @@ def get_settings_path(*, environment=None):
     configured_path = environment.get("VNTTS_SETTINGS_FILE")
     if configured_path:
         return Path(configured_path).expanduser()
-    return get_config_directory(environment=environment) / "settings.json"
+    return get_config_directory() / "settings.json"
 
 
 @dataclass(frozen=True)
