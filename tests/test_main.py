@@ -69,11 +69,11 @@ class MainTest(unittest.TestCase):
         image = object()
         with (
             patch(
-                "vntts.main.capture_dialog",
+                "vntts.dialog_capture.capture_dialog",
                 return_value=(image, Path("capture.png")),
             ),
             patch(
-                "vntts.main.recognize_screenshot_result",
+                "vntts.dialog_capture.recognize_screenshot_result",
                 return_value=OCRResult("Lucy", "Hello.", 95.0, "balanced", 1),
             ),
             redirect_stdout(io.StringIO()),
@@ -116,10 +116,11 @@ class MainTest(unittest.TestCase):
         image = object()
         with (
             patch(
-                "vntts.main.capture_dialog", return_value=(image, Path("capture.png"))
+                "vntts.dialog_capture.capture_dialog",
+                return_value=(image, Path("capture.png")),
             ),
             patch(
-                "vntts.main.recognize_screenshot_result",
+                "vntts.dialog_capture.recognize_screenshot_result",
                 return_value=OCRResult("Lucy", "Hello.", 95.0, "balanced", 1),
             ),
             redirect_stdout(io.StringIO()),
@@ -135,7 +136,7 @@ class MainTest(unittest.TestCase):
 
     def test_capture_failure_identifies_screen_capture_stage(self):
         with patch(
-            "vntts.main.mss.mss",
+            "vntts.dialog_capture.mss.mss",
             side_effect=RuntimeError("display unavailable"),
         ):
             with self.assertRaisesRegex(ScreenCaptureError, "display unavailable"):
@@ -149,7 +150,7 @@ class MainTest(unittest.TestCase):
 
         with TemporaryDirectory() as temporary_directory:
             screenshot_directory = Path(temporary_directory) / "nested"
-            with patch("vntts.main.mss.mss") as mss_factory:
+            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
                 mss_factory.return_value.__enter__.return_value = screen
                 image, output = capture_dialog(
                     screenshot_directory,
@@ -176,7 +177,7 @@ class MainTest(unittest.TestCase):
         }
 
         with TemporaryDirectory() as temporary_directory:
-            with patch("vntts.main.mss.mss") as mss_factory:
+            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
                 mss_factory.return_value.__enter__.return_value = screen
                 capture_dialog(
                     temporary_directory,
@@ -188,7 +189,7 @@ class MainTest(unittest.TestCase):
 
     def test_ocr_failure_identifies_tesseract_stage(self):
         with patch(
-            "vntts.main.recognize_dialog_image_result",
+            "vntts.dialog_capture.recognize_dialog_image_result",
             side_effect=RuntimeError("tesseract unavailable"),
         ):
             with self.assertRaisesRegex(OCRError, "tesseract unavailable"):
@@ -221,7 +222,9 @@ class MainTest(unittest.TestCase):
 
     def test_one_time_read_rejects_uncertain_ocr(self):
         result = OCRResult("Marcus", "Garbled text", 32.0, "balanced", 3)
-        with patch("vntts.main.recognize_dialog_image_result", return_value=result):
+        with patch(
+            "vntts.dialog_capture.recognize_dialog_image_result", return_value=result
+        ):
             with self.assertRaisesRegex(OCRUncertainError, "32%"):
                 recognize_screenshot(object(), minimum_confidence=60)
 
@@ -230,8 +233,10 @@ class MainTest(unittest.TestCase):
         uncertain_handler = Mock()
         uncertain_frame_recorder = Mock()
         with (
-            patch("vntts.main.capture_dialog", return_value=(object(), None)),
-            patch("vntts.main.recognize_screenshot_result", return_value=result),
+            patch("vntts.dialog_capture.capture_dialog", return_value=(object(), None)),
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+            ),
         ):
             snapshot = read_live_snapshot(
                 Path("captures"),
@@ -252,8 +257,10 @@ class MainTest(unittest.TestCase):
         result = OCRResult("Marcus", "Reliable text", 92.0, "balanced", 1)
         recorder = Mock()
         with (
-            patch("vntts.main.capture_dialog", return_value=(object(), None)),
-            patch("vntts.main.recognize_screenshot_result", return_value=result),
+            patch("vntts.dialog_capture.capture_dialog", return_value=(object(), None)),
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+            ),
         ):
             snapshot = read_live_snapshot(
                 Path("captures"),
@@ -282,7 +289,7 @@ class MainTest(unittest.TestCase):
                 errors = io.StringIO()
                 with (
                     redirect_stderr(errors),
-                    patch("vntts.main.read_dialog", side_effect=error),
+                    patch("vntts.dialog_capture.read_dialog", side_effect=error),
                 ):
                     read_dialog_safely(Mock(), Path("captures"))
 
@@ -348,8 +355,8 @@ class MainTest(unittest.TestCase):
         timestamp.strftime.return_value = "2026-08-08-12-00-00"
 
         with (
-            patch("vntts.main.datetime") as datetime_module,
-            patch("vntts.main.uuid4", side_effect=[first_id, second_id]),
+            patch("vntts.dialog_capture.datetime") as datetime_module,
+            patch("vntts.dialog_capture.uuid4", side_effect=[first_id, second_id]),
         ):
             datetime_module.now.return_value = timestamp
             first = create_screenshot_path(Path("captures"))
@@ -498,7 +505,7 @@ class MainTest(unittest.TestCase):
             )
 
             with patch(
-                "vntts.main.find_default_voice_manifest",
+                "vntts.runtime_config.find_default_voice_manifest",
                 return_value=manifest,
             ):
                 voice_router = initialize_voice_router(Mock(), AppSettings())
@@ -596,11 +603,11 @@ class MainTest(unittest.TestCase):
         with (
             redirect_stdout(io.StringIO()),
             patch(
-                "vntts.main.initialize_voice_router",
+                "vntts.controller.initialize_voice_router",
                 return_value=voice_router,
             ),
             patch(
-                "vntts.main.ThreadPoolExecutor",
+                "vntts.controller.ThreadPoolExecutor",
                 side_effect=[
                     capture_executor,
                     ocr_executor,
@@ -609,11 +616,11 @@ class MainTest(unittest.TestCase):
                 ],
             ),
             patch(
-                "vntts.main.LiveDialogReader",
+                "vntts.controller.LiveDialogReader",
                 return_value=live_reader,
             ) as live_reader_factory,
             patch(
-                "vntts.main.create_dialog_read_scheduler",
+                "vntts.controller.create_dialog_read_scheduler",
                 schedule_dialog_read,
             ),
         ):
@@ -651,10 +658,12 @@ class MainTest(unittest.TestCase):
         voice_router = Mock()
         statuses = []
         with (
-            patch("vntts.main.initialize_voice_router", return_value=voice_router),
-            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
-            patch("vntts.main.LiveDialogReader", return_value=Mock()),
-            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+            patch(
+                "vntts.controller.initialize_voice_router", return_value=voice_router
+            ),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
                 AppSettings(warm_up_voices=False),
@@ -678,12 +687,12 @@ class MainTest(unittest.TestCase):
         model_assets = Mock()
         registry = Mock()
         with (
-            patch("vntts.main.initialize_voice_registry", return_value=registry),
-            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
             patch(
-                "vntts.main.LiveDialogReader", return_value=Mock()
+                "vntts.controller.LiveDialogReader", return_value=Mock()
             ) as live_reader_factory,
-            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
                 AppSettings(speech_backend="chatterbox-nano"),
@@ -723,10 +732,10 @@ class MainTest(unittest.TestCase):
         registry = Mock()
         statuses = []
         with (
-            patch("vntts.main.initialize_voice_registry", return_value=registry),
-            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
-            patch("vntts.main.LiveDialogReader", return_value=Mock()),
-            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
                 AppSettings(speech_backend="pocket-tts"),
@@ -758,10 +767,12 @@ class MainTest(unittest.TestCase):
         statuses = []
         errors = []
         with (
-            patch("vntts.main.initialize_voice_router", return_value=voice_router),
-            patch("vntts.main.ThreadPoolExecutor", return_value=Mock()),
-            patch("vntts.main.LiveDialogReader", return_value=Mock()),
-            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+            patch(
+                "vntts.controller.initialize_voice_router", return_value=voice_router
+            ),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
                 AppSettings(
@@ -840,9 +851,9 @@ class MainTest(unittest.TestCase):
         image = object()
 
         with (
-            patch("vntts.main.capture_dialog", return_value=(image, None)),
+            patch("vntts.dialog_capture.capture_dialog", return_value=(image, None)),
             patch(
-                "vntts.main.recognize_screenshot_result",
+                "vntts.dialog_capture.recognize_screenshot_result",
                 return_value=OCRResult(
                     "Marcus",
                     "This is a complete test.",
@@ -1176,7 +1187,7 @@ class MainTest(unittest.TestCase):
             choice_detected=True,
         )
 
-        with patch("vntts.main.DialogueAdvancer") as advancer:
+        with patch("vntts.controller.DialogueAdvancer") as advancer:
             advanced = controller._auto_advance_dialog()
 
         self.assertFalse(advanced)
@@ -1196,13 +1207,15 @@ class MainTest(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch("vntts.main.initialize_voice_router", return_value=voice_router),
             patch(
-                "vntts.main.ThreadPoolExecutor",
+                "vntts.controller.initialize_voice_router", return_value=voice_router
+            ),
+            patch(
+                "vntts.controller.ThreadPoolExecutor",
                 side_effect=[Mock(), Mock(), Mock(), Mock()],
             ),
-            patch("vntts.main.LiveDialogReader", return_value=Mock()),
-            patch("vntts.main.create_dialog_read_scheduler", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
                 settings,

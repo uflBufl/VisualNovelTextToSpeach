@@ -37,9 +37,11 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
+from vntts.controller import AppController
 from vntts.dashboard_ui import CompactController, ControlDashboard
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
+from vntts.dialog_capture import format_runtime_error
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
@@ -48,17 +50,6 @@ from vntts.macos import (
     get_macos_permission_status,
 )
 from vntts.macos_ui import MacOSPermissionsDialog
-from vntts.main import (
-    AppController,
-    format_runtime_error,
-    get_clear_queue_hotkey,
-    get_emergency_stop_hotkey,
-    get_hotkey,
-    get_live_hotkey,
-    get_pause_hotkey,
-    get_repeat_hotkey,
-    get_skip_hotkey,
-)
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.ocr_review_ui import OCRReviewDialog
@@ -74,6 +65,15 @@ from vntts.release_smoke_test import (
 )
 from vntts.reverse1999_audition import load_audition_data
 from vntts.reverse1999_audition_ui import Reverse1999AuditionDialog
+from vntts.runtime_config import (
+    get_clear_queue_hotkey,
+    get_emergency_stop_hotkey,
+    get_hotkey,
+    get_live_hotkey,
+    get_pause_hotkey,
+    get_repeat_hotkey,
+    get_skip_hotkey,
+)
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import (
     AppSettings,

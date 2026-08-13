@@ -135,7 +135,9 @@ class OCRCorrectionPipelineTest(unittest.TestCase):
         result = OCRResult("Mareus", "Hello.", 95.0, "balanced", 1)
         dictionary = OCRCorrectionDictionary({"Mareus": "Marcus"})
 
-        with patch("vntts.main.recognize_dialog_image_result", return_value=result):
+        with patch(
+            "vntts.dialog_capture.recognize_dialog_image_result", return_value=result
+        ):
             corrected = recognize_screenshot_result(
                 object(),
                 correction_dictionary=dictionary,

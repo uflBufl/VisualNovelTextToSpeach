@@ -3,15 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## Architecture
-
-### P1 - Deepen the runtime module
-
-- [ ] Split runtime configuration, dialog capture/OCR, and controller
-      orchestration out of `vntts/main.py`; keep `main.py` as a temporary
-      compatibility facade while callers and tests move to the narrower
-      modules.
-
 ## Live mode
 
 ### P0 - Import Reverse: 1999 NPC voices

@@ -53,7 +53,7 @@ def run_release_smoke_test(
             capture_source = str(image_path)
         else:
             if capture is None:
-                from vntts.main import capture_dialog
+                from vntts.dialog_capture import capture_dialog
 
                 capture = capture_dialog
             image, _output = capture(

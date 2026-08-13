@@ -38,8 +38,10 @@ class DiagnosticsTest(unittest.TestCase):
         clock = iter((1.0, 1.025, 2.0, 2.075)).__next__
 
         with (
-            patch("vntts.main.capture_dialog", return_value=(image, None)),
-            patch("vntts.main.recognize_screenshot_result", return_value=result),
+            patch("vntts.dialog_capture.capture_dialog", return_value=(image, None)),
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+            ),
         ):
             _, _, actual = analyze_dialog_snapshot(
                 "captures",
