@@ -1,7 +1,9 @@
 import json
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts.settings import (
     AppSettings,
@@ -59,20 +61,24 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.speech_backend, "pocket-tts")
         self.assertTrue(any("speech_backend" in warning for warning in warnings))
 
-    def test_windows_paths_use_roaming_settings_and_local_application_data(self):
-        environment = {
-            "APPDATA": r"C:\Users\Ada\AppData\Roaming",
-            "LOCALAPPDATA": r"C:\Users\Ada\AppData\Local",
-        }
-
-        self.assertEqual(
-            get_config_directory(environment=environment, platform="win32"),
-            Path(environment["APPDATA"]) / "VisualNovelTextToSpeech",
+    def test_paths_use_platformdirs(self):
+        config_path = Path("/config/vntts")
+        data_path = Path("/data/vntts")
+        with (
+            patch(
+                "vntts.settings.user_config_path", return_value=config_path
+            ) as config,
+            patch("vntts.settings.user_data_path", return_value=data_path) as data,
+        ):
+            self.assertEqual(get_config_directory(), config_path)
+            self.assertEqual(get_local_data_directory(), data_path)
+        app_name = (
+            "VisualNovelTextToSpeech"
+            if sys.platform in {"darwin", "win32"}
+            else "vntts"
         )
-        self.assertEqual(
-            get_local_data_directory(environment=environment, platform="win32"),
-            Path(environment["LOCALAPPDATA"]) / "VisualNovelTextToSpeech",
-        )
+        config.assert_called_once_with(app_name, appauthor=False, roaming=True)
+        data.assert_called_once_with(app_name, appauthor=False)
 
     def test_settings_round_trip_as_json(self):
         with TemporaryDirectory() as temporary_directory:
