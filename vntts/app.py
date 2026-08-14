@@ -204,6 +204,9 @@ class SettingsDialog(QDialog):
             or (str(default_voice_manifest) if default_voice_manifest else "")
         )
         self.story_index = QLineEdit(settings.story_index or "")
+        self.generated_audio_manifest = QLineEdit(
+            settings.generated_audio_manifest or ""
+        )
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
@@ -274,6 +277,7 @@ class SettingsDialog(QDialog):
         form.addRow("TTS language", self.tts_language)
         form.addRow("Voice manifest", self.voice_manifest)
         form.addRow("Story index", self.story_index)
+        form.addRow("Generated audio manifest", self.generated_audio_manifest)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("Voice profile", self.tts_profile)
         form.addRow("Output volume", self.output_volume)
@@ -449,6 +453,9 @@ class SettingsDialog(QDialog):
                 "tts_language": optional_text(self.tts_language),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "story_index": optional_text(self.story_index),
+                "generated_audio_manifest": optional_text(
+                    self.generated_audio_manifest
+                ),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "tts_profile": self.tts_profile.currentText(),
                 "output_volume_percent": self.output_volume.value(),

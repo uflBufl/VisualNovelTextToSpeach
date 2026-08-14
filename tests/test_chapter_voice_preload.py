@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -93,6 +94,45 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
             path.write_text(story_index_document(), encoding="utf-8")
             self.assertEqual(len(ChapterVoicePreloader.load_optional(path).dialogue), 4)
+
+    def test_exact_resolution_returns_stable_line_identity_and_text_hash(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story.jsonl"
+            path.write_text(story_index_document(), encoding="utf-8")
+            preloader = ChapterVoicePreloader.load_optional(path)
+
+            line = preloader.resolve_exact(
+                "KAMUTA",
+                "These old ones are enough to carry everyone.",
+            )
+
+        self.assertEqual(line.line_id, "test:0")
+        self.assertEqual(
+            line.text_sha256,
+            hashlib.sha256(line.text.encode("utf-8")).hexdigest(),
+        )
+
+    def test_exact_resolution_rejects_partial_or_ambiguous_text(self):
+        document = dialogue_document()
+        duplicate = dict(document["dialogue"][0])
+        duplicate["chapter"] = "other"
+        document["dialogue"].append(duplicate)
+        for index, entry in enumerate(document["dialogue"]):
+            entry["line_id"] = f"test:{index}"
+            entry["text_sha256"] = hashlib.sha256(
+                entry["text"].encode("utf-8")
+            ).hexdigest()
+        preloader = ChapterVoicePreloader.from_document(document)
+
+        self.assertIsNone(
+            preloader.resolve_exact("Kamuta", "These old ones are enough")
+        )
+        self.assertIsNone(
+            preloader.resolve_exact(
+                "Kamuta",
+                "These old ones are enough to carry everyone.",
+            )
+        )
 
 
 if __name__ == "__main__":

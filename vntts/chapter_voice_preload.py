@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -10,12 +11,18 @@ def _normalize(value):
     return " ".join(re.findall(r"[\w']+", str(value).casefold()))
 
 
+def _normalize_exact_text(value):
+    return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
+
+
 @dataclass(frozen=True)
 class ChapterDialogue:
+    line_id: str | None
     chapter: str
     sequence: int
     speaker: str
     text: str
+    text_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -33,9 +40,13 @@ class ChapterVoicePreloader:
         self.lookahead_rows = max(1, int(lookahead_rows))
         self.by_speaker = defaultdict(list)
         self.by_chapter = defaultdict(list)
+        self.by_exact_dialogue = defaultdict(list)
         for row in self.dialogue:
             self.by_speaker[_normalize(row.speaker)].append(row)
             self.by_chapter[row.chapter].append(row)
+            self.by_exact_dialogue[
+                (_normalize(row.speaker), _normalize_exact_text(row.text))
+            ].append(row)
         for rows in self.by_chapter.values():
             rows.sort(key=lambda row: row.sequence)
         self.current_match = None
@@ -55,7 +66,18 @@ class ChapterVoicePreloader:
                 sequence = int(entry.get("sequence", 0))
             except (TypeError, ValueError):
                 sequence = 0
-            rows.append(ChapterDialogue(chapter, sequence, speaker, text))
+            line_id = str(entry.get("line_id") or "").strip() or None
+            text_hash = str(entry.get("text_sha256") or "").strip() or None
+            rows.append(
+                ChapterDialogue(
+                    line_id,
+                    chapter,
+                    sequence,
+                    speaker,
+                    text,
+                    text_hash,
+                )
+            )
         return cls(rows, lookahead_rows=lookahead_rows)
 
     @classmethod
@@ -67,10 +89,43 @@ class ChapterVoicePreloader:
         except StoryIndexError:
             return cls(lookahead_rows=lookahead_rows)
         rows = (
-            ChapterDialogue(line.chapter, line.sequence, line.speaker, line.text)
+            ChapterDialogue(
+                line.line_id,
+                line.chapter,
+                line.sequence,
+                line.speaker,
+                line.text,
+                line.text_sha256,
+            )
             for line in indexed_lines
         )
         return cls(rows, lookahead_rows=lookahead_rows)
+
+    def resolve_exact(self, character, text):
+        """Resolve an OCR line without fuzzy text substitution."""
+        candidates = self.by_exact_dialogue.get(
+            (_normalize(character), _normalize_exact_text(text)),
+            (),
+        )
+        candidates = [row for row in candidates if row.line_id and row.text_sha256]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            selected = candidates[0]
+        elif self.current_match is not None:
+            nearby = [
+                row for row in candidates if row.chapter == self.current_match.chapter
+            ]
+            if not nearby:
+                return None
+            selected = min(
+                nearby,
+                key=lambda row: abs(row.sequence - self.current_match.sequence),
+            )
+        else:
+            return None
+        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        return selected
 
     def recommend(self, character, text, *, limit=3):
         if limit <= 0 or not self.dialogue:

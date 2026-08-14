@@ -23,13 +23,13 @@ class SettingsTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(settings.schema_version, 16)
+        self.assertEqual(settings.schema_version, 17)
         self.assertEqual(settings.live_idle_flush_ms, 400)
 
     def test_current_schema_preserves_an_explicit_idle_delay(self):
         settings = AppSettings.from_mapping(
             {
-                "schema_version": 16,
+                "schema_version": 17,
                 "live_idle_flush_ms": 700,
             }
         )
@@ -100,6 +100,7 @@ class SettingsTest(unittest.TestCase):
                 game_window_title="Reverse: 1999",
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 tts_language="en",
+                generated_audio_manifest="audio/generated.json",
                 output_volume_percent=72,
                 speech_rate_percent=115,
             )

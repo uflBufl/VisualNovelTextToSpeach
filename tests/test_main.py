@@ -1125,6 +1125,57 @@ class MainTest(unittest.TestCase):
             "Fatutu",
         )
 
+    def test_controller_wraps_live_backend_when_generated_audio_is_configured(self):
+        library = Mock()
+        library.index.entries = (Mock(), Mock())
+        library_factory = Mock(return_value=library)
+        wrapped_backend = Mock()
+        backend_factory = Mock(return_value=wrapped_backend)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                generated_audio_manifest="generated-audio.json",
+            ),
+            tts_factory=Mock(),
+            generated_audio_library_factory=library_factory,
+            generated_audio_backend_factory=backend_factory,
+        )
+        live_backend = Mock()
+        controller.speech_backend = live_backend
+
+        self.assertTrue(controller._configure_generated_audio_backend())
+
+        library_factory.assert_called_once_with(
+            "generated-audio.json",
+            warn=controller.status_handler,
+        )
+        backend_factory.assert_called_once_with(
+            live_backend,
+            library,
+            controller.chapter_voice_preloader,
+            volume=1.0,
+            speed=1.0,
+        )
+        self.assertIs(controller.speech_backend, wrapped_backend)
+
+    def test_controller_keeps_live_backend_without_story_identity(self):
+        statuses = []
+        library_factory = Mock()
+        controller = AppController(
+            AppSettings(generated_audio_manifest="generated-audio.json"),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+            generated_audio_library_factory=library_factory,
+        )
+        live_backend = Mock()
+        controller.speech_backend = live_backend
+
+        self.assertFalse(controller._configure_generated_audio_backend())
+
+        self.assertIs(controller.speech_backend, live_backend)
+        library_factory.assert_not_called()
+        self.assertIn("story index", statuses[-1])
+
     def test_controller_does_not_prime_unknown_speaker_as_narrator(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.voice_router = Mock(registry=CharacterVoiceRegistry())

@@ -4846,7 +4846,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cu129" },
     { name = "transformers", specifier = "==4.57.3" },
-    { name = "vntts-artifacts", git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.1.0" },
+    { name = "vntts-artifacts", git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.2.0" },
 ]
 provides-extras = ["rapidocr"]
 
@@ -4866,8 +4866,8 @@ notebook = [
 
 [[package]]
 name = "vntts-artifacts"
-version = "0.1.0"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.1.0#b08b35ca256ea242ea18826216d5067dbf6a23bd" }
+version = "0.2.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.2.0#90c3c7e7077f11ff18065ce1d13d23a72195ef85" }
 
 [[package]]
 name = "wcwidth"

@@ -24,6 +24,10 @@ from vntts.dialog_capture import (
     recognize_live_frame,
     report_runtime_error,
 )
+from vntts.generated_audio import (
+    GeneratedAudioFallbackBackend,
+    GeneratedAudioLibrary,
+)
 from vntts.history import DialogueHistory
 from vntts.live import (
     AdaptiveSpeechBackpressure,
@@ -182,6 +186,8 @@ class AppController:
         correction_store=None,
         history=None,
         chapter_voice_preloader=None,
+        generated_audio_library_factory=GeneratedAudioLibrary.load_optional,
+        generated_audio_backend_factory=GeneratedAudioFallbackBackend,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -198,6 +204,8 @@ class AppController:
             chapter_voice_preloader
             or ChapterVoicePreloader.load_optional(self.settings.story_index)
         )
+        self.generated_audio_library_factory = generated_audio_library_factory
+        self.generated_audio_backend_factory = generated_audio_backend_factory
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -293,6 +301,8 @@ class AppController:
             else:
                 self.voice_router = self.tts
                 self.speech_backend = self.tts
+
+            self._configure_generated_audio_backend()
 
             if self.settings.warm_up_voices:
                 self.status_handler("Warming speech model and voices...")
@@ -601,12 +611,20 @@ class AppController:
         self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
             self.settings.story_index
         )
+        self._configure_generated_audio_backend()
         self.refresh_corrections()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         if self.tts is not None:
             self.tts.set_volume(self.settings.output_volume_percent / 100)
             self.tts.set_speed(self.settings.speech_rate_percent / 100)
+        if self.speech_backend is not None:
+            set_volume = getattr(self.speech_backend, "set_volume", None)
+            set_speed = getattr(self.speech_backend, "set_speed", None)
+            if callable(set_volume):
+                set_volume(self.settings.output_volume_percent / 100)
+            if callable(set_speed):
+                set_speed(self.settings.speech_rate_percent / 100)
         if self.live_reader is None:
             return
 
@@ -655,6 +673,40 @@ class AppController:
         configure = getattr(self.speech_backend, "set_live_mode_active", None)
         if callable(configure):
             configure(active)
+
+    def _configure_generated_audio_backend(self):
+        if self.speech_backend is None:
+            return False
+        live_backend = (
+            self.speech_backend.live_backend
+            if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+            else self.speech_backend
+        )
+        self.speech_backend = live_backend
+        if not self.settings.generated_audio_manifest:
+            return False
+        if not self.settings.story_index:
+            self.status_handler(
+                "Generated audio disabled: configure a story index for stable line IDs"
+            )
+            return False
+        library = self.generated_audio_library_factory(
+            self.settings.generated_audio_manifest,
+            warn=self.status_handler,
+        )
+        if library is None:
+            return False
+        self.speech_backend = self.generated_audio_backend_factory(
+            live_backend,
+            library,
+            self.chapter_voice_preloader,
+            volume=self.settings.output_volume_percent / 100,
+            speed=self.settings.speech_rate_percent / 100,
+        )
+        self.status_handler(
+            f"Loaded {len(library.index.entries)} generated audio entries"
+        )
+        return True
 
     def refresh_corrections(self):
         self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
@@ -835,12 +887,13 @@ class AppController:
                 pipeline_metrics.max_speech_queue_depth if pipeline_metrics else 0
             ),
         )
-        if self.tts is not None:
+        metric_source = self.speech_backend or self.tts
+        if metric_source is not None:
             snapshot = replace(
                 snapshot,
-                synthesis_ms=getattr(self.tts, "last_synthesis_ms", None),
-                playback_ms=getattr(self.tts, "last_playback_ms", None),
-                last_first_audio_ms=getattr(self.tts, "last_first_audio_ms", None),
+                synthesis_ms=getattr(metric_source, "last_synthesis_ms", None),
+                playback_ms=getattr(metric_source, "last_playback_ms", None),
+                last_first_audio_ms=getattr(metric_source, "last_first_audio_ms", None),
             )
         with self.diagnostic_lock:
             self.last_diagnostic = snapshot

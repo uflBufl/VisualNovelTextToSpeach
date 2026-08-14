@@ -144,16 +144,19 @@ Character voice cloning also requires accepting the model terms at
 `uvx hf auth login`.
 
 Game-specific extraction lives in a separate repository. An extractor may
-produce two local, game-agnostic artifacts for VNTTS:
+produce three local, game-agnostic artifacts for VNTTS:
 
 - a character voice `manifest.json`;
 - a versioned `vntts.story-index` JSONL file for chapter detection and likely
-  next-speaker preloading.
+  next-speaker preloading;
+- an optional versioned `vntts.generated-audio` JSON manifest for verified
+  ahead-of-time audio lookup.
 
-Select both in Settings or store them in a game profile. VNTTS does not decrypt
-game configuration, parse engine assets, inspect audio banks, or distribute
-extracted game content. The Reverse: 1999 implementation and its local-only
-story/voice workflow are in the sibling `reverse1999-extractor` project.
+Select these artifacts in Settings or store them in a game profile. VNTTS does
+not decrypt game configuration, parse engine assets, inspect audio banks, or
+distribute extracted game content. The Reverse: 1999 implementation and its
+local-only story/voice workflow are in the sibling `reverse1999-extractor`
+project.
 
 Use XTTS with character-specific voices and a default narrator voice:
 
@@ -163,6 +166,7 @@ VNTTS_TTS_LANGUAGE='en' \
 VNTTS_TTS_PROFILE='stable' \
 VNTTS_VOICE_MANIFEST='/path/to/voice-pack/manifest.json' \
 VNTTS_STORY_INDEX='/path/to/story-index.jsonl' \
+VNTTS_GENERATED_AUDIO_MANIFEST='/path/to/generated-audio.json' \
 VNTTS_NARRATOR_SPEAKER='Claribel Dervla' \
 uv run vntts
 ```
@@ -172,6 +176,10 @@ when that speaker is first detected. XTTS uses `stable` by default. Select
 `stable`, `natural`, or `expressive` with `VNTTS_TTS_PROFILE`; invalid profile
 names also use `stable`. Unknown speakers use the narrator voice until mapped.
 Imported recordings and user manifests are stored under application data.
+When generated audio is configured, VNTTS uses it only for an exact story line
+whose stable line ID and current UTF-8 text SHA-256 match the manifest. Missing,
+modified, partial, ambiguous, or speed-incompatible entries fall back to the
+selected live speech engine.
 
 ## Project layout
 

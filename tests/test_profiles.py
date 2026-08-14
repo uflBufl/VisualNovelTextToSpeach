@@ -26,6 +26,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 ocr_language="eng+jpn",
                 voice_manifest="voices/reverse-1999.json",
                 story_index="story/reverse-1999.jsonl",
+                generated_audio_manifest="audio/generated.json",
             )
             store = GameProfileStore(path)
 
@@ -39,6 +40,7 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.ocr_language, "eng+jpn")
         self.assertEqual(applied.voice_manifest, "voices/reverse-1999.json")
         self.assertEqual(applied.story_index, "story/reverse-1999.jsonl")
+        self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
         with TemporaryDirectory() as temporary_directory:
