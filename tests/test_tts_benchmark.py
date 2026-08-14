@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from vntts.speech_backend import SpeechBackendCapabilities
+from vntts.speech_backend_runtime import BoundedCache
 from vntts.tts_benchmark import benchmark_backend, write_report, write_wav
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
@@ -27,7 +28,51 @@ class FakeBackend:
         return False
 
 
+class FakeStreamingBackend(FakeBackend):
+    capabilities = SpeechBackendCapabilities(True, True, True)
+
+    def __init__(self):
+        super().__init__()
+        self.audio_cache = BoundedCache(1)
+        self.last_first_audio_ms = 125.0
+
+    def prepare(self, character, text):
+        return character, text
+
+    def play(self, prepared):
+        character, text = prepared
+        self.audio_cache.put(
+            (character.casefold(), " ".join(text.split())),
+            np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32),
+        )
+        return True
+
+
 class TTSBenchmarkTest(unittest.TestCase):
+    def test_reads_streamed_audio_through_bounded_cache_interface(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        backend = FakeStreamingBackend()
+
+        def create_fake_backend(name, registry, cache):
+            del name, registry, cache
+            return backend
+
+        with TemporaryDirectory() as temporary_directory:
+            report = benchmark_backend(
+                "fake",
+                registry,
+                ["Kamuta"],
+                "A line.",
+                temporary_directory,
+                backend_factory=create_fake_backend,
+            )
+
+        sample = report["samples"][0]
+        self.assertEqual(sample["duration_seconds"], 1.0)
+        self.assertEqual(sample["first_audio_ms"], 125.0)
+
     def test_records_cold_generation_cache_and_audio(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
