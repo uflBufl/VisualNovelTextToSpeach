@@ -3,12 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## Architecture
-
-- [ ] Define the generated-audio manifest in `vntts-artifacts`, then add exact
-      lookup by stable story line ID and text hash, falling back to the
-      configured live TTS backend when no valid local generation exists.
-
 ## Live mode
 
 ### P0 - Validate performance and resilience
