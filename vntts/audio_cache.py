@@ -3,8 +3,7 @@ from hashlib import blake2b
 from pathlib import Path
 
 import numpy as np
-
-from vntts.atomic_io import atomic_output_path
+from vntts_artifacts.atomic_io import atomic_output_path
 
 
 class PersistentAudioCache:

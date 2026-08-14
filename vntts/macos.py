@@ -2,7 +2,8 @@ import plistlib
 import sys
 from pathlib import Path
 
-from vntts.atomic_io import atomic_output_path
+from vntts_artifacts.atomic_io import atomic_output_path
+
 from vntts.settings import get_local_data_directory
 
 launch_agent_label = "io.github.visualnoveltexttospeech.login"

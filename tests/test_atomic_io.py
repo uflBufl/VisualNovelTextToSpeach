@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts.atomic_io import (
+from vntts_artifacts.atomic_io import (
     atomic_output_group,
     atomic_output_path,
     atomic_write_json,

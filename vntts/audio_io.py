@@ -4,8 +4,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
-
-from vntts.atomic_io import atomic_output_path
+from vntts_artifacts.atomic_io import atomic_output_path
 
 
 def write_pcm16_wav(path, samples, sample_rate):

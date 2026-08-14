@@ -4803,6 +4803,7 @@ dependencies = [
     { name = "torchaudio", version = "2.8.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.14' and sys_platform == 'darwin') or (python_full_version != '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')" },
     { name = "torchaudio", version = "2.8.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "(python_full_version >= '3.14' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "transformers" },
+    { name = "vntts-artifacts" },
 ]
 
 [package.optional-dependencies]
@@ -4845,6 +4846,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cu129" },
     { name = "transformers", specifier = "==4.57.3" },
+    { name = "vntts-artifacts", git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.1.0" },
 ]
 provides-extras = ["rapidocr"]
 
@@ -4861,6 +4863,11 @@ notebook = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=1.5" },
 ]
+
+[[package]]
+name = "vntts-artifacts"
+version = "0.1.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.1.0#b08b35ca256ea242ea18826216d5067dbf6a23bd" }
 
 [[package]]
 name = "wcwidth"

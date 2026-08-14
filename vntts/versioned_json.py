@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TypeVar
 
-from vntts.atomic_io import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_write_json
 
 Document = TypeVar("Document")
 

@@ -6,8 +6,8 @@ from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 
 import numpy as np
+from vntts_artifacts.atomic_io import atomic_write_json
 
-from vntts.atomic_io import atomic_write_json
 from vntts.audio_io import write_pcm16_wav
 
 try:

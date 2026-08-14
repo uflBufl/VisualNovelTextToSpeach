@@ -9,8 +9,8 @@ from uuid import uuid4
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
+from vntts_artifacts.atomic_io import atomic_output_group, atomic_write_json
 
-from vntts.atomic_io import atomic_output_group, atomic_write_json
 from vntts.dialog import is_probable_character_name, parse_dialog
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.versioned_json import write_versioned_json

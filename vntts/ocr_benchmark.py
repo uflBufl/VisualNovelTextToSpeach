@@ -8,8 +8,8 @@ from statistics import median
 from time import perf_counter, process_time
 
 from PIL import Image
+from vntts_artifacts.atomic_io import atomic_write_json
 
-from vntts.atomic_io import atomic_write_json
 from vntts.ocr_backend import RapidOCRBackend, TesseractOCRBackend
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest

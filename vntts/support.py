@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
-from vntts.atomic_io import atomic_output_path
+from vntts_artifacts.atomic_io import atomic_output_path
+
 from vntts.diagnostics import macos_permission_warnings
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract

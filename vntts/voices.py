@@ -1,12 +1,12 @@
-import json
-import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
-
-class VoiceManifestError(ValueError):
-    pass
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    normalize_character_name,
+)
 
 
 @dataclass(frozen=True)
@@ -37,72 +37,22 @@ class CharacterVoiceRegistry:
     @classmethod
     def from_file(cls, manifest_path):
         manifest_path = Path(manifest_path).expanduser().resolve()
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise VoiceManifestError(
-                f"Unable to read voice manifest {manifest_path}: {error}"
-            ) from error
-
-        if not isinstance(manifest, dict):
-            raise VoiceManifestError("Voice manifest must be a JSON object")
-        entries = manifest.get("voices")
-        if not isinstance(entries, list):
-            raise VoiceManifestError("Voice manifest must contain a voices list")
-
-        voices = []
-        for index, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                raise VoiceManifestError(f"Voice entry {index} must be an object")
-            character = entry.get("character")
-            speaker = entry.get("speaker")
-            if not isinstance(character, str) or not character.strip():
-                raise VoiceManifestError(
-                    f"Voice entry {index} requires a character name"
-                )
-            if not isinstance(speaker, str) or not speaker.strip():
-                raise VoiceManifestError(f"Voice entry {index} requires a speaker ID")
-
-            legacy_reference = entry.get("reference")
-            manifest_references = entry.get("references")
-            if legacy_reference is not None and manifest_references is not None:
-                raise VoiceManifestError(
-                    f"Voice entry {index} cannot contain reference and references"
-                )
-            if manifest_references is None:
-                manifest_references = (
-                    [] if legacy_reference is None else [legacy_reference]
-                )
-            if not isinstance(manifest_references, list) or not all(
-                isinstance(reference, str) and reference.strip()
-                for reference in manifest_references
-            ):
-                raise VoiceManifestError(
-                    f"Voice entry {index} references must be non-empty strings"
-                )
-
-            references = tuple(
-                (manifest_path.parent / reference).resolve()
-                for reference in manifest_references
+        _manifest, entries = load_voice_manifest(manifest_path)
+        voices = [
+            CharacterVoice(
+                character=entry.character,
+                speaker=entry.speaker,
+                reference=(manifest_path.parent / entry.references[0]).resolve()
+                if entry.references
+                else None,
+                aliases=entry.aliases,
+                references=tuple(
+                    (manifest_path.parent / reference).resolve()
+                    for reference in entry.references
+                ),
             )
-
-            aliases = entry.get("aliases", [])
-            if not isinstance(aliases, list) or not all(
-                isinstance(alias, str) and alias.strip() for alias in aliases
-            ):
-                raise VoiceManifestError(
-                    f"Voice entry {index} aliases must be non-empty strings"
-                )
-
-            voices.append(
-                CharacterVoice(
-                    character=character.strip(),
-                    speaker=speaker.strip(),
-                    reference=references[0] if references else None,
-                    aliases=tuple(aliases),
-                    references=references,
-                )
-            )
+            for entry in entries
+        ]
         return cls(voices)
 
     def resolve(self, character):
@@ -218,11 +168,6 @@ class CharacterVoiceRouter:
             "speaker": voice.speaker,
             "speaker_wav": speaker_wav,
         }
-
-
-def normalize_character_name(character):
-    normalized = unicodedata.normalize("NFKC", character or "").casefold()
-    return "".join(value for value in normalized if value.isalnum())
 
 
 def is_narrator(character):

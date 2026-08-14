@@ -8,8 +8,8 @@ from types import MethodType
 from typing import Any, Protocol
 
 import numpy as np
+from vntts_artifacts.atomic_io import atomic_output_path
 
-from vntts.atomic_io import atomic_output_path
 from vntts.audio_cache import PersistentAudioCache
 from vntts.services.tts_engine import (
     AudioPlaybackError,

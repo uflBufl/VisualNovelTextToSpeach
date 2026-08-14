@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from PIL import Image
+from vntts_artifacts.atomic_io import atomic_write_json
 
-from vntts.atomic_io import atomic_write_json
 from vntts.ocr import (
     default_dialog_region,
     default_minimum_ocr_confidence,

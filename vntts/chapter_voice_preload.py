@@ -3,7 +3,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from vntts.story_index import StoryIndexError, load_story_index
+from vntts_artifacts.story_index import StoryIndexError, load_story_index
 
 
 def _normalize(value):

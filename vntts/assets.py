@@ -8,10 +8,11 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from vntts.atomic_io import atomic_write_json
-from vntts.file_integrity import sha256_file
+from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.text_utils import slugify
+
 from vntts.settings import get_local_data_directory
-from vntts.text_utils import slugify
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 asset_manifest_name = "vntts-asset.json"

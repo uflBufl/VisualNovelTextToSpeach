@@ -4,7 +4,8 @@ import sys
 import traceback
 from pathlib import Path
 
-from vntts.atomic_io import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_write_json
+
 from vntts.onboarding import probe_tesseract
 from vntts.runtime_paths import (
     configure_bundled_dependencies,

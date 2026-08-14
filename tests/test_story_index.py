@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts.story_index import StoryIndexError, load_story_index
+from vntts_artifacts.story_index import StoryIndexError, load_story_index
 
 
 class StoryIndexTest(unittest.TestCase):
