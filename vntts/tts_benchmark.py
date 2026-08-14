@@ -7,8 +7,7 @@ from time import perf_counter, process_time
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
-
-from vntts.audio_io import write_pcm16_wav
+from vntts_artifacts.audio import write_pcm16_wav
 
 try:
     import resource

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import wave
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
 
 import numpy as np
+from vntts_artifacts.audio import Pcm16MonoWavError, read_pcm16_mono_wav
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     GeneratedAudioManifestError,
@@ -72,7 +72,7 @@ class GeneratedAudioLibrary:
             return None
         try:
             samples, sample_rate = _read_pcm16_mono_wav(entry.audio)
-        except (OSError, ValueError, wave.Error) as error:
+        except Pcm16MonoWavError as error:
             self._warn_once(
                 entry, f"Generated audio is invalid: {entry.audio}: {error}"
             )
@@ -133,11 +133,16 @@ class GeneratedAudioFallbackBackend:
         self.last_first_audio_ms = None
         self.last_playback_ms = None
         self.last_playback_underrun = False
+        self.voice_override = None
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
 
     def prepare(self, character, text):
-        line = self.line_resolver.resolve_exact(character, text)
+        line = (
+            None
+            if self.voice_override is not None and self.voice_override(character)
+            else self.line_resolver.resolve_exact(character, text)
+        )
         if line is not None and line.line_id and self.speed == 1.0:
             prepared = self.library.find(line.line_id, line.text_sha256)
             if prepared is not None:
@@ -228,15 +233,6 @@ class GeneratedAudioFallbackBackend:
 
 
 def _read_pcm16_mono_wav(path):
-    with wave.open(str(path), "rb") as source:
-        if source.getcomptype() != "NONE":
-            raise ValueError("compressed WAV is not supported")
-        if source.getnchannels() != 1 or source.getsampwidth() != 2:
-            raise ValueError("expected mono 16-bit PCM WAV")
-        sample_rate = source.getframerate()
-        frame_count = source.getnframes()
-        frames = source.readframes(frame_count)
-    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-    if len(samples) != frame_count or not np.all(np.isfinite(samples)):
-        raise ValueError("WAV sample data is incomplete or invalid")
-    return samples, sample_rate
+    pcm, info = read_pcm16_mono_wav(path)
+    samples = np.asarray(pcm, dtype=np.float32) / 32768.0
+    return samples, info.sample_rate

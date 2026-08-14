@@ -33,7 +33,7 @@ dependencies = [
     "PySide6>=6.6",
     # Needs eSpeak to run
     # "pyttsx3>=2.90",
-    "vntts-artifacts",
+    "vntts-artifacts[audio]",
 ]
 
 [project.optional-dependencies]
@@ -58,7 +58,7 @@ torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", tag = "v0.2.0" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", tag = "v0.3.0" }
 
 [dependency-groups]
 dev = [

@@ -3,6 +3,15 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
+## Shared artifact consolidation
+
+- [x] Move the duplicated PCM16 WAV writer and generated-audio WAV reader to
+      `vntts-artifacts v0.3.0`; consume its format constant and shared text hash
+      without adding game-specific or application-state behavior to the package.
+- [ ] After the current product work stabilizes, consolidate repeated CLI exit,
+      stderr, and structured-result handling behind a repository-local helper;
+      keep individual argument parsers explicit.
+
 ## Live mode
 
 ### P0 - Validate performance and resilience
