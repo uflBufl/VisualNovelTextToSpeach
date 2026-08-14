@@ -859,6 +859,11 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz", hash = "sha256:49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491", size = 25901, upload-time = "2014-06-16T11:18:57.406Z" }
 
 [[package]]
+name = "durable-file"
+version = "0.1.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=durable-file-v0.1.0#3557679180502da3bf2695dd2646224ef012c6b6" }
+
+[[package]]
 name = "einops"
 version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4846,7 +4851,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cu129" },
     { name = "transformers", specifier = "==4.57.3" },
-    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.3.0" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.4.0" },
 ]
 provides-extras = ["rapidocr"]
 
@@ -4866,8 +4871,11 @@ notebook = [
 
 [[package]]
 name = "vntts-artifacts"
-version = "0.3.0"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.3.0#e25a23402ad5804c6605c263b55f3f1fa63da21d" }
+version = "0.4.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.4.0#191604da4c81ee952ef30b0cfd22f7d51f0e3b39" }
+dependencies = [
+    { name = "durable-file" },
+]
 
 [package.optional-dependencies]
 audio = [
