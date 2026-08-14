@@ -118,6 +118,38 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
         self.assertEqual(normalize_character_name(" 37 "), "37")
         self.assertEqual(normalize_character_name("An-an Lee"), "ananlee")
 
+    def test_manual_assignment_can_use_a_preset_or_an_imported_voice(self):
+        marcus = CharacterVoice("Marcus", "local-marcus", Path("marcus.wav"))
+        registry = CharacterVoiceRegistry([marcus])
+
+        registry.set_assignment("Selone", "preset:alba")
+        registry.set_assignment("Narrator", "character:marcus")
+
+        self.assertEqual(registry.resolve("Selone").speaker, "alba")
+        self.assertIs(registry.resolve("Narrator"), marcus)
+
+    def test_default_assignment_overrides_a_manifest_voice(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Marcus", "local-marcus", Path("marcus.wav"))]
+        )
+
+        registry.set_assignment("Marcus", "default")
+
+        self.assertIsNone(registry.resolve("Marcus"))
+
+    def test_incompatible_preset_assignment_can_be_ignored(self):
+        warnings = []
+        registry = CharacterVoiceRegistry()
+
+        registry.apply_assignments(
+            {"Marcus": "preset:alba"},
+            warn=warnings.append,
+            preset_validator=lambda _speaker: False,
+        )
+
+        self.assertNotIn("marcus", registry.assignments)
+        self.assertIn("not available", warnings[0])
+
     def test_discovers_a_complete_default_voice_pack(self):
         with TemporaryDirectory() as temporary_directory:
             project_root = Path(temporary_directory)
@@ -191,6 +223,18 @@ class CharacterVoiceRouterTest(unittest.TestCase):
         router.speak("Unknown Person", "Hello.")
 
         tts.speak.assert_called_once_with("Hello.", speaker=None)
+
+    def test_selected_narrator_voice_is_also_the_unknown_character_fallback(self):
+        tts = Mock()
+        tts.has_speaker.return_value = True
+        narrator = CharacterVoice("Marcus", "local-marcus")
+        router = CharacterVoiceRouter(tts, narrator_voice=narrator)
+
+        router.speak("Unknown Person", "Hello.")
+
+        tts.speak.assert_called_once_with(
+            "Hello.", speaker="local-marcus", speaker_wav=None
+        )
 
     def test_cached_character_voice_does_not_reload_reference(self):
         tts = Mock()

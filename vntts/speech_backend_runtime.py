@@ -31,6 +31,9 @@ class BoundedCache:
         while len(self._values) > self.max_entries:
             self._values.popitem(last=False)
 
+    def clear(self):
+        self._values.clear()
+
 
 def validate_volume(volume):
     if isinstance(volume, bool) or not isinstance(volume, (int, float)):

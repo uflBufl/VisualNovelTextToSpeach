@@ -16,6 +16,8 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceManifestError,
     find_default_voice_manifest,
+    normalize_character_name,
+    pocket_tts_preset_voices,
 )
 
 default_hotkey = default_hotkey_for_key("h")
@@ -245,6 +247,22 @@ def initialize_voice_registry(settings=None, error_handler=None):
             error_handler(error)
         return None
 
+    if settings is not None:
+        preset_validator = None
+        if settings.speech_backend == "pocket-tts":
+            preset_validator = pocket_tts_preset_voices.__contains__
+        elif settings.speech_backend == "chatterbox-nano":
+            preset_validator = ().__contains__
+        registry.apply_assignments(
+            settings.voice_assignments,
+            warn=(
+                (lambda message: error_handler(VoiceManifestError(message)))
+                if error_handler is not None
+                else (lambda message: print(message, file=sys.stderr))
+            ),
+            preset_validator=preset_validator,
+        )
+
     return registry
 
 
@@ -252,6 +270,21 @@ def initialize_voice_router(tts, settings=None, error_handler=None):
     registry = initialize_voice_registry(settings, error_handler)
     if registry is None:
         return None
+    if settings is not None:
+        for character, voice in tuple(registry.assignments.items()):
+            if (
+                voice is not None
+                and not voice.references
+                and not tts.has_speaker(voice.speaker)
+            ):
+                registry.assignments.pop(character)
+                error = VoiceManifestError(
+                    f"Voice {voice.speaker!r} is not available in the loaded XTTS model"
+                )
+                if error_handler is not None:
+                    error_handler(error)
+                else:
+                    print(error, file=sys.stderr)
     return CharacterVoiceRouter(
         tts,
         registry,
@@ -259,6 +292,15 @@ def initialize_voice_router(tts, settings=None, error_handler=None):
             settings.narrator_speaker
             if settings is not None
             else os.environ.get("VNTTS_NARRATOR_SPEAKER")
+        ),
+        narrator_voice=(
+            registry.resolve("Narrator")
+            if settings is not None
+            and any(
+                normalize_character_name(character) == "narrator"
+                for character in settings.voice_assignments
+            )
+            else None
         ),
     )
 

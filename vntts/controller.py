@@ -49,7 +49,13 @@ from vntts.speech_backend import (
     PocketTTSVoiceRouterBackend,
     XTTSVoiceRouterBackend,
 )
-from vntts.voices import normalize_character_name
+from vntts.voices import (
+    VoiceChoice,
+    default_voice_choice_id,
+    find_voice_assignment,
+    normalize_character_name,
+    pocket_tts_preset_voices,
+)
 from vntts.window_capture import WindowCaptureTarget
 
 
@@ -274,9 +280,22 @@ class AppController:
                     if self.settings.speech_backend == "pocket-tts"
                     else self.chatterbox_backend_factory
                 )
+                narrator_reference = self.settings.tts_speaker_wav
+                narrator_source_id = find_voice_assignment(
+                    self.settings.voice_assignments,
+                    "Narrator",
+                )
+                if narrator_source_id is not None:
+                    narrator_voice = registry.resolve_source(narrator_source_id)
+                    if narrator_voice is None:
+                        narrator_reference = self.settings.tts_speaker_wav
+                    elif narrator_voice.references:
+                        narrator_reference = narrator_voice.references[0]
+                    elif self.settings.speech_backend == "pocket-tts":
+                        narrator_reference = narrator_voice.speaker
                 self.tts = backend_factory(
                     registry,
-                    narrator_reference=self.settings.tts_speaker_wav,
+                    narrator_reference=narrator_reference,
                     volume=self.settings.output_volume_percent / 100,
                 )
         except Exception as error:
@@ -513,6 +532,116 @@ class AppController:
             ),
         ]
 
+    def available_voice_choices(self):
+        if self.voice_router is None:
+            return []
+        choices = [
+            VoiceChoice(
+                default_voice_choice_id,
+                "Narrator / backend default",
+                "Use the same fallback voice as unmapped dialogue",
+            )
+        ]
+        if self.settings.speech_backend == "pocket-tts":
+            choices.extend(
+                VoiceChoice(
+                    f"preset:{name}",
+                    name.replace("_", " ").title(),
+                    "Pocket TTS built-in voice",
+                )
+                for name in pocket_tts_preset_voices
+            )
+        elif self.settings.speech_backend == "coqui-xtts":
+            speakers = getattr(getattr(self.tts, "tts", None), "speakers", None)
+            choices.extend(
+                VoiceChoice(
+                    f"preset:{speaker}",
+                    str(speaker),
+                    "XTTS model speaker",
+                )
+                for speaker in (speakers or ())
+            )
+        choices.extend(self.voice_router.registry.choices())
+        seen = set()
+        return [
+            choice
+            for choice in choices
+            if not (choice.id in seen or seen.add(choice.id))
+        ]
+
+    def voice_assignment_for(self, character):
+        configured = find_voice_assignment(
+            self.settings.voice_assignments,
+            character,
+        )
+        if configured is not None:
+            return configured
+        voice = self.voice_router.registry.resolve(character)
+        if voice is None:
+            return default_voice_choice_id
+        return f"character:{normalize_character_name(voice.character)}"
+
+    def preview_voice_choice(self, source_id, text):
+        if not self.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before previewing a voice")
+        if not text or not text.strip():
+            raise ValueError("Enter preview text")
+        choice = next(
+            (
+                item
+                for item in self.available_voice_choices()
+                if item.id == source_id
+            ),
+            None,
+        )
+        if choice is None:
+            raise ValueError("The selected voice is no longer available")
+        self.status_handler(f"Previewing {choice.label} voice")
+        return self.speech_executor.submit(
+            self._preview_voice_choice,
+            choice,
+            text.strip(),
+        )
+
+    def assign_voice(self, character, source_id):
+        character = (character or "").strip()
+        if not character:
+            raise ValueError("Enter a narrator or character name")
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before changing a voice")
+        choice = next(
+            (
+                item
+                for item in self.available_voice_choices()
+                if item.id == source_id
+            ),
+            None,
+        )
+        if choice is None:
+            raise ValueError("The selected voice is no longer available")
+
+        assignments = {
+            configured_character: configured_source
+            for configured_character, configured_source in (
+                self.settings.voice_assignments or {}
+            ).items()
+            if normalize_character_name(configured_character)
+            != normalize_character_name(character)
+        }
+        assignments[character] = source_id
+        self.voice_router.registry.set_assignment(character, source_id)
+        self.settings = self.settings.updated(voice_assignments=assignments)
+        if normalize_character_name(character) == "narrator":
+            self._apply_narrator_voice(
+                self.voice_router.registry.resolve_source(source_id)
+            )
+        self._clear_voice_runtime_cache()
+        self.reported_unknown_speakers.discard(normalize_character_name(character))
+        self.status_handler(f"{choice.label} assigned to {character}")
+        return self.settings
+
     def preview_voice(self, character, text):
         if not self.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -703,6 +832,10 @@ class AppController:
             volume=self.settings.output_volume_percent / 100,
             speed=self.settings.speech_rate_percent / 100,
         )
+        self.speech_backend.voice_override = lambda character: (
+            find_voice_assignment(self.settings.voice_assignments, character)
+            is not None
+        )
         self.status_handler(
             f"Loaded {len(library.index.entries)} generated audio entries"
         )
@@ -745,6 +878,51 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return character, text
 
+    def _preview_voice_choice(self, choice, text):
+        registry = self.voice_router.registry
+        preview_character = "VNTTS voice preview"
+        preview_key = normalize_character_name(preview_character)
+        had_assignment = preview_key in registry.assignments
+        previous = registry.assignments.get(preview_key)
+        registry.set_assignment(preview_character, choice.id)
+        self._clear_voice_runtime_cache()
+        try:
+            self.voice_router.speak(preview_character, text)
+        finally:
+            if had_assignment:
+                registry.assignments[preview_key] = previous
+            else:
+                registry.assignments.pop(preview_key, None)
+            self._clear_voice_runtime_cache()
+            self._refresh_diagnostic_metrics()
+        return choice.label, text
+
+    def _apply_narrator_voice(self, voice):
+        if isinstance(self.voice_router, PocketTTSVoiceRouterBackend):
+            self.voice_router.narrator_reference = (
+                voice.references[0]
+                if voice is not None and voice.references
+                else voice.speaker
+                if voice is not None
+                else self.settings.tts_speaker_wav or "alba"
+            )
+            self.voice_router.voice_states.pop("narrator", None)
+        elif isinstance(self.voice_router, ChatterboxNanoVoiceRouterBackend):
+            self.voice_router.narrator_reference = (
+                voice.references[0]
+                if voice is not None and voice.references
+                else self.settings.tts_speaker_wav
+            )
+            self.voice_router.conditionals.pop("narrator", None)
+        else:
+            self.voice_router.narrator_voice = voice
+
+    def _clear_voice_runtime_cache(self):
+        cache = getattr(self.voice_router, "audio_cache", None)
+        clear = getattr(cache, "clear", None)
+        if callable(clear):
+            clear()
+
     def _warmup_progress(self, current, total, character):
         self.status_handler(f"Warming voice {current}/{total}: {character}")
 
@@ -768,6 +946,9 @@ class AppController:
     def _offer_unknown_speaker_mapping(self, character):
         key = normalize_character_name(character)
         if not key or key == "narrator" or self.voice_router is None:
+            return False
+        assignments = getattr(self.voice_router.registry, "assignments", {})
+        if isinstance(assignments, dict) and key in assignments:
             return False
         if self.voice_router.registry.resolve_closest(character) is not None:
             return False

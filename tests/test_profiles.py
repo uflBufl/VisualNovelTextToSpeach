@@ -27,6 +27,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 voice_manifest="voices/reverse-1999.json",
                 story_index="story/reverse-1999.jsonl",
                 generated_audio_manifest="audio/generated.json",
+                voice_assignments={"Narrator": "preset:alba"},
             )
             store = GameProfileStore(path)
 
@@ -41,6 +42,7 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.voice_manifest, "voices/reverse-1999.json")
         self.assertEqual(applied.story_index, "story/reverse-1999.jsonl")
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
+        self.assertEqual(applied.voice_assignments, {"Narrator": "preset:alba"})
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
         with TemporaryDirectory() as temporary_directory:
@@ -68,7 +70,7 @@ class GameProfileStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
             path.write_text(
-                json.dumps({"schema_version": 2, "profiles": []}),
+                json.dumps({"schema_version": 3, "profiles": []}),
                 encoding="utf-8",
             )
 

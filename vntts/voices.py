@@ -8,6 +8,55 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+default_voice_choice_id = "default"
+pocket_tts_preset_voices = (
+    "alba",
+    "anna",
+    "azelma",
+    "bill_boerst",
+    "caro_davy",
+    "charles",
+    "cosette",
+    "eponine",
+    "estelle",
+    "eve",
+    "fantine",
+    "george",
+    "giovanni",
+    "jane",
+    "javert",
+    "jean",
+    "juergen",
+    "lola",
+    "marius",
+    "mary",
+    "michael",
+    "paul",
+    "peter_yearsley",
+    "rafael",
+    "stuart_bell",
+    "vera",
+)
+
+
+@dataclass(frozen=True)
+class VoiceChoice:
+    id: str
+    label: str
+    description: str = ""
+
+
+def find_voice_assignment(assignments, character):
+    target = normalize_character_name(character)
+    return next(
+        (
+            source_id
+            for configured_character, source_id in assignments.items()
+            if normalize_character_name(configured_character) == target
+        ),
+        None,
+    )
+
 
 @dataclass(frozen=True)
 class CharacterVoice:
@@ -29,6 +78,7 @@ class CharacterVoice:
 class CharacterVoiceRegistry:
     def __init__(self, voices=()):
         self.voices = {}
+        self.assignments = {}
         for voice in voices:
             self._add_name(voice.character, voice)
             for alias in voice.aliases:
@@ -56,10 +106,76 @@ class CharacterVoiceRegistry:
         return cls(voices)
 
     def resolve(self, character):
-        return self.voices.get(normalize_character_name(character))
+        normalized_name = normalize_character_name(character)
+        if normalized_name in self.assignments:
+            return self.assignments[normalized_name]
+        return self.voices.get(normalized_name)
+
+    def resolve_source(self, source_id):
+        if source_id == default_voice_choice_id:
+            return None
+        source_type, separator, value = (source_id or "").partition(":")
+        if not separator or not value:
+            raise VoiceManifestError(f"Invalid voice choice: {source_id!r}")
+        if source_type == "preset":
+            return CharacterVoice(value, value)
+        if source_type == "character":
+            voice = self.voices.get(normalize_character_name(value))
+            if voice is None:
+                raise VoiceManifestError(
+                    f"The selected voice is no longer available: {value!r}"
+                )
+            return voice
+        raise VoiceManifestError(f"Unknown voice choice: {source_id!r}")
+
+    def set_assignment(self, character, source_id):
+        normalized_name = normalize_character_name(character)
+        if not normalized_name:
+            raise VoiceManifestError("Character name is required")
+        self.assignments[normalized_name] = self.resolve_source(source_id)
+
+    def apply_assignments(
+        self,
+        assignments,
+        *,
+        warn=None,
+        preset_validator=None,
+    ):
+        warn = warn or (lambda _message: None)
+        for character, source_id in assignments.items():
+            if (
+                source_id.startswith("preset:")
+                and preset_validator is not None
+                and not preset_validator(source_id.removeprefix("preset:"))
+            ):
+                warn(
+                    f"Voice choice {source_id!r} is not available for {character!r}"
+                )
+                continue
+            try:
+                self.set_assignment(character, source_id)
+            except VoiceManifestError as error:
+                warn(str(error))
+
+    def unique_voices(self):
+        return tuple({id(voice): voice for voice in self.voices.values()}.values())
+
+    def choices(self):
+        return tuple(
+            VoiceChoice(
+                f"character:{normalize_character_name(voice.character)}",
+                voice.character,
+                "Imported character voice",
+            )
+            for voice in sorted(
+                self.unique_voices(), key=lambda item: item.character.casefold()
+            )
+        )
 
     def resolve_closest(self, character, *, minimum_similarity=0.78):
         normalized_name = normalize_character_name(character)
+        if normalized_name in self.assignments:
+            return self.assignments[normalized_name]
         exact_voice = self.voices.get(normalized_name)
         if exact_voice is not None:
             return exact_voice
@@ -113,10 +229,18 @@ def find_default_voice_manifest(project_root=None):
 
 
 class CharacterVoiceRouter:
-    def __init__(self, tts, registry=None, *, narrator_speaker=None):
+    def __init__(
+        self,
+        tts,
+        registry=None,
+        *,
+        narrator_speaker=None,
+        narrator_voice=None,
+    ):
         self.tts = tts
         self.registry = registry or CharacterVoiceRegistry()
         self.narrator_speaker = narrator_speaker
+        self.narrator_voice = narrator_voice
 
     def speak(self, character, text, *, playback_guard=None):
         arguments = self._speech_arguments(character)
@@ -145,6 +269,8 @@ class CharacterVoiceRouter:
     def _speech_arguments(self, character):
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
+            voice = self.narrator_voice
+        if voice is None:
             return {"speaker": self.narrator_speaker}
 
         speaker_wav = None

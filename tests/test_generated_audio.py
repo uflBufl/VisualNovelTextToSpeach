@@ -132,6 +132,23 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertEqual(live.prepare.call_count, 2)
 
+    def test_manual_voice_override_skips_matching_generated_audio(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            live = self.create_live_backend()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(),
+                audio_output=FakeAudioOutput(),
+            )
+            backend.voice_override = lambda character: character == "Ada"
+
+            prepared = backend.prepare("Ada", "Hello.")
+
+        self.assertEqual(prepared, "live-audio")
+        live.prepare.assert_called_once_with("Ada", "Hello.")
+
     def test_modified_audio_falls_back_and_warns_once(self):
         warnings = []
         with TemporaryDirectory() as directory:

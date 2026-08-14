@@ -929,6 +929,45 @@ class MainTest(unittest.TestCase):
             "Hello.",
         )
 
+    def test_controller_lists_pocket_presets_and_assigns_one_immediately(self):
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.speech_executor = Mock()
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+
+        choices = controller.available_voice_choices()
+        updated = controller.assign_voice("Selone", "preset:alba")
+
+        self.assertIn("preset:alba", [choice.id for choice in choices])
+        self.assertEqual(updated.voice_assignments, {"Selone": "preset:alba"})
+        self.assertEqual(
+            controller.voice_router.registry.resolve("Selone").speaker,
+            "alba",
+        )
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selone")
+        )
+
+    def test_controller_previews_a_catalog_choice_on_the_speech_executor(self):
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.speech_executor = Mock()
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+
+        result = controller.preview_voice_choice("preset:marius", " Hello. ")
+
+        self.assertIs(result, controller.speech_executor.submit.return_value)
+        submitted = controller.speech_executor.submit.call_args.args
+        self.assertEqual(submitted[0], controller._preview_voice_choice)
+        self.assertEqual(submitted[1].id, "preset:marius")
+        self.assertEqual(submitted[2], "Hello.")
+
     def test_applying_settings_updates_loaded_speech_controls(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.tts = Mock()

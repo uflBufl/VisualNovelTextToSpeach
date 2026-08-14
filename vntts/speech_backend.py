@@ -323,13 +323,13 @@ class ChatterboxNanoVoiceRouterBackend:
     def _resolve_conditionals(self, character):
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
-            if self.default_conditionals is not None:
-                return self.default_conditionals
             if self.narrator_reference:
                 return self._prepare_conditionals(
                     "narrator",
                     self.narrator_reference,
                 )
+            if self.default_conditionals is not None:
+                return self.default_conditionals
             raise TTSConfigurationError(
                 "This Chatterbox model has no default narrator voice; configure "
                 "a narrator reference in TTS speaker WAV."

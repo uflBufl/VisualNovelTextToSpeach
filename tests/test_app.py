@@ -76,7 +76,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertTrue(tray_application.speaker_mapping_action.isVisible())
         self.assertEqual(
-            tray_application.voice_preview_action.text(), "Preview voices..."
+            tray_application.voice_preview_action.text(), "Choose voices..."
         )
         self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
         self.assertEqual(
@@ -343,6 +343,8 @@ class TrayApplicationTest(unittest.TestCase):
     def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
         controller = Mock()
         controller.available_voice_characters.return_value = ["Narrator", "Marcus"]
+        choices = [Mock(id="preset:alba", label="Alba")]
+        controller.available_voice_choices.return_value = choices
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -355,7 +357,11 @@ class TrayApplicationTest(unittest.TestCase):
 
         factory.assert_called_once_with(
             ["Narrator", "Marcus"],
-            controller.preview_voice,
+            choices,
+            controller.preview_voice_choice,
+            tray_application.assign_voice,
+            controller.voice_assignment_for,
+            initial_character="Narrator",
         )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()

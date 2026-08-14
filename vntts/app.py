@@ -552,7 +552,7 @@ class TrayApplication(QObject):
         self.ocr_review_action = QAction("Review uncertain OCR...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
-        self.voice_preview_action = QAction("Preview voices...")
+        self.voice_preview_action = QAction("Choose voices...")
         self.speaker_mapping_action = QAction("Manage character voices...")
         self.history_action = QAction("Dialogue history...")
         self.support_action = QAction("Diagnostics and logs...")
@@ -1087,7 +1087,11 @@ class TrayApplication(QObject):
     def open_voice_previews(self):
         dialog = VoicePreviewDialog(
             self.controller.available_voice_characters(),
-            self.controller.preview_voice,
+            self.controller.available_voice_choices(),
+            self.controller.preview_voice_choice,
+            self.assign_voice,
+            self.controller.voice_assignment_for,
+            initial_character="Narrator",
         )
         dialog.exec()
 
@@ -1101,7 +1105,25 @@ class TrayApplication(QObject):
         )
 
     def open_speaker_mapping(self):
-        self.open_assets()
+        initial_character = self.pending_unknown_speaker or "Narrator"
+        dialog = VoicePreviewDialog(
+            self.controller.available_voice_characters(),
+            self.controller.available_voice_choices(),
+            self.controller.preview_voice_choice,
+            self.assign_voice,
+            self.controller.voice_assignment_for,
+            initial_character=initial_character,
+        )
+        dialog.exec()
+        self.pending_unknown_speaker = None
+        self.speaker_mapping_action.setText("Manage character voices...")
+
+    def assign_voice(self, character, source_id):
+        self.settings = self.controller.assign_voice(character, source_id)
+        path = self.settings.save()
+        self._sync_active_profile()
+        self.set_status(f"Voice for {character} saved to {path}")
+        return self.settings
 
     def open_support_center(self):
         if self.support_dialog is None:

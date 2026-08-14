@@ -6,7 +6,7 @@ from vntts.ocr import DialogRegion, get_dialog_region
 from vntts.settings import get_config_directory
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-profiles_schema_version = 1
+profiles_schema_version = 2
 
 
 def get_profiles_path():
@@ -24,6 +24,7 @@ class GameProfile:
     voice_manifest: str | None
     story_index: str | None
     generated_audio_manifest: str | None
+    voice_assignments: dict[str, str]
 
     @classmethod
     def from_settings(cls, name, settings, *, region=None, profile_id=None):
@@ -37,6 +38,7 @@ class GameProfile:
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,
+            voice_assignments=dict(settings.voice_assignments),
         )
 
     @classmethod
@@ -63,6 +65,7 @@ class GameProfile:
             generated_audio_manifest=_optional_text(
                 values.get("generated_audio_manifest")
             ),
+            voice_assignments=_voice_assignments(values.get("voice_assignments")),
         )
 
     def to_mapping(self):
@@ -79,6 +82,7 @@ class GameProfile:
             voice_manifest=self.voice_manifest,
             story_index=self.story_index,
             generated_audio_manifest=self.generated_audio_manifest,
+            voice_assignments=dict(self.voice_assignments),
         )
 
     def updated_from_settings(self, settings, *, region=None):
@@ -91,6 +95,7 @@ class GameProfile:
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,
+            voice_assignments=dict(settings.voice_assignments),
         )
 
 
@@ -122,6 +127,7 @@ class GameProfileStore:
             decode=decode,
             fallback=fallback,
             warn=warn,
+            allow_older=True,
         )
 
     def save(self):
@@ -218,3 +224,16 @@ def _validated_name(name):
 
 def _optional_text(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _voice_assignments(value):
+    if not isinstance(value, dict):
+        return {}
+    return {
+        character.strip(): source_id.strip()
+        for character, source_id in value.items()
+        if isinstance(character, str)
+        and character.strip()
+        and isinstance(source_id, str)
+        and source_id.strip()
+    }

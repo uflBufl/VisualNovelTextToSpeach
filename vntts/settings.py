@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 17
+settings_schema_version = 18
 
 
 def _platform_app_name():
@@ -80,6 +80,7 @@ class AppSettings:
     story_index: str | None = None
     generated_audio_manifest: str | None = None
     narrator_speaker: str | None = None
+    voice_assignments: dict[str, str] = field(default_factory=dict)
     active_profile_id: str | None = None
 
     @classmethod
@@ -204,6 +205,24 @@ class AppSettings:
         }:
             warn("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
+
+        voice_assignments = values.get(
+            "voice_assignments", defaults.voice_assignments
+        )
+        if isinstance(voice_assignments, dict) and all(
+            isinstance(character, str)
+            and character.strip()
+            and isinstance(source_id, str)
+            and source_id.strip()
+            for character, source_id in voice_assignments.items()
+        ):
+            parsed["voice_assignments"] = {
+                character.strip(): source_id.strip()
+                for character, source_id in voice_assignments.items()
+            }
+        else:
+            warn("Invalid 'voice_assignments' setting; using its default")
+            parsed["voice_assignments"] = {}
 
         return cls(**parsed)
 

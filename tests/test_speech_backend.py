@@ -217,6 +217,18 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
         self.assertFalse(backend.capabilities.concurrent_prepare_and_play)
 
+    def test_configured_narrator_reference_overrides_embedded_default(self):
+        with TemporaryDirectory() as temporary_directory:
+            reference = Path(temporary_directory) / "narrator.wav"
+            reference.touch()
+            model = FakeChatterboxModel()
+            backend, model = self.create_backend(CharacterVoiceRegistry(), model=model)
+            backend.narrator_reference = reference
+
+            backend.prepare("Narrator", "Once upon a time.")
+
+        self.assertEqual(model.prepared_references, [str(reference)])
+
     def test_reserves_cpu_threads_for_ocr_and_playback(self):
         torch_module = Mock()
         torch_module.get_num_threads.return_value = 6

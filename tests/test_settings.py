@@ -23,13 +23,13 @@ class SettingsTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(settings.schema_version, 17)
+        self.assertEqual(settings.schema_version, settings_schema_version)
         self.assertEqual(settings.live_idle_flush_ms, 400)
 
     def test_current_schema_preserves_an_explicit_idle_delay(self):
         settings = AppSettings.from_mapping(
             {
-                "schema_version": 17,
+                "schema_version": settings_schema_version,
                 "live_idle_flush_ms": 700,
             }
         )
@@ -101,6 +101,10 @@ class SettingsTest(unittest.TestCase):
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 tts_language="en",
                 generated_audio_manifest="audio/generated.json",
+                voice_assignments={
+                    "Narrator": "preset:alba",
+                    "Marcus": "preset:anna",
+                },
                 output_volume_percent=72,
                 speech_rate_percent=115,
             )
@@ -109,6 +113,17 @@ class SettingsTest(unittest.TestCase):
             loaded = load_app_settings(path, environment={})
 
         self.assertEqual(loaded, settings)
+
+    def test_invalid_voice_assignments_are_ignored(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"voice_assignments": {"Marcus": 42}},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(settings.voice_assignments, {})
+        self.assertTrue(any("voice_assignments" in warning for warning in warnings))
 
     def test_malformed_settings_file_uses_defaults(self):
         warnings = []

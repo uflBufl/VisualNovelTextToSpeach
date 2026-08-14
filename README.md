@@ -69,6 +69,10 @@ fallback, and atomic publication. On first launch, complete the setup
 wizard to select the game, verify OCR and audio, calibrate the dialogue area,
 and run an OCR-to-speech test. Use **Manage models and voices** in the app to
 download or verify the speech model and import local character voice references.
+After the speech engine is ready, use **Choose voices** to compare candidates
+with the same sample text and assign the preferred voice to the narrator or any
+character. The character field is editable, so an OCR name that is missing from
+the imported manifest can be mapped manually as soon as it appears.
 On Windows, models and imported voice packs are stored under
 `%LOCALAPPDATA%\VisualNovelTextToSpeech\`. Run the terminal interface for
 development or recovery:
@@ -176,6 +180,12 @@ when that speaker is first detected. XTTS uses `stable` by default. Select
 `stable`, `natural`, or `expressive` with `VNTTS_TTS_PROFILE`; invalid profile
 names also use `stable`. Unknown speakers use the narrator voice until mapped.
 Imported recordings and user manifests are stored under application data.
+Manual assignments are stored in the active game profile and take effect
+immediately. Pocket TTS exposes its built-in voice catalog in the chooser; XTTS
+exposes the speakers reported by the loaded model; imported character voices are
+available with every cloning backend. An explicit manual assignment also uses
+live synthesis instead of pre-generated story audio, so the selected voice is
+honored consistently.
 When generated audio is configured, VNTTS uses it only for an exact story line
 whose stable line ID and current UTF-8 text SHA-256 match the manifest. Missing,
 modified, partial, ambiguous, or speed-incompatible entries fall back to the
