@@ -173,8 +173,11 @@ class SettingsDialog(QDialog):
             self.clear_queue_hotkey,
             self.emergency_stop_hotkey,
         )
-        self.macos_hotkey_notice = QLabel(macos_hotkey_limitation)
+        self.macos_hotkey_notice = QLabel(
+            f"<b>macOS controls</b><br>{macos_hotkey_limitation}"
+        )
         self.macos_hotkey_notice.setWordWrap(True)
+        self.macos_hotkey_notice.setAccessibleName("macOS controls")
         self.macos_hotkey_notice.setVisible(sys.platform == "darwin")
         if sys.platform == "darwin":
             for recorder in self.hotkey_recorders:
@@ -300,7 +303,7 @@ class SettingsDialog(QDialog):
         shortcuts_form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
         shortcuts_form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
         if sys.platform == "darwin":
-            shortcuts_form.addRow("macOS controls", self.macos_hotkey_notice)
+            shortcuts_form.addRow(self.macos_hotkey_notice)
 
         capture_form = QFormLayout()
         capture_form.addRow("Screenshot directory", screenshot_layout)
@@ -393,6 +396,9 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _settings_region(title, form):
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         region = QGroupBox(title)
         region.setLayout(form)
         return region

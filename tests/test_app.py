@@ -246,6 +246,13 @@ class TrayApplicationTest(unittest.TestCase):
         available = dialog.screen().availableGeometry()
         self.assertLessEqual(dialog.width(), max(320, available.width() - 64))
         self.assertLessEqual(dialog.height(), max(320, available.height() - 64))
+        self.assertTrue(
+            all(
+                region.layout().fieldGrowthPolicy()
+                == region.layout().FieldGrowthPolicy.AllNonFixedFieldsGrow
+                for region in dialog.settings_regions
+            )
+        )
         dialog.deleteLater()
 
     def test_settings_expose_output_volume_and_speech_rate(self):
@@ -367,6 +374,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn(
             "Global hotkeys are unavailable", dialog.macos_hotkey_notice.text()
         )
+        self.assertIn("macOS controls", dialog.macos_hotkey_notice.text())
         self.assertIn("compact controls", dialog.macos_hotkey_notice.text())
         self.assertTrue(
             all(not recorder.isEnabled() for recorder in dialog.hotkey_recorders)
