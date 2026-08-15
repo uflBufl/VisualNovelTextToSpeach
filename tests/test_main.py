@@ -666,7 +666,10 @@ class MainTest(unittest.TestCase):
             patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
         ):
             controller = AppController(
-                AppSettings(warm_up_voices=False),
+                AppSettings(
+                    speech_backend="coqui-xtts",
+                    warm_up_voices=False,
+                ),
                 tts_factory=Mock(return_value=tts),
                 status_handler=statuses.append,
             )

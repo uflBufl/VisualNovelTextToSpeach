@@ -52,6 +52,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
             settings = AppSettings(
                 capture_mode="window",
                 game_window_title="Reverse: 1999",
+                speech_backend="coqui-xtts",
                 tts_model="xtts_v2",
                 voice_manifest=str(manifest),
             )
