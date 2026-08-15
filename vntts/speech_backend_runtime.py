@@ -67,19 +67,33 @@ def voice_source_identity(voice_key, source):
 class SpeechCacheKeyFactory:
     """Own persistent generated-audio identities for one loaded backend model."""
 
-    def __init__(self, cache, *, backend, model, sample_rate):
+    def __init__(
+        self,
+        cache,
+        *,
+        backend,
+        model,
+        sample_rate,
+        model_identity=None,
+    ):
         self.cache = cache
         self.backend = backend
-        self.model = f"{model.__class__.__module__}.{model.__class__.__qualname__}"
+        self.model = model_identity or (
+            f"{model.__class__.__module__}.{model.__class__.__qualname__}"
+        )
         self.sample_rate = sample_rate
 
-    def key(self, *, voice_key, source, text, speed):
+    def key(self, *, voice_key, source, text, speed, **settings):
         return self.cache.key(
             backend=self.backend,
             model=self.model,
             voice=voice_source_identity(voice_key, source),
             text=text,
-            settings={"sample_rate": self.sample_rate, "speed": speed},
+            settings={
+                "sample_rate": self.sample_rate,
+                "speed": speed,
+                **settings,
+            },
         )
 
 

@@ -79,10 +79,11 @@ from vntts.settings import (
     get_settings_path,
     load_app_settings,
 )
+from vntts.speech_backend import default_moss_tts_model
 from vntts.support import RuntimeSupportLog, SupportBundleBuilder
 from vntts.support_ui import SupportCenterDialog
 from vntts.voice_preview_ui import VoicePreviewDialog
-from vntts.voices import find_default_voice_manifest
+from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import (
     WindowCaptureError,
     enable_windows_dpi_awareness,
@@ -90,6 +91,7 @@ from vntts.window_capture import (
 )
 
 application_name = "Visual Novel Text to Speech"
+default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 
 def create_application_icon(style, *, platform=None):
@@ -189,6 +191,10 @@ class SettingsDialog(QDialog):
             "Chatterbox Nano (faster English CPU)",
             "chatterbox-nano",
         )
+        self.speech_backend.addItem(
+            "MOSS-TTS v1.5 (high quality, Apple Silicon)",
+            "moss-tts",
+        )
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
@@ -198,6 +204,7 @@ class SettingsDialog(QDialog):
         self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
         self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
+        self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
         default_voice_manifest = find_default_voice_manifest()
         self.voice_manifest = QLineEdit(
             settings.voice_manifest
@@ -256,6 +263,12 @@ class SettingsDialog(QDialog):
         diagnostics_layout.addWidget(self.ocr_diagnostics_directory)
         diagnostics_layout.addWidget(diagnostics_browse_button)
         self.diagnostics_browse_button = diagnostics_browse_button
+        narrator_reference_button = QPushButton("Browse...")
+        narrator_reference_button.clicked.connect(self.browse_narrator_reference)
+        narrator_reference_layout = QHBoxLayout()
+        narrator_reference_layout.addWidget(self.narrator_reference)
+        narrator_reference_layout.addWidget(narrator_reference_button)
+        self.narrator_reference_button = narrator_reference_button
 
         form = QFormLayout()
         form.addRow("Read once hotkey", self.read_hotkey)
@@ -273,8 +286,9 @@ class SettingsDialog(QDialog):
         form.addRow("OCR diagnostics", self.retain_uncertain_frames)
         form.addRow("Diagnostics directory", diagnostics_layout)
         form.addRow("Speech engine", self.speech_backend)
-        form.addRow("XTTS model", self.tts_model)
+        form.addRow("Speech model", self.tts_model)
         form.addRow("TTS language", self.tts_language)
+        form.addRow("Narrator reference", narrator_reference_layout)
         form.addRow("Voice manifest", self.voice_manifest)
         form.addRow("Story index", self.story_index)
         form.addRow("Generated audio manifest", self.generated_audio_manifest)
@@ -338,6 +352,16 @@ class SettingsDialog(QDialog):
         if selected:
             self.ocr_diagnostics_directory.setText(selected)
 
+    def browse_narrator_reference(self):
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose narrator voice reference",
+            self.narrator_reference.text(),
+            "Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
+        )
+        if path:
+            self.narrator_reference.setText(path)
+
     def update_ocr_diagnostics_controls(self):
         enabled = self.retain_uncertain_frames.isChecked()
         self.ocr_diagnostics_directory.setEnabled(enabled)
@@ -370,9 +394,23 @@ class SettingsDialog(QDialog):
         )
 
     def update_speech_backend_controls(self):
-        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
-        self.tts_model.setEnabled(uses_xtts)
-        self.tts_language.setEnabled(uses_xtts)
+        backend = self.speech_backend.currentData()
+        uses_xtts = backend == "coqui-xtts"
+        uses_moss = backend == "moss-tts"
+        if uses_moss and self.tts_model.text().strip() in {
+            "",
+            default_xtts_model,
+        }:
+            self.tts_model.setText(default_moss_tts_model)
+        elif uses_xtts and self.tts_model.text().strip() in {
+            "",
+            default_moss_tts_model,
+        }:
+            self.tts_model.setText(default_xtts_model)
+        self.tts_model.setEnabled(uses_xtts or uses_moss)
+        self.tts_language.setEnabled(uses_xtts or uses_moss)
+        self.narrator_reference.setEnabled(True)
+        self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
         self.tts_profile.setEnabled(uses_xtts)
         self.speech_rate.setEnabled(uses_xtts)
@@ -422,6 +460,22 @@ class SettingsDialog(QDialog):
                 "Accept the CPML terms before using XTTS.",
             )
             return
+        if (
+            self.speech_backend.currentData() == "moss-tts"
+            and not self.narrator_reference.text().strip()
+            and find_voice_assignment(
+                self.original_settings.voice_assignments,
+                "Narrator",
+            )
+            is None
+        ):
+            QMessageBox.warning(
+                self,
+                "Narrator reference required",
+                "Choose a narrator reference recording or assign an imported "
+                "character voice to Narrator before using MOSS-TTS.",
+            )
+            return
         self.accept()
 
     def settings(self):
@@ -451,6 +505,7 @@ class SettingsDialog(QDialog):
                 "speech_backend": self.speech_backend.currentData(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
+                "tts_speaker_wav": optional_text(self.narrator_reference),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "story_index": optional_text(self.story_index),
                 "generated_audio_manifest": optional_text(

@@ -201,6 +201,7 @@ class AppSettings:
         if parsed["speech_backend"] not in {
             "coqui-xtts",
             "chatterbox-nano",
+            "moss-tts",
             "pocket-tts",
         }:
             warn("Invalid 'speech_backend' setting; using its default")

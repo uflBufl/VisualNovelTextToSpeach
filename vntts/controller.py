@@ -46,6 +46,7 @@ from vntts.services.tts_engine import TTSEngine
 from vntts.settings import AppSettings
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
+    MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
     XTTSVoiceRouterBackend,
 )
@@ -187,6 +188,7 @@ class AppController:
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
         chatterbox_backend_factory=ChatterboxNanoVoiceRouterBackend,
+        moss_backend_factory=MossTTSVoiceRouterBackend,
         pocket_backend_factory=PocketTTSVoiceRouterBackend,
         speech_backpressure_factory=AdaptiveSpeechBackpressure,
         correction_store=None,
@@ -199,6 +201,7 @@ class AppController:
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
+        self.moss_backend_factory = moss_backend_factory
         self.pocket_backend_factory = pocket_backend_factory
         self.speech_backpressure_factory = speech_backpressure_factory
         self.correction_store = correction_store or OCRCorrectionStore.load()
@@ -257,6 +260,7 @@ class AppController:
         loading_status = {
             "coqui-xtts": "Loading TTS model...",
             "chatterbox-nano": "Loading Chatterbox Nano...",
+            "moss-tts": "Loading MOSS-TTS...",
             "pocket-tts": "Loading Pocket TTS...",
         }[self.settings.speech_backend]
         self.status_handler(loading_status)
@@ -267,7 +271,10 @@ class AppController:
                     os.environ["COQUI_TOS_AGREED"] = "1"
                 self.tts = self.tts_factory(**get_tts_configuration(self.settings))
             else:
-                if self.settings.speech_backend == "chatterbox-nano":
+                if self.settings.speech_backend in {
+                    "chatterbox-nano",
+                    "moss-tts",
+                }:
                     self.model_assets.configure_huggingface_environment()
                 registry = initialize_voice_registry(
                     self.settings,
@@ -275,11 +282,11 @@ class AppController:
                 )
                 if registry is None:
                     return False
-                backend_factory = (
-                    self.pocket_backend_factory
-                    if self.settings.speech_backend == "pocket-tts"
-                    else self.chatterbox_backend_factory
-                )
+                backend_factory = {
+                    "chatterbox-nano": self.chatterbox_backend_factory,
+                    "moss-tts": self.moss_backend_factory,
+                    "pocket-tts": self.pocket_backend_factory,
+                }[self.settings.speech_backend]
                 narrator_reference = self.settings.tts_speaker_wav
                 narrator_source_id = find_voice_assignment(
                     self.settings.voice_assignments,
@@ -293,10 +300,18 @@ class AppController:
                         narrator_reference = narrator_voice.references[0]
                     elif self.settings.speech_backend == "pocket-tts":
                         narrator_reference = narrator_voice.speaker
+                backend_options = {
+                    "narrator_reference": narrator_reference,
+                    "volume": self.settings.output_volume_percent / 100,
+                }
+                if self.settings.speech_backend == "moss-tts":
+                    backend_options.update(
+                        model_name=self.settings.tts_model,
+                        language=self.settings.tts_language or "English",
+                    )
                 self.tts = backend_factory(
                     registry,
-                    narrator_reference=narrator_reference,
-                    volume=self.settings.output_volume_percent / 100,
+                    **backend_options,
                 )
         except Exception as error:
             self.error_handler(TTSInitializationError(str(error)))
@@ -899,6 +914,13 @@ class AppController:
                 else self.settings.tts_speaker_wav or "alba"
             )
             self.voice_router.voice_states.pop("narrator", None)
+        elif isinstance(self.voice_router, MossTTSVoiceRouterBackend):
+            self.voice_router.narrator_reference = (
+                voice.references[0]
+                if voice is not None and voice.references
+                else self.settings.tts_speaker_wav
+            )
+            self.voice_router.prompt_audio_codes.pop("narrator", None)
         elif isinstance(self.voice_router, ChatterboxNanoVoiceRouterBackend):
             self.voice_router.narrator_reference = (
                 voice.references[0]

@@ -2,7 +2,8 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, Lock
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
 from time import monotonic
 from types import MethodType
 from typing import Any, Protocol
@@ -55,6 +56,58 @@ class PocketTTSPreparedSpeech:
     cache_key: tuple[str, str]
     persistent_cache_key: str
     cached_audio: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class MossTTSPreparedSpeech:
+    voice_key: str
+    prompt_audio_codes: Any
+    text: str
+    cache_key: tuple[str, str]
+    persistent_cache_key: str
+    cached_audio: np.ndarray | None = None
+
+
+default_moss_tts_model = "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"
+
+moss_language_names = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "sw": "Swahili",
+    "th": "Thai",
+    "tl": "Tagalog",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
+def normalize_moss_language(language):
+    value = str(language or "English").strip()
+    return moss_language_names.get(value.casefold().replace("_", "-"), value)
 
 
 class XTTSVoiceRouterBackend:
@@ -870,6 +923,532 @@ class PocketTTSVoiceRouterBackend:
         return prepared
 
 
+class MossTTSVoiceRouterBackend:
+    """High-fidelity Apple Silicon voice cloning with streaming playback."""
+
+    name = "moss-tts"
+    capabilities = SpeechBackendCapabilities(
+        voice_cloning=True,
+        streaming=True,
+        concurrent_prepare_and_play=False,
+        interrupt_on_dialog_replacement=True,
+    )
+
+    def __init__(
+        self,
+        registry,
+        *,
+        narrator_reference=None,
+        language="English",
+        model_name=None,
+        volume=1.0,
+        model_factory=None,
+        audio_output=None,
+        clock=monotonic,
+        audio_cache_size=32,
+        playback_latency="low",
+        runtime_directory=None,
+        prompt_cache_directory=None,
+        persistent_audio_cache_directory=None,
+        prompt_code_loader=None,
+        prompt_code_saver=None,
+        array_evaluator=None,
+        cached_stream_chunk_seconds=0.2,
+        streaming_first_chunk_frames=16,
+        streaming_interval=1.0,
+    ):
+        self.model_name = str(
+            model_name
+            or os.environ.get("VNTTS_MOSS_MODEL", "")
+            or default_moss_tts_model
+        )
+        self._mlx = None
+        if model_factory is None:
+            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
+            try:
+                import mlx.core as mx
+                from mlx_audio.tts import load
+            except ImportError as error:
+                raise TTSConfigurationError(
+                    "MOSS-TTS could not be imported from "
+                    f"{runtime_site_packages}. Reinstall it with "
+                    "`uv sync --project backends/moss-tts`."
+                ) from error
+            from vntts.moss_compat import install_moss_quantized_codec_compat
+
+            install_moss_quantized_codec_compat()
+            self._mlx = mx
+            model_factory = load
+        if audio_output is None:
+            import sounddevice
+
+            audio_output = sounddevice
+
+        try:
+            self.model = model_factory(self.model_name, lazy=True)
+        except Exception as error:
+            raise TTSConfigurationError(
+                f"MOSS-TTS could not load {self.model_name!r}: {error}"
+            ) from error
+        self.registry = registry
+        self.narrator_speaker = "MOSS reference voice"
+        self.narrator_reference = narrator_reference
+        self.language = normalize_moss_language(language)
+        self.audio_output = audio_output
+        self.clock = clock
+        self.playback_latency = playback_latency
+        self.sample_rate = int(getattr(self.model, "sample_rate", 48_000))
+        self.prompt_audio_codes = {}
+        self.prompt_cache_directory = Path(
+            prompt_cache_directory
+            or get_local_data_directory() / "models" / "moss-tts" / "voices"
+        ).expanduser()
+        self.prompt_code_loader = prompt_code_loader or self._load_prompt_codes
+        self.prompt_code_saver = prompt_code_saver or self._save_prompt_codes
+        self.array_evaluator = array_evaluator or self._evaluate_array
+        self.model_lock = Lock()
+        self.playback_lock = Lock()
+        self.active_stream_lock = Lock()
+        self.active_stream = None
+        self.active_generation = None
+        self.playback_stop = Event()
+        self.playback_active = False
+        self.last_playback_underrun = False
+        self.last_synthesis_ms = None
+        self.last_first_audio_ms = None
+        self.last_playback_ms = None
+        self.audio_cache = BoundedCache(audio_cache_size)
+        self.persistent_audio_cache = PersistentAudioCache(
+            persistent_audio_cache_directory
+            or get_local_data_directory() / "audio-cache" / self.name,
+            max_entries=max(64, self.audio_cache.max_entries * 8),
+        )
+        self.persistent_cache_keys = SpeechCacheKeyFactory(
+            self.persistent_audio_cache,
+            backend=self.name,
+            model=self.model,
+            model_identity=self.model_name,
+            sample_rate=self.sample_rate,
+        )
+        self.cached_stream_chunk_samples = max(
+            1,
+            round(self.sample_rate * float(cached_stream_chunk_seconds)),
+        )
+        self.streaming_first_chunk_frames = max(1, int(streaming_first_chunk_frames))
+        self.streaming_interval = max(0.08, float(streaming_interval))
+        self.set_volume(volume)
+        self.set_speed(1.0)
+
+    def prepare(self, character, text):
+        spoken_text = " ".join((text or "").split())
+        if not spoken_text:
+            raise TTSSynthesisError("MOSS-TTS received empty text")
+        voice_key, source = self._resolve_voice_source(character)
+        cache_key = voice_key, spoken_text
+        persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
+        cached_audio = self.audio_cache.get(cache_key)
+        if cached_audio is None:
+            cached_audio = self.persistent_audio_cache.get(persistent_key)
+            if cached_audio is not None:
+                self.audio_cache.put(cache_key, cached_audio)
+        prompt_audio_codes = None
+        if cached_audio is None:
+            with self.model_lock:
+                resolved_voice_key, prompt_audio_codes = self._resolve_prompt_codes(
+                    character
+                )
+            if resolved_voice_key != voice_key:
+                raise TTSConfigurationError(
+                    "MOSS-TTS resolved inconsistent voice conditioning"
+                )
+        return MossTTSPreparedSpeech(
+            voice_key,
+            prompt_audio_codes,
+            spoken_text,
+            cache_key,
+            persistent_key,
+            cached_audio,
+        )
+
+    def prime(self, character):
+        voice_key, _source = self._resolve_voice_source(character)
+        with self.model_lock:
+            if voice_key in self.prompt_audio_codes:
+                return False
+            self._resolve_prompt_codes(character)
+        return True
+
+    def speak(self, character, text, *, playback_guard=None):
+        return self.play(
+            self.prepare(character, text),
+            playback_guard=playback_guard,
+        )
+
+    def play(self, prepared, *, playback_guard=None):
+        if playback_guard is not None and not playback_guard():
+            return False
+        if not isinstance(prepared, MossTTSPreparedSpeech):
+            raise TTSConfigurationError("MOSS-TTS received invalid prepared speech")
+
+        with self.playback_lock:
+            if playback_guard is not None and not playback_guard():
+                return False
+            self.playback_stop.clear()
+            self.last_playback_underrun = False
+            self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
+            self.last_first_audio_ms = self.last_synthesis_ms
+            started = self.clock()
+            raw_chunks = []
+            completed = False
+            try:
+                self.playback_active = True
+                if prepared.cached_audio is not None:
+                    completed = self._play_cached(
+                        prepared.cached_audio,
+                        playback_guard,
+                    )
+                else:
+                    with self.model_lock:
+                        results = self.model.generate(
+                            text=prepared.text,
+                            prompt_audio_codes=prepared.prompt_audio_codes,
+                            language=self.language,
+                            max_tokens=4096,
+                            stream=True,
+                            streaming_first_chunk_frames=(
+                                self.streaming_first_chunk_frames
+                            ),
+                            streaming_interval=self.streaming_interval,
+                        )
+                        self.active_generation = results
+                        completed = self._play_generated(
+                            results,
+                            playback_guard,
+                            started,
+                            raw_chunks,
+                        )
+                if completed and raw_chunks:
+                    complete_audio = np.concatenate(raw_chunks, axis=0)
+                    self.audio_cache.put(prepared.cache_key, complete_audio)
+                    self.persistent_audio_cache.put(
+                        prepared.persistent_cache_key,
+                        complete_audio,
+                    )
+                return completed
+            except (TTSConfigurationError, TTSSynthesisError):
+                raise
+            except Exception as error:
+                if self.playback_stop.is_set():
+                    return False
+                raise AudioPlaybackError(str(error)) from error
+            finally:
+                self._close_active_generation()
+                with self.active_stream_lock:
+                    self.active_stream = None
+                self.playback_active = False
+                self.last_playback_ms = (self.clock() - started) * 1000
+
+    def warm_up(self, *, progress=None, text="Voice ready."):
+        progress = progress or (lambda _current, _total, _character: None)
+        voices = sorted(
+            {id(voice): voice for voice in self.registry.voices.values()}.values(),
+            key=lambda voice: voice.character.casefold(),
+        )
+        characters = ["Narrator", *(voice.character for voice in voices)]
+        for current, character in enumerate(characters, start=1):
+            progress(current, len(characters), character)
+            self.prime(character)
+
+        # Compile the MLX generation path before live reading begins. The
+        # generated warm-up is cached and never sent to the output device.
+        prepared = self.prepare("Narrator", text)
+        if prepared.cached_audio is None:
+            chunks = []
+            with self.model_lock:
+                for result in self.model.generate(
+                    text=prepared.text,
+                    prompt_audio_codes=prepared.prompt_audio_codes,
+                    language=self.language,
+                    max_tokens=128,
+                    stream=True,
+                    streaming_first_chunk_frames=self.streaming_first_chunk_frames,
+                    streaming_interval=self.streaming_interval,
+                ):
+                    audio = self._to_numpy_audio(result.audio)
+                    if audio.size:
+                        chunks.append(audio)
+            if chunks:
+                audio = np.concatenate(chunks, axis=0)
+                self.audio_cache.put(prepared.cache_key, audio)
+                self.persistent_audio_cache.put(prepared.persistent_cache_key, audio)
+        return len(characters)
+
+    def set_volume(self, volume):
+        self.volume = validate_volume(volume)
+
+    def set_speed(self, speed):
+        # MOSS-TTS does not expose pitch-preserving speed control.
+        self.speed = validate_speed(speed)
+
+    def set_live_mode_active(self, active):
+        return bool(active)
+
+    def stop(self):
+        was_playing = self.playback_active
+        self.playback_stop.set()
+        self._close_active_generation()
+        with self.active_stream_lock:
+            stream = self.active_stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                pass
+        return was_playing
+
+    def _play_cached(self, audio, playback_guard):
+        channels = self._to_numpy_audio(audio).shape[1]
+        with self.audio_output.OutputStream(
+            samplerate=self.sample_rate,
+            channels=channels,
+            dtype="float32",
+            latency=self.playback_latency,
+        ) as stream:
+            with self.active_stream_lock:
+                self.active_stream = stream
+            wrote_audio = False
+            for chunk in self._cached_chunks(audio):
+                if self._cancelled(playback_guard):
+                    return False
+                self._write_stream_chunk(stream, chunk)
+                wrote_audio = True
+        if not wrote_audio:
+            raise TTSSynthesisError("MOSS-TTS cached audio is empty")
+        return True
+
+    def _play_generated(self, results, playback_guard, started, raw_chunks):
+        first_audio = None
+        for result in results:
+            if self._cancelled(playback_guard):
+                return False
+            audio = self._to_numpy_audio(result.audio)
+            if audio.size:
+                first_audio = audio
+                break
+        if first_audio is None:
+            raise TTSSynthesisError("MOSS-TTS generated no audio")
+
+        first_audio_ms = (self.clock() - started) * 1000
+        self.last_synthesis_ms = first_audio_ms
+        self.last_first_audio_ms = first_audio_ms
+        chunk_queue = Queue(maxsize=4)
+        playback_finished = object()
+        playback_result = {"completed": False, "error": None}
+
+        def enqueue(value):
+            while not self.playback_stop.is_set():
+                try:
+                    chunk_queue.put(value, timeout=0.1)
+                    return True
+                except Full:
+                    continue
+            return False
+
+        def consume():
+            try:
+                with self.audio_output.OutputStream(
+                    samplerate=self.sample_rate,
+                    channels=first_audio.shape[1],
+                    dtype="float32",
+                    latency=self.playback_latency,
+                ) as stream:
+                    with self.active_stream_lock:
+                        self.active_stream = stream
+                    while not self._cancelled(playback_guard):
+                        try:
+                            audio = chunk_queue.get(timeout=0.1)
+                        except Empty:
+                            continue
+                        if audio is playback_finished:
+                            playback_result["completed"] = bool(raw_chunks)
+                            return
+                        raw_chunks.append(audio)
+                        self._write_stream_chunk(stream, audio)
+            except Exception as error:
+                playback_result["error"] = error
+                self.playback_stop.set()
+            finally:
+                with self.active_stream_lock:
+                    self.active_stream = None
+
+        enqueue(first_audio)
+        consumer = Thread(target=consume, name="vntts-moss-playback", daemon=True)
+        consumer.start()
+        try:
+            for result in results:
+                if self._cancelled(playback_guard):
+                    break
+                audio = self._to_numpy_audio(result.audio)
+                if audio.size and not enqueue(audio):
+                    break
+        finally:
+            if not self.playback_stop.is_set():
+                enqueue(playback_finished)
+            consumer.join(timeout=5.0)
+            if consumer.is_alive():
+                self.playback_stop.set()
+                consumer.join(timeout=1.0)
+        if playback_result["error"] is not None:
+            raise playback_result["error"]
+        return bool(playback_result["completed"])
+
+    def _cancelled(self, playback_guard):
+        if self.playback_stop.is_set():
+            return True
+        if playback_guard is not None and not playback_guard():
+            self.playback_stop.set()
+            return True
+        return False
+
+    def _write_stream_chunk(self, stream, audio):
+        underflowed = stream.write(self._prepare_audio(audio))
+        self.last_playback_underrun = self.last_playback_underrun or bool(underflowed)
+
+    def _resolve_prompt_codes(self, character):
+        voice_key, source = self._resolve_voice_source(character)
+        cached = self.prompt_audio_codes.get(voice_key)
+        if cached is not None:
+            return voice_key, cached
+
+        cache_path = self._prompt_cache_path(voice_key, source)
+        if cache_path.is_file():
+            try:
+                codes = self.prompt_code_loader(cache_path)
+                self.array_evaluator(codes)
+            except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+                codes = None
+            if codes is not None:
+                self.prompt_audio_codes[voice_key] = codes
+                return voice_key, codes
+
+        try:
+            codes = self.model.encode_reference_audio(str(source))
+            self.array_evaluator(codes)
+        except Exception as error:
+            raise TTSConfigurationError(
+                f"MOSS-TTS could not prepare voice {voice_key!r}: {error}"
+            ) from error
+        self.prompt_audio_codes[voice_key] = codes
+        try:
+            self.prompt_code_saver(codes, cache_path)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return voice_key, codes
+
+    def _resolve_voice_source(self, character):
+        voice = self.registry.resolve(character)
+        if is_narrator(character) or voice is None:
+            voice_key = "narrator"
+            source = self.narrator_reference
+        else:
+            voice_key = voice.speaker
+            source = voice.references[0] if voice.references else None
+        if source is None:
+            raise TTSConfigurationError(
+                "MOSS-TTS requires a narrator reference recording. Assign an "
+                "imported character voice to Narrator or configure TTS speaker WAV."
+            )
+        source_path = Path(source).expanduser()
+        if not source_path.is_file():
+            raise TTSConfigurationError(
+                f"MOSS-TTS voice reference does not exist: {source_path}"
+            )
+        return voice_key, source_path.resolve()
+
+    def _prompt_cache_path(self, voice_key, source):
+        return voice_artifact_cache_path(
+            self.prompt_cache_directory,
+            voice_key=voice_key,
+            source=source,
+            model_identity=f"{self.model_name}:{self.sample_rate}",
+            suffix=".safetensors",
+        )
+
+    def _persistent_cache_key(self, voice_key, text, source):
+        return self.persistent_cache_keys.key(
+            voice_key=voice_key,
+            source=source,
+            text=text,
+            speed=self.speed,
+            language=self.language,
+            streaming_first_chunk_frames=self.streaming_first_chunk_frames,
+            streaming_interval=self.streaming_interval,
+        )
+
+    def _cached_chunks(self, audio):
+        prepared = self._to_numpy_audio(audio)
+        for start in range(0, len(prepared), self.cached_stream_chunk_samples):
+            yield prepared[start : start + self.cached_stream_chunk_samples]
+
+    @staticmethod
+    def _to_numpy_audio(audio):
+        value = audio
+        to_numpy = getattr(value, "numpy", None)
+        if callable(to_numpy):
+            value = to_numpy()
+        prepared = np.asarray(value, dtype=np.float32).squeeze()
+        if prepared.ndim == 1:
+            return prepared.reshape(-1, 1)
+        if prepared.ndim != 2:
+            raise TTSSynthesisError(
+                f"MOSS-TTS returned unsupported audio shape {prepared.shape}"
+            )
+        if prepared.shape[0] in {1, 2} and prepared.shape[1] > 2:
+            prepared = prepared.T
+        if prepared.shape[1] not in {1, 2}:
+            raise TTSSynthesisError(
+                f"MOSS-TTS returned unsupported audio shape {prepared.shape}"
+            )
+        return prepared
+
+    def _prepare_audio(self, audio):
+        prepared = self._to_numpy_audio(audio).copy()
+        np.nan_to_num(prepared, copy=False)
+        prepared *= self.volume
+        np.clip(prepared, -0.95, 0.95, out=prepared)
+        return prepared
+
+    def _evaluate_array(self, value):
+        if self._mlx is not None:
+            self._mlx.eval(value)
+
+    def _load_prompt_codes(self, path):
+        if self._mlx is None:
+            raise RuntimeError("MLX is not available")
+        values = self._mlx.load(path)
+        return values["prompt_audio_codes"]
+
+    def _save_prompt_codes(self, codes, path):
+        if self._mlx is None:
+            return False
+        with atomic_output_path(path) as temporary_path:
+            self._mlx.save_safetensors(
+                temporary_path,
+                {"prompt_audio_codes": codes},
+            )
+        return True
+
+    def _close_active_generation(self):
+        generation = self.active_generation
+        self.active_generation = None
+        close = getattr(generation, "close", None)
+        if callable(close):
+            try:
+                close()
+            except (RuntimeError, ValueError):
+                pass
+
+
 def select_torch_device(torch_module):
     if torch_module.cuda.is_available():
         return "cuda"
@@ -963,6 +1542,37 @@ def activate_pocket_tts_runtime(runtime_directory=None):
         raise TTSConfigurationError(
             "Pocket TTS is not installed. Run "
             "`uv sync --project backends/pocket-tts`, then restart the app."
+        )
+    site_packages_text = str(site_packages)
+    if site_packages_text not in sys.path:
+        sys.path.insert(0, site_packages_text)
+    return site_packages
+
+
+def activate_moss_tts_runtime(runtime_directory=None):
+    if sys.platform != "darwin" or os.uname().machine != "arm64":
+        raise TTSConfigurationError(
+            "MOSS-TTS with MLX requires macOS on Apple Silicon."
+        )
+    runtime_directory = (
+        Path(
+            runtime_directory
+            or os.environ.get("VNTTS_MOSS_RUNTIME", "")
+            or Path(__file__).resolve().parents[1] / "backends" / "moss-tts" / ".venv"
+        )
+        .expanduser()
+        .resolve()
+    )
+    site_packages = (
+        runtime_directory
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    if not site_packages.is_dir():
+        raise TTSConfigurationError(
+            "MOSS-TTS is not installed. Run "
+            "`uv sync --project backends/moss-tts`, then restart the app."
         )
     site_packages_text = str(site_packages)
     if site_packages_text not in sys.path:

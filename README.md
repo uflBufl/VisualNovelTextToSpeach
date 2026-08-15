@@ -147,6 +147,26 @@ Character voice cloning also requires accepting the model terms at
 <https://huggingface.co/kyutai/pocket-tts> and authenticating once with
 `uvx hf auth login`.
 
+MOSS-TTS v1.5 is the high-quality streaming option for Apple Silicon Macs.
+Install its isolated MLX runtime once, choose MOSS-TTS in Settings, select a
+narrator reference recording, and restart the app:
+
+```sh
+uv sync --project backends/moss-tts
+```
+
+The default int8 model and audio tokenizer download about 6.8 GB on first use.
+VNTTS keeps the model loaded, caches each character reference, and streams
+48 kHz stereo audio with a short initial buffer. Enable voice warm-up to move
+the first MLX compilation cost to startup. Set `VNTTS_MOSS_MODEL` to use a
+compatible local path or Hugging Face model. MOSS-TTS requires macOS on Apple
+Silicon; Pocket TTS remains the portable default.
+
+The runtime pins the official `mlx-audio` release. VNTTS carries a guarded
+compatibility loader for its int8 MOSS audio tokenizer until the equivalent
+quantized-weight handling is available upstream; it disables itself when
+native support is detected.
+
 Game-specific extraction lives in a separate repository. An extractor may
 produce three local, game-agnostic artifacts for VNTTS:
 

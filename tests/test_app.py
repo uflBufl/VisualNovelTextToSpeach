@@ -292,6 +292,44 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.speech_rate.isEnabled())
         dialog.deleteLater()
 
+    def test_settings_offer_moss_with_model_language_and_reference(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                speech_backend="moss-tts",
+                tts_speaker_wav="matilda.wav",
+            )
+        )
+
+        self.assertEqual(dialog.speech_backend.currentData(), "moss-tts")
+        self.assertTrue(dialog.tts_model.isEnabled())
+        self.assertTrue(dialog.tts_language.isEnabled())
+        self.assertTrue(dialog.narrator_reference.isEnabled())
+        self.assertIn("MOSS-TTS-Local-Transformer", dialog.tts_model.text())
+        self.assertFalse(dialog.speech_rate.isEnabled())
+        self.assertEqual(dialog.settings().tts_speaker_wav, "matilda.wav")
+        dialog.deleteLater()
+
+    def test_settings_switch_default_model_between_xtts_and_moss(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                speech_backend="coqui-xtts",
+                tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
+            )
+        )
+
+        dialog.speech_backend.setCurrentIndex(
+            dialog.speech_backend.findData("moss-tts")
+        )
+        self.assertIn("MOSS-TTS-Local-Transformer", dialog.tts_model.text())
+        dialog.speech_backend.setCurrentIndex(
+            dialog.speech_backend.findData("coqui-xtts")
+        )
+        self.assertEqual(
+            dialog.tts_model.text(),
+            "tts_models/multilingual/multi-dataset/xtts_v2",
+        )
+        dialog.deleteLater()
+
     def test_settings_control_macos_launch_at_login(self):
         dialog = SettingsDialog(AppSettings(launch_at_login=True))
 

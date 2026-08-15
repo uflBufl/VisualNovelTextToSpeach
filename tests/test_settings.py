@@ -48,6 +48,11 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.speech_backend, "pocket-tts")
 
+    def test_moss_tts_backend_can_be_selected(self):
+        settings = AppSettings.from_mapping({"speech_backend": "moss-tts"})
+
+        self.assertEqual(settings.speech_backend, "moss-tts")
+
     def test_pocket_tts_is_the_default_backend(self):
         self.assertEqual(AppSettings().speech_backend, "pocket-tts")
 

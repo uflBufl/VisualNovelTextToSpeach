@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
+    MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
 )
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
@@ -87,6 +88,12 @@ def create_backend(name, registry, cache_root):
         return ChatterboxNanoVoiceRouterBackend(
             registry,
             conditioning_cache_directory=cache_root / "conditionals",
+            **common,
+        )
+    if name == "moss-tts":
+        return MossTTSVoiceRouterBackend(
+            registry,
+            prompt_cache_directory=cache_root / "prompt-codes",
             **common,
         )
     raise ValueError(f"Unsupported benchmark backend: {name}")
@@ -193,7 +200,7 @@ def build_parser():
     parser.add_argument(
         "--backend",
         required=True,
-        choices=("pocket-tts", "chatterbox-nano"),
+        choices=("pocket-tts", "chatterbox-nano", "moss-tts"),
     )
     parser.add_argument("--character", action="append", dest="characters")
     parser.add_argument("--text", default=default_text)
