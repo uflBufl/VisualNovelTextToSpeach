@@ -8,6 +8,10 @@ sections after their implementation has been verified and committed.
 - [ ] After the current product work stabilizes, consolidate repeated CLI exit,
       stderr, and structured-result handling behind a repository-local helper;
       keep individual argument parsers explicit.
+- [ ] Define and consume a versioned `vntts.game-pack` contract shared with the
+      Reverse: 1999 extractor. Bind the story index, voice manifest, generated
+      audio, producer versions, and SHA-256 checksums, then provide one-step
+      import and preflight validation in VNTTS.
 
 ## Live mode
 
@@ -22,6 +26,8 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Benchmark remaining backends and hardware
 
+- [ ] Complete the extractor's perceptual model gate before adding another
+      production speech backend, then integrate only the selected winner.
 - [ ] Benchmark XTTS and Chatterbox Nano on the target Windows CPU and CUDA
       hardware; compare first-audio latency, realtime factor, speaker similarity,
       hallucinations, RAM/VRAM, and package size.
@@ -42,6 +48,12 @@ sections after their implementation has been verified and committed.
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.
 
+## macOS application
+
+- [ ] Either implement reliable native global hotkeys on macOS or make the
+      control-window-only limitation explicit in onboarding, settings, and the
+      README.
+
 ## Windows application
 
 ### P2 - Windows distribution
@@ -56,7 +68,9 @@ sections after their implementation has been verified and committed.
   - Preserve downloaded models and user settings during application upgrades.
   - Sign the executable and installer for public distribution.
 
-- [ ] Add Windows compatibility and release testing.
+- [ ] Run and record Windows compatibility and release qualification evidence.
   - Cover Windows 11, common GPU vendors, multiple displays, and DPI scaling.
   - Cover windowed, borderless, normal-user, and elevated game processes.
+  - Cover a 30-minute soak, rapid and manual advancement, and shutdown during
+    every live-pipeline stage.
   - Run installation and OCR-to-speech smoke tests on a clean Windows machine.
