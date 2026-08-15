@@ -396,9 +396,7 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _settings_region(title, form):
-        form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         region = QGroupBox(title)
         region.setLayout(form)
         return region
