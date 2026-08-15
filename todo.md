@@ -5,9 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Shared artifact consolidation
 
-- [ ] After the current product work stabilizes, consolidate repeated CLI exit,
-      stderr, and structured-result handling behind a repository-local helper;
-      keep individual argument parsers explicit.
 - [ ] Define and consume a versioned `vntts.game-pack` contract shared with the
       Reverse: 1999 extractor. Bind the story index, voice manifest, generated
       audio, producer versions, and SHA-256 checksums, then provide one-step
