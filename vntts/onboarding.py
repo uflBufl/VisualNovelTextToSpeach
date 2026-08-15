@@ -6,6 +6,7 @@ from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
 from vntts.speech_backend import (
     activate_chatterbox_runtime,
+    activate_moss_tts_runtime,
     activate_pocket_tts_runtime,
 )
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -129,6 +130,7 @@ class OnboardingDiagnostics:
                 "Chatterbox Nano runtime",
                 activate_chatterbox_runtime,
             ),
+            "moss-tts": ("MOSS-TTS runtime", activate_moss_tts_runtime),
         }.get(settings.speech_backend)
         if isolated_runtime is not None:
             name, probe = isolated_runtime

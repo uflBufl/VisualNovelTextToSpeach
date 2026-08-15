@@ -251,7 +251,7 @@ def initialize_voice_registry(settings=None, error_handler=None):
         preset_validator = None
         if settings.speech_backend == "pocket-tts":
             preset_validator = pocket_tts_preset_voices.__contains__
-        elif settings.speech_backend == "chatterbox-nano":
+        elif settings.speech_backend in {"chatterbox-nano", "moss-tts"}:
             preset_validator = ().__contains__
         registry.apply_assignments(
             settings.voice_assignments,

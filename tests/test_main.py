@@ -760,6 +760,50 @@ class MainTest(unittest.TestCase):
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
 
+    def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "MOSS reference voice"
+        backend.capabilities.concurrent_prepare_and_play = False
+        moss_factory = Mock(return_value=backend)
+        tts_factory = Mock()
+        model_assets = Mock()
+        registry = Mock()
+        statuses = []
+        with (
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(
+                    speech_backend="moss-tts",
+                    tts_model="local/moss-int8",
+                    tts_language="en",
+                    tts_speaker_wav="matilda.wav",
+                ),
+                tts_factory=tts_factory,
+                moss_backend_factory=moss_factory,
+                model_asset_manager_factory=Mock(return_value=model_assets),
+                status_handler=statuses.append,
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertIn("Loading MOSS-TTS...", statuses)
+        tts_factory.assert_not_called()
+        model_assets.configure_huggingface_environment.assert_called_once_with()
+        moss_factory.assert_called_once_with(
+            registry,
+            narrator_reference="matilda.wav",
+            volume=1.0,
+            model_name="local/moss-int8",
+            language="en",
+        )
+        self.assertIs(controller.speech_backend, backend)
+        controller.shutdown()
+
     def test_voice_warmup_failure_does_not_prevent_startup(self):
         tts = Mock()
         voice_router = Mock()

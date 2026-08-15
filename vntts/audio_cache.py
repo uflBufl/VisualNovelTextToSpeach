@@ -33,7 +33,11 @@ class PersistentAudioCache:
             with path.open("rb") as source:
                 audio = np.load(source, allow_pickle=False)
             audio = np.atleast_1d(np.asarray(audio, dtype=np.float32).squeeze())
-            if audio.ndim != 1 or audio.size == 0 or not np.all(np.isfinite(audio)):
+            if (
+                audio.ndim not in {1, 2}
+                or audio.size == 0
+                or not np.all(np.isfinite(audio))
+            ):
                 return None
             path.touch()
             return audio
@@ -44,7 +48,11 @@ class PersistentAudioCache:
         if self.max_entries == 0:
             return None
         audio = np.atleast_1d(np.asarray(audio, dtype=np.float32).squeeze())
-        if audio.ndim != 1 or audio.size == 0 or not np.all(np.isfinite(audio)):
+        if (
+            audio.ndim not in {1, 2}
+            or audio.size == 0
+            or not np.all(np.isfinite(audio))
+        ):
             return None
         path = self.directory / f"{key}.npy"
         try:

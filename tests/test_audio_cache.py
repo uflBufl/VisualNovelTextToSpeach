@@ -43,6 +43,17 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
         np.testing.assert_allclose(audio, [0.1, -0.1])
 
+    def test_stereo_audio_survives_new_cache_instance(self):
+        with TemporaryDirectory() as temporary_directory:
+            first = PersistentAudioCache(temporary_directory)
+            expected = np.array([[0.1, -0.1], [0.2, -0.2]], dtype=np.float32)
+            first.put("stereo", expected)
+
+            second = PersistentAudioCache(temporary_directory)
+            audio = second.get("stereo")
+
+        np.testing.assert_allclose(audio, expected)
+
     def test_prunes_oldest_entries_and_ignores_corruption(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

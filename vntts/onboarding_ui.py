@@ -28,7 +28,8 @@ from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.settings import AppSettings
-from vntts.voices import find_default_voice_manifest
+from vntts.speech_backend import default_moss_tts_model
+from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
 default_onboarding_model = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -75,10 +76,19 @@ class ConfigurationPage(QWizardPage):
         self.speech_backend.addItem("Pocket TTS (recommended)", "pocket-tts")
         self.speech_backend.addItem("XTTS", "coqui-xtts")
         self.speech_backend.addItem("Chatterbox Nano", "chatterbox-nano")
+        self.speech_backend.addItem("MOSS-TTS v1.5 (Apple Silicon)", "moss-tts")
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
         self.tts_language = QLineEdit(settings.tts_language or "en")
+        self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
+        self.narrator_reference_button = QPushButton("Browse...")
+        self.narrator_reference_button.setMinimumWidth(120)
+        self.narrator_reference_button.clicked.connect(self.browse_narrator_reference)
+        self.narrator_reference_layout = QHBoxLayout()
+        self.narrator_reference_layout.setContentsMargins(0, 0, 0, 0)
+        self.narrator_reference_layout.addWidget(self.narrator_reference, 1)
+        self.narrator_reference_layout.addWidget(self.narrator_reference_button)
         self.ocr_language = QLineEdit(settings.ocr_language)
         default_voice_manifest = find_default_voice_manifest()
         self.voice_manifest = QLineEdit(
@@ -121,6 +131,7 @@ class ConfigurationPage(QWizardPage):
         form.addRow("TTS model", self.tts_model)
         form.addRow("OCR language", self.ocr_language)
         form.addRow("TTS language", self.tts_language)
+        form.addRow("Narrator reference", self.narrator_reference_layout)
         form.addRow("Voice manifest", self.manifest_layout)
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("", self.terms)
@@ -159,6 +170,16 @@ class ConfigurationPage(QWizardPage):
         if path:
             self.voice_manifest.setText(path)
 
+    def browse_narrator_reference(self):
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose narrator voice reference",
+            self.narrator_reference.text(),
+            "Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
+        )
+        if path:
+            self.narrator_reference.setText(path)
+
     def manage_assets(self):
         dialog = AssetManagerDialog(self.settings(), parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -180,8 +201,21 @@ class ConfigurationPage(QWizardPage):
         self.license_label.setVisible(uses_xtts)
 
     def update_backend_controls(self):
-        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
-        self.tts_model.setEnabled(uses_xtts)
+        backend = self.speech_backend.currentData()
+        uses_xtts = backend == "coqui-xtts"
+        uses_moss = backend == "moss-tts"
+        if uses_moss and self.tts_model.text().strip() in {
+            "",
+            default_onboarding_model,
+        }:
+            self.tts_model.setText(default_moss_tts_model)
+        elif uses_xtts and self.tts_model.text().strip() in {
+            "",
+            default_moss_tts_model,
+        }:
+            self.tts_model.setText(default_onboarding_model)
+        self.tts_model.setEnabled(uses_xtts or uses_moss)
+        self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_speaker.setEnabled(uses_xtts)
         self.update_terms_control()
 
@@ -217,6 +251,22 @@ class ConfigurationPage(QWizardPage):
                 "Accept the CPML terms before using XTTS.",
             )
             return False
+        if (
+            self.speech_backend.currentData() == "moss-tts"
+            and not self.narrator_reference.text().strip()
+            and find_voice_assignment(
+                self.original_settings.voice_assignments,
+                "Narrator",
+            )
+            is None
+        ):
+            QMessageBox.warning(
+                self,
+                "Narrator reference required",
+                "Choose a narrator reference recording or assign an imported "
+                "character voice to Narrator before using MOSS-TTS.",
+            )
+            return False
 
         self.flow.draft_settings = self.settings()
         return True
@@ -237,6 +287,7 @@ class ConfigurationPage(QWizardPage):
                 "tts_model": optional_text(self.tts_model),
                 "ocr_language": self.ocr_language.text().strip(),
                 "tts_language": optional_text(self.tts_language),
+                "tts_speaker_wav": optional_text(self.narrator_reference),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "xtts_terms_accepted": self.terms.isChecked(),
