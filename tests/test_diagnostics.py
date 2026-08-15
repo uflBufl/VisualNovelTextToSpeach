@@ -139,6 +139,8 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         self.assertIn("Screen & System Audio Recording", warnings[0])
         self.assertIn("Accessibility", warnings[1])
+        self.assertIn("auto advance", warnings[1])
+        self.assertNotIn("global hotkeys", warnings[1])
 
     def test_adaptive_capture_state_updates_live_diagnostics(self):
         snapshots = []

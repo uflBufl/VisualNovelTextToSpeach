@@ -48,12 +48,12 @@ class OnboardingDiagnostics:
             self._check_model(settings),
             self._check_voice_manifest(settings),
         ]
-        permission_result = self._check_platform_permissions()
+        permission_result = self._check_platform_permissions(settings)
         if permission_result is not None:
             results.insert(2, permission_result)
         return tuple(results)
 
-    def _check_platform_permissions(self):
+    def _check_platform_permissions(self, settings):
         status = self.permission_status_provider()
         screen_capture = status.get("screen_capture")
         accessibility = status.get("accessibility")
@@ -62,8 +62,8 @@ class OnboardingDiagnostics:
         missing = []
         if screen_capture is False:
             missing.append("Screen Recording for game capture")
-        if accessibility is False:
-            missing.append("Accessibility for global hotkeys")
+        if accessibility is False and settings.auto_advance_enabled:
+            missing.append("Accessibility for auto advance")
         if missing:
             return DiagnosticResult(
                 "macOS permissions",
@@ -71,17 +71,18 @@ class OnboardingDiagnostics:
                 f"Missing {', '.join(missing)}. Allow the terminal or VNTTS "
                 "under System Settings -> Privacy & Security, then restart it.",
             )
-        if screen_capture is None or accessibility is None:
+        if screen_capture is None or (
+            settings.auto_advance_enabled and accessibility is None
+        ):
             return DiagnosticResult(
                 "macOS permissions",
                 "warning",
                 "One or more permission states could not be checked",
             )
-        return DiagnosticResult(
-            "macOS permissions",
-            "ok",
-            "Screen Recording and Accessibility are granted",
-        )
+        message = "Screen Recording is granted"
+        if settings.auto_advance_enabled:
+            message += " and Accessibility is granted"
+        return DiagnosticResult("macOS permissions", "ok", message)
 
     def _check_hotkeys(self, settings):
         try:

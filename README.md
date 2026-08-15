@@ -42,9 +42,12 @@ The application targets Windows 11 first and also supports running from source
 on macOS. Linux support is limited to X11.
 
 - macOS: grant the terminal or packaged application access under **Privacy &
-  Security -> [Accessibility](https://support.apple.com/guide/mac-help/mh43185/mac)**
-  and **[Screen & System Audio Recording](https://support.apple.com/guide/mac-help/mchld6aa7d23/mac)**,
-  then restart it. Screen-region and selected-window capture are supported.
+  Security -> [Screen & System Audio Recording](https://support.apple.com/guide/mac-help/mchld6aa7d23/mac)**,
+  then restart it. Grant
+  **[Accessibility](https://support.apple.com/guide/mac-help/mh43185/mac)** only
+  when using auto advance. Screen-region and selected-window capture are
+  supported. Global hotkeys are unavailable in the current macOS build; keep
+  the control window or compact floating controls open and use their buttons.
 - Windows: run the application in an interactive desktop session. No extra
   permission is normally required. Select the game under **Settings -> Capture
   source** and use borderless-windowed mode; minimized and exclusive-fullscreen
@@ -81,7 +84,8 @@ development or recovery:
 uv run vntts
 ```
 
-Press `Ctrl+Shift+H` to capture and read the current dialog. Set
+On Windows and Linux X11, press `Ctrl+Shift+H` to capture and read the current
+dialog. Set
 `VNTTS_HOTKEY` using [pynput hotkey syntax](https://pynput.readthedocs.io/en/latest/keyboard.html#global-hotkeys)
 to choose another shortcut:
 
@@ -89,7 +93,8 @@ to choose another shortcut:
 VNTTS_HOTKEY='<ctrl>+<alt>+r' uv run -m vntts
 ```
 
-Press `Ctrl+Shift+L` to start or stop live reading while text is appearing.
+On those platforms, press `Ctrl+Shift+L` to start or stop live reading while
+text is appearing.
 Set `VNTTS_LIVE_HOTKEY` to change this shortcut. Live mode recognizes the
 dialog every 200 ms and queues stable sentences or phrases without waiting for
 the whole dialog to finish. One-time reads are ignored while live mode is on.

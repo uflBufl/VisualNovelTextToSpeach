@@ -29,6 +29,8 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
 
         self.assertEqual(dialog.screen_status.text(), "Not granted")
         self.assertEqual(dialog.accessibility_status.text(), "Status unavailable")
+        self.assertIn("auto advance", dialog.note.text())
+        self.assertIn("Global hotkeys are unavailable", dialog.note.text())
 
         dialog.request_screen()
 

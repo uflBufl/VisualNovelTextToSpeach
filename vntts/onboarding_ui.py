@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.calibration import show_calibration_overlay
 from vntts.hotkey_ui import HotkeyRecorder
-from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.hotkeys import (
+    HotkeyValidationError,
+    macos_hotkey_limitation,
+    validate_hotkey_assignments,
+)
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.settings import AppSettings
@@ -71,6 +75,12 @@ class ConfigurationPage(QWizardPage):
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
+        self.macos_hotkey_notice = QLabel(macos_hotkey_limitation)
+        self.macos_hotkey_notice.setWordWrap(True)
+        self.macos_hotkey_notice.setVisible(sys.platform == "darwin")
+        if sys.platform == "darwin":
+            self.read_hotkey.setEnabled(False)
+            self.live_hotkey.setEnabled(False)
         self.tts_model = QLineEdit(settings.tts_model or default_onboarding_model)
         self.speech_backend = QComboBox()
         self.speech_backend.addItem("Pocket TTS (recommended)", "pocket-tts")
@@ -127,6 +137,8 @@ class ConfigurationPage(QWizardPage):
         form.addRow("Game window", self.window_layout)
         form.addRow("Read once hotkey", self.read_hotkey)
         form.addRow("Live reading hotkey", self.live_hotkey)
+        if sys.platform == "darwin":
+            form.addRow("macOS controls", self.macos_hotkey_notice)
         form.addRow("Speech engine", self.speech_backend)
         form.addRow("TTS model", self.tts_model)
         form.addRow("OCR language", self.ocr_language)

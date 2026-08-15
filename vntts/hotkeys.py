@@ -2,6 +2,11 @@ import sys
 
 from pynput import keyboard
 
+macos_hotkey_limitation = (
+    "Global hotkeys are unavailable in the current macOS build. Keep the "
+    "control window or compact controls open and use their buttons during play."
+)
+
 
 class HotkeyValidationError(ValueError):
     pass

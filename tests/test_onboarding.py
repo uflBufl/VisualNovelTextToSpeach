@@ -156,6 +156,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 game_window_title="Reverse: 1999",
                 tts_model="xtts_v2",
                 narrator_speaker="Narrator",
+                auto_advance_enabled=True,
             )
         )
 
@@ -166,6 +167,31 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         self.assertIn("Screen Recording", permission.message)
         self.assertIn("Accessibility", permission.message)
         self.assertIn("System Settings", permission.message)
+
+    def test_accessibility_is_optional_without_auto_advance(self):
+        diagnostics = OnboardingDiagnostics(
+            tesseract_probe=lambda: "5.5.0",
+            audio_probe=lambda: "Speakers",
+            model_path_resolver=lambda _model: Path("missing-model"),
+            permission_status_provider=lambda: {
+                "screen_capture": True,
+                "accessibility": False,
+            },
+        )
+
+        results = diagnostics.run(
+            AppSettings(
+                game_window_title="Reverse: 1999",
+                tts_model="xtts_v2",
+                narrator_speaker="Narrator",
+            )
+        )
+
+        permission = next(
+            result for result in results if result.name == "macOS permissions"
+        )
+        self.assertEqual(permission.status, "ok")
+        self.assertNotIn("Accessibility", permission.message)
 
 
 class OnboardingWizardTest(unittest.TestCase):
@@ -186,6 +212,18 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.configuration_page.narrator_speaker.text(),
             "Claribel Dervla",
         )
+
+    def test_macos_setup_explains_control_window_only_hotkeys(self):
+        with patch("vntts.onboarding_ui.sys.platform", "darwin"):
+            wizard = OnboardingWizard(AppSettings())
+
+        page = wizard.configuration_page
+        self.assertFalse(page.macos_hotkey_notice.isHidden())
+        self.assertIn("Global hotkeys are unavailable", page.macos_hotkey_notice.text())
+        self.assertIn("compact controls", page.macos_hotkey_notice.text())
+        self.assertFalse(page.read_hotkey.isEnabled())
+        self.assertFalse(page.live_hotkey.isEnabled())
+        wizard.deleteLater()
 
     def test_finish_requires_successful_end_to_end_test(self):
         wizard = OnboardingWizard(AppSettings())

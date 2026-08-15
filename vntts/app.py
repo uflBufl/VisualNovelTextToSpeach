@@ -44,7 +44,11 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
-from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.hotkeys import (
+    HotkeyValidationError,
+    macos_hotkey_limitation,
+    validate_hotkey_assignments,
+)
 from vntts.macos import (
     configure_macos_launch_at_login,
     get_macos_permission_status,
@@ -158,6 +162,21 @@ class SettingsDialog(QDialog):
         self.repeat_hotkey = HotkeyRecorder(settings.repeat_hotkey)
         self.clear_queue_hotkey = HotkeyRecorder(settings.clear_queue_hotkey)
         self.emergency_stop_hotkey = HotkeyRecorder(settings.emergency_stop_hotkey)
+        self.hotkey_recorders = (
+            self.read_hotkey,
+            self.live_hotkey,
+            self.pause_hotkey,
+            self.skip_hotkey,
+            self.repeat_hotkey,
+            self.clear_queue_hotkey,
+            self.emergency_stop_hotkey,
+        )
+        self.macos_hotkey_notice = QLabel(macos_hotkey_limitation)
+        self.macos_hotkey_notice.setWordWrap(True)
+        self.macos_hotkey_notice.setVisible(sys.platform == "darwin")
+        if sys.platform == "darwin":
+            for recorder in self.hotkey_recorders:
+                recorder.setEnabled(False)
         self.screenshot_directory = QLineEdit(settings.screenshot_directory)
         self.retain_uncertain_frames = QCheckBox(
             "Save uncertain frames for OCR diagnostics"
@@ -278,6 +297,8 @@ class SettingsDialog(QDialog):
         form.addRow("Repeat speech hotkey", self.repeat_hotkey)
         form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
         form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
+        if sys.platform == "darwin":
+            form.addRow("macOS controls", self.macos_hotkey_notice)
         form.addRow("Screenshot directory", screenshot_layout)
         form.addRow("Capture source", self.capture_mode)
         form.addRow("Game window", window_layout)
@@ -304,10 +325,12 @@ class SettingsDialog(QDialog):
         form.addRow("Closing the window", self.keep_running_on_close)
         form.addRow("XTTS license", self.xtts_terms)
 
-        note = QLabel(
-            "Hotkey changes take effect immediately. Voice and model changes "
-            "take effect after restarting the application."
+        note_text = (
+            "Voice and model changes take effect after restarting the application."
         )
+        if sys.platform != "darwin":
+            note_text = f"Hotkey changes take effect immediately. {note_text}"
+        note = QLabel(note_text)
         note.setWordWrap(True)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save

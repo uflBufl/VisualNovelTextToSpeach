@@ -339,6 +339,20 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.settings().launch_at_login)
         dialog.deleteLater()
 
+    def test_macos_settings_explain_control_window_only_hotkeys(self):
+        with patch("vntts.app.sys.platform", "darwin"):
+            dialog = SettingsDialog(AppSettings())
+
+        self.assertFalse(dialog.macos_hotkey_notice.isHidden())
+        self.assertIn(
+            "Global hotkeys are unavailable", dialog.macos_hotkey_notice.text()
+        )
+        self.assertIn("compact controls", dialog.macos_hotkey_notice.text())
+        self.assertTrue(
+            all(not recorder.isEnabled() for recorder in dialog.hotkey_recorders)
+        )
+        dialog.deleteLater()
+
     def test_settings_change_updates_macos_launch_at_login(self):
         controller = Mock()
         tray_application = TrayApplication(

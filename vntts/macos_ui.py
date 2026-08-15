@@ -71,19 +71,20 @@ class MacOSPermissionsDialog(QDialog):
         form.addRow("Screen recording", screen_actions)
         form.addRow("Accessibility", accessibility_actions)
 
-        note = QLabel(
+        self.note = QLabel(
             "After granting a permission, quit and reopen the application. "
             "Screen recording is required for OCR capture; Accessibility is "
-            "required for global hotkeys."
+            "required only for auto advance. Global hotkeys are unavailable in "
+            "the current macOS build; use the control window or compact controls."
         )
-        note.setWordWrap(True)
+        self.note.setWordWrap(True)
         refresh = QPushButton("Refresh status")
         refresh.clicked.connect(self.refresh)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(note)
+        layout.addWidget(self.note)
         layout.addWidget(refresh)
         layout.addWidget(buttons)
         self.refresh()

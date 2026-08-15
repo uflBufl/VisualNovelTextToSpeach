@@ -70,7 +70,7 @@ def macos_permission_warnings(
         )
     if accessibility_trusted is not None and not accessibility_trusted():
         warnings.append(
-            "Accessibility permission is missing, so global hotkeys may not work. "
+            "Accessibility permission is missing, so auto advance will not work. "
             "Open System Settings -> Privacy & Security -> Accessibility, allow "
             "this application, and restart it."
         )
