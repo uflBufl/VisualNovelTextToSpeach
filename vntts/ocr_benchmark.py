@@ -10,6 +10,7 @@ from time import perf_counter, process_time
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
 
+from vntts.cli import cli_messages
 from vntts.ocr_backend import RapidOCRBackend, TesseractOCRBackend
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
@@ -208,13 +209,14 @@ def main(argv=None):
     )
     output = write_report(report, arguments.output)
     summary = report["summary"]
-    print(
-        f"{report['backend']}: {summary['images']} image(s), median "
-        f"{summary['median_latency_ms']:.1f} ms, p95 "
-        f"{summary['p95_latency_ms']:.1f} ms"
+    return cli_messages(
+        (
+            f"{report['backend']}: {summary['images']} image(s), median "
+            f"{summary['median_latency_ms']:.1f} ms, p95 "
+            f"{summary['p95_latency_ms']:.1f} ms",
+            output,
+        )
     )
-    print(output)
-    return 0
 
 
 if __name__ == "__main__":

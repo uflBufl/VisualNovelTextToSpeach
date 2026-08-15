@@ -3,10 +3,9 @@
 # Re-exports preserve the historical vntts.main import surface.
 # ruff: noqa: F401
 
-import sys
-
 from pynput import keyboard
 
+from vntts.cli import cli_error
 from vntts.controller import (
     AppController,
     create_dialog_read_scheduler,
@@ -118,9 +117,8 @@ def main(tts_factory=TTSEngine):
             }
         )
     except HotkeyValidationError as error:
-        print(f"Invalid hotkeys: {error}", file=sys.stderr)
         controller.shutdown()
-        return 1
+        return cli_error(f"Invalid hotkeys: {error}")
 
     try:
         listen_for_hotkeys(

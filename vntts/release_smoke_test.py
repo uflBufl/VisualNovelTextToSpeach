@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
 
+from vntts.cli import CLIReportResult
 from vntts.ocr import (
     default_dialog_region,
     default_minimum_ocr_confidence,
@@ -136,4 +137,4 @@ def run_release_smoke_test(
         "confidence": confidence,
         "checks": checks,
     }
-    return successful, _write_report(report, report_path)
+    return CLIReportResult(successful, _write_report(report, report_path))

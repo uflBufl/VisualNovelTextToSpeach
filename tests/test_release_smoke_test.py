@@ -50,16 +50,18 @@ class ReleaseSmokeTest(unittest.TestCase):
             engine = Mock()
             engine_factory = Mock(return_value=engine)
 
-            successful, written_path = run_release_smoke_test(
+            result = run_release_smoke_test(
                 image_path=image_path,
                 report_path=report_path,
                 expected_speaker="Marcus",
                 recognize=recognize,
                 engine_factory=engine_factory,
             )
+            successful, written_path = result
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertTrue(successful)
+            self.assertEqual(result.exit_code, 0)
             self.assertEqual(written_path, report_path)
             self.assertTrue(report["success"])
             self.assertEqual(report["speaker"], "Marcus")

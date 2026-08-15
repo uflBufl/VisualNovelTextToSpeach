@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 
+from vntts.cli import cli_message
+
 
 def escape_workflow_command(value):
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -18,9 +20,10 @@ def main(arguments=None):
     print(completed.stdout, end="")
     if completed.returncode and os.environ.get("GITHUB_ACTIONS"):
         details = completed.stdout[-12_000:] or "Unit tests exited without output."
-        print(
+        return cli_message(
             f"::error title=Unit tests failed::{escape_workflow_command(details)}",
-            file=sys.stderr,
+            exit_code=completed.returncode,
+            error=True,
         )
     return completed.returncode
 

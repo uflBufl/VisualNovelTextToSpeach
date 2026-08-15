@@ -1,5 +1,6 @@
 import argparse
 
+from vntts.cli import cli_messages, cli_success
 from vntts.release_matrix import (
     load_evidence,
     load_release_matrix,
@@ -25,11 +26,8 @@ def main(argv=None):
         allow_unsigned=arguments.allow_unsigned,
     )
     if errors:
-        for error in errors:
-            print(error)
-        return 1
-    print(f"All {len(profiles)} Windows release profiles passed.")
-    return 0
+        return cli_messages(errors, exit_code=1, error=True)
+    return cli_success(f"All {len(profiles)} Windows release profiles passed.")
 
 
 if __name__ == "__main__":

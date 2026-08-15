@@ -6,6 +6,7 @@ from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
+from vntts.cli import CLIReportResult
 from vntts.onboarding import probe_tesseract
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
@@ -153,4 +154,4 @@ def run_package_self_test(
         else Path(report_path).expanduser()
     )
     atomic_write_json(report_path, report)
-    return successful, report_path
+    return CLIReportResult(successful, report_path)

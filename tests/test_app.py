@@ -14,6 +14,7 @@ from vntts.app import (  # noqa: E402
     create_application_icon,
     main,
 )
+from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
@@ -862,7 +863,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.configure_bundled_dependencies"),
             patch(
                 "vntts.app.run_package_self_test",
-                return_value=(True, "report.json"),
+                return_value=CLIReportResult(True, Path("report.json")),
             ) as self_test,
             patch("vntts.app.QApplication") as application,
         ):
@@ -883,7 +884,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.configure_bundled_dependencies"),
             patch(
                 "vntts.app.run_release_smoke_test",
-                return_value=(True, "report.json"),
+                return_value=CLIReportResult(True, Path("report.json")),
             ) as smoke_test,
             patch("vntts.app.QApplication") as application,
         ):

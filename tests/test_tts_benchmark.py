@@ -1,12 +1,15 @@
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.speech_backend_runtime import BoundedCache
-from vntts.tts_benchmark import benchmark_backend, write_report, write_wav
+from vntts.tts_benchmark import benchmark_backend, main, write_report, write_wav
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -49,6 +52,17 @@ class FakeStreamingBackend(FakeBackend):
 
 
 class TTSBenchmarkTest(unittest.TestCase):
+    def test_cli_reports_missing_manifest_to_stderr(self):
+        errors = StringIO()
+        with (
+            patch("vntts.tts_benchmark.find_default_voice_manifest", return_value=None),
+            redirect_stderr(errors),
+        ):
+            exit_code = main(["--backend", "pocket-tts"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("No complete voice manifest", errors.getvalue())
+
     def test_reads_streamed_audio_through_bounded_cache_interface(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]

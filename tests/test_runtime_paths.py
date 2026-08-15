@@ -188,14 +188,16 @@ class RuntimePathsTest(unittest.TestCase):
             report_path = Path(temporary_directory) / "report.json"
             importer = Mock()
 
-            successful, written_path = run_package_self_test(
+            result = run_package_self_test(
                 report_path,
                 import_module=importer,
                 tesseract_probe=Mock(return_value="5.5.0"),
             )
+            successful, written_path = result
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertTrue(successful)
+            self.assertEqual(result.exit_code, 0)
             self.assertEqual(written_path, report_path)
             self.assertTrue(report["success"])
             self.assertEqual(

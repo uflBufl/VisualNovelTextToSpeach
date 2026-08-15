@@ -1354,19 +1354,15 @@ def main(argv=None):
     )
     configure_bundled_dependencies()
     if arguments.package_self_test:
-        successful, _report_path = run_package_self_test(
-            arguments.package_self_test_report
-        )
-        return 0 if successful else 1
+        return run_package_self_test(arguments.package_self_test_report).exit_code
     if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:
-        successful, _report_path = run_release_smoke_test(
+        return run_release_smoke_test(
             image_path=arguments.release_smoke_test_image,
             window_title=arguments.release_smoke_test_window_title,
             report_path=arguments.release_smoke_test_report,
             model_name=arguments.release_smoke_test_model,
             expected_speaker=arguments.release_smoke_test_expected_speaker,
-        )
-        return 0 if successful else 1
+        ).exit_code
 
     enable_windows_dpi_awareness()
     application_arguments = [sys.argv[0], *qt_arguments]

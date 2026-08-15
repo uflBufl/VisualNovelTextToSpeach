@@ -14,6 +14,7 @@ try:
 except ImportError:  # pragma: no cover - unavailable on Windows
     resource = None
 
+from vntts.cli import cli_error, cli_messages
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -213,14 +214,14 @@ def main(argv=None):
     arguments = build_parser().parse_args(argv)
     manifest = arguments.manifest or find_default_voice_manifest()
     if manifest is None:
-        raise SystemExit("No complete voice manifest is available")
+        return cli_error("No complete voice manifest is available")
     registry = CharacterVoiceRegistry.from_file(manifest)
     characters = arguments.characters or ["Kamuta", "Fatutu"]
     missing = [
         character for character in characters if registry.resolve(character) is None
     ]
     if missing:
-        raise SystemExit(f"Voice is not available: {missing[0]}")
+        return cli_error(f"Voice is not available: {missing[0]}")
     report = benchmark_backend(
         arguments.backend,
         registry,
@@ -229,14 +230,17 @@ def main(argv=None):
         arguments.output,
     )
     report_path = write_report(report, arguments.output)
-    print(report_path)
-    for sample in report["samples"]:
-        print(
-            f"{sample['character']}: first audio {sample['first_audio_ms']:.0f} ms, "
-            f"RTF {sample['realtime_factor']:.2f}, cache "
-            f"{sample['cached_replay_ms']:.1f} ms"
+    return cli_messages(
+        (
+            report_path,
+            *(
+                f"{sample['character']}: first audio {sample['first_audio_ms']:.0f} ms, "
+                f"RTF {sample['realtime_factor']:.2f}, cache "
+                f"{sample['cached_replay_ms']:.1f} ms"
+                for sample in report["samples"]
+            ),
         )
-    return 0
+    )
 
 
 if __name__ == "__main__":
