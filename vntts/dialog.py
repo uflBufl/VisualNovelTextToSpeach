@@ -25,10 +25,7 @@ def is_probable_character_name(text):
     if any(not is_name_word(word) for word in words):
         return False
 
-    if len(words) == 1:
-        return candidate.istitle() or candidate.isupper()
-
-    return candidate.isupper()
+    return candidate.istitle() or candidate.isupper()
 
 
 def join_dialog_lines(lines):

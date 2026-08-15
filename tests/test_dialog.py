@@ -43,6 +43,12 @@ class DialogTest(unittest.TestCase):
             ("MARY JANE", "Welcome back."),
         )
 
+    def test_parse_dialog_recognizes_title_case_multiword_speaker(self):
+        self.assertEqual(
+            parse_dialog("Captain Osborn\n\nWelcome aboard."),
+            ("Captain Osborn", "Welcome aboard."),
+        )
+
     def test_parse_dialog_ignores_trailing_newlines(self):
         self.assertEqual(
             parse_dialog("Alice\n\nHello there.\n\n"),

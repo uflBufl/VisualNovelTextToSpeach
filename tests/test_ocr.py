@@ -101,6 +101,55 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(character, "Kamuta")
         self.assertEqual(text, "These old ones are enough to carry everyone.")
 
+    def test_unknown_multiword_speaker_is_detected_from_text_line_structure(self):
+        character, text = parse_recognized_dialog(
+            "Captain Osborn\n"
+            "I don't believe you two are acquainted with our Storm Reaction "
+            "Protocols, are you?\n",
+            self.registry,
+        )
+
+        self.assertEqual(character, "Captain Osborn")
+        self.assertEqual(
+            text,
+            "I don't believe you two are acquainted with our Storm Reaction "
+            "Protocols, are you?",
+        )
+
+    def test_unknown_multiword_speaker_is_detected_from_ocr_geometry(self):
+        data = {
+            "text": [
+                "Captain",
+                "Osborn",
+                "I",
+                "don't",
+                "believe",
+                "you",
+                "two",
+                "are",
+                "acquainted",
+                "you?",
+            ],
+            "conf": [96] * 10,
+            "block_num": [1] * 10,
+            "par_num": [1] * 10,
+            "line_num": [1, 1, 2, 2, 2, 2, 2, 2, 2, 3],
+            "left": [49, 287, 28, 60, 196, 376, 477, 578, 666, 26],
+            "top": [49, 48, 160, 157, 157, 170, 164, 170, 157, 226],
+            "width": [218, 203, 14, 120, 164, 84, 83, 70, 258, 109],
+            "height": [61, 49, 38, 41, 41, 37, 33, 27, 50, 47],
+        }
+
+        speaker = recognize_speaker_from_data(
+            data,
+            self.registry,
+            image_width=1965,
+            image_height=340,
+        )
+
+        self.assertEqual(speaker[0], "Captain Osborn")
+        self.assertEqual(speaker[1].text, "Captain Osborn")
+
     def test_unknown_speaker_is_detected_from_ocr_geometry(self):
         data = {
             "text": ["Kamuta", "These", "old", "ones", "are", "enough"],
