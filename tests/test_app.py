@@ -229,6 +229,25 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog.deleteLater()
 
+    def test_settings_are_scrollable_and_grouped_into_visual_regions(self):
+        dialog = SettingsDialog(AppSettings())
+
+        self.assertTrue(dialog.settings_scroll.widgetResizable())
+        self.assertEqual(
+            [region.title() for region in dialog.settings_regions],
+            [
+                "Keyboard shortcuts",
+                "Capture and OCR",
+                "Speech and voices",
+                "Playback and automation",
+                "Application behavior",
+            ],
+        )
+        available = dialog.screen().availableGeometry()
+        self.assertLessEqual(dialog.width(), max(320, available.width() - 64))
+        self.assertLessEqual(dialog.height(), max(320, available.height() - 64))
+        dialog.deleteLater()
+
     def test_settings_expose_output_volume_and_speech_rate(self):
         dialog = SettingsDialog(
             AppSettings(output_volume_percent=75, speech_rate_percent=110)

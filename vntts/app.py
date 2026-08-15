@@ -22,16 +22,19 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.asset_ui import AssetManagerDialog
@@ -153,7 +156,6 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.original_settings = settings
         self.setWindowTitle(f"{application_name} settings")
-        self.setMinimumWidth(540)
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
@@ -289,41 +291,72 @@ class SettingsDialog(QDialog):
         narrator_reference_layout.addWidget(narrator_reference_button)
         self.narrator_reference_button = narrator_reference_button
 
-        form = QFormLayout()
-        form.addRow("Read once hotkey", self.read_hotkey)
-        form.addRow("Live reading hotkey", self.live_hotkey)
-        form.addRow("Pause or resume hotkey", self.pause_hotkey)
-        form.addRow("Skip speech hotkey", self.skip_hotkey)
-        form.addRow("Repeat speech hotkey", self.repeat_hotkey)
-        form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
-        form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
+        shortcuts_form = QFormLayout()
+        shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
+        shortcuts_form.addRow("Live reading hotkey", self.live_hotkey)
+        shortcuts_form.addRow("Pause or resume hotkey", self.pause_hotkey)
+        shortcuts_form.addRow("Skip speech hotkey", self.skip_hotkey)
+        shortcuts_form.addRow("Repeat speech hotkey", self.repeat_hotkey)
+        shortcuts_form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
+        shortcuts_form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
         if sys.platform == "darwin":
-            form.addRow("macOS controls", self.macos_hotkey_notice)
-        form.addRow("Screenshot directory", screenshot_layout)
-        form.addRow("Capture source", self.capture_mode)
-        form.addRow("Game window", window_layout)
-        form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
-        form.addRow("OCR language", self.ocr_language)
-        form.addRow("OCR diagnostics", self.retain_uncertain_frames)
-        form.addRow("Diagnostics directory", diagnostics_layout)
-        form.addRow("Speech engine", self.speech_backend)
-        form.addRow("Speech model", self.tts_model)
-        form.addRow("TTS language", self.tts_language)
-        form.addRow("Narrator reference", narrator_reference_layout)
-        form.addRow("Voice manifest", self.voice_manifest)
-        form.addRow("Story index", self.story_index)
-        form.addRow("Generated audio manifest", self.generated_audio_manifest)
-        form.addRow("Narrator speaker", self.narrator_speaker)
-        form.addRow("Voice profile", self.tts_profile)
-        form.addRow("Output volume", self.output_volume)
-        form.addRow("Speaking speed", self.speech_rate)
-        form.addRow("Auto advance", self.auto_advance)
-        form.addRow("Advance key", self.auto_advance_key)
-        form.addRow("Advance delay", self.auto_advance_delay)
-        form.addRow("Startup readiness", self.warm_up_voices)
-        form.addRow("macOS startup", self.launch_at_login)
-        form.addRow("Closing the window", self.keep_running_on_close)
-        form.addRow("XTTS license", self.xtts_terms)
+            shortcuts_form.addRow("macOS controls", self.macos_hotkey_notice)
+
+        capture_form = QFormLayout()
+        capture_form.addRow("Screenshot directory", screenshot_layout)
+        capture_form.addRow("Capture source", self.capture_mode)
+        capture_form.addRow("Game window", window_layout)
+        capture_form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
+        capture_form.addRow("OCR language", self.ocr_language)
+        capture_form.addRow("OCR diagnostics", self.retain_uncertain_frames)
+        capture_form.addRow("Diagnostics directory", diagnostics_layout)
+
+        speech_form = QFormLayout()
+        speech_form.addRow("Speech engine", self.speech_backend)
+        speech_form.addRow("Speech model", self.tts_model)
+        speech_form.addRow("TTS language", self.tts_language)
+        speech_form.addRow("Narrator reference", narrator_reference_layout)
+        speech_form.addRow("Voice manifest", self.voice_manifest)
+        speech_form.addRow("Story index", self.story_index)
+        speech_form.addRow("Generated audio manifest", self.generated_audio_manifest)
+        speech_form.addRow("Narrator speaker", self.narrator_speaker)
+        speech_form.addRow("Voice profile", self.tts_profile)
+        speech_form.addRow("XTTS license", self.xtts_terms)
+
+        playback_form = QFormLayout()
+        playback_form.addRow("Output volume", self.output_volume)
+        playback_form.addRow("Speaking speed", self.speech_rate)
+        playback_form.addRow("Auto advance", self.auto_advance)
+        playback_form.addRow("Advance key", self.auto_advance_key)
+        playback_form.addRow("Advance delay", self.auto_advance_delay)
+
+        application_form = QFormLayout()
+        application_form.addRow("Startup readiness", self.warm_up_voices)
+        application_form.addRow("macOS startup", self.launch_at_login)
+        application_form.addRow("Closing the window", self.keep_running_on_close)
+
+        self.settings_regions = (
+            self._settings_region("Keyboard shortcuts", shortcuts_form),
+            self._settings_region("Capture and OCR", capture_form),
+            self._settings_region("Speech and voices", speech_form),
+            self._settings_region("Playback and automation", playback_form),
+            self._settings_region("Application behavior", application_form),
+        )
+        settings_content = QWidget()
+        settings_content_layout = QVBoxLayout(settings_content)
+        settings_content_layout.setContentsMargins(0, 0, 0, 0)
+        settings_content_layout.setSpacing(14)
+        for region in self.settings_regions:
+            settings_content_layout.addWidget(region)
+        settings_content_layout.addStretch()
+
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.settings_scroll.setWidget(settings_content)
 
         note_text = (
             "Voice and model changes take effect after restarting the application."
@@ -340,9 +373,10 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(self.settings_scroll, 1)
         layout.addWidget(note)
         layout.addWidget(buttons)
+        self._resize_for_available_screen()
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(
@@ -356,6 +390,23 @@ class SettingsDialog(QDialog):
         self.update_speech_backend_controls()
         self.update_ocr_diagnostics_controls()
         self.update_auto_advance_controls()
+
+    @staticmethod
+    def _settings_region(title, form):
+        region = QGroupBox(title)
+        region.setLayout(form)
+        return region
+
+    def _resize_for_available_screen(self):
+        available = self.screen().availableGeometry()
+        horizontal_margin = 64
+        vertical_margin = 64
+        available_width = max(320, available.width() - horizontal_margin)
+        available_height = max(320, available.height() - vertical_margin)
+        self.resize(
+            min(760, available_width),
+            min(800, available_height),
+        )
 
     def browse_screenshot_directory(self):
         selected = QFileDialog.getExistingDirectory(
