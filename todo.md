@@ -48,12 +48,6 @@ sections after their implementation has been verified and committed.
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.
 
-## macOS application
-
-- [ ] Either implement reliable native global hotkeys on macOS or make the
-      control-window-only limitation explicit in onboarding, settings, and the
-      README.
-
 ## Windows application
 
 ### P2 - Windows distribution
