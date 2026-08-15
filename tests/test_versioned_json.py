@@ -75,7 +75,10 @@ class VersionedJsonTest(unittest.TestCase):
             path.write_text('{"schema_version": 1, "value": "stable"}\n')
 
             with (
-                patch("vntts_artifacts.atomic_io.os.replace", side_effect=OSError("blocked")),
+                patch(
+                    "vntts.versioned_json.atomic_write_json",
+                    side_effect=OSError("blocked"),
+                ),
                 self.assertRaisesRegex(OSError, "blocked"),
             ):
                 write_versioned_json(path, 1, {"value": "replacement"})

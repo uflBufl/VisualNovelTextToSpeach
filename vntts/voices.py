@@ -148,9 +148,7 @@ class CharacterVoiceRegistry:
                 and preset_validator is not None
                 and not preset_validator(source_id.removeprefix("preset:"))
             ):
-                warn(
-                    f"Voice choice {source_id!r} is not available for {character!r}"
-                )
+                warn(f"Voice choice {source_id!r} is not available for {character!r}")
                 continue
             try:
                 self.set_assignment(character, source_id)

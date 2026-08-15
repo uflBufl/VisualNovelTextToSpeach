@@ -947,9 +947,7 @@ class MainTest(unittest.TestCase):
             controller.voice_router.registry.resolve("Selone").speaker,
             "alba",
         )
-        self.assertFalse(
-            controller._offer_unknown_speaker_mapping("Selone")
-        )
+        self.assertFalse(controller._offer_unknown_speaker_mapping("Selone"))
 
     def test_controller_previews_a_catalog_choice_on_the_speech_executor(self):
         controller = AppController(

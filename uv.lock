@@ -4841,7 +4841,7 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.3,<5" },
     { name = "pynput", specifier = ">=1.8.1" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=10.3" },
-    { name = "pyside6", specifier = ">=6.6" },
+    { name = "pyside6", specifier = "==6.10.1" },
     { name = "pytesseract", specifier = ">=0.3.13" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "rapidocr", marker = "extra == 'rapidocr'", specifier = ">=3.8.1,<4" },
@@ -4860,7 +4860,7 @@ dev = [
     { name = "deptree", specifier = ">=0.0.12" },
     { name = "nbstripout", specifier = ">=0.8.2" },
     { name = "pyinstaller" },
-    { name = "ruff", specifier = ">=0.14" },
+    { name = "ruff", specifier = "==0.16.2" },
 ]
 notebook = [
     { name = "jupyter", specifier = ">=1.1" },

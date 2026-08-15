@@ -589,11 +589,7 @@ class AppController:
         if not text or not text.strip():
             raise ValueError("Enter preview text")
         choice = next(
-            (
-                item
-                for item in self.available_voice_choices()
-                if item.id == source_id
-            ),
+            (item for item in self.available_voice_choices() if item.id == source_id),
             None,
         )
         if choice is None:
@@ -612,11 +608,7 @@ class AppController:
         if self.is_live_running:
             raise RuntimeError("Stop live reading before changing a voice")
         choice = next(
-            (
-                item
-                for item in self.available_voice_choices()
-                if item.id == source_id
-            ),
+            (item for item in self.available_voice_choices() if item.id == source_id),
             None,
         )
         if choice is None:

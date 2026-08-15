@@ -126,7 +126,9 @@ def benchmark_backend(
                 voice_key = voice.speaker if voice is not None else "narrator"
                 audio = backend.audio_cache.get((voice_key, normalized_text))
                 if audio is None:
-                    raise RuntimeError("Streaming backend did not cache completed audio")
+                    raise RuntimeError(
+                        "Streaming backend did not cache completed audio"
+                    )
                 first_audio_ms = backend.last_first_audio_ms
             else:
                 audio = prepared

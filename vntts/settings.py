@@ -206,9 +206,7 @@ class AppSettings:
             warn("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
 
-        voice_assignments = values.get(
-            "voice_assignments", defaults.voice_assignments
-        )
+        voice_assignments = values.get("voice_assignments", defaults.voice_assignments)
         if isinstance(voice_assignments, dict) and all(
             isinstance(character, str)
             and character.strip()

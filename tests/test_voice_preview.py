@@ -21,9 +21,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
             ["Narrator", "Marcus"],
             [
                 VoiceChoice("preset:alba", "Alba", "Pocket TTS built-in voice"),
-                VoiceChoice(
-                    "preset:marius", "Marius", "Pocket TTS built-in voice"
-                ),
+                VoiceChoice("preset:marius", "Marius", "Pocket TTS built-in voice"),
             ],
             preview_handler or Mock(),
             assignment_handler or Mock(),
@@ -41,9 +39,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
         future.set_result(("Marius", "Hello, Timekeeper."))
         self.application.processEvents()
 
-        preview_handler.assert_called_once_with(
-            "preset:marius", "Hello, Timekeeper."
-        )
+        preview_handler.assert_called_once_with("preset:marius", "Hello, Timekeeper.")
         self.assertTrue(dialog.preview_button.isEnabled())
         self.assertEqual(dialog.status.text(), "Played Marius preview")
         dialog.deleteLater()
