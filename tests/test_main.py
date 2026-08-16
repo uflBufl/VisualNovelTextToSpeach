@@ -1015,6 +1015,19 @@ class MainTest(unittest.TestCase):
             "This is a complete test.",
         )
 
+    def test_controller_preview_uses_live_backend_rendering_boundary(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.voice_router = Mock()
+        controller.speech_backend = Mock()
+
+        controller._preview_voice("Marcus", "Preview this.")
+
+        controller.speech_backend.speak.assert_called_once_with(
+            "Marcus",
+            "Preview this.",
+        )
+        controller.voice_router.speak.assert_not_called()
+
     def test_controller_exposes_speech_queue_controls(self):
         statuses = []
         controller = AppController(

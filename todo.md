@@ -15,20 +15,6 @@ sections after their implementation has been verified and committed.
 
 ## Offline authoring and application responsibility split
 
-### P0 - Separate synthesis from device playback
-
-- [ ] Introduce a typed synthesis result or chunk stream that carries PCM,
-      sample rate, completion state, generation limits, timing, and diagnostics
-      independently of the audio device.
-- [ ] Add a backend rendering API with explicit voice, text, seed, generation
-      profile, cancellation, and cache policy. Make live playback, benchmarks,
-      previews, and ahead-of-time generation use the same rendering path.
-- [ ] Refactor MOSS so generation no longer happens only inside `play()` and
-      remove fake/discard audio outputs as the mechanism for obtaining a WAV.
-- [ ] Preserve live streaming latency, cancellation, missed-EOS limits, prompt
-      caching, and persistent speech-cache behavior with focused regression
-      tests for both rendering and playback.
-
 ### P1 - Move generic generation authoring into VNTTS
 
 - [ ] Add an isolated `vntts.authoring` package and separate

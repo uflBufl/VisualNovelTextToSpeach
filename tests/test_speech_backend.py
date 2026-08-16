@@ -528,12 +528,116 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
 
 class XTTSBackendTest(unittest.TestCase):
+    def create_backend(self, *, clock=None):
+        voice_router = Mock()
+        voice_router.tts.sample_rate = 24_000
+        voice_router.tts.last_cache_source = "fresh-generation"
+        voice_router.tts.last_synthesis_cancelled = False
+        voice_router.synthesize.return_value = np.array(
+            [0.0, 0.5, -0.5, 0.0],
+            dtype=np.float32,
+        )
+        options = {} if clock is None else {"clock": clock}
+        return XTTSVoiceRouterBackend(voice_router, **options), voice_router
+
     def test_exposes_the_wrapped_engine_underflow_status(self):
         voice_router = Mock()
+        voice_router.tts.sample_rate = 24_000
         voice_router.tts.last_playback_underrun = True
         backend = XTTSVoiceRouterBackend(voice_router)
 
         self.assertTrue(backend.last_playback_underrun)
+
+    def test_render_returns_typed_pcm_through_voice_router(self):
+        backend, voice_router = self.create_backend(clock=iter((1.0, 1.125)).__next__)
+
+        result = backend.render(
+            SynthesisRequest(
+                voice="Lucy",
+                text="  Render   this. ",
+                generation_profile="configured",
+            )
+        ).collect()
+
+        self.assertEqual(result.pcm.shape, (4, 1))
+        self.assertEqual(result.sample_rate, 24_000)
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertEqual(result.timing.first_chunk_ms, 125.0)
+        self.assertIsNone(result.limits.max_tokens)
+        voice_router.synthesize.assert_called_once_with(
+            "Lucy",
+            "Render this.",
+            synthesis_options=None,
+            cache_policy=SynthesisCachePolicy.USE,
+            cancellation=unittest.mock.ANY,
+        )
+        voice_router.play.assert_not_called()
+
+    def test_named_profile_is_passed_as_explicit_synthesis_options(self):
+        backend, voice_router = self.create_backend()
+
+        backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Natural line.",
+                generation_profile="natural",
+            )
+        ).collect()
+
+        options = voice_router.synthesize.call_args.kwargs["synthesis_options"]
+        self.assertEqual(options["temperature"], 0.85)
+        self.assertFalse(options["split_sentences"])
+
+    def test_play_and_speak_use_rendered_audio(self):
+        backend, voice_router = self.create_backend()
+
+        self.assertTrue(backend.speak("Narrator", "Shared path."))
+
+        voice_router.synthesize.assert_called_once()
+        voice_router.play.assert_called_once()
+        np.testing.assert_array_equal(
+            voice_router.play.call_args.args[0],
+            np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32),
+        )
+
+    def test_cancelled_render_returns_no_pcm(self):
+        backend, voice_router = self.create_backend()
+        cancelled = Event()
+
+        def synthesize(*_args, **_kwargs):
+            cancelled.set()
+            voice_router.tts.last_synthesis_cancelled = True
+            return np.array([0.0, 0.5, 0.0], dtype=np.float32)
+
+        voice_router.synthesize.side_effect = synthesize
+
+        result = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Cancel this.",
+                generation_profile="configured",
+                cancellation=cancelled,
+            )
+        ).collect()
+
+        self.assertEqual(result.completion, SynthesisCompletion.CANCELLED)
+        self.assertEqual(result.pcm.size, 0)
+
+    def test_seeded_xtts_render_is_rejected(self):
+        backend, _voice_router = self.create_backend()
+
+        with self.assertRaisesRegex(
+            TTSConfigurationError,
+            "does not expose deterministic seeded generation",
+        ):
+            backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Seeded.",
+                    seed=3,
+                    generation_profile="configured",
+                )
+            )
 
 
 class PocketTTSBackendTest(unittest.TestCase):

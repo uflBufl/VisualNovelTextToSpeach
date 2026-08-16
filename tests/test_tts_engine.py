@@ -2,7 +2,8 @@ import unittest
 import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from threading import Event
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -13,6 +14,9 @@ from vntts.services.tts_engine import (
     get_tts_profile,
     prepare_speech_text,
 )
+from vntts.synthesis import SynthesisCachePolicy
+
+_default_audio_output = object()
 
 
 class TTSEngineTest(unittest.TestCase):
@@ -32,6 +36,7 @@ class TTSEngineTest(unittest.TestCase):
         volume=1.0,
         clock=None,
         audio_cache_size=32,
+        audio_output=_default_audio_output,
     ):
         tts = Mock()
         tts.is_multi_speaker = is_multi_speaker
@@ -48,7 +53,8 @@ class TTSEngineTest(unittest.TestCase):
         torch_module.cuda.is_available.return_value = False
         torch_module.device.return_value = "cpu"
 
-        audio_output = Mock()
+        if audio_output is _default_audio_output:
+            audio_output = Mock()
         options = {}
         if clock is not None:
             options["clock"] = clock
@@ -151,6 +157,53 @@ class TTSEngineTest(unittest.TestCase):
         tts.tts.assert_called_once_with(text="Same line")
         self.assertEqual(audio_output.play.call_count, 2)
         self.assertEqual(engine.last_synthesis_ms, 0.0)
+        self.assertEqual(engine.last_cache_source, "memory-cache")
+
+    def test_synthesis_cache_policy_can_refresh_or_bypass_audio(self):
+        engine, tts, _audio_output = self.create_engine()
+
+        engine.synthesize("Same line")
+        engine.synthesize("Same line")
+        engine.synthesize("Same line", cache_policy=SynthesisCachePolicy.REFRESH)
+        engine.synthesize("Same line", cache_policy=SynthesisCachePolicy.BYPASS)
+
+        self.assertEqual(tts.tts.call_count, 3)
+        self.assertEqual(engine.last_cache_source, "fresh-generation")
+
+    def test_cancelled_synthesis_is_not_returned_from_audio_cache(self):
+        cancelled = Event()
+        engine, tts, _audio_output = self.create_engine()
+
+        def synthesize(**_arguments):
+            cancelled.set()
+            return [0.0, 0.5, 0.0]
+
+        tts.tts.side_effect = synthesize
+        cancelled_audio = engine.synthesize(
+            "Cancel this",
+            cancellation=cancelled.is_set,
+        )
+        cancelled.clear()
+        engine.synthesize("Cancel this")
+
+        self.assertEqual(cancelled_audio, [0.0, 0.5, 0.0])
+        self.assertEqual(tts.tts.call_count, 2)
+        self.assertFalse(engine.last_synthesis_cancelled)
+
+    def test_render_only_engine_does_not_import_sounddevice(self):
+        original_import = __import__
+
+        def reject_sounddevice(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise AssertionError("render-only construction imported sounddevice")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=reject_sounddevice):
+            engine, _tts, audio_output = self.create_engine(audio_output=None)
+            audio = engine.synthesize("Offline XTTS render")
+
+        self.assertIsNone(audio_output)
+        self.assertEqual(audio, [0.0, 0.5, 0.0])
 
     def test_audio_cache_keeps_speakers_separate(self):
         engine, tts, _ = self.create_engine(

@@ -8,6 +8,8 @@ from time import monotonic
 import numpy as np
 from scipy.signal import resample_poly
 
+from vntts.synthesis import SynthesisCachePolicy
+
 
 class TTSError(Exception):
     pass
@@ -128,11 +130,6 @@ class TTSEngine:
             import torch
 
             torch_module = torch
-        if audio_output is None:
-            import sounddevice
-
-            audio_output = sounddevice
-
         device = torch_module.device(
             "cuda" if torch_module.cuda.is_available() else "cpu"
         )
@@ -162,6 +159,8 @@ class TTSEngine:
         self.last_playback_underrun = False
         self.last_synthesis_ms = None
         self.last_playback_ms = None
+        self.last_cache_source = None
+        self.last_synthesis_cancelled = False
         self.sample_rate = self.tts.synthesizer.output_sample_rate
         if not self.sample_rate:
             raise RuntimeError("Loaded TTS model does not define an output sample rate")
@@ -202,17 +201,18 @@ class TTSEngine:
             playback_started = self.clock()
             try:
                 self.playback_active = True
+                audio_output = self._resolve_audio_output()
                 prepared, playback_sample_rate = match_output_sample_rate(
-                    self.audio_output,
+                    audio_output,
                     self._prepare_audio(audio),
                     self.sample_rate,
                 )
-                self.audio_output.play(
+                audio_output.play(
                     prepared,
                     playback_sample_rate,
                     latency=self.playback_latency,
                 )
-                playback_status = self.audio_output.wait()
+                playback_status = audio_output.wait()
                 self.last_playback_underrun = self._playback_underflowed(
                     playback_status
                 )
@@ -243,6 +243,8 @@ class TTSEngine:
         language=None,
         speaker_wav=None,
         synthesis_options=None,
+        cache_policy=SynthesisCachePolicy.USE,
+        cancellation=None,
     ):
         with self.synthesis_lock:
             return self._synthesize_locked(
@@ -251,6 +253,8 @@ class TTSEngine:
                 language=language,
                 speaker_wav=speaker_wav,
                 synthesis_options=synthesis_options,
+                cache_policy=cache_policy,
+                cancellation=cancellation,
             )
 
     def _synthesize_locked(
@@ -260,7 +264,25 @@ class TTSEngine:
         language=None,
         speaker_wav=None,
         synthesis_options=None,
+        cache_policy=SynthesisCachePolicy.USE,
+        cancellation=None,
     ):
+        try:
+            cache_policy = SynthesisCachePolicy(cache_policy)
+        except ValueError as error:
+            raise TTSConfigurationError(
+                f"Unknown synthesis cache policy {cache_policy!r}"
+            ) from error
+
+        def cancellation_requested():
+            return bool(cancellation()) if cancellation is not None else False
+
+        self.last_synthesis_cancelled = cancellation_requested()
+        self.last_cache_source = "fresh-generation"
+        if self.last_synthesis_cancelled:
+            self.last_synthesis_ms = 0.0
+            return np.empty(0, dtype=np.float32)
+
         uses_default_reference = speaker_wav is None
         if uses_default_reference:
             speaker_wav = self.default_speaker_wav
@@ -281,10 +303,15 @@ class TTSEngine:
         spoken_text = prepare_speech_text(text)
         cache_key = self._audio_cache_key(spoken_text, arguments)
         can_reuse_cached_audio = speaker_wav is None or speaker is None
-        if can_reuse_cached_audio and cache_key in self.audio_cache:
+        if (
+            cache_policy is SynthesisCachePolicy.USE
+            and can_reuse_cached_audio
+            and cache_key in self.audio_cache
+        ):
             audio = self.audio_cache.pop(cache_key)
             self.audio_cache[cache_key] = audio
             self.last_synthesis_ms = 0.0
+            self.last_cache_source = "memory-cache"
             return audio
 
         synthesis_started = self.clock()
@@ -308,7 +335,12 @@ class TTSEngine:
                 # speaker ID are passed together. Later phrases can reuse it.
                 self.default_speaker_wav = None
 
-        self._cache_audio(cache_key, audio)
+        self.last_synthesis_cancelled = cancellation_requested()
+        if (
+            not self.last_synthesis_cancelled
+            and cache_policy is not SynthesisCachePolicy.BYPASS
+        ):
+            self._cache_audio(cache_key, audio)
         return audio
 
     def _audio_cache_key(self, text, arguments):
@@ -465,5 +497,13 @@ class TTSEngine:
 
     def stop(self):
         was_playing = self.playback_active
-        self.audio_output.stop()
+        if self.audio_output is not None:
+            self.audio_output.stop()
         return was_playing
+
+    def _resolve_audio_output(self):
+        if self.audio_output is None:
+            import sounddevice
+
+            self.audio_output = sounddevice
+        return self.audio_output

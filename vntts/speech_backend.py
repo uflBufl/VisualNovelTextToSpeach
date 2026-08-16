@@ -17,6 +17,7 @@ from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
     TTSSynthesisError,
+    get_tts_profile,
     match_output_sample_rate,
 )
 from vntts.settings import get_local_data_directory
@@ -177,17 +178,136 @@ class XTTSVoiceRouterBackend:
     """Compatibility adapter around the existing Coqui voice router."""
 
     name = "coqui-xtts"
+    generation_profile = "configured"
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
         streaming=False,
         concurrent_prepare_and_play=True,
     )
 
-    def __init__(self, voice_router):
+    def __init__(self, voice_router, *, clock=monotonic):
         self.voice_router = voice_router
+        self.clock = clock
+        sample_rate = getattr(voice_router.tts, "sample_rate", 24_000)
+        self.sample_rate = (
+            int(sample_rate)
+            if isinstance(sample_rate, (int, float)) and not isinstance(sample_rate, bool)
+            else 24_000
+        )
+        self.last_synthesis_ms = None
+        self.last_first_audio_ms = None
 
     def prepare(self, character, text):
-        return self.voice_router.synthesize(character, text)
+        return self.render(
+            SynthesisRequest(
+                voice=character,
+                text=text,
+                generation_profile=self.generation_profile,
+            )
+        ).collect().pcm.reshape(-1)
+
+    def render(self, request):
+        """Render Coqui/XTTS PCM through the configured voice router."""
+        if not isinstance(request, SynthesisRequest):
+            raise TTSConfigurationError("XTTS received an invalid render request")
+        spoken_text = " ".join((request.text or "").split())
+        if not spoken_text:
+            raise TTSSynthesisError("XTTS received empty text")
+        if request.seed is not None:
+            raise TTSConfigurationError(
+                "XTTS does not expose deterministic seeded generation"
+            )
+        profile = str(request.generation_profile or "configured").strip().casefold()
+        synthesis_options = None
+        if profile != self.generation_profile:
+            synthesis_options = get_tts_profile(profile)
+        try:
+            cache_policy = SynthesisCachePolicy(request.cache_policy)
+        except ValueError as error:
+            raise TTSConfigurationError(
+                f"Unknown synthesis cache policy {request.cache_policy!r}"
+            ) from error
+        return SynthesisChunkStream(
+            self._render_chunks(
+                request,
+                spoken_text,
+                profile,
+                synthesis_options,
+                cache_policy,
+            )
+        )
+
+    def _render_chunks(
+        self,
+        request,
+        spoken_text,
+        profile,
+        synthesis_options,
+        cache_policy,
+    ):
+        started = self.clock()
+        audio = self.voice_router.synthesize(
+            request.voice,
+            spoken_text,
+            synthesis_options=synthesis_options,
+            cache_policy=cache_policy,
+            cancellation=request.cancellation_requested,
+        )
+        elapsed_ms = (self.clock() - started) * 1000
+        cancelled = bool(
+            request.cancellation_requested()
+            or getattr(self.voice_router.tts, "last_synthesis_cancelled", False)
+        )
+        completion = (
+            SynthesisCompletion.CANCELLED
+            if cancelled
+            else SynthesisCompletion.COMPLETE
+        )
+        pcm = (
+            np.asarray(audio, dtype=np.float32).squeeze().reshape(-1, 1)
+            if not cancelled
+            else np.empty((0, 1), dtype=np.float32)
+        )
+        cache_source = str(
+            getattr(self.voice_router.tts, "last_cache_source", None)
+            or "fresh-generation"
+        )
+        first_chunk_ms = (
+            0.0 if cache_source != "fresh-generation" else elapsed_ms
+        )
+        self.last_synthesis_ms = first_chunk_ms
+        self.last_first_audio_ms = first_chunk_ms if pcm.size else None
+        if pcm.size:
+            yield SynthesisChunk(
+                pcm=pcm,
+                sample_rate=self.sample_rate,
+                index=0,
+                elapsed_ms=elapsed_ms,
+            )
+        return SynthesisResult(
+            pcm=pcm,
+            sample_rate=self.sample_rate,
+            completion=completion,
+            limits=SynthesisLimits(max_tokens=None, max_audio_seconds=None),
+            timing=SynthesisTiming(
+                first_chunk_ms=self.last_first_audio_ms,
+                total_ms=elapsed_ms,
+            ),
+            diagnostics=SynthesisDiagnostics(
+                backend=self.name,
+                cache_source=cache_source,
+                generation_profile=profile,
+                seed=None,
+                chunk_count=1 if pcm.size else 0,
+                sample_count=len(pcm),
+            ),
+        )
+
+    def speak(self, character, text, *, playback_guard=None):
+        return self.play(
+            self.prepare(character, text),
+            playback_guard=playback_guard,
+        )
 
     def play(self, prepared, *, playback_guard=None):
         return self.voice_router.play(

@@ -246,8 +246,22 @@ class CharacterVoiceRouter:
             arguments["playback_guard"] = playback_guard
         return self.tts.speak(text, **arguments)
 
-    def synthesize(self, character, text):
-        return self.tts.synthesize(text, **self._speech_arguments(character))
+    def synthesize(
+        self,
+        character,
+        text,
+        *,
+        synthesis_options=None,
+        cache_policy="use",
+        cancellation=None,
+    ):
+        return self.tts.synthesize(
+            text,
+            synthesis_options=synthesis_options,
+            cache_policy=cache_policy,
+            cancellation=cancellation,
+            **self._speech_arguments(character),
+        )
 
     def play(self, audio, *, playback_guard=None):
         return self.tts.play(audio, playback_guard=playback_guard)

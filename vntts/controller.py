@@ -801,7 +801,7 @@ class AppController:
         try:
             speak_dialog(
                 text,
-                lambda value: self.voice_router.speak(character, value),
+                lambda value: self._speak_with_live_backend(character, value),
             )
         finally:
             self._refresh_diagnostic_metrics()
@@ -1018,7 +1018,7 @@ class AppController:
 
     def _preview_voice(self, character, text):
         try:
-            self.voice_router.speak(character, text)
+            self._speak_with_live_backend(character, text)
         finally:
             self._refresh_diagnostic_metrics()
         return character, text
@@ -1032,7 +1032,7 @@ class AppController:
         registry.set_assignment(preview_character, choice.id)
         self._clear_voice_runtime_cache()
         try:
-            self.voice_router.speak(preview_character, text)
+            self._speak_with_live_backend(preview_character, text)
         finally:
             if had_assignment:
                 registry.assignments[preview_key] = previous
@@ -1041,6 +1041,15 @@ class AppController:
             self._clear_voice_runtime_cache()
             self._refresh_diagnostic_metrics()
         return choice.label, text
+
+    def _speak_with_live_backend(self, character, text):
+        backend = self.speech_backend
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            backend = backend.live_backend
+        speak = getattr(backend, "speak", None)
+        if callable(speak):
+            return speak(character, text)
+        return self.voice_router.speak(character, text)
 
     def _apply_narrator_voice(self, voice):
         if isinstance(self.voice_router, PocketTTSVoiceRouterBackend):

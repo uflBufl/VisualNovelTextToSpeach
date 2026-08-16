@@ -1,8 +1,8 @@
 # Device-independent speech rendering
 
 `vntts.synthesis` defines the boundary between waveform generation and audio
-device playback. MOSS-TTS, Pocket TTS, and Chatterbox Nano implement this
-boundary; XTTS still uses its legacy prepared-speech path.
+device playback. MOSS-TTS, Pocket TTS, Chatterbox Nano, and XTTS implement this
+boundary.
 
 Call a rendering backend's `render()` method with a `SynthesisRequest`. The
 request identifies every input that can intentionally change the waveform:
@@ -49,6 +49,11 @@ optional deterministic seed. Pocket and Chatterbox currently expose only their
 Their model-native token and duration limits are represented as `None`; MOSS
 reports its explicit text-derived safety limits.
 
+XTTS accepts `configured` to retain the application-level profile and speed, or
+an explicit `stable`, `natural`, or `expressive` profile for an isolated render.
+It rejects a non-null seed because the wrapped Coqui API does not provide a
+stable per-request seed contract. XTTS reports model-native limits as `None`.
+
 MOSS live playback, voice preview through `speak()`, warm-up, and the benchmark
 all consume the same renderer. MOSS playback drains chunks into its bounded
 producer/consumer queue. Pocket playback consumes its renderer's natural chunks
@@ -57,6 +62,10 @@ underrun protection without delaying direct-render access to first PCM.
 `stop()`, a false playback guard, or the request's cancellation source stops
 rendering and signals cooperative model cancellation where the engine supports
 it.
+
+Voice previews and OCR speech tests select the live backend rather than an
+artifact-routing wrapper, so XTTS preview generation also crosses this render
+boundary before playback.
 
 Ahead-of-time callers should consume `result.pcm` and `result.sample_rate`
 directly and write their WAV from those fields. They should not provide a fake,
