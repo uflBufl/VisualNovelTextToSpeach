@@ -37,6 +37,7 @@ class FakeBackend:
 
     def __init__(self):
         self.primed = []
+        self.stop_calls = 0
 
     def prime(self, character):
         self.primed.append(character)
@@ -46,6 +47,7 @@ class FakeBackend:
         return np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32)
 
     def stop(self):
+        self.stop_calls += 1
         return False
 
 
@@ -211,6 +213,41 @@ class TTSBenchmarkTest(unittest.TestCase):
                         backend_factory=lambda _name, _registry, _cache: backend,
                     )
                 self.assertEqual(list(Path(directory).glob("*.wav")), [])
+                self.assertEqual(backend.stop_calls, 1)
+
+    def test_late_sample_failure_publishes_nothing_and_stops_backend(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        backend = FakeRenderingBackend(
+            completions=(
+                SynthesisCompletion.COMPLETE,
+                SynthesisCompletion.COMPLETE,
+                SynthesisCompletion.LIMITED,
+            )
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            sentinel = output / "existing.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "limited"):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    [],
+                    "unused",
+                    output,
+                    benchmark_samples=[
+                        {"id": "one", "character": "Kamuta", "text": "One"},
+                        {"id": "two", "character": "Kamuta", "text": "Two"},
+                    ],
+                    backend_factory=lambda _name, _registry, _cache: backend,
+                )
+
+            self.assertEqual(list(output.glob("*.wav")), [])
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(backend.stop_calls, 1)
 
     def test_uses_typed_render_sample_rate_for_published_wav(self):
         registry = CharacterVoiceRegistry(
@@ -350,6 +387,40 @@ class TTSBenchmarkTest(unittest.TestCase):
                 path = Path(directory) / "corpus.json"
                 path.write_text(json.dumps(document), encoding="utf-8")
                 with self.assertRaises(ValueError):
+                    load_tts_benchmark_corpus(path)
+
+    def test_strict_corpus_rejects_coerced_or_blank_identity_fields(self):
+        text = "Text"
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        valid = {
+            "id": "one",
+            "line_id": "line",
+            "character": "Rhiannon",
+            "text": text,
+            "text_sha256": digest,
+        }
+        for field, invalid in (
+            ("id", 1),
+            ("line_id", 2),
+            ("character", 3),
+            ("text", 4),
+            ("id", "  "),
+        ):
+            sample = {**valid, field: invalid}
+            if field == "text" and isinstance(invalid, str):
+                sample["text_sha256"] = hashlib.sha256(invalid.encode()).hexdigest()
+            document = {
+                "schema": "vntts.tts-benchmark-corpus",
+                "schema_version": 1,
+                "samples": [sample],
+            }
+            with (
+                self.subTest(field=field, invalid=invalid),
+                TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "corpus.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, field):
                     load_tts_benchmark_corpus(path)
 
     def test_output_names_are_contained_and_collisions_rejected(self):

@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import os
 import platform
 import re
 import sys
@@ -114,7 +115,17 @@ def load_tts_benchmark_corpus(path):
                 "Strict benchmark identity fields require the "
                 f"{TTS_BENCHMARK_CORPUS_SCHEMA!r} schema"
             )
-        character = str(sample.get("character") or "Narrator").strip() or "Narrator"
+        if strict:
+            for field in ("id", "line_id", "character", "text"):
+                value = sample.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"Strict TTS benchmark sample {index} {field} must be "
+                        "non-empty text"
+                    )
+            character = sample["character"]
+        else:
+            character = str(sample.get("character") or "Narrator").strip() or "Narrator"
         raw_text = sample.get("text")
         text = (
             raw_text
@@ -123,11 +134,13 @@ def load_tts_benchmark_corpus(path):
         )
         if not text:
             raise ValueError(f"TTS benchmark sample {index} has no text")
-        sample_id = str(sample.get("id") or f"sample-{index}")
+        sample_id = (
+            sample["id"] if strict else str(sample.get("id") or f"sample-{index}")
+        )
         if sample_id in seen_ids:
             raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
-        line_id = str(sample.get("line_id") or sample_id)
+        line_id = sample["line_id"] if strict else sample_id
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if strict:
             if not sample.get("id") or not sample.get("line_id"):
@@ -189,6 +202,90 @@ def _validate_render_result(result, request, stage):
 
 
 def benchmark_backend(
+    backend_name,
+    registry,
+    characters,
+    text,
+    output_directory,
+    *,
+    benchmark_samples=None,
+    corpus_name=None,
+    model_id=None,
+    backend_factory=create_backend,
+    clock=perf_counter,
+    cpu_clock=process_time,
+):
+    """Finish every sample in staging before publishing this run's WAVs."""
+    output_directory = Path(output_directory).expanduser().resolve()
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    created_backends = []
+
+    def tracked_backend_factory(name, registry, cache):
+        backend = backend_factory(name, registry, cache)
+        created_backends.append(backend)
+        return backend
+
+    with TemporaryDirectory(
+        prefix=".tts-benchmark-", dir=output_directory.parent
+    ) as staging_directory:
+        try:
+            report = _benchmark_backend_staged(
+                backend_name,
+                registry,
+                characters,
+                text,
+                staging_directory,
+                benchmark_samples=benchmark_samples,
+                corpus_name=corpus_name,
+                model_id=model_id,
+                backend_factory=tracked_backend_factory,
+                clock=clock,
+                cpu_clock=cpu_clock,
+            )
+        finally:
+            stop_error = None
+            for backend in reversed(created_backends):
+                stop = getattr(backend, "stop", None)
+                if not callable(stop):
+                    continue
+                try:
+                    stop()
+                except Exception as error:  # pragma: no cover - backend-specific
+                    if stop_error is None:
+                        stop_error = error
+            if stop_error is not None and sys.exc_info()[0] is None:
+                raise stop_error
+
+        staging_root = Path(staging_directory).resolve()
+        publications = []
+        for sample in report["samples"]:
+            staged = Path(sample["audio"]).resolve()
+            if staged.parent != staging_root or not staged.is_file():
+                raise RuntimeError("Benchmark staging produced an unsafe WAV path")
+            destination = _contained_child(
+                output_directory, staged.name, "Benchmark WAV"
+            )
+            if destination.exists():
+                raise FileExistsError(
+                    f"Benchmark WAV already exists; refusing to overwrite: {destination}"
+                )
+            publications.append((sample, staged, destination))
+
+        output_directory.mkdir(parents=True, exist_ok=True)
+        published = []
+        try:
+            for sample, staged, destination in publications:
+                os.replace(staged, destination)
+                published.append(destination)
+                sample["audio"] = str(destination)
+        except Exception:
+            for destination in published:
+                destination.unlink(missing_ok=True)
+            raise
+    return report
+
+
+def _benchmark_backend_staged(
     backend_name,
     registry,
     characters,
@@ -406,9 +503,6 @@ def benchmark_backend(
                     "artifact_rating": None,
                 }
             )
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
     return {
         "schema": TTS_BENCHMARK_REPORT_SCHEMA,
         "schema_version": TTS_BENCHMARK_REPORT_VERSION,
