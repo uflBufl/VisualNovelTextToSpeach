@@ -24,6 +24,7 @@ class DiagnosticSnapshot:
     speech_queue_depth: int = 0
     max_speech_queue_depth: int = 0
     last_first_audio_ms: float | None = None
+    cache_source: str | None = None
     audio_source: str = "Not selected"
 
 

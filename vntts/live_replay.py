@@ -20,7 +20,11 @@ from vntts.dialog_capture import (
     fingerprint_dialog_frame,
     recognize_live_frame,
 )
-from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.generated_audio import (
+    GeneratedAudioFallbackBackend,
+    PlaybackStatus,
+    SourceAudioRoute,
+)
 from vntts.live import LiveDialogReader
 from vntts.ocr import DialogRegion
 from vntts.speech_backend import SpeechBackendCapabilities
@@ -134,8 +138,8 @@ class LiveReplayRunner:
         advance_states = []
 
         def prepare(chunk):
-            prepared = router.prepare(chunk.character, chunk.text)
-            trace = router.last_route_trace
+            prepared = router.prepare_route(chunk.character, chunk.text)
+            trace = prepared.trace
             routes.append(trace.support_fields() | {"generation": chunk.generation})
             occurred_at = monotonic()
             route_details = trace.support_fields()
@@ -155,7 +159,51 @@ class LiveReplayRunner:
             return prepared
 
         def play(chunk, prepared):
-            del prepared
+            playback_started = monotonic()
+            outcome = router.play_route(
+                prepared,
+                playback_guard=lambda: reader.wait_until_playable(chunk),
+            )
+            if (
+                isinstance(prepared, SourceAudioRoute)
+                and outcome.status is PlaybackStatus.PASSTHROUGH_UNOBSERVED
+            ):
+                reader.block_auto_advance_for_generation(
+                    chunk.generation,
+                    "Replay cannot observe original game-audio completion",
+                )
+            elif not outcome.successful:
+                reader.block_auto_advance_for_generation(
+                    chunk.generation,
+                    "Replay playback was interrupted or failed",
+                )
+            if outcome.successful and isinstance(prepared, SourceAudioRoute):
+                reader.seal_generation(chunk.generation)
+            chunk_details = {
+                "chunk_id": chunk.chunk_id,
+                "chunk_ordinal": chunk.ordinal,
+                "chunk_characters": len(chunk.text),
+            }
+            if outcome.first_audio_ms is not None:
+                reader.record_first_pcm(
+                    playback_started + outcome.first_audio_ms / 1000
+                )
+            timelines.record(
+                "playback-outcome",
+                chunk.generation,
+                monotonic(),
+                outcome=outcome.status.value,
+                underflowed=outcome.underflowed,
+                generation_limited=outcome.generation_limited,
+                synthesis_ms=outcome.synthesis_ms,
+                playback_ms=outcome.playback_ms,
+                first_audio_ms=outcome.first_audio_ms,
+                cache_source=outcome.cache_source,
+                effective_source=outcome.audio_source,
+                **chunk_details,
+            )
+            if outcome.status is PlaybackStatus.FAILED:
+                raise RuntimeError(outcome.error or "Replay playback failed")
             played.append(
                 {
                     "generation": chunk.generation,
@@ -163,7 +211,7 @@ class LiveReplayRunner:
                     "text": chunk.text,
                 }
             )
-            return True
+            return outcome.successful
 
         executors = [
             ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"replay-{name}")

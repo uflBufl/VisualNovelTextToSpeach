@@ -1175,14 +1175,29 @@ class LiveDialogReader:
             self._schedule_deferred_if_possible()
 
     def _play_if_current(self, chunk, prepared):
+        from vntts.generated_audio import (
+            GeneratedAudioRoute,
+            LiveTTSRoute,
+            SourceAudioRoute,
+        )
+
         if not self.wait_until_playable(chunk):
             return
         with self.state_lock:
             self.current_chunk = chunk
             self.last_spoken_chunk = chunk
             self._record_speech_metrics_locked(playback_started=True)
-        if self.first_pcm_on_prepare:
-            self._report_pipeline_event("first-pcm", chunk.generation, monotonic())
+        if self.first_pcm_on_prepare and not isinstance(
+            prepared, (GeneratedAudioRoute, LiveTTSRoute, SourceAudioRoute)
+        ):
+            self._report_pipeline_event(
+                "first-pcm",
+                chunk.generation,
+                monotonic(),
+                chunk_id=chunk.chunk_id,
+                chunk_ordinal=chunk.ordinal,
+                chunk_characters=len(chunk.text),
+            )
         try:
             self.play_prepared(chunk, prepared)
         except Exception as error:
@@ -1197,6 +1212,9 @@ class LiveDialogReader:
                 "playback-completion",
                 chunk.generation,
                 monotonic(),
+                chunk_id=chunk.chunk_id,
+                chunk_ordinal=chunk.ordinal,
+                chunk_characters=len(chunk.text),
             )
 
     def _speak_if_current(self, chunk):
@@ -1210,8 +1228,15 @@ class LiveDialogReader:
                 playback_started=True,
             )
         now = monotonic()
-        self._report_pipeline_event("generation-start", chunk.generation, now)
-        self._report_pipeline_event("first-pcm", chunk.generation, now)
+        chunk_details = {
+            "chunk_id": chunk.chunk_id,
+            "chunk_ordinal": chunk.ordinal,
+            "chunk_characters": len(chunk.text),
+        }
+        self._report_pipeline_event(
+            "generation-start", chunk.generation, now, **chunk_details
+        )
+        self._report_pipeline_event("first-pcm", chunk.generation, now, **chunk_details)
 
         try:
             self.speak_chunk(chunk)
@@ -1227,6 +1252,7 @@ class LiveDialogReader:
                 "playback-completion",
                 chunk.generation,
                 monotonic(),
+                **chunk_details,
             )
 
     def _report_observation(self, character, text):
@@ -1524,7 +1550,17 @@ class LiveDialogReader:
                 last_first_pcm_at=occurred_at,
             )
             generation = self.active_generation
-        self._report_pipeline_event("first-pcm", generation, occurred_at)
+            chunk = self.current_chunk
+        details = (
+            {
+                "chunk_id": chunk.chunk_id,
+                "chunk_ordinal": chunk.ordinal,
+                "chunk_characters": len(chunk.text),
+            }
+            if chunk is not None
+            else {}
+        )
+        self._report_pipeline_event("first-pcm", generation, occurred_at, **details)
 
     def _defer_chunk_locked(self, chunk):
         deferred = self.deferred_chunk

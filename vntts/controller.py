@@ -29,8 +29,13 @@ from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
+    GeneratedAudioRoute,
+    LiveTTSRoute,
+    PlaybackOutcome,
+    PlaybackStatus,
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
+    SourceAudioRoute,
 )
 from vntts.history import DialogueHistory
 from vntts.live import (
@@ -46,7 +51,7 @@ from vntts.runtime_config import (
     initialize_voice_registry,
     initialize_voice_router,
 )
-from vntts.services.tts_engine import TTSEngine
+from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
 from vntts.settings import AppSettings
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -443,7 +448,8 @@ class AppController:
                 ),
                 first_pcm_on_prepare=not bool(
                     getattr(backend_capabilities, "streaming", False)
-                ),
+                )
+                and not isinstance(self.speech_backend, GeneratedAudioFallbackBackend),
                 **self._get_live_configuration(),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -1280,7 +1286,7 @@ class AppController:
         elif regained_focus:
             self.status_handler("Game focus restored; live reading resumed")
 
-    def _publish_diagnostic(self, snapshot):
+    def _publish_diagnostic(self, snapshot, route_metrics=None, audio_source=None):
         pipeline_metrics = self.get_live_pipeline_metrics()
         snapshot = replace(
             snapshot,
@@ -1294,7 +1300,28 @@ class AppController:
             ),
         )
         metric_source = self.speech_backend or self.tts
-        if metric_source is not None:
+        if route_metrics is not None:
+            snapshot = replace(
+                snapshot,
+                synthesis_ms=route_metrics.synthesis_ms,
+                playback_ms=(
+                    route_metrics.playback_ms
+                    if isinstance(route_metrics, PlaybackOutcome)
+                    else snapshot.playback_ms
+                ),
+                last_first_audio_ms=(
+                    route_metrics.first_audio_ms
+                    if isinstance(route_metrics, PlaybackOutcome)
+                    else snapshot.last_first_audio_ms
+                ),
+                cache_source=route_metrics.cache_source,
+                audio_source=audio_source
+                or route_metrics.audio_source
+                or "Not selected",
+            )
+        elif metric_source is not None and not isinstance(
+            metric_source, GeneratedAudioFallbackBackend
+        ):
             snapshot = replace(
                 snapshot,
                 synthesis_ms=getattr(metric_source, "last_synthesis_ms", None),
@@ -1317,8 +1344,14 @@ class AppController:
             self._refresh_diagnostic_metrics()
 
     def _prepare_live_chunk(self, chunk):
+        prepared = None
         try:
-            prepared = self.speech_backend.prepare(chunk.character, chunk.text)
+            prepare_route = getattr(type(self.speech_backend), "prepare_route", None)
+            prepared = (
+                prepare_route(self.speech_backend, chunk.character, chunk.text)
+                if callable(prepare_route)
+                else self.speech_backend.prepare(chunk.character, chunk.text)
+            )
             self.last_audio_source_description = self._describe_audio_source(prepared)
             trace = self._build_audio_route_trace(chunk, prepared)
             self.last_audio_route_trace = trace
@@ -1329,18 +1362,31 @@ class AppController:
             self._record_pipeline_route(chunk, trace)
             return prepared
         finally:
-            self._refresh_diagnostic_metrics()
+            self._refresh_diagnostic_metrics(
+                prepared
+                if isinstance(
+                    prepared, (GeneratedAudioRoute, SourceAudioRoute, LiveTTSRoute)
+                )
+                else None,
+                self._describe_audio_source(prepared) if prepared is not None else None,
+            )
 
     def _play_live_chunk(self, chunk, audio):
         source = self._describe_audio_source(audio)
         self.last_audio_source_description = source
         self.status_handler(f"Audio source for {chunk.character}: {source}")
         if (
+            isinstance(audio, SourceAudioRoute)
+            and audio.prepared.completion_seconds is None
+        ) or (
             isinstance(audio, PreparedSourceAudioPassThrough)
             and audio.completion_seconds is None
         ):
+            source_audio = (
+                audio.prepared if isinstance(audio, SourceAudioRoute) else audio
+            )
             reason = (
-                f"Auto advance paused for original game audio line {audio.line_id}: "
+                f"Auto advance paused for original game audio line {source_audio.line_id}: "
                 "completion timing is unavailable. Advance manually or select "
                 "Live TTS only."
             )
@@ -1350,21 +1396,61 @@ class AppController:
             ):
                 self.status_handler(reason)
         playback_started = monotonic()
+        outcome = None
         try:
-            result = self.speech_backend.play(
-                audio,
-                playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+            play_route = getattr(type(self.speech_backend), "play_route", None)
+            outcome = (
+                play_route(
+                    self.speech_backend,
+                    audio,
+                    playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+                )
+                if callable(play_route)
+                and isinstance(
+                    audio, (GeneratedAudioRoute, SourceAudioRoute, LiveTTSRoute)
+                )
+                else None
             )
+            result = (
+                outcome.successful
+                if outcome is not None
+                else self.speech_backend.play(
+                    audio,
+                    playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+                )
+            )
+            if not result:
+                self.live_reader.block_auto_advance_for_generation(
+                    chunk.generation,
+                    "Playback was interrupted; retry or wait for a new dialogue",
+                )
             if result and isinstance(
                 audio,
-                (PreparedGeneratedAudio, PreparedSourceAudioPassThrough),
+                (
+                    GeneratedAudioRoute,
+                    SourceAudioRoute,
+                    PreparedGeneratedAudio,
+                    PreparedSourceAudioPassThrough,
+                ),
             ):
                 self.live_reader.seal_generation(chunk.generation)
-            underflowed = bool(
-                getattr(self.speech_backend, "last_playback_underrun", False)
+            underflowed = (
+                outcome.underflowed
+                if outcome is not None
+                else bool(getattr(self.speech_backend, "last_playback_underrun", False))
             )
             generation_limited = (
-                getattr(self.speech_backend, "last_generation_limited", False) is True
+                outcome.generation_limited
+                if outcome is not None
+                else getattr(self.speech_backend, "last_generation_limited", False)
+                is True
+            )
+            outcome_name = (
+                outcome.status.value
+                if outcome is not None
+                else "completed"
+                if result
+                else "interrupted"
             )
             try:
                 self.pipeline_event_handler(
@@ -1373,9 +1459,36 @@ class AppController:
                     monotonic(),
                     underflowed=underflowed,
                     generation_limited=generation_limited,
+                    outcome=outcome_name,
+                    synthesis_ms=(outcome.synthesis_ms if outcome else None),
+                    playback_ms=(outcome.playback_ms if outcome else None),
+                    first_audio_ms=(outcome.first_audio_ms if outcome else None),
+                    cache_source=(outcome.cache_source if outcome else None),
+                    effective_source=(outcome.audio_source if outcome else None),
+                    chunk_id=chunk.chunk_id,
+                    chunk_ordinal=chunk.ordinal,
+                    chunk_characters=len(chunk.text),
+                )
+                self.pipeline_event_handler(
+                    "playback-outcome",
+                    chunk.generation,
+                    monotonic(),
+                    outcome=outcome_name,
+                    underflowed=underflowed,
+                    generation_limited=generation_limited,
+                    synthesis_ms=(outcome.synthesis_ms if outcome else None),
+                    playback_ms=(outcome.playback_ms if outcome else None),
+                    first_audio_ms=(outcome.first_audio_ms if outcome else None),
+                    cache_source=(outcome.cache_source if outcome else None),
+                    effective_source=(outcome.audio_source if outcome else None),
+                    chunk_id=chunk.chunk_id,
+                    chunk_ordinal=chunk.ordinal,
+                    chunk_characters=len(chunk.text),
                 )
             except Exception as error:
                 self.error_handler(error)
+            if outcome is not None and outcome.status is PlaybackStatus.FAILED:
+                raise AudioPlaybackError(outcome.error or "Audio playback failed")
             if generation_limited:
                 self.status_handler(
                     "MOSS stopped at the dialogue safety limit; the line was not "
@@ -1391,7 +1504,11 @@ class AppController:
                     if underflowed
                     else "Audio playback stable; live speech prefetch restored"
                 )
-            first_audio_ms = getattr(self.speech_backend, "last_first_audio_ms", None)
+            first_audio_ms = (
+                outcome.first_audio_ms
+                if outcome is not None
+                else getattr(self.speech_backend, "last_first_audio_ms", None)
+            )
             if isinstance(first_audio_ms, (int, float)) and not isinstance(
                 first_audio_ms, bool
             ):
@@ -1400,9 +1517,11 @@ class AppController:
                 )
             return result
         finally:
-            self._refresh_diagnostic_metrics()
+            self._refresh_diagnostic_metrics(outcome, source)
 
     def _describe_audio_source(self, prepared):
+        if isinstance(prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)):
+            prepared = prepared.prepared
         if isinstance(prepared, PreparedSourceAudioPassThrough):
             completion = (
                 f", completion {prepared.completion_seconds:.2f}s"
@@ -1448,12 +1567,21 @@ class AppController:
                 chunk.generation,
                 occurred_at,
                 voice_reference_id=trace.voice_reference_id,
+                chunk_id=trace.chunk_id,
+                chunk_ordinal=trace.chunk_ordinal,
+                chunk_characters=trace.chunk_characters,
             )
         except Exception as error:
             self.error_handler(error)
 
     def _build_audio_route_trace(self, chunk, prepared):
-        route = getattr(self.speech_backend, "last_route_trace", None)
+        route = (
+            prepared.trace
+            if isinstance(
+                prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)
+            )
+            else getattr(self.speech_backend, "last_route_trace", None)
+        )
         if route is None:
             line, match_result = self._resolve_trace_line(chunk)
             effective_source = getattr(
@@ -1481,13 +1609,20 @@ class AppController:
                 line.line_id if line is not None else None,
                 artifact_state,
             )
+        prepared_payload = (
+            prepared.prepared
+            if isinstance(
+                prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)
+            )
+            else prepared
+        )
         voice_reference_id = (
             None
             if isinstance(
-                prepared,
+                prepared_payload,
                 (PreparedGeneratedAudio, PreparedSourceAudioPassThrough),
             )
-            else self._voice_reference_identifier(chunk.character, prepared)
+            else self._voice_reference_identifier(chunk.character, prepared_payload)
         )
         return replace(
             route,
@@ -1541,11 +1676,11 @@ class AppController:
         narrator_speaker = getattr(self.voice_router, "narrator_speaker", None)
         return f"speaker:{narrator_speaker}" if narrator_speaker else None
 
-    def _refresh_diagnostic_metrics(self):
+    def _refresh_diagnostic_metrics(self, route_metrics=None, audio_source=None):
         with self.diagnostic_lock:
             snapshot = self.last_diagnostic
         if snapshot is not None:
-            self._publish_diagnostic(snapshot)
+            self._publish_diagnostic(snapshot, route_metrics, audio_source)
 
     def shutdown(self):
         self.shutdown_requested.set()

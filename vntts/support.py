@@ -39,6 +39,7 @@ generation_timeline_stages = (
     "generation-start",
     "first-pcm",
     "playback-completion",
+    "playback-outcome",
     "key-dispatch",
     "confirmed-next-dialogue",
     "auto-advance-timeout",
@@ -55,6 +56,11 @@ generation_timeline_detail_fields = (
     "attempt",
     "underflowed",
     "generation_limited",
+    "outcome",
+    "synthesis_ms",
+    "playback_ms",
+    "first_audio_ms",
+    "cache_source",
     "chunk_id",
     "chunk_ordinal",
     "chunk_characters",
@@ -88,12 +94,8 @@ class GenerationTimelineLog:
                 generation,
                 {"generation": generation, "events": OrderedDict()},
             )
-            event_key = (
-                f"{stage}:{details['chunk_id']}"
-                if stage in {"route-decision", "voice-resolution"}
-                and details.get("chunk_id")
-                else stage
-            )
+            chunk_id = details.get("chunk_id")
+            event_key = f"{stage}:{chunk_id}" if chunk_id else stage
             existing = timeline["events"].get(event_key, {})
             event = {
                 "stage": stage,
@@ -315,6 +317,7 @@ def sanitize_diagnostic(snapshot):
         "speech_queue_depth": snapshot.speech_queue_depth,
         "max_speech_queue_depth": snapshot.max_speech_queue_depth,
         "last_first_audio_ms": snapshot.last_first_audio_ms,
+        "cache_source": snapshot.cache_source,
     }
 
 

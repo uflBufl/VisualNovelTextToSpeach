@@ -8,11 +8,16 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
+    AudioRouteTrace,
     GeneratedAudioFallbackBackend,
+    GeneratedAudioRoute,
+    PlaybackOutcome,
+    PlaybackStatus,
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
 )
@@ -44,6 +49,7 @@ from vntts.ocr import DialogRegion, OCRResult
 from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
+from vntts.support import GenerationTimelineLog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -1422,6 +1428,96 @@ class MainTest(unittest.TestCase):
         timestamp = controller.live_reader.record_first_pcm.call_args.args[0]
         self.assertIsInstance(timestamp, float)
 
+    def test_interrupted_typed_playback_blocks_auto_advance_and_does_not_seal(self):
+        class InterruptedBackend:
+            name = "typed-test"
+
+            def play_route(self, _route, *, playback_guard=None):
+                self.guard_value = playback_guard()
+                return PlaybackOutcome(PlaybackStatus.INTERRUPTED, 5.0)
+
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = InterruptedBackend()
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                "a" * 64,
+                np.array([0.0], dtype=np.float32),
+                24_000,
+            ),
+            AudioRouteTrace(
+                None,
+                "generated",
+                "exact",
+                None,
+                None,
+                "game:1",
+                "generated-audio-entry-verified",
+            ),
+        )
+
+        result = controller._play_live_chunk(
+            SpeechChunk(4, "Rhiannon", "A line."), route
+        )
+
+        self.assertFalse(result)
+        controller.live_reader.seal_generation.assert_not_called()
+        controller.live_reader.block_auto_advance_for_generation.assert_called_once()
+
+    def test_failed_typed_playback_blocks_auto_advance_before_error_surfaces(self):
+        timeline_events = []
+
+        class FailedBackend:
+            name = "typed-test"
+
+            def play_route(self, _route, *, playback_guard=None):
+                self.guard_value = playback_guard()
+                return PlaybackOutcome(
+                    PlaybackStatus.FAILED,
+                    5.0,
+                    error="device failed",
+                )
+
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                timeline_events.append((stage, details))
+            ),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = FailedBackend()
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                "a" * 64,
+                np.array([0.0], dtype=np.float32),
+                24_000,
+            ),
+            AudioRouteTrace(
+                None,
+                "generated",
+                "exact",
+                None,
+                None,
+                "game:1",
+                "generated-audio-entry-verified",
+            ),
+        )
+
+        with self.assertRaisesRegex(AudioPlaybackError, "device failed"):
+            controller._play_live_chunk(SpeechChunk(4, "Rhiannon", "A line."), route)
+
+        controller.live_reader.seal_generation.assert_not_called()
+        controller.live_reader.block_auto_advance_for_generation.assert_called_once()
+        outcome = next(
+            event for event in timeline_events if event[0] == "playback-outcome"
+        )
+        self.assertEqual(outcome[1]["outcome"], "failed")
+
     def test_moss_safety_limit_is_visible_and_recorded_without_blocking_completion(
         self,
     ):
@@ -1718,6 +1814,88 @@ class MainTest(unittest.TestCase):
             "MOSS persistent cache (voice: rhiannon)",
         )
 
+    def test_diagnostic_uses_route_bound_outcome_metrics(self):
+        diagnostics = []
+        controller = AppController(
+            AppSettings(),
+            diagnostic_handler=diagnostics.append,
+        )
+        controller.speech_backend = Mock(
+            last_synthesis_ms=500.0,
+            last_playback_ms=900.0,
+            last_first_audio_ms=999.0,
+        )
+        controller.last_audio_source_description = "Live TTS (moss-tts)"
+        outcome = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            20.0,
+            first_audio_ms=10.0,
+            synthesis_ms=5.0,
+            cache_source="fresh-generation",
+        )
+
+        controller._publish_diagnostic(
+            DiagnosticSnapshot(None), outcome, "Live TTS (moss-tts)"
+        )
+
+        self.assertEqual(diagnostics[-1].synthesis_ms, 5.0)
+        self.assertEqual(diagnostics[-1].playback_ms, 20.0)
+        self.assertEqual(diagnostics[-1].last_first_audio_ms, 10.0)
+        self.assertEqual(diagnostics[-1].cache_source, "fresh-generation")
+
+    def test_typed_playback_diagnostic_keeps_route_local_source_and_metrics(self):
+        diagnostics = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            diagnostic_handler=diagnostics.append,
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.last_diagnostic = DiagnosticSnapshot(None)
+
+        class ConcurrentPrepareBackend:
+            name = "typed-test"
+
+            def play_route(self, _route, *, playback_guard=None):
+                self.guard_value = playback_guard()
+                controller.last_audio_source_description = "Live TTS (route B)"
+                return PlaybackOutcome(
+                    PlaybackStatus.COMPLETED,
+                    20.0,
+                    first_audio_ms=10.0,
+                    synthesis_ms=5.0,
+                    cache_source="generated-audio",
+                    audio_source="generated",
+                )
+
+        controller.speech_backend = ConcurrentPrepareBackend()
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                "a" * 64,
+                np.array([0.0], dtype=np.float32),
+                24_000,
+            ),
+            AudioRouteTrace(
+                None,
+                "generated",
+                "exact",
+                None,
+                None,
+                "game:1",
+                "generated-audio-entry-verified",
+            ),
+        )
+
+        controller._play_live_chunk(SpeechChunk(4, "Rhiannon", "A line."), route)
+
+        self.assertEqual(diagnostics[-1].audio_source, "Generated audio (line game:1)")
+        self.assertEqual(diagnostics[-1].synthesis_ms, 5.0)
+        self.assertEqual(diagnostics[-1].playback_ms, 20.0)
+        self.assertEqual(diagnostics[-1].last_first_audio_ms, 10.0)
+        self.assertEqual(diagnostics[-1].cache_source, "generated-audio")
+
     def test_live_prepare_reports_generation_scoped_audio_route(self):
         traces = []
         timeline_events = []
@@ -1771,6 +1949,46 @@ class MainTest(unittest.TestCase):
             timeline_events[1][3]["voice_reference_id"],
             "voice:rhiannon-v2:reference-1",
         )
+
+    def test_live_prepare_keeps_two_chunk_scoped_voice_resolution_events(self):
+        registry = CharacterVoiceRegistry(
+            [
+                CharacterVoice(
+                    "Rhiannon",
+                    "rhiannon-v2",
+                    references=(Path("rhiannon-reference.wav"),),
+                )
+            ]
+        )
+        timelines = GenerationTimelineLog()
+        controller = AppController(
+            AppSettings(audio_source_policy="live-tts-only"),
+            pipeline_event_handler=timelines.record,
+        )
+        controller.voice_router = Mock(registry=registry)
+        controller.speech_backend = Mock(
+            name="moss-tts",
+            last_audio_source="moss-tts:fresh-generation",
+            last_route_trace=None,
+        )
+        controller.speech_backend.prepare.return_value = SimpleNamespace(
+            voice_key="rhiannon-v2"
+        )
+
+        controller._prepare_live_chunk(
+            SpeechChunk(9, "Rhiannon", "First chunk.", ordinal=1)
+        )
+        controller._prepare_live_chunk(
+            SpeechChunk(9, "Rhiannon", "Second chunk.", ordinal=2)
+        )
+
+        voice_events = [
+            event
+            for event in timelines.snapshot()[0]["events"]
+            if event["stage"] == "voice-resolution"
+        ]
+        self.assertEqual(len(voice_events), 2)
+        self.assertEqual([event["chunk_ordinal"] for event in voice_events], [1, 2])
 
     def test_controller_sets_coqui_acceptance_for_approved_xtts_use(self):
         tts = Mock()

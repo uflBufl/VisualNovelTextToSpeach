@@ -79,10 +79,9 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Simplify the live speech boundary after the P0 replay passes
 
-- [ ] Split route selection from synthesis/playback. The current
-      `GeneratedAudioFallbackBackend` owns original game pass-through, generated
-      files, live TTS fallback, voice overrides, and metrics; replace it with a
-      typed route decision plus source-specific players.
+- [ ] Remove the transitional `GeneratedAudioFallbackBackend.prepare()`/`play()`
+      compatibility facade and mutable `last_*` metrics after every remaining
+      caller consumes the typed route decision and route-local playback outcome.
 - [ ] Replace mutable backend `last_*` compatibility metrics with the generation
       timeline now used by diagnostics and support bundles.
 - [ ] Document the final routing precedence, source-audio completion contract,

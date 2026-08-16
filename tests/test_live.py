@@ -4,6 +4,11 @@ from queue import Queue
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, patch
 
+from vntts.generated_audio import (
+    AudioRouteTrace,
+    GeneratedAudioRoute,
+    PreparedGeneratedAudio,
+)
 from vntts.live import (
     AdaptiveCapturePolicy,
     AdaptiveSpeechBackpressure,
@@ -892,6 +897,36 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.record_first_pcm(123.5)
 
         self.assertEqual(reader.get_pipeline_metrics().last_first_pcm_at, 123.5)
+
+    def test_typed_route_does_not_claim_first_pcm_before_player_observes_it(self):
+        events = []
+        reader = self.create_reader(
+            prepare_chunk=Mock(),
+            play_prepared=Mock(return_value=False),
+            playback_executor=ImmediateExecutor(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append(stage)
+            ),
+            first_pcm_on_prepare=True,
+        )
+        reader.active_generation = 1
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio("game:1", "a" * 64, (), 24_000),
+            AudioRouteTrace(
+                None,
+                "generated",
+                "exact",
+                None,
+                None,
+                "game:1",
+                "generated-audio-entry-verified",
+            ),
+        )
+
+        reader._play_if_current(SpeechChunk(1, "Alice", "Hello."), route)
+
+        self.assertNotIn("first-pcm", events)
+        self.assertIn("playback-completion", events)
 
     def test_observation_and_stable_sentence_record_pipeline_timestamps(self):
         reader = self.create_reader()

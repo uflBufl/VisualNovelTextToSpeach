@@ -93,6 +93,48 @@ class GenerationTimelineLogTest(unittest.TestCase):
         )
         self.assertNotIn("dialogue", str(events))
 
+    def test_keeps_every_chunk_scoped_stage_and_merges_same_chunk_reports(self):
+        timelines = GenerationTimelineLog()
+        stages = (
+            "generation-start",
+            "route-decision",
+            "voice-resolution",
+            "first-pcm",
+            "playback-completion",
+            "playback-outcome",
+            "duplicate-chunk-suppressed",
+        )
+        for ordinal, chunk_id in enumerate(("chunk-a", "chunk-b"), 1):
+            for offset, stage in enumerate(stages):
+                timelines.record(
+                    stage,
+                    1,
+                    ordinal + offset / 100,
+                    chunk_id=chunk_id,
+                    chunk_ordinal=ordinal,
+                )
+        timelines.record(
+            "playback-completion",
+            1,
+            9.0,
+            chunk_id="chunk-a",
+            underflowed=True,
+        )
+
+        events = timelines.snapshot()[0]["events"]
+
+        self.assertEqual(len(events), len(stages) * 2)
+        self.assertEqual(
+            sum(event["stage"] == "playback-completion" for event in events), 2
+        )
+        completion_a = next(
+            event
+            for event in events
+            if event["stage"] == "playback-completion"
+            and event["chunk_id"] == "chunk-a"
+        )
+        self.assertTrue(completion_a["underflowed"])
+
     def test_rejects_unknown_stage_and_ignores_generation_zero(self):
         timelines = GenerationTimelineLog()
 
