@@ -139,10 +139,10 @@ command. Valid `r1999.model-listening-session` directories are reported as
 `preserve-ready`. Discovery and inspection never write source or application
 data.
 
-This slice does not resume generation, rebuild a derived manifest, alter review
-decisions, or migrate generic queue-building and model-selection workflows.
-Those remain explicit backlog items until the authoring runtime owns and tests
-them end to end.
+Import commands never resume generation, rebuild a derived manifest, alter
+review decisions, or publish a final pack. Those are separate explicit
+authoring operations, so preserving a snapshot is not evidence that it has
+resumed successfully.
 
 ## Verified legacy census
 
@@ -170,3 +170,46 @@ The listening dry-run validated all 45 rated trials, six models, 45 hidden A/B
 assignments and 90 relative WAV aliases, including the legacy `dimensions`
 form, exact key binding, source-report hashes and recomputed report. No legacy
 audio or application data was copied during either dry-run.
+
+## Verified application-data migration
+
+The three stable job-backed snapshots were imported from clean commit
+`fb6452a` on 2026-08-17. Destination names are deterministic immutable import
+identities; they contain no source-directory component:
+
+| Destination identity | Queue | Authoritative state | Derived manifest |
+| --- | ---: | --- | --- |
+| `legacy-12888f0d08ffe96b5be29f7b` | 592 | 338 approved | 338 current entries |
+| `legacy-395a5e5eec0327a3a793b66d` | 592 | 197 generated pending review, 141 failed | 0 current entries |
+| `legacy-14d28505d16f4729c363c2de` | 1,220 | 680 generated pending review | absent |
+
+The first history already existed and returned `created=false`. The other two
+returned `created=true` once and `created=false` on an immediate repeated
+import. The two 592-item histories coexist because their immutable queue-record
+digests agree even though their state, review and synthesis provenance differ.
+
+For each source, verification computed SHA-256 over the ordered inventory of
+artifact role, source identity and individual artifact SHA-256 before and after
+the imports. The digests were unchanged:
+
+- older 338-approved history:
+  `e009b442d9d38919dca21b7bb3dfae3aada35e8969f0d877f0f08b71d5a8c5ab`;
+- newer generated/failed history:
+  `e6e25155811244def7984f7f2f3bea4ae52375f9802a3a1b4bed01593d8bccb2`;
+- interrupted Patch 3.7 history:
+  `cf4e75a056147e38e620d621335bc0632cb5aae09b1fa0700de47873830e3009`.
+
+The preserved blind-listening import is
+`listening-4cc961e3ab2dba5492a879b6`: 45 of 45 trials rated, six hidden models,
+90 audio aliases, and the report present. All 93 imported artifacts and all 93
+corresponding source artifacts still match their recorded SHA-256 values. Its
+source fingerprint is
+`1c043b4971d05354becb6ed7cf758cd1fdb038835a6e44c90fd83c932398d23b`.
+
+Migration completion does not clear the operational gates. The 680 Patch 3.7
+items and 197 newer-history items still require manual review. The 141 failed
+newer-history items require an explicit retry decision after their failure
+cause and voice readiness are reviewed. Remaining queue items require the
+normal preflight filters for missing references, recoverable source audio and
+sound effects. A first successful VNTTS resume must prove cumulative attempts,
+seeds and immutable queue identity before the preservation TODO can be removed.

@@ -7,9 +7,10 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Preserve existing generation work
 
-- [ ] Keep compatibility with current queue IDs, line IDs, text hashes, seeds,
-      attempts, and approval state until all existing jobs have been imported
-      and resumed successfully in VNTTS.
+- [ ] Resume the two incomplete imported generation histories successfully in
+      VNTTS while preserving their queue IDs, line IDs, text hashes, seeds,
+      attempts, failure records, and approval state. Import alone is not resume
+      proof.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       `moss-tts-local-transformer-v1.5-mlx` model after their voice references
       are available. Preserve source-audio candidates instead of replacing them
