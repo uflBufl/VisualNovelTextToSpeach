@@ -39,6 +39,8 @@ class ListeningImportInspection:
     audio_count: int
     report_present: bool
     artifacts: tuple[tuple[str, Path, Path, str], ...]
+    source_controls: tuple[tuple[Path, str], ...] = ()
+    key_mode: int = 0o600
 
 
 @dataclass(frozen=True)
@@ -56,24 +58,48 @@ def inspect_listening_session(session_directory):
     session_path = root / "session.json"
     key_path = root / ".blind-key.json"
     report_path = root / "report.json"
-    session = _load_schema(session_path, SESSION_SCHEMA, "listening session")
-    key = _load_schema(key_path, KEY_SCHEMA, "blind-listening key")
+    session, session_sha256 = _load_schema_snapshot(
+        session_path, SESSION_SCHEMA, "listening session"
+    )
+    key, key_sha256 = _load_schema_snapshot(key_path, KEY_SCHEMA, "blind-listening key")
+    key_mode = key_path.stat().st_mode & 0o777
     trials, audio = _validate_session(root, session)
-    _validate_key(session, key, key_path, trials)
+    audio_sha256 = {relative: sha256_file(path) for relative, path in audio.items()}
+    source_controls = _validate_key(
+        session, key, key_path, key_sha256, trials, audio_sha256
+    )
+    report_sha256 = None
     if report_path.is_file():
-        report = _load_schema(report_path, REPORT_SCHEMA, "listening report")
+        report, report_sha256 = _load_schema_snapshot(
+            report_path, REPORT_SCHEMA, "listening report"
+        )
         _validate_report(session_path, session, key, report)
 
     artifacts = [
-        ("listening_session", session_path, Path("session.json"), sha256_file(session_path)),
-        ("blind_listening_key", key_path, Path(".blind-key.json"), sha256_file(key_path)),
+        (
+            "listening_session",
+            session_path,
+            Path("session.json"),
+            session_sha256,
+        ),
+        (
+            "blind_listening_key",
+            key_path,
+            Path(".blind-key.json"),
+            key_sha256,
+        ),
     ]
     if report_path.is_file():
         artifacts.append(
-            ("listening_report", report_path, Path("report.json"), sha256_file(report_path))
+            (
+                "listening_report",
+                report_path,
+                Path("report.json"),
+                report_sha256,
+            )
         )
     for relative, source in sorted(audio.items(), key=lambda item: item[0].as_posix()):
-        artifacts.append(("blind_audio", source, relative, sha256_file(source)))
+        artifacts.append(("blind_audio", source, relative, audio_sha256[relative]))
     logical_payload = {
         "source_kind": session.get("source_kind"),
         "source_sha256": session.get("source_sha256"),
@@ -87,7 +113,7 @@ def inspect_listening_session(session_directory):
                     role,
                     destination.as_posix(),
                     digest,
-                    (source.stat().st_mode & 0o777) if role == "blind_listening_key" else None,
+                    key_mode if role == "blind_listening_key" else None,
                 )
                 for role, source, destination, digest in artifacts
             ]
@@ -102,6 +128,8 @@ def inspect_listening_session(session_directory):
         audio_count=len(audio),
         report_present=report_path.is_file(),
         artifacts=tuple(artifacts),
+        source_controls=source_controls,
+        key_mode=key_mode,
     )
     _verify_controls_unchanged(inspection)
     return inspection
@@ -110,7 +138,9 @@ def inspect_listening_session(session_directory):
 def import_listening_session(session_directory, destination_root=None):
     """Stage and atomically preserve one explicitly selected listening session."""
     inspection = inspect_listening_session(session_directory)
-    destination_root = Path(destination_root or default_import_root()).expanduser().resolve()
+    destination_root = (
+        Path(destination_root or default_import_root()).expanduser().resolve()
+    )
     destination_root.mkdir(parents=True, exist_ok=True)
     import_id = f"listening-{inspection.logical_identity[:24]}"
     destination = destination_root / import_id
@@ -129,7 +159,7 @@ def import_listening_session(session_directory, destination_root=None):
                     f"Listening artifact changed during import: {source}"
                 )
             if role == "blind_listening_key" and (
-                (target.stat().st_mode & 0o777) != (source.stat().st_mode & 0o777)
+                (target.stat().st_mode & 0o777) != inspection.key_mode
             ):
                 raise ListeningImportError(
                     f"Blind-listening key mode changed during import: {source}"
@@ -152,7 +182,9 @@ def import_listening_session(session_directory, destination_root=None):
 def _validate_session(root, session):
     source_kind = session.get("source_kind")
     if not isinstance(source_kind, str) or not source_kind.strip():
-        raise ListeningImportError("Listening session source_kind must be non-empty text")
+        raise ListeningImportError(
+            "Listening session source_kind must be non-empty text"
+        )
     _require_sha256(session.get("source_sha256"), "session source_sha256")
     _require_sha256(session.get("blind_key_sha256"), "session blind_key_sha256")
     trials = session.get("trials")
@@ -179,7 +211,9 @@ def _validate_session(root, session):
                 "b",
                 "tie",
             }:
-                raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
+                raise ListeningImportError(
+                    f"Listening trial {trial_id!r} rating is invalid"
+                )
             completed += 1
         sides = trial.get("audio")
         if not isinstance(sides, dict) or set(sides) != {"a", "b"}:
@@ -203,32 +237,46 @@ def _validate_session(root, session):
     return trials, audio
 
 
-def _validate_key(session, key, key_path, trials):
-    if sha256_file(key_path) != session.get("blind_key_sha256"):
-        raise ListeningImportError("Blind-listening key is missing, changed, or mismatched")
+def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
+    if key_sha256 != session.get("blind_key_sha256"):
+        raise ListeningImportError(
+            "Blind-listening key is missing, changed, or mismatched"
+        )
     for field in ("source_kind", "source_sha256"):
         if key.get(field) != session.get(field):
-            raise ListeningImportError(f"Blind-listening key {field} does not match session")
+            raise ListeningImportError(
+                f"Blind-listening key {field} does not match session"
+            )
     sources = key.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ListeningImportError("Blind-listening key source inventory is invalid")
+    source_controls = {}
     for source in sources:
         if not isinstance(source, dict) or not isinstance(source.get("path"), str):
-            raise ListeningImportError("Blind-listening key source inventory is invalid")
+            raise ListeningImportError(
+                "Blind-listening key source inventory is invalid"
+            )
         _require_sha256(source.get("sha256"), "blind-key source SHA-256")
         source_path = Path(source["path"]).expanduser().resolve()
         if not source_path.is_file() or sha256_file(source_path) != source["sha256"]:
             raise ListeningImportError(
                 f"Blind-listening source report is missing or changed: {source_path}"
             )
+        source_controls[source_path] = source["sha256"]
     source_digest = hashlib.sha256(
         json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
     if source_digest != session.get("source_sha256"):
-        raise ListeningImportError("Blind-listening source inventory digest is inconsistent")
+        raise ListeningImportError(
+            "Blind-listening source inventory digest is inconsistent"
+        )
     models = key.get("models")
     assignments = key.get("assignments")
-    if not isinstance(models, list) or len(models) < 2 or not isinstance(assignments, list):
+    if (
+        not isinstance(models, list)
+        or len(models) < 2
+        or not isinstance(assignments, list)
+    ):
         raise ListeningImportError("Blind-listening key models/assignments are invalid")
     model_ids = []
     for model in models:
@@ -244,11 +292,17 @@ def _validate_key(session, key, key_path, trials):
     trial_by_id = {trial["trial_id"]: trial for trial in trials}
     seen = set()
     for assignment in assignments:
-        if not isinstance(assignment, dict) or set(assignment) != {"trial_id", "a", "b"}:
+        if not isinstance(assignment, dict) or set(assignment) != {
+            "trial_id",
+            "a",
+            "b",
+        }:
             raise ListeningImportError("Blind-listening assignment is invalid")
         trial_id = assignment["trial_id"]
         if trial_id not in expected_ids:
-            raise ListeningImportError(f"Blind assignment references unknown trial {trial_id!r}")
+            raise ListeningImportError(
+                f"Blind assignment references unknown trial {trial_id!r}"
+            )
         if trial_id in seen:
             raise ListeningImportError(f"Duplicate blind assignment for {trial_id!r}")
         seen.add(trial_id)
@@ -264,32 +318,41 @@ def _validate_key(session, key, key_path, trials):
                     f"Blind assignment {trial_id!r} side {side} has no source provenance"
                 )
             provenance_audio = Path(value["source"]).expanduser().resolve()
-            alias = _within(
-                key_path.parent,
-                _safe_relative(
-                    trial_by_id[trial_id]["audio"][side],
-                    f"trial {trial_id!r} side {side}",
-                ),
+            relative = _safe_relative(
+                trial_by_id[trial_id]["audio"][side],
                 f"trial {trial_id!r} side {side}",
             )
-            if not provenance_audio.is_file() or sha256_file(provenance_audio) != sha256_file(
-                alias
+            _within(
+                key_path.parent,
+                relative,
+                f"trial {trial_id!r} side {side}",
+            )
+            if (
+                not provenance_audio.is_file()
+                or sha256_file(provenance_audio) != audio_sha256[relative]
             ):
                 raise ListeningImportError(
                     f"Blind assignment {trial_id!r} side {side} audio does not match its alias"
                 )
+            source_controls[provenance_audio] = audio_sha256[relative]
             sides.append(value["model_id"])
         if sides[0] == sides[1]:
             raise ListeningImportError(
                 f"Blind assignment {trial_id!r} compares a model with itself"
             )
     if seen != expected_ids:
-        raise ListeningImportError("Blind-listening assignments do not cover every trial")
+        raise ListeningImportError(
+            "Blind-listening assignments do not cover every trial"
+        )
+    return tuple(sorted(source_controls.items(), key=lambda item: str(item[0])))
 
 
 def _validate_report(session_path, session, key, report):
     configured_session = report.get("session")
-    if not isinstance(configured_session, str) or Path(configured_session).expanduser().resolve() != session_path:
+    if (
+        not isinstance(configured_session, str)
+        or Path(configured_session).expanduser().resolve() != session_path
+    ):
         raise ListeningImportError("Listening report points to a different session")
     expected = _expected_report(session, key)
     for field, value in expected.items():
@@ -356,7 +419,9 @@ def _expected_report(session, key):
                     "losses": value["losses"],
                     "ties": value["ties"],
                     "rate": (
-                        round((value["wins"] + 0.5 * value["ties"]) / preference_trials, 4)
+                        round(
+                            (value["wins"] + 0.5 * value["ties"]) / preference_trials, 4
+                        )
                         if preference_trials
                         else None
                     ),
@@ -365,7 +430,11 @@ def _expected_report(session, key):
         )
     models.sort(
         key=lambda item: (
-            -(item["preference"]["rate"] if item["preference"]["rate"] is not None else -1),
+            -(
+                item["preference"]["rate"]
+                if item["preference"]["rate"] is not None
+                else -1
+            ),
             -item["preference"]["wins"],
             item["model_id"],
         )
@@ -412,7 +481,7 @@ def _manifest(inspection, import_id):
                 "path": relative.as_posix(),
                 "sha256": digest,
                 **(
-                    {"mode": source.stat().st_mode & 0o777}
+                    {"mode": inspection.key_mode}
                     if role == "blind_listening_key"
                     else {}
                 ),
@@ -439,9 +508,7 @@ def _validate_existing(destination, inspection):
         raise ListeningImportError(
             "Listening session changed after import; existing application data was left untouched"
         )
-    expected = _manifest(
-        inspection, f"listening-{inspection.logical_identity[:24]}"
-    )
+    expected = _manifest(inspection, f"listening-{inspection.logical_identity[:24]}")
     expected["imported_at"] = manifest.get("imported_at")
     if manifest != expected:
         raise ListeningImportError(
@@ -455,18 +522,32 @@ def _validate_existing(destination, inspection):
         if not path.is_file() or sha256_file(path) != artifact.get("sha256"):
             raise ListeningImportError(f"Imported listening artifact changed: {path}")
         if "mode" in artifact and (path.stat().st_mode & 0o777) != artifact["mode"]:
-            raise ListeningImportError(f"Imported listening artifact mode changed: {path}")
+            raise ListeningImportError(
+                f"Imported listening artifact mode changed: {path}"
+            )
     _verify_controls_unchanged(inspection)
     return ListeningImportResult(destination, manifest, False)
 
 
 def _verify_controls_unchanged(inspection):
     for role, source, _relative, digest in inspection.artifacts:
-        if role == "blind_audio":
-            continue
         if not source.is_file() or sha256_file(source) != digest:
             raise ListeningImportError(
                 "Listening source is active or changed during import; retry when idle. "
+                "No application data was published."
+            )
+        if (
+            role == "blind_listening_key"
+            and (source.stat().st_mode & 0o777) != inspection.key_mode
+        ):
+            raise ListeningImportError(
+                "Blind-listening key mode changed during import; retry when idle. "
+                "No application data was published."
+            )
+    for source, digest in inspection.source_controls:
+        if not source.is_file() or sha256_file(source) != digest:
+            raise ListeningImportError(
+                "Listening provenance source changed during import; retry when idle. "
                 "No application data was published."
             )
 
@@ -480,11 +561,37 @@ def _load_schema(path, schema, description):
     return value
 
 
+def _load_schema_snapshot(path, schema, description):
+    path = Path(path)
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ListeningImportError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
+    digest = hashlib.sha256(payload).hexdigest()
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ListeningImportError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
+    if not isinstance(value, dict):
+        raise ListeningImportError(f"{description.title()} must be a JSON object")
+    if value.get("schema") != schema or value.get("schema_version") != SCHEMA_VERSION:
+        raise ListeningImportError(
+            f"Unsupported {description} schema; expected {schema!r} version {SCHEMA_VERSION}"
+        )
+    return value, digest
+
+
 def _load_json(path, description):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ListeningImportError(f"Unable to read {description} {path}: {error}") from error
+        raise ListeningImportError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
     if not isinstance(value, dict):
         raise ListeningImportError(f"{description.title()} must be a JSON object")
     return value
@@ -519,6 +626,6 @@ def _require_sha256(value, label):
 
 
 def _canonical(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-        "utf-8"
-    )
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")

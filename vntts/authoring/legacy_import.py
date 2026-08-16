@@ -101,6 +101,8 @@ class _ImportPlan:
     logical_identity: str
     manifest_diagnostics: tuple[str, ...]
     source_kind: str = "reverse1999-extractor-pregeneration-job"
+    source_diagnostics: tuple[str, ...] = ()
+    runtime_status: str = "snapshot"
 
 
 def default_legacy_jobs_root(*, environment=None):
@@ -138,21 +140,14 @@ def discover_legacy_jobs(jobs_root=None):
                 destinations.add(_resolve_path(job_directory, value))
         try:
             plan = _build_import_plan(job_directory)
-            running_error = None
-            if plan.job.get("status") == "running":
-                running_error = (
-                    "Legacy job is still marked running. Discovery cannot certify a "
-                    "stable snapshot; stop the producer and retry before import."
-                )
             candidates.append(
                 LegacyImportCandidate(
                     job_directory=job_directory,
                     title=_optional_text(plan.job.get("title")) or job_directory.name,
-                    status=_optional_text(plan.job.get("status")) or "unknown",
+                    status=plan.runtime_status,
                     queue_items=len(plan.queue.items),
                     generated_items=int(plan.summary["generated_items"]),
-                    compatibility_error=running_error,
-                    diagnostics=plan.manifest_diagnostics,
+                    diagnostics=plan.manifest_diagnostics + plan.source_diagnostics,
                 )
             )
         except LegacyAuthoringImportError as error:
@@ -179,7 +174,9 @@ def discover_legacy_jobs(jobs_root=None):
 def import_legacy_job(job_directory, destination_root=None):
     """Validate and copy one legacy job without changing either source or prior imports."""
     plan = _build_import_plan(job_directory)
-    destination_root = Path(destination_root or default_import_root()).expanduser().resolve()
+    destination_root = (
+        Path(destination_root or default_import_root()).expanduser().resolve()
+    )
     destination_root.mkdir(parents=True, exist_ok=True)
     import_id = _import_id(plan)
     destination = destination_root / import_id
@@ -232,7 +229,9 @@ def inspect_standalone_generation(queue_path, output_directory):
 def import_standalone_generation(queue_path, output_directory, destination_root=None):
     """Import one explicitly selected standalone queue/output pair."""
     plan = _build_standalone_import_plan(queue_path, output_directory)
-    destination_root = Path(destination_root or default_import_root()).expanduser().resolve()
+    destination_root = (
+        Path(destination_root or default_import_root()).expanduser().resolve()
+    )
     destination_root.mkdir(parents=True, exist_ok=True)
     import_id = _import_id(plan)
     destination = destination_root / import_id
@@ -273,13 +272,7 @@ def _build_standalone_import_plan(queue_path, output_directory):
         raise LegacyAuthoringImportError(
             f"Standalone generation output is not a directory: {output}"
         )
-    try:
-        queue = VoiceGenerationQueue.load(queue_path)
-    except VoiceGenerationQueueError as error:
-        raise LegacyAuthoringImportError(
-            f"Incompatible standalone generation queue {queue_path}: {error}"
-        ) from error
-    queue_sha256 = sha256_file(queue_path)
+    queue, queue_sha256 = _load_queue_snapshot(queue_path)
     state_path = output / "generation-state.json"
     manifest_path = output / "manifest.json"
     if not state_path.is_file() and not manifest_path.is_file():
@@ -288,12 +281,18 @@ def _build_standalone_import_plan(queue_path, output_directory):
         )
 
     artifacts = {}
-    _add_artifact(artifacts, "generation_queue", queue_path, Path("queue.jsonl"))
+    _add_artifact(
+        artifacts,
+        "generation_queue",
+        queue_path,
+        Path("queue.jsonl"),
+        expected_sha256=queue_sha256,
+    )
     state = None
     state_items = {}
     generated_files = {}
     if state_path.is_file():
-        state = _load_json(state_path, "generation state")
+        state, state_sha256 = _load_json_snapshot(state_path, "generation state")
         if state.get("queue_sha256") != queue_sha256:
             raise LegacyAuthoringImportError(
                 "Explicit standalone pairing failed: generation-state.json does not "
@@ -307,16 +306,23 @@ def _build_standalone_import_plan(queue_path, output_directory):
             "generation_state",
             state_path,
             Path("generated-audio/generation-state.json"),
+            expected_sha256=state_sha256,
         )
-        for source, relative in generated_files.values():
+        for source, relative, digest in generated_files.values():
             _add_artifact(
-                artifacts, "generated_wav", source, Path("generated-audio") / relative
+                artifacts,
+                "generated_wav",
+                source,
+                Path("generated-audio") / relative,
+                expected_sha256=digest,
             )
 
     generated_index = None
     diagnostics = ()
     if manifest_path.is_file():
-        raw_manifest = _load_json(manifest_path, "generated-audio manifest")
+        generated_index, raw_manifest, manifest_sha256 = _load_generated_index_snapshot(
+            manifest_path
+        )
         manifest_queue_sha256 = raw_manifest.get("source_queue_sha256")
         if state is None and manifest_queue_sha256 != queue_sha256:
             raise LegacyAuthoringImportError(
@@ -329,6 +335,8 @@ def _build_standalone_import_plan(queue_path, output_directory):
             queue,
             queue_sha256,
             state_items,
+            generated_index,
+            raw_manifest,
             state_exists=state is not None,
         )
         current = not diagnostics
@@ -341,10 +349,15 @@ def _build_standalone_import_plan(queue_path, output_directory):
                 if current
                 else Path("legacy/stale-generated-audio-manifest.json")
             ),
+            expected_sha256=manifest_sha256,
         )
-        for source, relative in manifest_files.values():
+        for source, relative, digest in manifest_files.values():
             _add_artifact(
-                artifacts, "generated_wav", source, Path("generated-audio") / relative
+                artifacts,
+                "generated_wav",
+                source,
+                Path("generated-audio") / relative,
+                expected_sha256=digest,
             )
 
     summary = _generation_summary(queue, state_items, generated_index, diagnostics)
@@ -375,7 +388,7 @@ def _build_standalone_import_plan(queue_path, output_directory):
 def _build_import_plan(job_directory):
     job_directory = Path(job_directory).expanduser().resolve()
     job_path = job_directory / "job.json"
-    job = _load_json(job_path, "pregeneration job")
+    job, job_sha256 = _load_json_snapshot(job_path, "pregeneration job")
     if (
         job.get("schema") != LEGACY_JOB_SCHEMA
         or job.get("schema_version") != LEGACY_JOB_SCHEMA_VERSION
@@ -385,20 +398,10 @@ def _build_import_plan(job_directory):
             f"{LEGACY_JOB_SCHEMA!r} version {LEGACY_JOB_SCHEMA_VERSION}"
         )
     _validate_job(job)
-    if _live_pid(job.get("pid")):
-        raise LegacyAuthoringImportError(
-            "Pregeneration source is active; retry import when the legacy job is idle"
-        )
+    runtime_status, source_diagnostics = _legacy_runtime_status(job)
 
     queue_path = _job_path(job_directory, job.get("queue"), "queue")
-    try:
-        queue = VoiceGenerationQueue.load(queue_path)
-    except VoiceGenerationQueueError as error:
-        raise LegacyAuthoringImportError(
-            f"Incompatible generation queue {queue_path}: {error}. "
-            "Re-export it with vntts-artifacts v0.6 before importing."
-        ) from error
-    queue_sha256 = sha256_file(queue_path)
+    queue, queue_sha256 = _load_queue_snapshot(queue_path)
     output = _job_path(job_directory, job.get("output"), "output directory")
     if output.exists() and not output.is_dir():
         raise LegacyAuthoringImportError(
@@ -408,14 +411,26 @@ def _build_import_plan(job_directory):
     manifest_path = output / "manifest.json"
 
     artifacts = {}
-    _add_artifact(artifacts, "legacy_job", job_path, Path("legacy/job.json"))
-    _add_artifact(artifacts, "generation_queue", queue_path, Path("queue.jsonl"))
+    _add_artifact(
+        artifacts,
+        "legacy_job",
+        job_path,
+        Path("legacy/job.json"),
+        expected_sha256=job_sha256,
+    )
+    _add_artifact(
+        artifacts,
+        "generation_queue",
+        queue_path,
+        Path("queue.jsonl"),
+        expected_sha256=queue_sha256,
+    )
 
     state = None
     state_items = {}
     generated_files = {}
     if state_path.is_file():
-        state = _load_json(state_path, "generation state")
+        state, state_sha256 = _load_json_snapshot(state_path, "generation state")
         state_items, generated_files = _validate_state(
             state,
             state_path,
@@ -428,25 +443,34 @@ def _build_import_plan(job_directory):
             "generation_state",
             state_path,
             Path("generated-audio/generation-state.json"),
+            expected_sha256=state_sha256,
         )
-        for source, relative in generated_files.values():
+        for source, relative, digest in generated_files.values():
             _add_artifact(
                 artifacts,
                 "generated_wav",
                 source,
                 Path("generated-audio") / relative,
+                expected_sha256=digest,
             )
 
     generated_index = None
     manifest_diagnostics = ()
     if manifest_path.is_file():
-        generated_index, manifest_files, manifest_diagnostics = _validate_generated_manifest(
-            manifest_path,
-            output,
-            queue,
-            queue_sha256,
-            state_items,
-            state_exists=state is not None,
+        generated_index, raw_manifest, manifest_sha256 = _load_generated_index_snapshot(
+            manifest_path
+        )
+        generated_index, manifest_files, manifest_diagnostics = (
+            _validate_generated_manifest(
+                manifest_path,
+                output,
+                queue,
+                queue_sha256,
+                state_items,
+                generated_index,
+                raw_manifest,
+                state_exists=state is not None,
+            )
         )
         manifest_current = not manifest_diagnostics
         _add_artifact(
@@ -462,19 +486,23 @@ def _build_import_plan(job_directory):
                 if manifest_current
                 else Path("legacy/stale-generated-audio-manifest.json")
             ),
+            expected_sha256=manifest_sha256,
         )
-        for source, relative in manifest_files.values():
+        for source, relative, digest in manifest_files.values():
             _add_artifact(
                 artifacts,
                 "generated_wav",
                 source,
                 Path("generated-audio") / relative,
+                expected_sha256=digest,
             )
 
     summary = _generation_summary(
         queue, state_items, generated_index, manifest_diagnostics
     )
-    ordered_artifacts = tuple(sorted(artifacts.values(), key=lambda item: item.destination.as_posix()))
+    ordered_artifacts = tuple(
+        sorted(artifacts.values(), key=lambda item: item.destination.as_posix())
+    )
     logical_identity = hashlib.sha256(
         f"{queue_sha256}\n{output}".encode("utf-8")
     ).hexdigest()
@@ -490,6 +518,8 @@ def _build_import_plan(job_directory):
         external_inputs=_external_inputs(job_directory, job),
         logical_identity=logical_identity,
         manifest_diagnostics=manifest_diagnostics,
+        source_diagnostics=source_diagnostics,
+        runtime_status=runtime_status,
     )
     _verify_source_controls_unchanged(plan)
     return plan
@@ -543,11 +573,11 @@ def _validate_job(job):
                 f"Pregeneration job requires non-empty {field!r}"
             )
     if job.get("model") is not None and _optional_text(job.get("model")) is None:
-        raise LegacyAuthoringImportError(
-            "Pregeneration job model must be text or null"
-        )
+        raise LegacyAuthoringImportError("Pregeneration job model must be text or null")
     try:
-        created_at = datetime.fromisoformat(str(job["created_at"]).replace("Z", "+00:00"))
+        created_at = datetime.fromisoformat(
+            str(job["created_at"]).replace("Z", "+00:00")
+        )
     except ValueError as error:
         raise LegacyAuthoringImportError(
             "Pregeneration job created_at must be an ISO-8601 timestamp"
@@ -760,7 +790,7 @@ def _validate_state(state, state_path, output, queue, queue_sha256):
         source = _within(output, relative, f"state item {queue_id!r} path")
         info = _validate_generated_wav(source, value.get("file_sha256"), queue_id)
         _validate_quality(queue_id, value.get("quality"), info)
-        files[source] = (source, relative)
+        files[source] = (source, relative, value["file_sha256"])
     return items, files
 
 
@@ -770,24 +800,19 @@ def _validate_generated_manifest(
     queue,
     queue_sha256,
     state_items,
+    index,
+    raw,
     *,
     state_exists,
 ):
-    try:
-        index = GeneratedAudioIndex.load(manifest_path)
-    except GeneratedAudioManifestError as error:
-        raise LegacyAuthoringImportError(
-            f"Incompatible generated-audio manifest {manifest_path}: {error}"
-        ) from error
     diagnostics = []
     if index.metadata.get("source_queue_sha256") != queue_sha256:
         diagnostics.append("source_queue_sha256 does not match the imported queue")
     if not state_exists:
-        diagnostics.append("generation state is absent, so approvals cannot be confirmed")
-    queue_by_identity = {
-        (item.line_id, item.text_sha256): item for item in queue.items
-    }
-    raw = _load_json(manifest_path, "generated-audio manifest")
+        diagnostics.append(
+            "generation state is absent, so approvals cannot be confirmed"
+        )
+    queue_by_identity = {(item.line_id, item.text_sha256): item for item in queue.items}
     raw_entries = raw.get("entries", [])
     files = {}
     published_queue_ids = set()
@@ -809,7 +834,7 @@ def _validate_generated_manifest(
                 f"Generated WAV is missing or modified for line {entry.line_id!r}"
             )
         relative = _relative_within(output, entry.audio, "generated WAV")
-        files[entry.audio] = (entry.audio, relative)
+        files[entry.audio] = (entry.audio, relative, entry.audio_sha256)
         if state_exists and queue_item is not None:
             state_item = state_items.get(queue_item.queue_id)
             if not isinstance(state_item, dict) or (
@@ -846,8 +871,7 @@ def _validate_generated_manifest(
             for field in ("sample_rate", "sample_count"):
                 if raw_entry.get(field) != quality.get(field):
                     diagnostics.append(
-                        f"{field} does not match state item "
-                        f"{queue_item.queue_id!r}"
+                        f"{field} does not match state item {queue_item.queue_id!r}"
                     )
     if state_exists:
         approved_queue_ids = {
@@ -859,9 +883,7 @@ def _validate_generated_manifest(
         }
         missing = approved_queue_ids.difference(published_queue_ids)
         if missing:
-            diagnostics.append(
-                f"manifest omits {len(missing)} approved state item(s)"
-            )
+            diagnostics.append(f"manifest omits {len(missing)} approved state item(s)")
     return index, files, tuple(dict.fromkeys(diagnostics))
 
 
@@ -969,6 +991,9 @@ def _import_manifest(plan, import_id):
             "model": plan.job.get("model"),
             "narrator_character": plan.job.get("narrator_character"),
         }
+        if plan.source_diagnostics:
+            manifest["source"]["diagnostics"] = list(plan.source_diagnostics)
+            manifest["legacy_job"]["snapshot_status"] = plan.runtime_status
     return manifest
 
 
@@ -1025,9 +1050,14 @@ def _validate_import_root_collisions(destination_root, plan):
                 )
             queue_id = existing.get("queue_id")
             current = proposed.get(queue_id)
-            if current is not None and current != existing:
+            immutable_fields = ("line_id", "text_sha256", "queue_item_sha256")
+            if current is not None and any(
+                not isinstance(existing.get(field), str)
+                or existing.get(field) != current.get(field)
+                for field in immutable_fields
+            ):
                 raise LegacyAuthoringImportError(
-                    f"Queue identity {queue_id!r} conflicts with existing import "
+                    f"Immutable queue identity {queue_id!r} conflicts with existing import "
                     f"{manifest_path.parent}. No application data was changed."
                 )
 
@@ -1045,7 +1075,10 @@ def _validate_existing_import(destination, plan):
     expected = _import_manifest(plan, _import_id(plan))
     expected["imported_at"] = manifest.get("imported_at")
     source = manifest.get("source")
-    if not isinstance(source, dict) or source.get("logical_identity") != plan.logical_identity:
+    if (
+        not isinstance(source, dict)
+        or source.get("logical_identity") != plan.logical_identity
+    ):
         raise LegacyAuthoringImportError(
             f"Import ID collision at {destination}; choose a different destination root"
         )
@@ -1116,31 +1149,70 @@ def _validate_existing_import(destination, plan):
 
 def _verify_source_controls_unchanged(plan):
     for artifact in plan.artifacts:
-        if artifact.role not in CONTROL_ARTIFACT_ROLES:
-            continue
-        if not artifact.source.is_file() or sha256_file(artifact.source) != artifact.sha256:
+        if (
+            not artifact.source.is_file()
+            or sha256_file(artifact.source) != artifact.sha256
+        ):
             raise LegacyAuthoringImportError(
                 "Legacy source is active or changed during import; retry when idle. "
                 "No application data was published."
             )
 
 
-def _live_pid(value):
+def _legacy_runtime_status(job):
+    status = _optional_text(job.get("status")) or "unknown"
+    pid = job.get("pid")
+    pid_status = _pid_status(pid)
+    if status == "running":
+        if pid_status == "dead":
+            diagnostic = (
+                f"Legacy job remains marked running, but recorded PID {pid} is "
+                "proven absent; this stable snapshot is preserved as interrupted."
+            )
+            return "interrupted", (diagnostic,)
+        if pid_status == "live":
+            raise LegacyAuthoringImportError(
+                "Pregeneration source is active; retry import when the legacy job is idle"
+            )
+        raise LegacyAuthoringImportError(
+            "Legacy job is marked running, but its recorded PID is missing, invalid, "
+            "or cannot be inspected. Stop the producer and retry when its status is "
+            "known idle."
+        )
+    if pid_status == "live":
+        raise LegacyAuthoringImportError(
+            "Pregeneration source has a live recorded PID; retry import when idle"
+        )
+    return status, ()
+
+
+def _pid_status(value):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return False
+        return "unknown"
     try:
         os.kill(value, 0)
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        return "dead"
+    except (PermissionError, OSError):
+        return "unknown"
+    return "live"
 
 
-def _add_artifact(artifacts, role, source, destination):
+def _add_artifact(
+    artifacts,
+    role,
+    source,
+    destination,
+    *,
+    expected_sha256=None,
+):
     source = Path(source).resolve()
     destination = Path(destination)
     digest = sha256_file(source)
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise LegacyAuthoringImportError(
+            "Legacy source changed while it was being validated; retry when idle"
+        )
     existing = artifacts.get(destination)
     if existing is not None:
         if existing.source != source or existing.sha256 != digest:
@@ -1157,7 +1229,9 @@ def _import_id(plan):
 
 def _job_path(job_directory, value, label):
     if not isinstance(value, str) or not value.strip():
-        raise LegacyAuthoringImportError(f"Pregeneration job is missing its {label} path")
+        raise LegacyAuthoringImportError(
+            f"Pregeneration job is missing its {label} path"
+        )
     return _resolve_path(job_directory, value)
 
 
@@ -1176,7 +1250,9 @@ def _safe_relative(value, label):
     parts = value.split("/")
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
-        raise LegacyAuthoringImportError(f"{label} must stay within its owning directory")
+        raise LegacyAuthoringImportError(
+            f"{label} must stay within its owning directory"
+        )
     return Path(*path.parts)
 
 
@@ -1186,7 +1262,9 @@ def _within(root, relative, label):
     try:
         path.relative_to(root)
     except ValueError as error:
-        raise LegacyAuthoringImportError(f"{label} leaves its owning directory") from error
+        raise LegacyAuthoringImportError(
+            f"{label} leaves its owning directory"
+        ) from error
     return path
 
 
@@ -1195,7 +1273,9 @@ def _relative_within(root, path, label):
     try:
         return Path(path).resolve().relative_to(root)
     except ValueError as error:
-        raise LegacyAuthoringImportError(f"{label} leaves the generation output") from error
+        raise LegacyAuthoringImportError(
+            f"{label} leaves the generation output"
+        ) from error
 
 
 def _load_json(path, description):
@@ -1209,6 +1289,82 @@ def _load_json(path, description):
     if not isinstance(value, dict):
         raise LegacyAuthoringImportError(f"{description.title()} must be a JSON object")
     return value
+
+
+def _load_json_snapshot(path, description):
+    payload, digest = _read_snapshot(path, description)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LegacyAuthoringImportError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
+    if not isinstance(value, dict):
+        raise LegacyAuthoringImportError(f"{description.title()} must be a JSON object")
+    return value, digest
+
+
+def _load_queue_snapshot(path):
+    path = Path(path).expanduser().resolve()
+    payload, digest = _read_snapshot(path, "generation queue")
+    with tempfile.TemporaryDirectory(prefix="vntts-legacy-queue-") as directory:
+        snapshot = Path(directory) / "queue.jsonl"
+        snapshot.write_bytes(payload)
+        try:
+            parsed = VoiceGenerationQueue.load(snapshot)
+        except VoiceGenerationQueueError as error:
+            raise LegacyAuthoringImportError(
+                f"Incompatible generation queue {path}: {error}. "
+                "Re-export it with vntts-artifacts v0.6 before importing."
+            ) from error
+    return VoiceGenerationQueue(path, parsed.metadata, parsed.items), digest
+
+
+def _load_generated_index_snapshot(path):
+    path = Path(path).expanduser().resolve()
+    payload, digest = _read_snapshot(path, "generated-audio manifest")
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LegacyAuthoringImportError(
+            f"Unable to read generated-audio manifest {path}: {error}"
+        ) from error
+    with tempfile.TemporaryDirectory(prefix="vntts-legacy-manifest-") as directory:
+        snapshot = Path(directory) / "manifest.json"
+        snapshot.write_bytes(payload)
+        try:
+            parsed = GeneratedAudioIndex.load(snapshot)
+        except GeneratedAudioManifestError as error:
+            raise LegacyAuthoringImportError(
+                f"Incompatible generated-audio manifest {path}: {error}"
+            ) from error
+    raw_entries = raw.get("entries", []) if isinstance(raw, dict) else []
+    entries = []
+    for entry, record in zip(parsed.entries, raw_entries, strict=True):
+        relative = _safe_relative(record.get("audio"), "generated WAV path")
+        entries.append(
+            type(entry)(
+                line_id=entry.line_id,
+                text_sha256=entry.text_sha256,
+                audio=_within(path.parent, relative, "generated WAV path"),
+                audio_format=entry.audio_format,
+                audio_sha256=entry.audio_sha256,
+                sample_rate=entry.sample_rate,
+                sample_count=entry.sample_count,
+            )
+        )
+    return GeneratedAudioIndex(path, parsed.metadata, entries), raw, digest
+
+
+def _read_snapshot(path, description):
+    path = Path(path)
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise LegacyAuthoringImportError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
+    return payload, hashlib.sha256(payload).hexdigest()
 
 
 def _load_json_optional(path):

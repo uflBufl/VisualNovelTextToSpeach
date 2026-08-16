@@ -70,13 +70,15 @@ directory and checksum-verified, then the complete directory is renamed into
 place. The source job is never deleted, rewritten or regenerated. Existing
 imports are never overwritten.
 
-Immediately before staging is renamed, every source control file is hashed
-again: job, queue, state and manifest for generation; session, hidden key and
-report for listening. A changed file aborts and removes staging with an
-actionable retry-when-idle error. A live legacy PID is rejected before copying,
-and discovery never reports a job still marked `running` as a stable candidate.
-This closes the source-mutation window without locking or modifying producer
-files.
+Immediately before staging is renamed, every planned source artifact is hashed
+again: control documents and every generated or blind-listening WAV. A changed
+file aborts and removes staging with an actionable retry-when-idle error. A live
+legacy PID is rejected before copying. A job marked `running` is accepted only
+when its recorded positive PID is proven absent; its raw status is preserved,
+the imported snapshot is classified as `interrupted`, and discovery exposes the
+diagnostic. Missing, invalid, live, permission-denied or otherwise uninspectable
+PIDs fail closed. This closes the source-mutation window without locking or
+modifying producer files.
 
 Each import contains `import.json`, the original job snapshot, the exact queue,
 the state and optional generated manifest, plus every validated generated WAV.
@@ -85,12 +87,16 @@ provenance, full queue identities, attempts, seeds, statuses, review decisions
 and generated-file provenance.
 
 Logical import identity uses the full queue checksum and canonical legacy
-output location. Original and `registered_existing_job` wrappers for the same
+output location; the source fingerprint binds the exact authoritative state
+snapshot. Original and `registered_existing_job` wrappers for the same
 queue/output are idempotent. Re-import verifies every existing destination
-checksum. A changed source or modified destination fails without overwriting.
-Across separate jobs, the same queue ID may coexist only when line, text, file,
-attempt, seed, review and synthesis provenance agree; conflicting work is a
-hard error rather than last-write-wins.
+checksum. A changed source at the same logical location or modified destination
+fails without overwriting. Separate output histories may preserve the same
+canonical queue item while carrying different attempts, review decisions,
+providers or generated WAVs. Cross-history collision checks compare immutable
+line ID, text SHA-256 and the canonical full queue-record digest, so a changed
+voice, action or producer extension remains a hard conflict instead of being
+merged or accepted last-write-wins.
 
 ## Commands
 
@@ -140,14 +146,17 @@ them end to end.
 
 ## Verified legacy census
 
-The read-only discovery gate on 2026-08-16 validated all three current
-job-backed Reverse: 1999 shapes. The registered Patch 3.7 job has 1,220 queue
-items and 680 generated results, but remains marked `running`, so discovery
-deliberately does not certify it as a stable import candidate. The stopped
-character-story job has 592 queue items, 197 generated-pending-review results
-and 141 valid sparse failures. The older nullable-target job has 592 queue items
-and 338 approved results. No source or VNTTS application-data file was written
-during that census.
+The read-only discovery gate was repeated on 2026-08-17 and validated all three
+current job-backed Reverse: 1999 shapes as compatible immutable snapshots. The
+registered Patch 3.7 job has 1,220 queue items and 680 generated results. Its
+source still says `running`, but recorded PID 49573 is proven absent, so it is
+reported as `interrupted` without changing the source. The stopped newer
+character-story history has 592 queue items, 197 generated-pending-review
+results and 141 valid sparse failures. The separate older nullable-target
+history has the same 592 canonical queue records and 338 approved results;
+different review/generation provenance no longer causes those distinct output
+histories to collide. No source or VNTTS application-data file was written
+during this discovery census.
 
 The extended read-only gate surfaced two unpaired queues (63,419 and 97,893
 items), three archived output directories, and the current blind-listening

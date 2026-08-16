@@ -225,7 +225,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             imported_hash = sha256_file(imported_state)
             state = json.loads(fixture["state"].read_text(encoding="utf-8"))
             state["active"]["last_error"] = "new crash diagnostic"
-            fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
 
             with self.assertRaisesRegex(LegacyAuthoringImportError, "source changed"):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
@@ -239,7 +241,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             second_fixture = write_legacy_fixture(root / "second")
             rows = [
                 json.loads(line)
-                for line in second_fixture["queue"].read_text(encoding="utf-8").splitlines()
+                for line in second_fixture["queue"]
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
             rows[1]["voice_character"] = "Different Voice"
             second_fixture["queue"].write_text(
@@ -252,7 +256,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             second_fixture["state"].write_text(
                 json.dumps(state, sort_keys=True), encoding="utf-8"
             )
-            manifest = json.loads(second_fixture["manifest"].read_text(encoding="utf-8"))
+            manifest = json.loads(
+                second_fixture["manifest"].read_text(encoding="utf-8")
+            )
             manifest["source_queue_sha256"] = queue_hash
             second_fixture["manifest"].write_text(
                 json.dumps(manifest, sort_keys=True), encoding="utf-8"
@@ -264,7 +270,10 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
     def test_rejects_invalid_status_review_combinations(self):
         for status, review in (("failed", "approved"), ("generated", "approved")):
-            with self.subTest(status=status, review=review), TemporaryDirectory() as directory:
+            with (
+                self.subTest(status=status, review=review),
+                TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 fixture = write_legacy_fixture(root)
                 state = json.loads(fixture["state"].read_text(encoding="utf-8"))
@@ -310,14 +319,158 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                     mutated = True
                 return result
 
-            with patch(
-                "vntts.authoring.legacy_import.shutil.copy2",
-                side_effect=mutate_after_queue_copy,
-            ), self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"):
+            with (
+                patch(
+                    "vntts.authoring.legacy_import.shutil.copy2",
+                    side_effect=mutate_after_queue_copy,
+                ),
+                self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
+            ):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
 
             self.assertFalse((root / "app-data" / "legacy-").exists())
             self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_running_job_with_proven_dead_pid_imports_as_interrupted_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            job_path = fixture["job_directory"] / "job.json"
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            job["status"] = "running"
+            job["pid"] = 2_147_483_647
+            job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
+
+            with patch(
+                "vntts.authoring.legacy_import.os.kill",
+                side_effect=ProcessLookupError,
+            ):
+                candidate = next(
+                    item
+                    for item in discover_legacy_jobs(fixture["jobs"])
+                    if item.kind == "pregeneration-job"
+                )
+                result = import_legacy_job(fixture["job_directory"], root / "app-data")
+
+        self.assertTrue(candidate.compatible)
+        self.assertEqual(candidate.status, "interrupted")
+        self.assertTrue(candidate.diagnostics)
+        self.assertTrue(result.created)
+        self.assertEqual(result.manifest["legacy_job"]["status"], "running")
+        self.assertEqual(
+            result.manifest["legacy_job"]["snapshot_status"], "interrupted"
+        )
+        self.assertTrue(result.manifest["source"]["diagnostics"])
+
+    def test_running_job_with_unknown_pid_fails_closed(self):
+        for pid, kill_error in (
+            (None, None),
+            ("bad", None),
+            (2_147_483_647, PermissionError()),
+        ):
+            with self.subTest(pid=pid), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root)
+                job_path = fixture["job_directory"] / "job.json"
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+                job["status"] = "running"
+                job["pid"] = pid
+                job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
+                context = (
+                    patch(
+                        "vntts.authoring.legacy_import.os.kill",
+                        side_effect=kill_error,
+                    )
+                    if kill_error is not None
+                    else patch("vntts.authoring.legacy_import.os.kill")
+                )
+
+                with (
+                    context,
+                    self.assertRaisesRegex(
+                        LegacyAuthoringImportError,
+                        "missing, invalid, or cannot be inspected",
+                    ),
+                ):
+                    import_legacy_job(fixture["job_directory"], root / "app-data")
+
+                self.assertFalse((root / "app-data").exists())
+
+    def test_generated_wav_mutation_during_copy_aborts_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            original_copy = __import__("shutil").copy2
+            mutated = False
+
+            def mutate_after_wav_copy(source, destination):
+                nonlocal mutated
+                result = original_copy(source, destination)
+                if Path(source).resolve() == fixture["wav"].resolve() and not mutated:
+                    fixture["wav"].write_bytes(b"changed after copy")
+                    mutated = True
+                return result
+
+            with (
+                patch(
+                    "vntts.authoring.legacy_import.shutil.copy2",
+                    side_effect=mutate_after_wav_copy,
+                ),
+                self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
+            ):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_job_semantics_are_bound_to_the_exact_snapshotted_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            job_path = fixture["job_directory"] / "job.json"
+
+            def mutate_after_validation(job):
+                mutated = dict(job)
+                mutated["title"] = "Mutated after semantic read"
+                job_path.write_text(
+                    json.dumps(mutated, sort_keys=True), encoding="utf-8"
+                )
+
+            with (
+                patch(
+                    "vntts.authoring.legacy_import._validate_job",
+                    side_effect=mutate_after_validation,
+                ),
+                self.assertRaisesRegex(LegacyAuthoringImportError, "changed"),
+            ):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            self.assertFalse((root / "app-data").exists())
+
+    def test_state_validated_wav_hash_is_bound_without_a_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            fixture["manifest"].unlink()
+            original_validate = __import__(
+                "vntts.authoring.legacy_import", fromlist=["_validate_state"]
+            )._validate_state
+
+            def mutate_after_state_validation(*args, **kwargs):
+                result = original_validate(*args, **kwargs)
+                with fixture["wav"].open("ab") as stream:
+                    stream.write(b"changed after validation")
+                return result
+
+            with (
+                patch(
+                    "vntts.authoring.legacy_import._validate_state",
+                    side_effect=mutate_after_state_validation,
+                ),
+                self.assertRaisesRegex(LegacyAuthoringImportError, "changed"),
+            ):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            self.assertFalse((root / "app-data").exists())
 
     def test_standalone_import_requires_and_preserves_exact_queue_output_pair(self):
         with TemporaryDirectory() as directory:
@@ -364,12 +517,8 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(
-                LegacyAuthoringImportError, "full SHA-256"
-            ):
-                inspect_standalone_generation(
-                    other["queue"], fixture["state"].parent
-                )
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "full SHA-256"):
+                inspect_standalone_generation(other["queue"], fixture["state"].parent)
 
     def test_manifest_only_standalone_output_is_preserved_as_unconfirmed_snapshot(self):
         with TemporaryDirectory() as directory:
@@ -385,7 +534,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 result.manifest["summary"]["generated_manifest_state"], "stale"
             )
             self.assertTrue(
-                (result.destination / "legacy/stale-generated-audio-manifest.json").is_file()
+                (
+                    result.destination / "legacy/stale-generated-audio-manifest.json"
+                ).is_file()
             )
 
     def test_import_preserves_identity_attempts_review_and_valid_audio(self):
@@ -402,11 +553,13 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 result.destination / "queue.jsonl"
             )
             imported_state = json.loads(
-                (result.destination / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+                (
+                    result.destination / "generated-audio/generation-state.json"
+                ).read_text(encoding="utf-8")
             )
-            imported_wav = result.destination / "generated-audio/audio/rhiannon/line.wav"
+            imported_wav = (
+                result.destination / "generated-audio/audio/rhiannon/line.wav"
+            )
             identity = result.manifest["identities"][0]
 
             self.assertTrue(result.created)
@@ -414,7 +567,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             self.assertEqual(imported_queue.items[0].queue_id, fixture["queue_id"])
             self.assertEqual(imported_queue.items[0].line_id, fixture["line_id"])
             self.assertEqual(imported_queue.items[0].text_sha256, fixture["text_hash"])
-            self.assertTrue(imported_queue.items[0].document["provider_extension"]["keep"])
+            self.assertTrue(
+                imported_queue.items[0].document["provider_extension"]["keep"]
+            )
             self.assertEqual(identity["attempts"], 3)
             self.assertEqual(identity["seed"], 11)
             self.assertEqual(identity["status"], "approved")
@@ -499,21 +654,21 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             imported_hash = sha256_file(imported_state)
             state = json.loads(fixture["state"].read_text(encoding="utf-8"))
             state["items"][fixture["queue_id"]]["seed"] = 12
-            fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
             manifest = json.loads(fixture["manifest"].read_text(encoding="utf-8"))
             manifest["entries"][0]["seed"] = 12
             fixture["manifest"].write_text(
                 json.dumps(manifest, sort_keys=True), encoding="utf-8"
             )
 
-            with self.assertRaisesRegex(
-                LegacyAuthoringImportError, "source changed"
-            ):
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "source changed"):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
 
             self.assertEqual(sha256_file(imported_state), imported_hash)
 
-    def test_same_queue_identity_with_different_provenance_is_rejected(self):
+    def test_same_queue_record_can_coexist_in_distinct_generation_histories(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first_fixture = write_legacy_fixture(root / "first")
@@ -530,14 +685,22 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             second_fixture["manifest"].write_text(
                 json.dumps(manifest, sort_keys=True), encoding="utf-8"
             )
-            import_legacy_job(first_fixture["job_directory"], root / "app-data")
+            first = import_legacy_job(first_fixture["job_directory"], root / "app-data")
+            second = import_legacy_job(
+                second_fixture["job_directory"], root / "app-data"
+            )
 
-            with self.assertRaisesRegex(
-                LegacyAuthoringImportError, "conflicts with existing import"
-            ):
-                import_legacy_job(
-                    second_fixture["job_directory"], root / "app-data"
-                )
+        self.assertTrue(first.created)
+        self.assertTrue(second.created)
+        self.assertNotEqual(first.destination, second.destination)
+        self.assertEqual(
+            first.manifest["identities"][0]["queue_item_sha256"],
+            second.manifest["identities"][0]["queue_item_sha256"],
+        )
+        self.assertNotEqual(
+            first.manifest["identities"][0]["provider"],
+            second.manifest["identities"][0]["provider"],
+        )
 
     def test_tampered_source_wav_is_rejected_before_writing_app_data(self):
         with TemporaryDirectory() as directory:
@@ -577,9 +740,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 json.dumps(state, sort_keys=True), encoding="utf-8"
             )
 
-            with self.assertRaisesRegex(
-                LegacyAuthoringImportError, "must stay within"
-            ):
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "must stay within"):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
 
     def test_modified_import_is_never_overwritten(self):
@@ -643,7 +804,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
         self.assertEqual(result.manifest["identities"][0]["review_status"], "rejected")
         self.assertEqual(result.manifest["identities"][0]["seed"], 12)
-        self.assertEqual(result.manifest["summary"]["generated_manifest_state"], "stale")
+        self.assertEqual(
+            result.manifest["summary"]["generated_manifest_state"], "stale"
+        )
         self.assertTrue(result.manifest["summary"]["generated_manifest_diagnostics"])
         self.assertTrue(candidate.compatible)
         self.assertTrue(candidate.diagnostics)
@@ -659,9 +822,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             broken.mkdir()
             future_job = dict(fixture["job"])
             future_job["schema_version"] = 99
-            (broken / "job.json").write_text(
-                json.dumps(future_job), encoding="utf-8"
-            )
+            (broken / "job.json").write_text(json.dumps(future_job), encoding="utf-8")
 
             candidates = discover_legacy_jobs(fixture["jobs"])
 
@@ -670,7 +831,10 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         incompatible = next(
             candidate for candidate in candidates if not candidate.compatible
         )
-        self.assertIn("expected 'r1999.pregeneration-job' version 1", incompatible.compatibility_error)
+        self.assertIn(
+            "expected 'r1999.pregeneration-job' version 1",
+            incompatible.compatibility_error,
+        )
 
     def test_discovery_reports_unsupported_standalone_and_listening_work(self):
         with TemporaryDirectory() as directory:

@@ -32,7 +32,9 @@ def write_listening_fixture(root):
         write_pcm16_wav(audio_root / f"trial-0001-{side}.wav", samples, 16_000)
     source_report = root / "source-report.json"
     source_report.write_text('{"synthetic": true}\n', encoding="utf-8")
-    sources = [{"path": str(source_report.resolve()), "sha256": sha256_file(source_report)}]
+    sources = [
+        {"path": str(source_report.resolve()), "sha256": sha256_file(source_report)}
+    ]
     source_hash = hashlib.sha256(
         json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -196,13 +198,71 @@ class ListeningImportTest(unittest.TestCase):
                     mutated = True
                 return result
 
-            with patch(
-                "vntts.authoring.listening_import.shutil.copy2",
-                side_effect=mutate_after_report_copy,
-            ), self.assertRaisesRegex(ListeningImportError, "retry when idle"):
+            with (
+                patch(
+                    "vntts.authoring.listening_import.shutil.copy2",
+                    side_effect=mutate_after_report_copy,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "retry when idle"),
+            ):
                 import_listening_session(source, root / "app-data")
 
             self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_blind_audio_mutation_during_copy_aborts_before_publish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            audio_path = source / "audio/trial-0001-a.wav"
+            original_copy = __import__("shutil").copy2
+            mutated = False
+
+            def mutate_after_audio_copy(source_path, destination):
+                nonlocal mutated
+                result = original_copy(source_path, destination)
+                if Path(source_path).resolve() == audio_path.resolve() and not mutated:
+                    audio_path.write_bytes(b"changed after copy")
+                    mutated = True
+                return result
+
+            with (
+                patch(
+                    "vntts.authoring.listening_import.shutil.copy2",
+                    side_effect=mutate_after_audio_copy,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "retry when idle"),
+            ):
+                import_listening_session(source, root / "app-data")
+
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_session_semantics_are_bound_to_the_exact_snapshotted_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            session_path = source / "session.json"
+
+            def mutate_after_validation(_root, session):
+                mutated = dict(session)
+                mutated["updated_at"] = "2026-08-15T10:00:00+00:00"
+                session_path.write_text(
+                    json.dumps(mutated, sort_keys=True), encoding="utf-8"
+                )
+                return session["trials"], {
+                    Path("audio/trial-0001-a.wav"): source / "audio/trial-0001-a.wav",
+                    Path("audio/trial-0001-b.wav"): source / "audio/trial-0001-b.wav",
+                }
+
+            with (
+                patch(
+                    "vntts.authoring.listening_import._validate_session",
+                    side_effect=mutate_after_validation,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+
+            self.assertFalse((root / "app-data").exists())
 
     def test_import_preserves_session_key_report_audio_and_is_idempotent(self):
         with TemporaryDirectory() as directory:
@@ -244,7 +304,9 @@ class ListeningImportTest(unittest.TestCase):
                     key_path = source / ".blind-key.json"
                     key = json.loads(key_path.read_text(encoding="utf-8"))
                     key["assignments"][0]["a"]["model_id"] = "provider/model-two"
-                    key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
+                    key_path.write_text(
+                        json.dumps(key, sort_keys=True), encoding="utf-8"
+                    )
                 elif mutation == "path":
                     session_path = source / "session.json"
                     session = json.loads(session_path.read_text(encoding="utf-8"))
@@ -274,7 +336,9 @@ class ListeningImportTest(unittest.TestCase):
             session_path = source / "session.json"
             session = json.loads(session_path.read_text(encoding="utf-8"))
             session["updated_at"] = "2026-08-15T10:00:00+00:00"
-            session_path.write_text(json.dumps(session, sort_keys=True), encoding="utf-8")
+            session_path.write_text(
+                json.dumps(session, sort_keys=True), encoding="utf-8"
+            )
 
             with self.assertRaisesRegex(ListeningImportError, "changed after import"):
                 import_listening_session(source, root / "app-data")
