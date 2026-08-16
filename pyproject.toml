@@ -51,6 +51,7 @@ vntts-benchmark-tts = "vntts.tts_benchmark:main"
 vntts-replay-live = "vntts.live_replay:main"
 vntts-check-reference = "vntts.reference_quality:main"
 vntts-preflight-game-pack = "vntts.game_pack:main"
+vntts-pregenerate = "vntts.authoring.cli:main"
 
 [tool.uv.sources]
 torch = [

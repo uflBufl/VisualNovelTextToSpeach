@@ -342,6 +342,13 @@ banks, or distribute extracted game content. The Reverse: 1999 implementation
 and its local-only story/voice workflow are in the sibling
 `reverse1999-extractor` project.
 
+Existing Reverse: 1999 pregeneration jobs can be discovered and imported into
+VNTTS application data without executing extractor code or changing the source
+files. Use the separate `vntts-pregenerate` command; see the
+[legacy authoring import contract](docs/authoring-legacy-import.md) for its
+validation, idempotency and collision rules. Generation and review remain
+outside the primary player.
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh

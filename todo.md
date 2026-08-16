@@ -7,9 +7,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Move generic generation authoring into VNTTS
 
-- [ ] Add an isolated `vntts.authoring` package and separate
-      `vntts-pregenerate` entry point; keep long-running generation, review, and
-      model-selection workflows out of the primary player interface.
 - [ ] Move the generic queue builder, delivery annotations, bulk generation,
       generated-WAV validation, resumable state, approval, and manifest
       publication from `r1999extractor` into `vntts.authoring`.
@@ -27,7 +24,9 @@ sections after their implementation has been verified and committed.
 
 - [ ] Read and migrate existing `r1999.pregeneration-job`, generation queue,
       generation state, review decisions, and generated-audio manifests without
-      deleting, overwriting, or regenerating valid local artifacts.
+      deleting, overwriting, or regenerating valid local artifacts. Job-backed
+      generation is supported; standalone outputs and blind-listening sessions
+      are discoverable but still require non-destructive import.
 - [ ] Keep compatibility with current queue IDs, line IDs, text hashes, seeds,
       attempts, and approval state until all existing jobs have been imported
       and resumed successfully in VNTTS.
