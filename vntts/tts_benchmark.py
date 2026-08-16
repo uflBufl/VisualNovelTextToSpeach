@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import platform
+import re
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,13 +23,14 @@ from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
 )
-from vntts.synthesis import SynthesisRequest
+from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 from vntts.versioned_json import read_versioned_json
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
 default_output = get_local_data_directory() / "benchmarks" / "tts"
 default_text = "The tide is turning. We should return before the storm arrives."
 TTS_BENCHMARK_CORPUS_VERSION = 1
+TTS_BENCHMARK_CORPUS_SCHEMA = "vntts.tts-benchmark-corpus"
 TTS_BENCHMARK_REPORT_SCHEMA = "vntts.tts-benchmark-report"
 TTS_BENCHMARK_REPORT_VERSION = 1
 
@@ -96,19 +98,53 @@ def load_tts_benchmark_corpus(path):
         schema_version=TTS_BENCHMARK_CORPUS_VERSION,
         document_name="TTS benchmark corpus",
     )
+    declared_schema = document.get("schema")
+    if declared_schema not in {None, TTS_BENCHMARK_CORPUS_SCHEMA}:
+        raise ValueError(
+            f"Unsupported TTS benchmark corpus schema: {declared_schema!r}"
+        )
+    strict = declared_schema == TTS_BENCHMARK_CORPUS_SCHEMA
     samples = []
+    seen_ids = set()
     for index, sample in enumerate(document.get("samples", ()), start=1):
         if not isinstance(sample, dict):
             raise ValueError(f"TTS benchmark sample {index} must be an object")
+        if not strict and any(key in sample for key in ("line_id", "text_sha256")):
+            raise ValueError(
+                "Strict benchmark identity fields require the "
+                f"{TTS_BENCHMARK_CORPUS_SCHEMA!r} schema"
+            )
         character = str(sample.get("character") or "Narrator").strip() or "Narrator"
-        text = " ".join(str(sample.get("text") or "").split())
+        raw_text = sample.get("text")
+        text = (
+            raw_text
+            if strict and isinstance(raw_text, str)
+            else " ".join(str(raw_text or "").split())
+        )
         if not text:
             raise ValueError(f"TTS benchmark sample {index} has no text")
+        sample_id = str(sample.get("id") or f"sample-{index}")
+        if sample_id in seen_ids:
+            raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")
+        seen_ids.add(sample_id)
+        line_id = str(sample.get("line_id") or sample_id)
+        text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if strict:
+            if not sample.get("id") or not sample.get("line_id"):
+                raise ValueError(
+                    f"Strict TTS benchmark sample {index} requires id and line_id"
+                )
+            if sample.get("text_sha256") != text_digest:
+                raise ValueError(
+                    f"TTS benchmark sample {index} text_sha256 does not match exact text"
+                )
         samples.append(
             {
-                "id": str(sample.get("id") or f"sample-{index}"),
+                "id": sample_id,
+                "line_id": line_id,
                 "character": character,
                 "text": text,
+                "text_sha256": text_digest,
             }
         )
     if not samples:
@@ -117,6 +153,39 @@ def load_tts_benchmark_corpus(path):
         "name": str(document.get("name") or Path(path).stem),
         "samples": samples,
     }
+
+
+def _safe_component(value, label):
+    raw = str(value).strip()
+    if not raw or raw in {".", ".."}:
+        raise ValueError(f"{label} is not a safe output name: {value!r}")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-.")
+    if not safe or safe in {".", ".."}:
+        raise ValueError(f"{label} is not a safe output name: {value!r}")
+    return safe
+
+
+def _contained_child(root, name, label):
+    root = Path(root).expanduser().resolve()
+    candidate = (root / name).resolve()
+    if candidate.parent != root:
+        raise ValueError(f"{label} escapes benchmark output: {name!r}")
+    return candidate
+
+
+def _validate_render_result(result, request, stage):
+    if result.completion is not SynthesisCompletion.COMPLETE:
+        raise RuntimeError(
+            f"{stage} render did not complete: {result.completion.value}"
+        )
+    if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
+        raise RuntimeError(f"{stage} render returned an invalid sample rate")
+    if (
+        result.diagnostics.seed != request.seed
+        or result.diagnostics.generation_profile != request.generation_profile
+    ):
+        raise RuntimeError(f"{stage} render diagnostics do not match the request")
+    return result
 
 
 def benchmark_backend(
@@ -134,6 +203,28 @@ def benchmark_backend(
     cpu_clock=process_time,
 ):
     output_directory = Path(output_directory).expanduser().resolve()
+    backend_component = _safe_component(backend_name, "Backend")
+    work_items = tuple(
+        benchmark_samples
+        or (
+            {"id": character, "character": character, "text": text}
+            for character in characters
+        )
+    )
+    output_names = []
+    seen_ids = set()
+    for index, item in enumerate(work_items, start=1):
+        sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
+        if sample_id in seen_ids:
+            raise ValueError(f"Duplicate benchmark sample ID: {sample_id!r}")
+        seen_ids.add(sample_id)
+        character_component = _safe_component(item.get("character"), "Character")
+        sample_component = _safe_component(sample_id, "Sample ID")
+        output_names.append(
+            f"{backend_component}-{character_component}-{sample_component}.wav"
+        )
+    if len(output_names) != len({name.casefold() for name in output_names}):
+        raise ValueError("Benchmark samples collide as output WAV names")
     with TemporaryDirectory() as temporary_directory:
         wall_started = clock()
         cpu_started = cpu_clock()
@@ -141,11 +232,7 @@ def benchmark_backend(
         startup_wall_ms = (clock() - wall_started) * 1000
         startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
         samples = []
-        work_items = benchmark_samples or (
-            {"id": character, "character": character, "text": text}
-            for character in characters
-        )
-        for item in work_items:
+        for item, output_name in zip(work_items, output_names, strict=True):
             sample_id = str(item.get("id") or item["character"])
             character = item["character"]
             sample_text = item["text"]
@@ -162,8 +249,11 @@ def benchmark_backend(
                 generation_profile=getattr(backend, "generation_profile", "stable"),
             )
             if callable(render):
-                rendered = render(render_request).collect()
+                rendered = _validate_render_result(
+                    render(render_request).collect(), render_request, "Fresh"
+                )
                 audio = rendered.pcm
+                audio_sample_rate = rendered.sample_rate
                 first_audio_ms = rendered.timing.first_chunk_ms
                 fresh_cache_source = rendered.diagnostics.cache_source
             else:
@@ -179,13 +269,15 @@ def benchmark_backend(
                     audio = getattr(backend, "last_generated_audio", None)
                 if audio is None:
                     raise RuntimeError("Streaming backend produced no completed audio")
+                audio_sample_rate = backend.sample_rate
                 first_audio_ms = backend.last_first_audio_ms
             elif not callable(render):
                 audio = prepared
+                audio_sample_rate = backend.sample_rate
                 first_audio_ms = (clock() - generation_started) * 1000
             generation_wall_ms = (clock() - generation_started) * 1000
             generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
-            duration_seconds = len(audio) / backend.sample_rate
+            duration_seconds = len(audio) / audio_sample_rate
             fresh_underrun = bool(getattr(backend, "last_playback_underrun", False))
             fresh_generation_limited = bool(
                 getattr(backend, "last_generation_limited", False)
@@ -193,7 +285,9 @@ def benchmark_backend(
 
             cached_started = clock()
             if callable(render):
-                memory_rendered = render(render_request).collect()
+                memory_rendered = _validate_render_result(
+                    render(render_request).collect(), render_request, "Memory-cache"
+                )
                 memory_cache_source = memory_rendered.diagnostics.cache_source
             else:
                 cached_prepared = backend.prepare(character, sample_text)
@@ -222,7 +316,11 @@ def benchmark_backend(
                 backend.audio_cache.clear()
                 persistent_started = clock()
                 if callable(render):
-                    persistent_rendered = render(render_request).collect()
+                    persistent_rendered = _validate_render_result(
+                        render(render_request).collect(),
+                        render_request,
+                        "Persistent-cache",
+                    )
                     persistent_cache_source = (
                         persistent_rendered.diagnostics.cache_source
                     )
@@ -247,13 +345,18 @@ def benchmark_backend(
                     getattr(backend, "last_generation_limited", False)
                 )
 
-            safe_character = "-".join(character.casefold().split())
-            safe_sample_id = "-".join(sample_id.casefold().split()).replace("/", "-")
+            expected_text_sha256 = hashlib.sha256(
+                sample_text.encode("utf-8")
+            ).hexdigest()
+            declared_text_sha256 = item.get("text_sha256")
+            if declared_text_sha256 not in {None, expected_text_sha256}:
+                raise ValueError(
+                    f"Benchmark sample {sample_id!r} text_sha256 does not match exact text"
+                )
             audio_path = write_wav(
-                output_directory
-                / f"{backend_name}-{safe_character}-{safe_sample_id}.wav",
+                _contained_child(output_directory, output_name, "Benchmark WAV"),
                 audio,
-                backend.sample_rate,
+                audio_sample_rate,
             )
             samples.append(
                 {
@@ -261,9 +364,7 @@ def benchmark_backend(
                     "line_id": str(item.get("line_id") or sample_id),
                     "character": character,
                     "text": sample_text,
-                    "text_sha256": hashlib.sha256(
-                        sample_text.encode("utf-8")
-                    ).hexdigest(),
+                    "text_sha256": expected_text_sha256,
                     "audio": str(audio_path),
                     "audio_sha256": sha256_file(audio_path),
                     "duration_seconds": duration_seconds,
@@ -327,7 +428,10 @@ def benchmark_backend(
 def write_report(report, output_directory):
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
-    path = output_directory / f"{report['backend']}.json"
+    backend_component = _safe_component(report["backend"], "Backend")
+    path = _contained_child(
+        output_directory, f"{backend_component}.json", "Benchmark report"
+    )
     atomic_write_json(path, report)
     return path
 

@@ -1,4 +1,7 @@
+import hashlib
+import json
 import unittest
+import wave
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -70,29 +73,42 @@ class FakeRenderingBackend(FakeBackend):
     capabilities = SpeechBackendCapabilities(True, True, True)
     generation_profile = "stable"
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        completions=(SynthesisCompletion.COMPLETE,),
+        result_sample_rate=None,
+        diagnostics_profile=None,
+    ):
         super().__init__()
         self.render_requests = []
+        self.completions = tuple(completions)
+        self.result_sample_rate = result_sample_rate or self.sample_rate
+        self.diagnostics_profile = diagnostics_profile
 
     def render(self, request):
         self.render_requests.append(request)
+        call_index = len(self.render_requests) - 1
         cache_source = (
             "fresh-generation" if len(self.render_requests) == 1 else "memory-cache"
         )
+        completion = self.completions[min(call_index, len(self.completions) - 1)]
         audio = np.array([[0.0], [0.5], [-0.5], [0.0]], dtype=np.float32)
 
         def produce():
             yield SynthesisChunk(audio, self.sample_rate, 0, 25.0)
             return SynthesisResult(
                 pcm=audio,
-                sample_rate=self.sample_rate,
-                completion=SynthesisCompletion.COMPLETE,
+                sample_rate=self.result_sample_rate,
+                completion=completion,
                 limits=SynthesisLimits(256, 3.0),
                 timing=SynthesisTiming(25.0, 50.0),
                 diagnostics=SynthesisDiagnostics(
                     backend="fake",
                     cache_source=cache_source,
-                    generation_profile=request.generation_profile,
+                    generation_profile=(
+                        self.diagnostics_profile or request.generation_profile
+                    ),
                     seed=request.seed,
                     chunk_count=1,
                     sample_count=4,
@@ -169,6 +185,51 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(sample["memory_cache"]["cache_source"], "memory-cache")
         self.assertEqual(sample["first_audio_ms"], 25.0)
 
+    def test_rejects_incomplete_or_mismatched_render_before_publishing_wav(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        cases = (
+            FakeRenderingBackend(completions=(SynthesisCompletion.LIMITED,)),
+            FakeRenderingBackend(
+                completions=(
+                    SynthesisCompletion.COMPLETE,
+                    SynthesisCompletion.CANCELLED,
+                )
+            ),
+            FakeRenderingBackend(diagnostics_profile="different"),
+        )
+        for backend in cases:
+            with self.subTest(backend=backend), TemporaryDirectory() as directory:
+                with self.assertRaises(RuntimeError):
+                    benchmark_backend(
+                        "fake",
+                        registry,
+                        ["Kamuta"],
+                        "A line.",
+                        directory,
+                        backend_factory=lambda _name, _registry, _cache: backend,
+                    )
+                self.assertEqual(list(Path(directory).glob("*.wav")), [])
+
+    def test_uses_typed_render_sample_rate_for_published_wav(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        backend = FakeRenderingBackend(result_sample_rate=8)
+        with TemporaryDirectory() as directory:
+            report = benchmark_backend(
+                "fake",
+                registry,
+                ["Kamuta"],
+                "A line.",
+                directory,
+                backend_factory=lambda _name, _registry, _cache: backend,
+            )
+            with wave.open(report["samples"][0]["audio"], "rb") as stream:
+                self.assertEqual(stream.getframerate(), 8)
+        self.assertEqual(report["samples"][0]["duration_seconds"], 0.5)
+
     def test_records_cold_generation_cache_and_audio(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
@@ -224,8 +285,110 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(corpus["name"], "Rhiannon")
         self.assertEqual(
             corpus["samples"],
-            [{"id": "short", "character": "Rhiannon", "text": "I, erhm ..."}],
+            [
+                {
+                    "id": "short",
+                    "line_id": "short",
+                    "character": "Rhiannon",
+                    "text": "I, erhm ...",
+                    "text_sha256": hashlib.sha256(b"I, erhm ...").hexdigest(),
+                }
+            ],
         )
+
+    def test_strict_corpus_preserves_exact_text_and_identity(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            text = "I,  erhm ...\nStill exact."
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "queue:1",
+                                "line_id": "line:1",
+                                "character": "Rhiannon",
+                                "text": text,
+                                "text_sha256": digest,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            corpus = load_tts_benchmark_corpus(path)
+
+        self.assertEqual(corpus["samples"][0]["text"], text)
+        self.assertEqual(corpus["samples"][0]["line_id"], "line:1")
+        self.assertEqual(corpus["samples"][0]["text_sha256"], digest)
+
+    def test_rejects_conflicting_schema_identity_and_duplicate_ids(self):
+        documents = (
+            {
+                "schema": "unrelated.corpus",
+                "schema_version": 1,
+                "samples": [{"id": "one", "text": "Text"}],
+            },
+            {
+                "schema_version": 1,
+                "samples": [{"id": "one", "line_id": "line", "text": "Text"}],
+            },
+            {
+                "schema_version": 1,
+                "samples": [
+                    {"id": "one", "text": "First"},
+                    {"id": "one", "text": "Second"},
+                ],
+            },
+        )
+        for document in documents:
+            with self.subTest(document=document), TemporaryDirectory() as directory:
+                path = Path(directory) / "corpus.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_tts_benchmark_corpus(path)
+
+    def test_output_names_are_contained_and_collisions_rejected(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("../Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        backend = FakeRenderingBackend()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = benchmark_backend(
+                "../escaped",
+                registry,
+                [],
+                "unused",
+                root,
+                benchmark_samples=[
+                    {"id": "../sample", "character": "../Kamuta", "text": "Text"}
+                ],
+                backend_factory=lambda _name, _registry, _cache: backend,
+            )
+            audio = Path(report["samples"][0]["audio"])
+            self.assertEqual(audio.parent, root.resolve())
+            report_path = write_report(report, root)
+            self.assertEqual(report_path.parent, root.resolve())
+            self.assertFalse((root.parent / "escaped.json").exists())
+
+            with self.assertRaisesRegex(ValueError, "collide"):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    [],
+                    "unused",
+                    root,
+                    benchmark_samples=[
+                        {"id": "A/B", "character": "../Kamuta", "text": "One"},
+                        {"id": "A B", "character": "../Kamuta", "text": "Two"},
+                    ],
+                    backend_factory=lambda _name, _registry, _cache: backend,
+                )
 
     def test_benchmarks_each_corpus_line_with_cache_stage_fields(self):
         registry = CharacterVoiceRegistry(
