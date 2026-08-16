@@ -1,5 +1,20 @@
 """Offline VNTTS authoring and non-destructive legacy-work import."""
 
+from vntts.authoring.bulk_generation import (
+    AudioQuality,
+    BulkGenerationError,
+    BulkGenerationResult,
+    SpeechQuality,
+    inspect_generated_speech,
+    inspect_generated_wav,
+    is_spoken_queue_item,
+    load_generation_state,
+    normalize_short_trailing_ellipsis,
+    publish_generated_manifest,
+    review_generation_item,
+    run_bulk_generation,
+    sha256_control_path,
+)
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     LegacyImportCandidate,
@@ -46,6 +61,10 @@ from vntts.authoring.queue_builder import (
 )
 
 __all__ = [
+    "AudioQuality",
+    "BulkGenerationError",
+    "BulkGenerationResult",
+    "SpeechQuality",
     "LegacyAuthoringImportError",
     "LegacyImportCandidate",
     "LegacyImportResult",
@@ -72,12 +91,21 @@ __all__ = [
     "import_standalone_generation",
     "inspect_listening_session",
     "inspect_generation_queue",
+    "inspect_generated_wav",
+    "inspect_generated_speech",
     "inspect_standalone_generation",
     "listening_progress",
     "load_listening_session",
+    "load_generation_state",
+    "is_spoken_queue_item",
     "next_pending_trial",
     "plan_generation_queue",
     "publish_generation_queue",
+    "publish_generated_manifest",
+    "normalize_short_trailing_ellipsis",
     "record_trial_preference",
+    "review_generation_item",
+    "run_bulk_generation",
+    "sha256_control_path",
     "select_representative_items",
 ]

@@ -55,12 +55,18 @@ def create_backend(
     cache_root,
     *,
     model_name=None,
+    narrator_reference=None,
     moss_streaming_first_chunk_frames=None,
     moss_streaming_interval=None,
 ):
     cache_root = Path(cache_root)
     common = {
         "persistent_audio_cache_directory": cache_root / "audio",
+        **(
+            {"narrator_reference": narrator_reference}
+            if narrator_reference is not None
+            else {}
+        ),
     }
     if name == "pocket-tts":
         return PocketTTSVoiceRouterBackend(

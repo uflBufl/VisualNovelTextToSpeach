@@ -363,6 +363,13 @@ They apply an explicit canonical source-audio policy and report missing voice
 references before generation. See the
 [collection-driven queue contract](docs/authoring-generation-queues.md).
 
+The same authoring entry point now resumes typed, device-independent bulk
+generation and owns generated-WAV validation, cumulative attempts/seeds,
+approval/rejection and approved-only manifest publication. It dual-reads
+preserved legacy state while treating state, not a possibly stale manifest, as
+the review authority. See the
+[resumable bulk-generation contract](docs/authoring-bulk-generation.md).
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh

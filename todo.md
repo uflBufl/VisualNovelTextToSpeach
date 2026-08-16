@@ -7,9 +7,9 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Move generic generation authoring into VNTTS
 
-- [ ] Move the generic queue builder, delivery annotations, bulk generation,
-      generated-WAV validation, resumable state, approval, and manifest
-      publication from `r1999extractor` into `vntts.authoring`.
+- [ ] Move generic delivery-annotation authoring into `vntts.authoring`; the
+      collection-driven queue builder and typed resumable generation/review
+      executor are now owned here.
 - [ ] Publish a final verified game pack from the authoring workflow after
       generation and review; keep extracted inputs, generated WAVs, and review
       state in application data rather than the repository.
