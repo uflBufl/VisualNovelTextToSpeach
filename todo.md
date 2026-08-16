@@ -18,10 +18,9 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Make the authoring workbench truthful and actionable
 
-- [ ] Add writable story-collection selection that filters exact queue IDs,
-      show its selection details, persist recent narrator/reference choices,
-      and keep rarely changed paths behind readiness details.
-- [ ] Add friendly timestamps for imported histories and resume workspaces.
+- [ ] Preserve source job creation/update timestamps in future import snapshots
+      and show friendly resume-workspace creation timestamps. Existing immutable
+      import time is already shown; never infer missing history from file mtimes.
 
 ## Live mode
 

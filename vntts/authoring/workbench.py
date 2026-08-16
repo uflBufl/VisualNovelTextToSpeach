@@ -18,11 +18,16 @@ from pathlib import Path, PurePosixPath
 from platformdirs import user_data_path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    validate_voice_manifest,
+)
 
 from vntts.authoring import legacy_import
 from vntts.authoring.bulk_generation import (
@@ -145,6 +150,39 @@ class GenerationReadiness:
     missing_voice: int | None
     blocked_reasons: tuple[str, ...]
     queue_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CollectionSelection:
+    collection_ids: tuple[str, ...]
+    collection_count: int
+    story_records: int
+    queue_items: int
+    queue_ids: tuple[str, ...]
+    readiness: GenerationReadiness
+
+
+@dataclass(frozen=True)
+class ImmutableHistoryTimestamp:
+    kind: str
+    instant: str
+    display: str
+
+
+@dataclass(frozen=True)
+class WorkspaceCollection:
+    collection_id: str
+    title: str
+    kind: str
+    record_count: int
+
+
+@dataclass(frozen=True)
+class WorkspaceVoice:
+    character: str
+    speaker: str
+    aliases: tuple[str, ...]
+    references: tuple[Path, ...]
 
 
 def default_workspaces_root():
@@ -299,7 +337,6 @@ def create_resume_workspace(
             voice_manifest=voice_manifest,
             import_manifest=manifest,
             queue=queue_snapshot,
-            narrator_character=narrator,
         )
         run_config = {
             "backend": _optional_text(backend),
@@ -619,6 +656,236 @@ def inspect_generation_readiness(workspace_directory, *, queue_ids=None):
         blocked_reasons=reasons,
         queue_ids=tuple(item.queue_id for item in candidates),
     )
+
+
+def inspect_collection_selection(workspace_directory, *, collection_ids=None):
+    """Map declared story collections to exact immutable queue identities."""
+    directory, workspace = _load_workspace(workspace_directory)
+    document = _load_bound_story_document(directory, workspace)
+    queue = _load_bound_workspace_queue(directory, workspace)
+    declared = tuple(collection.collection_id for collection in document.collections)
+    if collection_ids is None:
+        selected = declared
+    else:
+        requested = {_required_text(value, "Collection ID") for value in collection_ids}
+        unknown = requested - set(declared)
+        if unknown:
+            raise AuthoringWorkbenchError(
+                "Selected collection IDs are absent from the story index: "
+                + ", ".join(sorted(unknown))
+            )
+        selected = tuple(value for value in declared if value in requested)
+    record_keys = {
+        (record.line_id, record.text_sha256)
+        for collection_id in selected
+        for record in document.records_for_collection(collection_id)
+    }
+    queue_ids = tuple(
+        item.queue_id
+        for item in queue.items
+        if (item.line_id, item.text_sha256) in record_keys
+    )
+    readiness = inspect_generation_readiness(
+        workspace_directory,
+        queue_ids=queue_ids,
+    )
+    return CollectionSelection(
+        collection_ids=selected,
+        collection_count=len(selected),
+        story_records=len(record_keys),
+        queue_items=len(queue_ids),
+        queue_ids=queue_ids,
+        readiness=readiness,
+    )
+
+
+def list_workspace_collections(workspace_directory):
+    directory, workspace = _load_workspace(workspace_directory)
+    document = _load_bound_story_document(directory, workspace)
+    return tuple(
+        WorkspaceCollection(
+            collection_id=collection.collection_id,
+            title=collection.title,
+            kind=collection.kind,
+            record_count=len(document.records_for_collection(collection.collection_id)),
+        )
+        for collection in document.collections
+    )
+
+
+def workspace_voice_snapshot(workspace_directory):
+    """Load exact hash-bound voice tokens without trusting cached resolved paths."""
+    directory, workspace = _load_workspace(workspace_directory)
+    voice = workspace.get("voice_manifest")
+    if not isinstance(voice, dict):
+        return ()
+    manifest_path = _within(
+        directory,
+        _safe_relative(voice.get("path"), "Voice manifest snapshot"),
+        "Voice manifest snapshot",
+    )
+    payload = _read_bound_bytes(
+        manifest_path,
+        _require_sha256(voice.get("sha256"), "Voice manifest snapshot SHA-256"),
+        "Voice manifest snapshot",
+    )
+    try:
+        document = json.loads(payload.decode("utf-8"))
+        entries = validate_voice_manifest(document)
+    except (UnicodeDecodeError, json.JSONDecodeError, VoiceManifestError) as error:
+        raise AuthoringWorkbenchError(
+            f"Workspace voice manifest snapshot is invalid: {error}"
+        ) from error
+    controls = {}
+    for control in voice.get("controls", []):
+        if not isinstance(control, dict):
+            raise AuthoringWorkbenchError("Workspace voice control is malformed")
+        path = _within(
+            directory,
+            _safe_relative(control.get("path"), "Voice reference snapshot"),
+            "Voice reference snapshot",
+        )
+        controls[path] = _require_sha256(
+            control.get("sha256"), "Voice reference snapshot SHA-256"
+        )
+    values = []
+    used = set()
+    for entry in entries:
+        references = []
+        for value in entry.references:
+            relative = _safe_relative(value, "Voice reference")
+            path = _within(manifest_path.parent, relative, "Voice reference")
+            expected = controls.get(path)
+            if expected is None:
+                raise AuthoringWorkbenchError(
+                    f"Voice reference is absent from workspace controls: {value!r}"
+                )
+            _read_bound_bytes(path, expected, "Voice reference snapshot")
+            references.append(path)
+            used.add(path)
+        values.append(
+            WorkspaceVoice(
+                character=entry.character,
+                speaker=entry.speaker,
+                aliases=entry.aliases,
+                references=tuple(references),
+            )
+        )
+    if used != set(controls):
+        raise AuthoringWorkbenchError(
+            "Workspace voice control inventory does not match the manifest snapshot"
+        )
+    return tuple(values)
+
+
+def _load_bound_story_document(directory, workspace):
+    story = workspace.get("story_index")
+    if not isinstance(story, dict):
+        raise AuthoringWorkbenchError(
+            "Collection selection requires a snapshotted story index"
+        )
+    path = _within(
+        directory,
+        _safe_relative(story.get("path"), "Story index snapshot"),
+        "Story index snapshot",
+    )
+    payload = _read_bound_bytes(
+        path,
+        _require_sha256(story.get("sha256"), "Story index snapshot SHA-256"),
+        "Story index snapshot",
+    )
+    with tempfile.TemporaryDirectory(prefix="vntts-story-snapshot-") as temporary:
+        snapshot = Path(temporary) / "story-index.jsonl"
+        snapshot.write_bytes(payload)
+        try:
+            return load_story_index_document(snapshot)
+        except StoryIndexError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+
+
+def _load_bound_workspace_queue(directory, workspace):
+    queue_digest = next(
+        (
+            value.get("sha256")
+            for value in workspace.get("seed_inventory", [])
+            if isinstance(value, dict) and value.get("path") == "queue.jsonl"
+        ),
+        None,
+    )
+    payload = _read_bound_bytes(
+        directory / "queue.jsonl",
+        _require_sha256(queue_digest, "Workspace queue SHA-256"),
+        "Workspace queue",
+    )
+    with tempfile.TemporaryDirectory(prefix="vntts-queue-snapshot-") as temporary:
+        snapshot = Path(temporary) / "queue.jsonl"
+        snapshot.write_bytes(payload)
+        try:
+            return VoiceGenerationQueue.load(snapshot)
+        except VoiceGenerationQueueError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+
+
+def _read_bound_bytes(path, expected_sha256, label):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise AuthoringWorkbenchError(f"{label} is missing or unsafe")
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise AuthoringWorkbenchError(f"Unable to read {label}: {error}") from error
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise AuthoringWorkbenchError(f"{label} was modified")
+    return payload
+
+
+def immutable_history_timestamps(workspace_directory):
+    """Return friendly timestamps sourced only from the immutable import snapshot."""
+    directory, workspace = _load_workspace(workspace_directory)
+    snapshot = _load_json(
+        directory / workspace["source"]["snapshot"],
+        "workspace import snapshot",
+    )
+    legacy_job = snapshot.get("legacy_job")
+    candidates = []
+    if isinstance(legacy_job, dict):
+        candidates.extend(
+            (
+                ("Source created", legacy_job.get("created_at")),
+                ("Source updated", legacy_job.get("updated_at")),
+            )
+        )
+    candidates.append(("Imported", snapshot.get("imported_at")))
+    values = []
+    for kind, value in candidates:
+        parsed = _parse_history_timestamp(value)
+        if parsed is None:
+            continue
+        utc = parsed.astimezone(timezone.utc)
+        values.append(
+            (
+                utc,
+                kind,
+                ImmutableHistoryTimestamp(
+                    kind=kind,
+                    instant=utc.isoformat(),
+                    display=f"{kind}: {utc:%Y-%m-%d %H:%M:%S} UTC",
+                ),
+            )
+        )
+    return tuple(value for _instant, _kind, value in sorted(values))
+
+
+def _parse_history_timestamp(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def generation_command(
@@ -965,7 +1232,6 @@ def _copy_input_snapshots(
     voice_manifest,
     import_manifest,
     queue,
-    narrator_character,
 ):
     selected_sources = []
     story_config = None
@@ -1033,24 +1299,6 @@ def _copy_input_snapshots(
             "matches_legacy": legacy_digest == digest if legacy_digest else None,
         }
         selected_sources.append((source, digest, "voice manifest"))
-        registry = CharacterVoiceRegistry.from_file(target)
-        missing_characters = set()
-        for item in queue.items:
-            if item.action != "generate" or not is_spoken_queue_item(item):
-                continue
-            character = (
-                narrator_character
-                if item.voice_character == "Narrator"
-                else item.voice_character or item.speaker
-            )
-            voice = registry.resolve(character)
-            if voice is None or not voice.references:
-                missing_characters.add(character)
-        if missing_characters:
-            raise AuthoringWorkbenchError(
-                "Selected voice manifest does not cover queued characters: "
-                + ", ".join(sorted(missing_characters, key=str.casefold))
-            )
     return story_config, voice_config, tuple(selected_sources)
 
 
@@ -1479,10 +1727,14 @@ __all__ = [
     "ActiveAttempt",
     "AuthoringRuntimeStatus",
     "AuthoringWorkbenchError",
+    "CollectionSelection",
     "GenerationReadiness",
+    "ImmutableHistoryTimestamp",
     "ReviewItem",
     "WorkspaceCreationResult",
+    "WorkspaceCollection",
     "WorkspaceSummary",
+    "WorkspaceVoice",
     "create_resume_workspace",
     "default_workspaces_root",
     "discover_imports",
@@ -1491,7 +1743,11 @@ __all__ = [
     "generation_control_bindings",
     "generation_output_identity",
     "inspect_workspace",
+    "inspect_collection_selection",
     "inspect_generation_readiness",
+    "immutable_history_timestamps",
+    "list_workspace_collections",
     "list_review_items",
     "review_workspace_item",
+    "workspace_voice_snapshot",
 ]

@@ -21,8 +21,9 @@ from vntts.authoring.workbench import list_review_items
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QProcess, QSettings
+    from PySide6.QtCore import QProcess, QSettings, Qt
     from PySide6.QtGui import QCloseEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
     from vntts.authoring.workbench_ui import (
@@ -35,7 +36,9 @@ except ModuleNotFoundError as error:
     QApplication = None
     QProcess = None
     QSettings = None
+    Qt = None
     QCloseEvent = None
+    QTest = None
     QMessageBox = None
     QPushButton = None
     AuthoringWorkbenchDialog = None
@@ -194,6 +197,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
             self.assertTrue(dialog.collection_tree.hasFocus())
+            QTest.keyClick(dialog.collection_tree, Qt.Key.Key_Tab)
+            self.application.processEvents()
+            self.assertTrue(dialog.readiness_details.hasFocus())
+            QTest.keyClick(dialog.readiness_details, Qt.Key.Key_Tab)
+            self.application.processEvents()
+            self.assertTrue(dialog.recent_choice.hasFocus())
             for button in dialog.findChildren(QPushButton):
                 self.assertTrue(button.accessibleName(), button.text())
                 self.assertTrue(button.accessibleDescription(), button.text())
@@ -272,6 +281,172 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertNotIn(
                 " ".join([process.program, *process.arguments]), process.arguments
             )
+
+    def test_collection_selection_persists_and_drives_exact_child_filter(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.clear_authoring_state(workspace)
+            settings = self.settings(root)
+            process = FakeProcess(QProcess.ProcessState.NotRunning)
+            dialog = AuthoringWorkbenchDialog(
+                workspace, settings=settings, process=process
+            )
+            captured = []
+
+            def command(_workspace, *, queue_ids=None, **_kwargs):
+                captured.append(queue_ids)
+                return (os.sys.executable, "-c", "pass")
+
+            with patch(
+                "vntts.authoring.workbench_ui.generation_command",
+                side_effect=command,
+            ):
+                dialog.start_generation()
+
+            self.assertEqual(
+                captured, [dialog.collection_selection.readiness.queue_ids]
+            )
+            self.assertEqual(len(captured[0]), 1)
+            process.state_value = QProcess.ProcessState.NotRunning
+            dialog.collection_tree.topLevelItem(0).setCheckState(
+                0, Qt.CheckState.Unchecked
+            )
+            self.application.processEvents()
+            self.assertEqual(
+                dialog.collection_selection.collection_ids, ("source-only",)
+            )
+            self.assertIn("NO QUEUED ITEMS IN SELECTION", dialog.status.text())
+            for index in range(dialog.collection_tree.topLevelItemCount()):
+                dialog.collection_tree.topLevelItem(index).setCheckState(
+                    0, Qt.CheckState.Unchecked
+                )
+            self.application.processEvents()
+
+            self.assertEqual(dialog.collection_selection.collection_ids, ())
+            self.assertEqual(dialog.collection_selection.queue_ids, ())
+            self.assertFalse(dialog.generate.isEnabled())
+            self.assertIn("NO COLLECTION SELECTED", dialog.status.text())
+            before = process.start_calls
+            dialog.start_generation()
+            self.assertEqual(process.start_calls, before)
+            self.assertIn("no ready queue IDs", dialog.status.text())
+            dialog.close()
+
+            reopened = AuthoringWorkbenchDialog(workspace, settings=settings)
+            self.assertEqual(reopened.collection_selection.collection_ids, ())
+            self.assertTrue(
+                all(
+                    reopened.collection_tree.topLevelItem(index).checkState(0)
+                    == Qt.CheckState.Unchecked
+                    for index in range(reopened.collection_tree.topLevelItemCount())
+                )
+            )
+
+    def test_recent_reference_choices_are_contained_validated_and_searchable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            settings = self.settings(root)
+            workspace_hash = sha256_file(workspace / "workspace.json")
+            dialog = AuthoringWorkbenchDialog(workspace, settings=settings)
+
+            dialog._move_reference(1)
+            stored_key = dialog._workspace_settings_key("recent-references")
+            stored = settings.value(stored_key)
+            self.assertTrue(any('"index":1' in str(value) for value in stored))
+            settings.setValue(
+                stored_key,
+                [
+                    *stored,
+                    json.dumps({"character": "../../escape", "index": 0}),
+                    json.dumps({"character": "Rhiannon", "index": 99}),
+                    "/absolute/path.wav",
+                ],
+            )
+            settings.sync()
+            dialog.close()
+
+            reopened = AuthoringWorkbenchDialog(workspace, settings=settings)
+            choices = [
+                tuple(reopened.recent_choice.itemData(index))
+                for index in range(reopened.recent_choice.count())
+            ]
+            self.assertIn(("Rhiannon", 1), choices)
+            self.assertNotIn(("../../escape", 0), choices)
+            self.assertNotIn(("Rhiannon", 99), choices)
+            choice_index = choices.index(("Rhiannon", 1))
+            reopened.recent_choice.setCurrentIndex(choice_index)
+            reopened._choose_recent_reference(choice_index)
+            reference = reopened.voice_controller.current("Rhiannon")
+
+            self.assertEqual(reference.index, 1)
+            self.assertTrue(reference.path.is_relative_to(workspace / "inputs/voice"))
+            self.assertEqual(sha256_file(workspace / "workspace.json"), workspace_hash)
+            reopened.recent_choice.setEditText("does not exist")
+            reopened._choose_typed_recent_reference()
+            self.assertIn("RECENT PREVIEW UNAVAILABLE", reopened.status.text())
+
+    def test_cached_transient_external_reference_is_never_played_or_reused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            manifest = workspace / "inputs/voice/manifest.json"
+            original = manifest.read_bytes()
+            outside = root / "outside.wav"
+            outside.write_bytes(b"external")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Rhiannon",
+                                "speaker": "Rhiannon",
+                                "reference": str(outside),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stale = VoiceReferenceController(manifest)
+            manifest.write_bytes(original)
+            dialog.voice_controller = stale
+            dialog.voice_character.clear()
+            dialog.voice_character.addItem("Rhiannon")
+            dialog.player = Mock()
+
+            dialog.play_reference()
+            played = Path(dialog.player.setSource.call_args.args[0].toLocalFile())
+            dialog._apply_recent_reference("Rhiannon", 0)
+            recent = dialog.voice_controller.current("Rhiannon")
+
+            self.assertNotEqual(played, outside)
+            self.assertTrue(played.is_relative_to(workspace / "inputs/voice"))
+            self.assertTrue(recent.path.is_relative_to(workspace / "inputs/voice"))
+
+    def test_readiness_details_show_immutable_utc_history_and_persist(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            settings = self.settings(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=settings)
+
+            self.assertIn("Imported: ", dialog.readiness_text.text())
+            self.assertIn(" UTC", dialog.readiness_text.text())
+            self.assertIn("Source job time: unavailable", dialog.readiness_text.text())
+            self.assertIn("inputs/story-index.jsonl", dialog.readiness_text.text())
+            self.assertTrue(dialog.recent_choice.accessibleName())
+            self.assertTrue(dialog.readiness_details.accessibleName())
+            dialog.readiness_details.setChecked(True)
+            dialog._save_settings()
+            dialog.close()
+
+            reopened = AuthoringWorkbenchDialog(workspace, settings=settings)
+            self.assertTrue(reopened.readiness_details.isChecked())
+            self.assertTrue(reopened.readiness_text.isVisibleTo(reopened))
 
     def test_stop_escalates_and_close_confirmation_never_orphans_child(self):
         with TemporaryDirectory() as directory:

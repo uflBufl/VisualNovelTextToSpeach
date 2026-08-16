@@ -46,6 +46,12 @@ retry, while a selected failed line with a missing reference cannot silently do
 zero work. Recoverable source audio is not opted into by the workbench until an
 explicit matching preflight policy is added.
 
+A workspace may snapshot a valid partial voice manifest. Global readiness still
+reports every uncovered spoken queue item and an unfiltered command remains
+blocked. A focused collection or retry may proceed only when its exact queue-ID
+selection is fully covered. This permits adding references incrementally without
+weakening control hashes, queue identity or final-pack provenance requirements.
+
 ## Child-process trust boundary
 
 The generated command passes `--workspace` to a fresh
@@ -75,15 +81,25 @@ its line, voice, phase, attempt, latest error and a derived live elapsed timer.
 Runtime text distinguishes this child, an external owner, interruption,
 attention, review, readiness and completion without relying on color.
 
-The collection pane is deliberately a read-only view of declared story
-collections; it does not imply a filter that the generated command would
-ignore. Voice references are searchable and navigable, and playback revalidates
-the contained snapshot at click time. Review playback separately revalidates
-the exact state-bound generated WAV before playback; approval and rejection
-independently reload state and participate in the generation lease. A state,
-control or path integrity failure stops playback, clears stale rows and disables
-every generation-start/retry, review, open-folder and preview action. Stop
-Generation remains available for a child already owned by this window.
+The collection pane exposes checkboxes in the story document's declared order.
+`inspect_collection_selection()` maps selected records by exact
+`(line_id, text_sha256)` identity into queue-order IDs. Those IDs drive the
+displayed selection counts, selection-aware readiness and child command; an
+explicit empty selection never becomes the unfiltered `None` sentinel. The
+selection is stored only in `QSettings` under the content-addressed workspace
+ID, not in immutable workspace provenance.
+
+Voice references are searchable and navigable, and playback revalidates the
+contained snapshot at click time. Recent preview choices store only validated
+`(character, reference index)` values for that workspace; unknown characters,
+out-of-range indexes and malformed settings are discarded. Choosing
+a recent preview never changes the workspace narrator or synthesis config.
+Review playback separately revalidates the exact state-bound generated WAV
+before playback; approval and rejection independently reload state and
+participate in the generation lease. A state, control or path integrity failure
+stops playback, clears stale rows and disables every generation-start/retry,
+review, open-folder and preview action. Stop Generation remains available for a
+child already owned by this window.
 
 Generation runs through `QProcess` with program and arguments kept separate.
 The dialog polls authoritative state while the child is live, preserves
@@ -95,8 +111,13 @@ across later state polls. Geometry, splitter sizes and technical-detail state
 are stored with `QSettings`, and the controls have an explicit keyboard focus
 chain and accessible names/descriptions.
 
-The remaining graphical backlog includes writable collection selection,
-recent narrator/reference choices and friendlier history timestamps. A
-preserved or opened workspace is not evidence that an imported history has
+Checkable readiness details retain the selected collection IDs, exact ready-ID
+count, contained story/voice snapshot paths and short hashes. Existing legacy
+imports expose their immutable `imported_at` in numeric UTC form, independent
+of locale. Older import manifests did not preserve source job creation/update
+time, so the UI says that it is unavailable rather than guessing from file
+timestamps.
+
+A preserved or opened workspace is not evidence that an imported history has
 resumed successfully; that acceptance gate still requires a controlled real
 selected retry.

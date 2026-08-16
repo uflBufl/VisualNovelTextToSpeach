@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import codecs
+import json
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QTimer, QUrl
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QTextCursor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -32,7 +33,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
 from vntts.authoring.bulk_generation import process_started_at
 from vntts.authoring.workbench import (
@@ -40,11 +40,15 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     ReviewItem,
     generation_command,
+    immutable_history_timestamps,
+    inspect_collection_selection,
     inspect_workspace,
     list_review_items,
+    list_workspace_collections,
     review_workspace_item,
+    workspace_voice_snapshot,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,26 @@ class VoiceReferenceController:
             )
         )
         self._indexes = {voice.character: 0 for voice in self._characters}
+
+    @classmethod
+    def from_workspace(cls, workspace_directory, manifest_path):
+        instance = cls.__new__(cls)
+        instance.manifest_path = Path(manifest_path).expanduser().resolve()
+        voices = tuple(
+            CharacterVoice(
+                character=value.character,
+                speaker=value.speaker,
+                aliases=value.aliases,
+                references=value.references,
+            )
+            for value in workspace_voice_snapshot(workspace_directory)
+        )
+        instance.registry = CharacterVoiceRegistry(voices)
+        instance._characters = tuple(
+            sorted(voices, key=lambda voice: voice.character.casefold())
+        )
+        instance._indexes = {voice.character: 0 for voice in voices}
+        return instance
 
     def characters(self, search=""):
         needle = str(search).strip().casefold()
@@ -108,6 +132,16 @@ class VoiceReferenceController:
         self._indexes[character] = (current + int(offset)) % len(references)
         return self.current(character)
 
+    def select(self, character, index):
+        references = self.references(character)
+        index = int(index)
+        if index < 0 or index >= len(references):
+            raise AuthoringWorkbenchError(
+                f"Reference index is unavailable for {character!r}: {index}"
+            )
+        self._indexes[character] = index
+        return self.current(character)
+
 
 class AuthoringWorkbenchDialog(QDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
@@ -132,6 +166,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.stop_timeout_ms = int(stop_timeout_ms)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.summary = None
+        self.collection_selection = None
+        self.collection_selection = None
         self.voice_controller = None
         self.active_started_at = None
         self.close_after_stop = False
@@ -144,6 +180,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self._current_reference_key = None
         self._selected_review_identity = None
         self._preview_active = False
+        self._selected_collection_ids = None
+        self._loading_collections = False
+        self._selection_refresh_pending = False
+        self._loading_recent_choices = False
+        self._recent_reference_choices = None
         self._stop_requested = False
         self._forced_kill = False
         self._log_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -165,12 +206,22 @@ class AuthoringWorkbenchDialog(QDialog):
         self.active = QLabel()
         self.active.setAccessibleName("Current generation attempt")
         self.active.setWordWrap(True)
+        self.readiness_details = QGroupBox("Readiness details")
+        self.readiness_details.setCheckable(True)
+        self.readiness_details.setAccessibleName("Authoring readiness details")
+        self.readiness_text = QLabel()
+        self.readiness_text.setWordWrap(True)
+        self.readiness_text.setAccessibleName(
+            "Selected collections, immutable history and input paths"
+        )
+        readiness_layout = QVBoxLayout(self.readiness_details)
+        readiness_layout.addWidget(self.readiness_text)
 
         self.collection_tree = QTreeWidget()
         self.collection_tree.setHeaderLabels(["Story collection", "Kind", "Lines"])
         self.collection_tree.setAccessibleName("Story collections in this workspace")
         self.collection_tree.setAccessibleDescription(
-            "Read-only declared collection titles and order from the fixed workspace queue"
+            "Check declared collections to filter exact immutable queue IDs for generation and retry"
         )
         self.collection_tree.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
@@ -183,6 +234,16 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_character.setAccessibleName("Voice character")
         self.voice_character.setAccessibleDescription(
             "Choose a configured character voice; named characters never use narrator fallback"
+        )
+        self.recent_choice = QComboBox()
+        self.recent_choice.setEditable(True)
+        self.recent_choice.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.recent_choice.setAccessibleName("Recent narrator and reference previews")
+        self.recent_choice.setAccessibleDescription(
+            "Search recent contained reference choices; preview selection never changes workspace synthesis configuration"
+        )
+        self.recent_choice.lineEdit().setPlaceholderText(
+            "Search recent narrator/reference previews"
         )
         self.reference_label = QLabel("No voice reference selected")
         self.reference_label.setAccessibleName("Selected voice reference")
@@ -219,6 +280,9 @@ class AuthoringWorkbenchDialog(QDialog):
         voice_header = QHBoxLayout()
         voice_header.addWidget(self.voice_search)
         voice_header.addWidget(self.voice_character, 1)
+        recent_header = QHBoxLayout()
+        recent_header.addWidget(QLabel("Recent previews"))
+        recent_header.addWidget(self.recent_choice, 1)
         voice_controls = QHBoxLayout()
         for widget in (
             self.reference_previous,
@@ -230,6 +294,7 @@ class AuthoringWorkbenchDialog(QDialog):
         voice_box = QGroupBox("Voice references")
         voice_box.setAccessibleName("Voice reference chooser")
         voice_layout = QVBoxLayout(voice_box)
+        voice_layout.addLayout(recent_header)
         voice_layout.addLayout(voice_header)
         voice_layout.addWidget(self.reference_label)
         voice_layout.addLayout(voice_controls)
@@ -342,10 +407,17 @@ class AuthoringWorkbenchDialog(QDialog):
         layout.addWidget(self.status)
         layout.addWidget(self.counts)
         layout.addWidget(self.active)
+        layout.addWidget(self.readiness_details)
         layout.addWidget(self.splitter, 1)
 
         self.voice_search.textChanged.connect(self._populate_voice_choices)
         self.voice_character.currentTextChanged.connect(self._show_reference)
+        self.voice_character.activated.connect(self._record_current_reference)
+        self.recent_choice.activated.connect(self._choose_recent_reference)
+        self.recent_choice.lineEdit().returnPressed.connect(
+            self._choose_typed_recent_reference
+        )
+        self.collection_tree.itemChanged.connect(self._collection_selection_changed)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
         self.reference_next.clicked.connect(lambda: self._move_reference(1))
         self.reference_play.clicked.connect(self.play_reference)
@@ -360,6 +432,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.open_output.clicked.connect(self.open_output_folder)
         self.copy_diagnostics.clicked.connect(self.copy_diagnostic_text)
         self.technical.toggled.connect(self._technical_toggled)
+        self.readiness_details.toggled.connect(self.readiness_text.setVisible)
         self.process.readyReadStandardOutput.connect(self._append_process_output)
         self.process.started.connect(self._process_started)
         self.process.finished.connect(self._process_finished)
@@ -401,6 +474,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setRowCount(0)
         self.collection_tree.clear()
         self.voice_character.clear()
+        self.recent_choice.clear()
+        self.recent_choice.setEnabled(False)
+        self.readiness_text.setText(f"Blocked: {error}")
         self.reference_label.setText("Voice references unavailable")
         for action in (
             self.generate,
@@ -448,6 +524,11 @@ class AuthoringWorkbenchDialog(QDialog):
             f"Narrator: {workspace['narrator_character']} | Backend: {run_config['backend']} | "
             f"Model: {run_config['model']} | Profile: {run_config['generation_profile']}"
         )
+        self._populate_collections()
+        self.collection_selection = inspect_collection_selection(
+            self.workspace_directory,
+            collection_ids=self._selected_collection_ids,
+        )
         self.status.setText(self._status_text())
         self.status.setToolTip("; ".join(self.summary.blocked_reasons))
         self.counts.setText(
@@ -464,11 +545,15 @@ class AuthoringWorkbenchDialog(QDialog):
                     f"Resolve source audio: {self.summary.resolve_audio}",
                     f"Skipped sound effects: {self.summary.skipped_sound_effects}",
                     f"Other skipped actions: {self.summary.skipped_actions}",
+                    f"Selected collections: {self.collection_selection.collection_count}",
+                    f"Selected story lines: {self.collection_selection.story_records}",
+                    f"Selected queue lines: {self.collection_selection.queue_items}",
+                    f"Selected ready lines: {self.collection_selection.readiness.ready}",
                 )
             )
         )
+        self._show_readiness_details(workspace)
         self._show_active()
-        self._populate_collections()
         self.review_table.blockSignals(True)
         try:
             self._populate_reviews(reviews)
@@ -485,17 +570,30 @@ class AuthoringWorkbenchDialog(QDialog):
         finally:
             self.review_table.blockSignals(False)
         self._load_voice_controller()
+        self._populate_recent_choices(workspace["narrator_character"])
+        self.recent_choice.setEnabled(self.recent_choice.count() > 0)
         running = self.process.state() != QProcess.ProcessState.NotRunning
+        owned_elsewhere = self.summary.runtime_status in {
+            AuthoringRuntimeStatus.RUNNING_HERE,
+            AuthoringRuntimeStatus.RUNNING_EXTERNAL,
+            AuthoringRuntimeStatus.BLOCKED,
+        }
+        selection_readiness = self.collection_selection.readiness
         self.generate.setEnabled(
-            not running and self.summary.runtime_status is AuthoringRuntimeStatus.READY
+            not running
+            and not owned_elsewhere
+            and selection_readiness.ready > 0
+            and not selection_readiness.blocked_reasons
         )
         self.generate.setToolTip(
             "" if self.generate.isEnabled() else self._disabled_generation_reason()
         )
         retry_enabled = (
             not running
-            and self.summary.failed > 0
-            and self.summary.runtime_status is AuthoringRuntimeStatus.NEEDS_ATTENTION
+            and not owned_elsewhere
+            and selection_readiness.failed > 0
+            and selection_readiness.ready > 0
+            and not selection_readiness.blocked_reasons
         )
         self.retry_failed.setEnabled(retry_enabled)
         self.retry_failed.setToolTip(
@@ -529,10 +627,39 @@ class AuthoringWorkbenchDialog(QDialog):
         lines = [
             outcome for outcome in (self.process_outcome, self.media_outcome) if outcome
         ]
-        lines.append(labels[self.summary.runtime_status])
+        selection = self.collection_selection
+        if self.summary.runtime_status in {
+            AuthoringRuntimeStatus.RUNNING_HERE,
+            AuthoringRuntimeStatus.RUNNING_EXTERNAL,
+            AuthoringRuntimeStatus.INTERRUPTED,
+            AuthoringRuntimeStatus.BLOCKED,
+        }:
+            primary = labels[self.summary.runtime_status]
+        elif selection is not None and not selection.collection_ids:
+            primary = "NO COLLECTION SELECTED: choose at least one collection"
+        elif selection is not None and selection.queue_items == 0:
+            primary = "NO QUEUED ITEMS IN SELECTION: choose another collection"
+        elif selection is not None and selection.readiness.blocked_reasons:
+            primary = "SELECTION NEEDS ATTENTION: " + "; ".join(
+                selection.readiness.blocked_reasons
+            )
+        elif selection is not None and selection.readiness.ready > 0:
+            primary = f"READY: {selection.readiness.ready} selected line(s) can start"
+        else:
+            primary = labels[self.summary.runtime_status]
+        lines.append(primary)
         return "\n".join(lines)
 
     def _disabled_generation_reason(self):
+        if self.collection_selection is None:
+            return "Collection selection is unavailable"
+        readiness = self.collection_selection.readiness
+        if not self.collection_selection.collection_ids:
+            return "Select at least one story collection"
+        if readiness.blocked_reasons:
+            return "; ".join(readiness.blocked_reasons)
+        if readiness.ready == 0:
+            return "No ready pending or failed lines exist in selected collections"
         if self.summary.blocked_reasons:
             return "; ".join(self.summary.blocked_reasons)
         if self.summary.runtime_status is AuthoringRuntimeStatus.NEEDS_REVIEW:
@@ -543,6 +670,35 @@ class AuthoringWorkbenchDialog(QDialog):
         }:
             return "Generation is already running"
         return "No ready pending lines are available"
+
+    def _show_readiness_details(self, workspace):
+        story = workspace.get("story_index")
+        voice = workspace.get("voice_manifest")
+        history = immutable_history_timestamps(self.workspace_directory)
+        readiness = self.collection_selection.readiness
+        lines = [
+            "Collections: "
+            + (", ".join(self.collection_selection.collection_ids) or "none"),
+            f"Exact selected queue IDs: {len(readiness.queue_ids)}",
+            "Story snapshot: "
+            + (
+                f"{story['path']} ({story['sha256'][:12]}...)"
+                if isinstance(story, dict)
+                else "not configured"
+            ),
+            "Voice snapshot: "
+            + (
+                f"{voice['path']} ({voice['sha256'][:12]}...)"
+                if isinstance(voice, dict)
+                else "not configured"
+            ),
+            *(value.display for value in history),
+        ]
+        if not any(value.kind.startswith("Source ") for value in history):
+            lines.append("Source job time: unavailable in this legacy import")
+        if readiness.blocked_reasons:
+            lines.append("Selection blockers: " + "; ".join(readiness.blocked_reasons))
+        self.readiness_text.setText("\n".join(lines))
 
     def _show_active(self):
         attempt = self.summary.active
@@ -576,30 +732,73 @@ class AuthoringWorkbenchDialog(QDialog):
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     def _populate_collections(self):
+        self._loading_collections = True
+        self.collection_tree.blockSignals(True)
         self.collection_tree.clear()
-        directory, workspace = self._workspace_document()
-        story = workspace.get("story_index")
-        if not isinstance(story, dict):
-            QTreeWidgetItem(
-                self.collection_tree, ["Story snapshot not configured", "blocked", "0"]
-            )
-            return
         try:
-            document = load_story_index_document(directory / story["path"])
-        except StoryIndexError as error:
-            QTreeWidgetItem(
-                self.collection_tree, [f"Unavailable: {error}", "blocked", "0"]
-            )
+            collections = list_workspace_collections(self.workspace_directory)
+            declared = tuple(collection.collection_id for collection in collections)
+            if self._selected_collection_ids is None:
+                stored = self.settings.value(
+                    self._workspace_settings_key("collections")
+                )
+                if stored is None:
+                    self._selected_collection_ids = declared
+                else:
+                    if isinstance(stored, str):
+                        stored = [stored]
+                    requested = {str(value) for value in stored}
+                    self._selected_collection_ids = tuple(
+                        value for value in declared if value in requested
+                    )
+            selected = set(self._selected_collection_ids)
+            for collection in collections:
+                item = QTreeWidgetItem(
+                    self.collection_tree,
+                    [
+                        collection.title,
+                        collection.kind,
+                        str(collection.record_count),
+                    ],
+                )
+                item.setData(0, Qt.ItemDataRole.UserRole, collection.collection_id)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    0,
+                    Qt.CheckState.Checked
+                    if collection.collection_id in selected
+                    else Qt.CheckState.Unchecked,
+                )
+        finally:
+            self.collection_tree.blockSignals(False)
+            self._loading_collections = False
+
+    def _collection_selection_changed(self, _item, _column):
+        if self._loading_collections:
             return
-        for collection in document.collections:
-            QTreeWidgetItem(
-                self.collection_tree,
-                [
-                    collection.title,
-                    collection.kind,
-                    str(len(document.records_for_collection(collection.collection_id))),
-                ],
-            )
+        selected = []
+        for index in range(self.collection_tree.topLevelItemCount()):
+            item = self.collection_tree.topLevelItem(index)
+            if item.checkState(0) == Qt.CheckState.Checked:
+                selected.append(str(item.data(0, Qt.ItemDataRole.UserRole)))
+        self._selected_collection_ids = tuple(selected)
+        self.settings.setValue(
+            self._workspace_settings_key("collections"), list(selected)
+        )
+        self.settings.sync()
+        if self._selection_refresh_pending:
+            return
+        self._selection_refresh_pending = True
+        QTimer.singleShot(0, self._refresh_collection_selection)
+
+    def _refresh_collection_selection(self):
+        self._selection_refresh_pending = False
+        self.refresh()
+
+    def _workspace_settings_key(self, suffix):
+        return (
+            f"{self.settings_group}/workspaces/{self.workspace_directory.name}/{suffix}"
+        )
 
     def _workspace_document(self):
         from vntts.authoring.workbench import _load_workspace
@@ -612,14 +811,19 @@ class AuthoringWorkbenchDialog(QDialog):
             self.voice_character.clear()
             self._show_reference()
             return
-        if (
-            self.voice_controller is None
-            or self.voice_controller.manifest_path != self.summary.voice_manifest
-        ):
-            self.voice_controller = VoiceReferenceController(
-                self.summary.voice_manifest
-            )
-            self._populate_voice_choices()
+        current = None
+        if self.voice_controller is not None and self.voice_character.currentText():
+            current = self.voice_controller.current(self.voice_character.currentText())
+        controller = VoiceReferenceController.from_workspace(
+            self.workspace_directory, self.summary.voice_manifest
+        )
+        if current is not None:
+            try:
+                controller.select(current.character, current.index)
+            except AuthoringWorkbenchError:
+                pass
+        self.voice_controller = controller
+        self._populate_voice_choices()
 
     def _populate_voice_choices(self):
         current = self.voice_character.currentText()
@@ -635,6 +839,136 @@ class AuthoringWorkbenchDialog(QDialog):
                 self.voice_character.setCurrentIndex(index)
         self.voice_character.blockSignals(False)
         self._show_reference()
+
+    def _populate_recent_choices(self, narrator_character):
+        self._loading_recent_choices = True
+        try:
+            values = []
+            if self.voice_controller is not None:
+                try:
+                    if self.voice_controller.references(narrator_character):
+                        values.append((narrator_character, 0))
+                except AuthoringWorkbenchError:
+                    pass
+                stored = self.settings.value(
+                    self._workspace_settings_key("recent-references"), []
+                )
+                if isinstance(stored, str):
+                    stored = [stored]
+                for encoded in stored:
+                    try:
+                        value = json.loads(str(encoded))
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(value, dict) or set(value) != {
+                        "character",
+                        "index",
+                    }:
+                        continue
+                    character = value["character"]
+                    index = value["index"]
+                    if (
+                        not isinstance(character, str)
+                        or not character.strip()
+                        or isinstance(index, bool)
+                        or not isinstance(index, int)
+                    ):
+                        continue
+                    try:
+                        references = self.voice_controller.references(character)
+                    except AuthoringWorkbenchError:
+                        continue
+                    if index < 0 or index >= len(references):
+                        continue
+                    choice = (character, index)
+                    if choice not in values:
+                        values.append(choice)
+            values = values[:8]
+            self.recent_choice.blockSignals(True)
+            self.recent_choice.clear()
+            for character, index in values:
+                self.recent_choice.addItem(
+                    f"{character} - reference {index + 1}",
+                    (character, index),
+                )
+            self.recent_choice.blockSignals(False)
+            self._store_recent_choices(values)
+        finally:
+            self._loading_recent_choices = False
+
+    def _store_recent_choices(self, values):
+        values = tuple(values)
+        if values == self._recent_reference_choices:
+            return
+        encoded = [
+            json.dumps(
+                {"character": character, "index": index},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for character, index in values
+        ]
+        self.settings.setValue(
+            self._workspace_settings_key("recent-references"), encoded
+        )
+        self.settings.sync()
+        self._recent_reference_choices = values
+
+    def _record_current_reference(self, *_arguments):
+        if self._loading_recent_choices or self.voice_controller is None:
+            return
+        reference = self.voice_controller.current(self.voice_character.currentText())
+        if reference is None:
+            return
+        current = (reference.character, reference.index)
+        values = [current]
+        for index in range(self.recent_choice.count()):
+            value = self.recent_choice.itemData(index)
+            if isinstance(value, (tuple, list)) and len(value) == 2:
+                choice = (str(value[0]), int(value[1]))
+                if choice not in values:
+                    values.append(choice)
+        self._store_recent_choices(values[:8])
+        _directory, workspace = self._workspace_document()
+        self._populate_recent_choices(workspace["narrator_character"])
+
+    def _choose_recent_reference(self, index):
+        if self._loading_recent_choices:
+            return
+        value = self.recent_choice.itemData(index)
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            self._apply_recent_reference(str(value[0]), int(value[1]))
+
+    def _choose_typed_recent_reference(self):
+        typed = self.recent_choice.currentText().strip().casefold()
+        for index in range(self.recent_choice.count()):
+            if self.recent_choice.itemText(index).casefold() == typed:
+                self._choose_recent_reference(index)
+                return
+        self.media_outcome = "RECENT PREVIEW UNAVAILABLE: choose a validated entry"
+        if self.summary is not None:
+            self.status.setText(self._status_text())
+
+    def _apply_recent_reference(self, character, index):
+        if self.summary is None or self.summary.voice_manifest is None:
+            return
+        try:
+            controller = VoiceReferenceController.from_workspace(
+                self.workspace_directory, self.summary.voice_manifest
+            )
+            controller.select(character, index)
+        except AuthoringWorkbenchError as error:
+            self.media_outcome = f"RECENT PREVIEW UNAVAILABLE: {error}"
+            self._record_current_reference()
+            return
+        self.voice_controller = controller
+        self.voice_search.clear()
+        choice = self.voice_character.findText(character)
+        if choice >= 0:
+            self.voice_character.setCurrentIndex(choice)
+        self._show_reference()
+        self._record_current_reference()
 
     def _show_reference(self):
         reference = (
@@ -678,21 +1012,27 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self.voice_controller.move(self.voice_character.currentText(), offset)
         self._show_reference()
+        self._record_current_reference()
 
     def play_reference(self):
         if self.voice_controller is None:
             return
-        reference = self.voice_controller.current(self.voice_character.currentText())
-        if reference is None:
+        token = self.voice_controller.current(self.voice_character.currentText())
+        if token is None:
             return
         try:
             current = inspect_workspace(self.workspace_directory)
+            trusted = VoiceReferenceController.from_workspace(
+                self.workspace_directory, current.voice_manifest
+            )
+            reference = trusted.select(token.character, token.index)
         except AuthoringWorkbenchError as error:
             self.status.setText(f"BLOCKED: voice reference changed: {error}")
             return
-        if current.voice_manifest != self.voice_controller.manifest_path:
+        if current.voice_manifest != trusted.manifest_path:
             self.status.setText("BLOCKED: voice manifest selection changed")
             return
+        self.voice_controller = trusted
         self.player.setSource(QUrl.fromLocalFile(str(reference.path)))
         self.player.play()
         self._preview_active = True
@@ -835,14 +1175,28 @@ class AuthoringWorkbenchDialog(QDialog):
         self.refresh()
 
     def start_generation(self):
-        self._start_child(None)
+        if (
+            self.collection_selection is None
+            or not self.collection_selection.readiness.queue_ids
+        ):
+            self.process_outcome = (
+                "GENERATION CANCELLED: selected collections contain no ready queue IDs"
+            )
+            self.refresh()
+            return
+        self._start_child(self.collection_selection.readiness.queue_ids)
 
     def start_failed_retry(self):
+        selected_queue_ids = (
+            set(self.collection_selection.queue_ids)
+            if self.collection_selection is not None
+            else set()
+        )
         try:
             failed = tuple(
                 item.queue_id
                 for item in list_review_items(self.workspace_directory)
-                if item.status == "failed"
+                if item.status == "failed" and item.queue_id in selected_queue_ids
             )
         except AuthoringWorkbenchError as error:
             self.process_outcome = f"RETRY BLOCKED: {error}"
@@ -995,6 +1349,9 @@ class AuthoringWorkbenchDialog(QDialog):
         expanded = self.settings.value("technical-expanded", False, type=bool)
         self.technical.setChecked(expanded)
         self._technical_toggled(expanded)
+        readiness_expanded = self.settings.value("readiness-expanded", False, type=bool)
+        self.readiness_details.setChecked(readiness_expanded)
+        self.readiness_text.setVisible(readiness_expanded)
         self.settings.endGroup()
 
     def _save_settings(self):
@@ -1002,12 +1359,15 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter", self.splitter.sizes())
         self.settings.setValue("technical-expanded", self.technical.isChecked())
+        self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
         self.settings.endGroup()
         self.settings.sync()
 
     def _set_focus_chain(self):
         widgets = (
             self.collection_tree,
+            self.readiness_details,
+            self.recent_choice,
             self.voice_search,
             self.voice_character,
             self.reference_previous,
