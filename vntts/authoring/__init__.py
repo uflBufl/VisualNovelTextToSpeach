@@ -15,6 +15,11 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.game_pack import (
+    FinalGamePackError,
+    FinalGamePackResult,
+    publish_final_game_pack,
+)
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     LegacyImportCandidate,
@@ -64,6 +69,8 @@ __all__ = [
     "AudioQuality",
     "BulkGenerationError",
     "BulkGenerationResult",
+    "FinalGamePackError",
+    "FinalGamePackResult",
     "SpeechQuality",
     "LegacyAuthoringImportError",
     "LegacyImportCandidate",
@@ -102,6 +109,7 @@ __all__ = [
     "plan_generation_queue",
     "publish_generation_queue",
     "publish_generated_manifest",
+    "publish_final_game_pack",
     "normalize_short_trailing_ellipsis",
     "record_trial_preference",
     "review_generation_item",

@@ -370,6 +370,13 @@ preserved legacy state while treating state, not a possibly stale manifest, as
 the review authority. See the
 [resumable bulk-generation contract](docs/authoring-bulk-generation.md).
 
+After every selected queue item has a terminal approval or rejection, publish a
+portable final delivery with `vntts-pregenerate publish-pack`. Publication
+copies only bound inputs and approved WAVs into sibling staging, validates the
+complete shared game-pack contract, and commits with atomic no-replace rename;
+the queue, generated WAVs and review state remain unchanged in application
+data. See [final game-pack publication](docs/authoring-game-pack-publication.md).
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh

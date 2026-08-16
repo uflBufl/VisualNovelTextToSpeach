@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -19,6 +20,7 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     default_import_root,
@@ -68,6 +70,20 @@ def _load_stable_voice_registry(manifest_path):
         for entry in entries
     ]
     return CharacterVoiceRegistry(voices), digest
+
+
+def _producer_record(value):
+    name, separator, producer_version = value.partition("=")
+    if not separator or not name.strip() or not producer_version.strip():
+        raise argparse.ArgumentTypeError("producer must use NAME=VERSION")
+    return {"name": name.strip(), "version": producer_version.strip()}
+
+
+def _vntts_version():
+    try:
+        return version("visual-novel-text-to-speech")
+    except PackageNotFoundError:
+        return "0.1.0"
 
 
 def create_parser():
@@ -170,6 +186,22 @@ def create_parser():
     status = subparsers.add_parser("status", help="Inspect resumable generation state")
     status.add_argument("--state", type=Path, required=True)
     status.add_argument("--queue", type=Path)
+    pack = subparsers.add_parser(
+        "publish-pack", help="Atomically publish a fully verified final game pack"
+    )
+    pack.add_argument("--state", type=Path, required=True)
+    pack.add_argument("--queue", type=Path, required=True)
+    pack.add_argument("--story-index", type=Path, required=True)
+    pack.add_argument("--voice-manifest", type=Path, required=True)
+    pack.add_argument("--output", type=Path, required=True)
+    pack.add_argument("--game-id")
+    pack.add_argument("--game-version", required=True)
+    pack.add_argument(
+        "--producer",
+        action="append",
+        type=_producer_record,
+        help="Producer identity as NAME=VERSION; repeat for upstream producers",
+    )
     return parser
 
 
@@ -332,6 +364,25 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "publish-pack":
+            producers = arguments.producer or [
+                {
+                    "name": "visual-novel-text-to-speech",
+                    "version": _vntts_version(),
+                }
+            ]
+            result = publish_final_game_pack(
+                arguments.output,
+                state_path=arguments.state,
+                queue_path=arguments.queue,
+                story_index_path=arguments.story_index,
+                voice_manifest_path=arguments.voice_manifest,
+                game_id=arguments.game_id,
+                game_version=arguments.game_version,
+                producers=producers,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command in {"preflight-queue", "build-queue"}:
             plan = inspect_generation_queue(
                 arguments.story_index,
@@ -388,6 +439,7 @@ def main(argv=None):
     except (
         GenerationQueueBuildError,
         BulkGenerationError,
+        FinalGamePackError,
         LegacyAuthoringImportError,
         ListeningImportError,
         StoryIndexError,

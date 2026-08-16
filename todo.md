@@ -10,9 +10,6 @@ sections after their implementation has been verified and committed.
 - [ ] Move generic delivery-annotation authoring into `vntts.authoring`; the
       collection-driven queue builder and typed resumable generation/review
       executor are now owned here.
-- [ ] Publish a final verified game pack from the authoring workflow after
-      generation and review; keep extracted inputs, generated WAVs, and review
-      state in application data rather than the repository.
 
 ### P1 - Preserve existing generation work
 

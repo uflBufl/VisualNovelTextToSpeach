@@ -554,6 +554,39 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertIsNotNone(state["active"])
             self.assertFalse((root / "output/manifest.json").exists())
 
+    def test_directory_control_inventory_binds_every_tree_entry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            model = root / "model"
+            (model / "nested").mkdir(parents=True)
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "nested" / "weights.bin").write_bytes(b"weights")
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(),
+                control_files={"model_artifact": model},
+            )
+
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            generated = state["items"][item["queue_id"]]
+            controls = state["synthesis_controls"][
+                generated["synthesis_provenance_sha256"]
+            ]
+            model_control = controls[0]
+            self.assertEqual(model_control["kind"], "directory")
+            self.assertEqual(
+                [record["path"] for record in model_control["files"]],
+                ["config.json", "nested/weights.bin"],
+            )
+            self.assertEqual(
+                load_generation_state(result.state, queue)["synthesis_controls"],
+                state["synthesis_controls"],
+            )
+
     def test_lease_takeover_is_detected_and_successor_lease_is_not_unlinked(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

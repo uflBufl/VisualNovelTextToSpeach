@@ -11,7 +11,7 @@ import socket
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 
 import numpy as np
@@ -308,6 +308,7 @@ def run_bulk_generation(
     output_directory.mkdir(parents=True, exist_ok=True)
     queue, queue_sha256 = _load_stable_queue(queue_path)
     controls = _snapshot_control_files(control_files or {})
+    control_records = [_stored_control(value) for value in controls]
     provenance_sha256 = _canonical_sha256(
         {
             "provider": provider,
@@ -331,6 +332,16 @@ def run_bulk_generation(
             output_directory, process_checker or process_is_alive
         )
         state = _load_or_create_state(state_path, output_directory, queue, queue_sha256)
+        if state["schema"] == STATE_SCHEMA:
+            registry = state.setdefault("synthesis_controls", {})
+            existing_controls = registry.get(provenance_sha256)
+            if existing_controls is not None and existing_controls != control_records:
+                raise BulkGenerationProvenanceError(
+                    "Stored synthesis controls conflict with this run"
+                )
+            if existing_controls is None:
+                registry[provenance_sha256] = control_records
+                atomic_write_json(state_path, state, sort_keys=True)
         if interrupted_job is not None:
             interrupted_processes = state.setdefault("interrupted_processes", [])
             if not any(
@@ -574,6 +585,29 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
             return publish_generated_manifest(
                 state_path, manifest_path=manifest_path, _lease_held=True
             )
+    entries = _approved_manifest_entries(state, output_directory)
+    manifest_path = Path(manifest_path or output_directory / "manifest.json").resolve()
+    if manifest_path.parent != output_directory:
+        raise BulkGenerationError(
+            "Generated-audio manifest must stay in the state directory"
+        )
+    try:
+        write_generated_audio_manifest(
+            manifest_path,
+            {
+                "game": state.get("game"),
+                "language": state.get("language"),
+                "source_queue_sha256": state["queue_sha256"],
+                "generated_at": _now(),
+            },
+            entries,
+        )
+    except GeneratedAudioManifestError as error:
+        raise BulkGenerationError(str(error)) from error
+    return manifest_path
+
+
+def _approved_manifest_entries(state, output_directory):
     entries = []
     for queue_id, result in state["items"].items():
         if (
@@ -613,25 +647,7 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
                 entry[field] = result[field]
         entries.append(entry)
     entries.sort(key=lambda entry: (entry["line_id"], entry["text_sha256"]))
-    manifest_path = Path(manifest_path or output_directory / "manifest.json").resolve()
-    if manifest_path.parent != output_directory:
-        raise BulkGenerationError(
-            "Generated-audio manifest must stay in the state directory"
-        )
-    try:
-        write_generated_audio_manifest(
-            manifest_path,
-            {
-                "game": state.get("game"),
-                "language": state.get("language"),
-                "source_queue_sha256": state["queue_sha256"],
-                "generated_at": _now(),
-            },
-            entries,
-        )
-    except GeneratedAudioManifestError as error:
-        raise BulkGenerationError(str(error)) from error
-    return manifest_path
+    return entries
 
 
 def review_generation_item(state_path, queue_id, decision):
@@ -710,6 +726,7 @@ class _GenerationLease:
         self.queue_sha256 = queue_sha256
         self.process_checker = process_checker
         self.lease_id = secrets.token_hex(16)
+        self.committed = False
 
     def __enter__(self):
         if self.path.exists():
@@ -769,7 +786,7 @@ class _GenerationLease:
                 ownership_error = BulkGenerationError(
                     "Generation lease ownership changed during the run"
                 )
-        if ownership_error is not None and _error_type is None:
+        if ownership_error is not None and _error_type is None and not self.committed:
             raise ownership_error
 
     def assert_owned(self):
@@ -778,6 +795,10 @@ class _GenerationLease:
             raise BulkGenerationError(
                 "Generation lease ownership changed during the run"
             )
+
+    def mark_committed(self):
+        """Do not report cleanup ambiguity as failure after an external commit."""
+        self.committed = True
 
 
 def _load_or_create_state(state_path, output_directory, queue, queue_sha256):
@@ -793,6 +814,7 @@ def _load_or_create_state(state_path, output_directory, queue, queue_sha256):
         "language": queue.metadata.get("language"),
         "items": {},
         "active": None,
+        "synthesis_controls": {},
     }
     atomic_write_json(state_path, state, sort_keys=True)
     return state
@@ -829,6 +851,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             )
     if not isinstance(state.get("items"), dict):
         raise BulkGenerationError("Generation state items must be an object")
+    _validate_synthesis_controls(state)
     queue_by_id = (
         None if queue is None else {item.queue_id: item for item in queue.items}
     )
@@ -928,6 +951,88 @@ def _validate_active_attempt(active, queue_by_id):
         active.get("last_error"), str
     ):
         raise BulkGenerationError("Active attempt last_error must be text or null")
+
+
+def _validate_synthesis_controls(state):
+    registry = state.get("synthesis_controls")
+    if registry is None:
+        return
+    if not isinstance(registry, dict):
+        raise BulkGenerationError(
+            "Generation state synthesis_controls must be an object"
+        )
+    for provenance, controls in registry.items():
+        _required_sha256(provenance, "Synthesis-control provenance key")
+        if not isinstance(controls, list):
+            raise BulkGenerationError("Synthesis-control set must be a list")
+        roles = set()
+        for control in controls:
+            if not isinstance(control, dict):
+                raise BulkGenerationError("Synthesis control must be an object")
+            role = _required_text(control.get("role"), "Synthesis control role")
+            if role in roles:
+                raise BulkGenerationError(
+                    f"Synthesis-control role is duplicated: {role!r}"
+                )
+            roles.add(role)
+            kind = control.get("kind")
+            expected_fields = {"role", "kind", "path", "sha256"}
+            if kind == "directory":
+                expected_fields.add("files")
+            elif kind != "file":
+                raise BulkGenerationError(
+                    f"Synthesis control kind is invalid: {kind!r}"
+                )
+            if set(control) != expected_fields:
+                raise BulkGenerationError(
+                    f"Synthesis control {role!r} has unsupported fields"
+                )
+            _required_text(control.get("path"), f"Synthesis control {role!r} path")
+            _required_sha256(
+                control.get("sha256"), f"Synthesis control {role!r} sha256"
+            )
+            if kind == "directory":
+                files = control.get("files")
+                if not isinstance(files, list):
+                    raise BulkGenerationError(
+                        f"Synthesis control {role!r} files must be a list"
+                    )
+                parsed_files = []
+                seen_paths = set()
+                for file_record in files:
+                    if not isinstance(file_record, dict) or set(file_record) != {
+                        "path",
+                        "sha256",
+                    }:
+                        raise BulkGenerationError(
+                            f"Synthesis control {role!r} file record is invalid"
+                        )
+                    relative = file_record.get("path")
+                    if not isinstance(relative, str) or "\\" in relative:
+                        raise BulkGenerationError(
+                            f"Synthesis control {role!r} file path is invalid"
+                        )
+                    pure = PurePosixPath(relative)
+                    if pure.is_absolute() or any(
+                        part in {"", ".", ".."} for part in pure.parts
+                    ):
+                        raise BulkGenerationError(
+                            f"Synthesis control {role!r} file path is unsafe"
+                        )
+                    if relative in seen_paths:
+                        raise BulkGenerationError(
+                            f"Synthesis control {role!r} file path is duplicated"
+                        )
+                    seen_paths.add(relative)
+                    digest = _required_sha256(
+                        file_record.get("sha256"),
+                        f"Synthesis control {role!r} file sha256",
+                    )
+                    parsed_files.append({"path": relative, "sha256": digest})
+                if _control_directory_digest(parsed_files) != control["sha256"]:
+                    raise BulkGenerationError(
+                        f"Synthesis control {role!r} directory digest is inconsistent"
+                    )
 
 
 def _validate_success_item(
@@ -1227,14 +1332,63 @@ def _snapshot_control_files(control_files):
             raise BulkGenerationSourceChangedError(
                 f"Generation control {role!r} changed before the run started"
             )
+        directory_files = _control_directory_files(path) if path.is_dir() else ()
+        if directory_files and _control_directory_digest(directory_files) != digest:
+            raise BulkGenerationSourceChangedError(
+                f"Generation control {role!r} changed while it was inventoried"
+            )
         snapshots.append(
             {
                 "role": role,
                 "path": path,
                 "sha256": digest,
+                "kind": "directory" if path.is_dir() else "file",
+                "files": directory_files,
             }
         )
     return tuple(snapshots)
+
+
+def _control_directory_files(path):
+    records = []
+    try:
+        candidates = sorted(path.rglob("*"), key=lambda value: value.as_posix())
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            records.append(
+                {
+                    "path": candidate.relative_to(path).as_posix(),
+                    "sha256": sha256_file(candidate),
+                }
+            )
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Unable to inventory generation control directory {path}: {error}"
+        ) from error
+    return tuple(records)
+
+
+def _control_directory_digest(records):
+    digest = hashlib.sha256()
+    for record in records:
+        relative = record["path"].encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(bytes.fromhex(record["sha256"]))
+    return digest.hexdigest()
+
+
+def _stored_control(control):
+    record = {
+        "role": control["role"],
+        "kind": control["kind"],
+        "path": str(control["path"]),
+        "sha256": control["sha256"],
+    }
+    if control["kind"] == "directory":
+        record["files"] = list(control["files"])
+    return record
 
 
 def _assert_sources_unchanged(queue_path, queue_sha256, controls):

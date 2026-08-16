@@ -119,3 +119,8 @@ uv run vntts-pregenerate status \
 The current commands are headless. Live elapsed-time display, grouped skip
 reasons, focused retry controls and process status in the graphical authoring
 workbench remain separate UI work.
+
+After a dedicated selected queue has complete terminal review coverage, use
+the [final game-pack publication boundary](authoring-game-pack-publication.md)
+to stage and checksum-bind the story, voices and approved generated audio. The
+publisher does not rewrite this authoritative state or its source manifest.
