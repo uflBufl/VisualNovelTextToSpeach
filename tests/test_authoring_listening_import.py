@@ -149,6 +149,32 @@ def write_listening_fixture(root):
 
 
 class ListeningImportTest(unittest.TestCase):
+    def test_reimport_rejects_forged_manifest_and_modified_hidden_key_mode(self):
+        for mutation in ("artifacts", "summary", "mode"):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                first = import_listening_session(source, root / "app-data")
+                if mutation == "mode":
+                    key = first.destination / ".blind-key.json"
+                    original_mode = key.stat().st_mode & 0o777
+                    key.chmod(0o600 if original_mode != 0o600 else 0o644)
+                    expected = "mode changed"
+                else:
+                    manifest_path = first.destination / "import.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if mutation == "artifacts":
+                        manifest["artifacts"] = []
+                    else:
+                        manifest["summary"]["completed_count"] = 0
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                    )
+                    expected = "manifest was modified"
+
+                with self.assertRaisesRegex(ListeningImportError, expected):
+                    import_listening_session(source, root / "app-data")
+
     def test_source_mutation_during_copy_aborts_before_publish(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

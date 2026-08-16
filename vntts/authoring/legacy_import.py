@@ -354,19 +354,6 @@ def _build_standalone_import_plan(queue_path, output_directory):
     logical_identity = hashlib.sha256(
         f"{queue_sha256}\n{output}".encode("utf-8")
     ).hexdigest()
-    if state is not None:
-        fingerprint_input = _meaningful_source_fingerprint(queue_sha256, state_items)
-    else:
-        fingerprint_input = json.dumps(
-            {
-                "queue_sha256": queue_sha256,
-                "artifacts": [
-                    (item.destination.as_posix(), item.sha256) for item in ordered_artifacts
-                ],
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        )
     plan = _ImportPlan(
         job_directory=output,
         job={},
@@ -374,7 +361,7 @@ def _build_standalone_import_plan(queue_path, output_directory):
         state=state,
         generated_index=generated_index,
         artifacts=ordered_artifacts,
-        source_fingerprint=hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest(),
+        source_fingerprint=_control_fingerprint(ordered_artifacts),
         summary=summary,
         external_inputs=(),
         logical_identity=logical_identity,
@@ -491,7 +478,6 @@ def _build_import_plan(job_directory):
     logical_identity = hashlib.sha256(
         f"{queue_sha256}\n{output}".encode("utf-8")
     ).hexdigest()
-    fingerprint_input = _meaningful_source_fingerprint(queue_sha256, state_items)
     plan = _ImportPlan(
         job_directory=job_directory,
         job=job,
@@ -499,7 +485,7 @@ def _build_import_plan(job_directory):
         state=state,
         generated_index=generated_index,
         artifacts=ordered_artifacts,
-        source_fingerprint=hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest(),
+        source_fingerprint=_control_fingerprint(ordered_artifacts),
         summary=summary,
         external_inputs=_external_inputs(job_directory, job),
         logical_identity=logical_identity,
@@ -700,20 +686,14 @@ def _discover_unsupported_legacy_artifacts(
     return candidates
 
 
-def _meaningful_source_fingerprint(queue_sha256, state_items):
-    normalized_items = {}
-    for queue_id, value in sorted(state_items.items()):
-        normalized_items[queue_id] = {
-            key: field_value
-            for key, field_value in sorted(value.items())
-            if key != "updated_at"
-        }
-    return json.dumps(
-        {"queue_sha256": queue_sha256, "items": normalized_items},
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+def _control_fingerprint(artifacts):
+    controls = [
+        (artifact.role, artifact.destination.as_posix(), artifact.sha256)
+        for artifact in artifacts
+        if artifact.role in CONTROL_ARTIFACT_ROLES and artifact.role != "legacy_job"
+    ]
+    payload = json.dumps(controls, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _validate_state(state, state_path, output, queue, queue_sha256):
@@ -751,13 +731,15 @@ def _validate_state(state, state_path, output, queue, queue_sha256):
                 f"Generation state item {queue_id!r} has unsupported status {status!r}"
             )
         review = value.get("review_status")
-        if review not in {None, "pending_review", "approved", "rejected"}:
+        valid_reviews = {
+            "failed": {None},
+            "generated": {"pending_review", "rejected"},
+            "approved": {"approved"},
+        }
+        if review not in valid_reviews[status]:
             raise LegacyAuthoringImportError(
-                f"Generation state item {queue_id!r} has unsupported review decision {review!r}"
-            )
-        if status == "approved" and review != "approved":
-            raise LegacyAuthoringImportError(
-                f"Approved state item {queue_id!r} is missing its approved review decision"
+                f"Generation state item {queue_id!r} has invalid {status!r}/"
+                f"{review!r} status and review combination"
             )
         if status not in {"generated", "approved"}:
             continue
@@ -1000,6 +982,14 @@ def _import_identities(plan):
                 "queue_id": queue_item.queue_id,
                 "line_id": queue_item.line_id,
                 "text_sha256": queue_item.text_sha256,
+                "queue_item_sha256": hashlib.sha256(
+                    json.dumps(
+                        queue_item.document,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).hexdigest(),
                 "attempts": state.get("attempts"),
                 "seed": state.get("seed"),
                 "status": state.get("status", "pending"),
@@ -1052,6 +1042,8 @@ def _validate_existing_import(destination, plan):
         raise LegacyAuthoringImportError(
             f"Import destination already exists with an unsupported manifest: {destination}"
         )
+    expected = _import_manifest(plan, _import_id(plan))
+    expected["imported_at"] = manifest.get("imported_at")
     source = manifest.get("source")
     if not isinstance(source, dict) or source.get("logical_identity") != plan.logical_identity:
         raise LegacyAuthoringImportError(
@@ -1062,7 +1054,51 @@ def _validate_existing_import(destination, plan):
             "Legacy source changed after it was imported. Existing application data was "
             f"left untouched at {destination}."
         )
-    for artifact in manifest.get("artifacts", []):
+    same_source = source.get("source_directory") == str(plan.job_directory)
+    if same_source:
+        if manifest != expected:
+            raise LegacyAuthoringImportError(
+                f"Existing import manifest was modified: {manifest_path}. "
+                "No files were overwritten."
+            )
+    else:
+        for field in ("schema", "schema_version", "import_id", "summary", "identities"):
+            if manifest.get(field) != expected.get(field):
+                raise LegacyAuthoringImportError(
+                    f"Existing logical import conflicts in {field}: {manifest_path}"
+                )
+        for field in ("kind", "source_fingerprint", "logical_identity"):
+            if source.get(field) != expected["source"].get(field):
+                raise LegacyAuthoringImportError(
+                    f"Existing logical import source conflicts in {field}: {manifest_path}"
+                )
+        actual_inventory = {
+            item.get("path"): item
+            for item in manifest.get("artifacts", [])
+            if isinstance(item, dict)
+        }
+        expected_inventory = {item["path"]: item for item in expected["artifacts"]}
+        if set(actual_inventory) != set(expected_inventory):
+            raise LegacyAuthoringImportError(
+                f"Existing import artifact inventory was modified: {manifest_path}"
+            )
+        for path, expected_item in expected_inventory.items():
+            actual_item = actual_inventory[path]
+            if path == "legacy/job.json":
+                if actual_item.get("role") != "legacy_job":
+                    raise LegacyAuthoringImportError(
+                        f"Existing legacy job inventory was modified: {manifest_path}"
+                    )
+            elif actual_item != expected_item:
+                raise LegacyAuthoringImportError(
+                    f"Existing import artifact inventory conflicts at {path}: {manifest_path}"
+                )
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != len(plan.artifacts):
+        raise LegacyAuthoringImportError(
+            f"Existing import artifact inventory is incomplete: {manifest_path}"
+        )
+    for artifact in artifacts:
         if not isinstance(artifact, dict):
             raise LegacyAuthoringImportError(
                 f"Existing import manifest is malformed: {manifest_path}"

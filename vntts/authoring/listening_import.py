@@ -82,7 +82,15 @@ def inspect_listening_session(session_directory):
     logical_identity = hashlib.sha256(_canonical(logical_payload)).hexdigest()
     fingerprint = hashlib.sha256(
         _canonical(
-            [(role, destination.as_posix(), digest) for role, _, destination, digest in artifacts]
+            [
+                (
+                    role,
+                    destination.as_posix(),
+                    digest,
+                    (source.stat().st_mode & 0o777) if role == "blind_listening_key" else None,
+                )
+                for role, source, destination, digest in artifacts
+            ]
         )
     ).hexdigest()
     inspection = ListeningImportInspection(
@@ -112,13 +120,19 @@ def import_listening_session(session_directory, destination_root=None):
 
     staging = Path(tempfile.mkdtemp(prefix=f".{import_id}-", dir=destination_root))
     try:
-        for _role, source, relative, digest in inspection.artifacts:
+        for role, source, relative, digest in inspection.artifacts:
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             if sha256_file(target) != digest:
                 raise ListeningImportError(
                     f"Listening artifact changed during import: {source}"
+                )
+            if role == "blind_listening_key" and (
+                (target.stat().st_mode & 0o777) != (source.stat().st_mode & 0o777)
+            ):
+                raise ListeningImportError(
+                    f"Blind-listening key mode changed during import: {source}"
                 )
         atomic_write_json(staging / "import.json", manifest, sort_keys=True)
         _verify_controls_unchanged(inspection)
@@ -397,6 +411,11 @@ def _manifest(inspection, import_id):
                 "source_path": str(source),
                 "path": relative.as_posix(),
                 "sha256": digest,
+                **(
+                    {"mode": source.stat().st_mode & 0o777}
+                    if role == "blind_listening_key"
+                    else {}
+                ),
             }
             for role, source, relative, digest in inspection.artifacts
         ],
@@ -420,13 +439,23 @@ def _validate_existing(destination, inspection):
         raise ListeningImportError(
             "Listening session changed after import; existing application data was left untouched"
         )
-    for artifact in manifest.get("artifacts", []):
+    expected = _manifest(
+        inspection, f"listening-{inspection.logical_identity[:24]}"
+    )
+    expected["imported_at"] = manifest.get("imported_at")
+    if manifest != expected:
+        raise ListeningImportError(
+            f"Existing listening import manifest was modified: {manifest_path}"
+        )
+    for artifact in manifest["artifacts"]:
         if not isinstance(artifact, dict):
             raise ListeningImportError(f"Malformed listening import: {manifest_path}")
         relative = _safe_relative(artifact.get("path"), "imported listening artifact")
         path = _within(destination, relative, "imported listening artifact")
         if not path.is_file() or sha256_file(path) != artifact.get("sha256"):
             raise ListeningImportError(f"Imported listening artifact changed: {path}")
+        if "mode" in artifact and (path.stat().st_mode & 0o777) != artifact["mode"]:
+            raise ListeningImportError(f"Imported listening artifact mode changed: {path}")
     _verify_controls_unchanged(inspection)
     return ListeningImportResult(destination, manifest, False)
 

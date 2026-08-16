@@ -193,6 +193,93 @@ def write_legacy_fixture(root, *, job_name="original-job", title="Patch 3.7"):
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_reimport_rejects_forged_manifest_inventory_and_identity(self):
+        for mutation in ("artifacts", "identity", "summary"):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root)
+                first = import_legacy_job(fixture["job_directory"], root / "app-data")
+                manifest_path = first.destination / "import.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if mutation == "artifacts":
+                    manifest["artifacts"] = []
+                elif mutation == "identity":
+                    manifest["identities"][0]["review_status"] = "rejected"
+                else:
+                    manifest["summary"]["generated_items"] = 0
+                manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(
+                    LegacyAuthoringImportError, "manifest was modified"
+                ):
+                    import_legacy_job(fixture["job_directory"], root / "app-data")
+
+    def test_active_state_change_after_import_is_not_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            first = import_legacy_job(fixture["job_directory"], root / "app-data")
+            imported_state = first.destination / "generated-audio/generation-state.json"
+            imported_hash = sha256_file(imported_state)
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["active"]["last_error"] = "new crash diagnostic"
+            fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "source changed"):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            self.assertEqual(sha256_file(imported_state), imported_hash)
+
+    def test_queue_record_extensions_participate_in_cross_import_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_fixture = write_legacy_fixture(root / "first")
+            second_fixture = write_legacy_fixture(root / "second")
+            rows = [
+                json.loads(line)
+                for line in second_fixture["queue"].read_text(encoding="utf-8").splitlines()
+            ]
+            rows[1]["voice_character"] = "Different Voice"
+            second_fixture["queue"].write_text(
+                "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            queue_hash = sha256_file(second_fixture["queue"])
+            state = json.loads(second_fixture["state"].read_text(encoding="utf-8"))
+            state["queue_sha256"] = queue_hash
+            second_fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
+            manifest = json.loads(second_fixture["manifest"].read_text(encoding="utf-8"))
+            manifest["source_queue_sha256"] = queue_hash
+            second_fixture["manifest"].write_text(
+                json.dumps(manifest, sort_keys=True), encoding="utf-8"
+            )
+            import_legacy_job(first_fixture["job_directory"], root / "app-data")
+
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "conflicts"):
+                import_legacy_job(second_fixture["job_directory"], root / "app-data")
+
+    def test_rejects_invalid_status_review_combinations(self):
+        for status, review in (("failed", "approved"), ("generated", "approved")):
+            with self.subTest(status=status, review=review), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root)
+                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                item = state["items"][fixture["queue_id"]]
+                item["status"] = status
+                item["review_status"] = review
+                fixture["state"].write_text(
+                    json.dumps(state, sort_keys=True), encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(
+                    LegacyAuthoringImportError, "status and review combination"
+                ):
+                    import_legacy_job(fixture["job_directory"], root / "app-data")
+
     def test_active_job_and_source_mutation_during_copy_are_deferred(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
