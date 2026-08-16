@@ -63,6 +63,30 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(removed, original)
         self.assertEqual(store.profiles, [renamed])
 
+    def test_profile_persists_and_preflights_game_pack_on_activation(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            store = GameProfileStore(path)
+            profile = store.create(
+                "Packaged game",
+                AppSettings(game_pack="packs/game-pack.json"),
+            )
+            loaded = GameProfileStore.load(path).get(profile.id)
+            resolved = AppSettings(game_pack="/resolved/game-pack.json")
+
+            with patch(
+                "vntts.game_pack.apply_game_pack",
+                return_value=resolved,
+            ) as preflight:
+                applied = loaded.apply(AppSettings())
+
+        self.assertEqual(loaded.game_pack, "packs/game-pack.json")
+        self.assertEqual(applied, resolved)
+        self.assertEqual(
+            preflight.call_args.args[0].game_pack,
+            "packs/game-pack.json",
+        )
+
     def test_legacy_profile_without_audio_policy_migrates_to_live_tts(self):
         profile = GameProfile.from_mapping(
             {

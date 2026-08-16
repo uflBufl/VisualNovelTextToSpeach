@@ -3,16 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## Shared artifact consolidation
-
-- [ ] Define and consume a versioned `vntts.game-pack` contract shared with the
-      Reverse: 1999 extractor. Bind the story index, voice manifest, generated
-      audio, producer versions, and SHA-256 checksums, then provide one-step
-      import and preflight validation in VNTTS.
-- [ ] Upgrade VNTTS and the Reverse: 1999 producer to the same released
-      `vntts-artifacts` version and add a producer/consumer compatibility test
-      that loads a complete synthetic pack through the public APIs.
-
 ## Offline authoring and application responsibility split
 
 ### P1 - Move generic generation authoring into VNTTS

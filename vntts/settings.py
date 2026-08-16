@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 19
+settings_schema_version = 20
 
 audio_source_policies = {
     "live-tts-only",
@@ -84,6 +84,7 @@ class AppSettings:
     launch_at_login: bool = False
     keep_running_on_close: bool = False
     compact_controls: bool = False
+    game_pack: str | None = None
     voice_manifest: str | None = None
     story_index: str | None = None
     generated_audio_manifest: str | None = None
@@ -120,6 +121,7 @@ class AppSettings:
             "tts_speaker",
             "tts_language",
             "tts_speaker_wav",
+            "game_pack",
             "voice_manifest",
             "story_index",
             "generated_audio_manifest",
@@ -257,6 +259,7 @@ class AppSettings:
             "VNTTS_TTS_LANGUAGE": "tts_language",
             "VNTTS_TTS_SPEAKER_WAV": "tts_speaker_wav",
             "VNTTS_TTS_PROFILE": "tts_profile",
+            "VNTTS_GAME_PACK": "game_pack",
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
             "VNTTS_STORY_INDEX": "story_index",
             "VNTTS_GENERATED_AUDIO_MANIFEST": "generated_audio_manifest",
@@ -318,4 +321,9 @@ def load_app_settings(path=None, *, environment=None, warn=None):
         allow_unversioned=True,
     )
 
-    return settings.with_environment_overrides(environment, warn=warn)
+    settings = settings.with_environment_overrides(environment, warn=warn)
+    if settings.game_pack:
+        from vntts.game_pack import apply_game_pack
+
+        settings = apply_game_pack(settings)
+    return settings

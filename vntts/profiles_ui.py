@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
+from vntts_artifacts.game_pack import GamePackError
 
 from vntts.ocr import get_dialog_region, get_dialog_region_file, save_dialog_region
 from vntts.profiles import GameProfileStore
@@ -165,8 +166,13 @@ class GameProfilesDialog(QDialog):
         profile = self.current_profile()
         if profile is None:
             return
+        try:
+            selected_settings = profile.apply(self.original_settings)
+        except GamePackError as error:
+            QMessageBox.warning(self, "Unable to use profile", str(error))
+            return
         save_dialog_region(profile.dialog_region, get_dialog_region_file())
-        self.selected_settings = profile.apply(self.original_settings)
+        self.selected_settings = selected_settings
         self.accept()
 
     def settings(self):

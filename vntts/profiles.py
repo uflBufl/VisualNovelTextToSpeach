@@ -10,7 +10,7 @@ from vntts.settings import (
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-profiles_schema_version = 3
+profiles_schema_version = 4
 
 
 def get_profiles_path():
@@ -25,6 +25,7 @@ class GameProfile:
     game_window_title: str | None
     dialog_region: DialogRegion
     ocr_language: str
+    game_pack: str | None
     voice_manifest: str | None
     story_index: str | None
     generated_audio_manifest: str | None
@@ -40,6 +41,7 @@ class GameProfile:
             game_window_title=settings.game_window_title,
             dialog_region=region or get_dialog_region(),
             ocr_language=settings.ocr_language,
+            game_pack=settings.game_pack,
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,
@@ -66,6 +68,7 @@ class GameProfile:
                 region["height"],
             ),
             ocr_language=str(values.get("ocr_language") or "eng").strip(),
+            game_pack=_optional_text(values.get("game_pack")),
             voice_manifest=_optional_text(values.get("voice_manifest")),
             story_index=_optional_text(values.get("story_index")),
             generated_audio_manifest=_optional_text(
@@ -81,17 +84,23 @@ class GameProfile:
         return values
 
     def apply(self, settings):
-        return settings.updated(
+        settings = settings.updated(
             active_profile_id=self.id,
             capture_mode=self.capture_mode,
             game_window_title=self.game_window_title,
             ocr_language=self.ocr_language,
+            game_pack=self.game_pack,
             voice_manifest=self.voice_manifest,
             story_index=self.story_index,
             generated_audio_manifest=self.generated_audio_manifest,
             audio_source_policy=self.audio_source_policy,
             voice_assignments=dict(self.voice_assignments),
         )
+        if self.game_pack:
+            from vntts.game_pack import apply_game_pack
+
+            settings = apply_game_pack(settings)
+        return settings
 
     def updated_from_settings(self, settings, *, region=None):
         return replace(
@@ -100,6 +109,7 @@ class GameProfile:
             game_window_title=settings.game_window_title,
             dialog_region=region or get_dialog_region(),
             ocr_language=settings.ocr_language,
+            game_pack=settings.game_pack,
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,

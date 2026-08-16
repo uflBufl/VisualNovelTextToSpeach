@@ -49,6 +49,7 @@ from vntts.dashboard_ui import (
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
+from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -257,6 +258,7 @@ class SettingsDialog(QDialog):
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
         default_voice_manifest = find_default_voice_manifest()
+        self.game_pack = QLineEdit(settings.game_pack or "")
         self.voice_manifest = QLineEdit(
             settings.voice_manifest
             or (str(default_voice_manifest) if default_voice_manifest else "")
@@ -347,6 +349,7 @@ class SettingsDialog(QDialog):
         speech_form.addRow("Speech model", self.tts_model)
         speech_form.addRow("TTS language", self.tts_language)
         speech_form.addRow("Narrator reference", narrator_reference_layout)
+        speech_form.addRow("Game pack", self.game_pack)
         speech_form.addRow("Voice manifest", self.voice_manifest)
         speech_form.addRow("Story index", self.story_index)
         speech_form.addRow("Generated audio manifest", self.generated_audio_manifest)
@@ -613,6 +616,7 @@ class SettingsDialog(QDialog):
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "tts_speaker_wav": optional_text(self.narrator_reference),
+                "game_pack": optional_text(self.game_pack),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "story_index": optional_text(self.story_index),
                 "generated_audio_manifest": optional_text(
@@ -1133,6 +1137,11 @@ class TrayApplication(QObject):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         updated_settings = dialog.settings()
+        try:
+            updated_settings = apply_game_pack(updated_settings)
+        except GamePackError as error:
+            self.show_error(f"Unable to import game pack: {error}")
+            return
         if updated_settings.launch_at_login != self.settings.launch_at_login:
             try:
                 configure_macos_launch_at_login(updated_settings.launch_at_login)

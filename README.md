@@ -322,7 +322,8 @@ quantized-weight handling is available upstream; it disables itself when
 native support is detected.
 
 Game-specific extraction lives in a separate repository. An extractor may
-produce three local, game-agnostic artifacts for VNTTS:
+produce a versioned, checksum-bound `vntts.game-pack` that contains three local,
+game-agnostic artifacts for VNTTS:
 
 - a character voice `manifest.json`;
 - a versioned `vntts.story-index` JSONL file for chapter detection and likely
@@ -330,11 +331,16 @@ produce three local, game-agnostic artifacts for VNTTS:
 - an optional versioned `vntts.generated-audio` JSON manifest for verified
   ahead-of-time audio lookup.
 
-Select these artifacts in Settings or store them in a game profile. VNTTS does
-not decrypt game configuration, parse engine assets, inspect audio banks, or
-distribute extracted game content. The Reverse: 1999 implementation and its
-local-only story/voice workflow are in the sibling `reverse1999-extractor`
-project.
+Select the game-pack manifest in Settings, store it in a game profile, or set
+`VNTTS_GAME_PACK`. VNTTS validates the complete pack and every declared SHA-256
+before applying its resolved component paths. Individual artifact fields remain
+available for unpackaged local workflows. See [the game-pack import
+contract](docs/game-packs.md) for the public API and read-only preflight command.
+
+VNTTS does not decrypt game configuration, parse engine assets, inspect audio
+banks, or distribute extracted game content. The Reverse: 1999 implementation
+and its local-only story/voice workflow are in the sibling
+`reverse1999-extractor` project.
 
 Use XTTS with character-specific voices and a default narrator voice:
 
@@ -342,9 +348,7 @@ Use XTTS with character-specific voices and a default narrator voice:
 VNTTS_TTS_MODEL='tts_models/multilingual/multi-dataset/xtts_v2' \
 VNTTS_TTS_LANGUAGE='en' \
 VNTTS_TTS_PROFILE='stable' \
-VNTTS_VOICE_MANIFEST='/path/to/voice-pack/manifest.json' \
-VNTTS_STORY_INDEX='/path/to/story-index.jsonl' \
-VNTTS_GENERATED_AUDIO_MANIFEST='/path/to/generated-audio.json' \
+VNTTS_GAME_PACK='/path/to/game-pack.json' \
 VNTTS_AUDIO_SOURCE_POLICY='live-tts-only' \
 VNTTS_NARRATOR_SPEAKER='Claribel Dervla' \
 uv run vntts
