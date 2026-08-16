@@ -18,26 +18,10 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Make the authoring workbench truthful and actionable
 
-- [ ] Persist structured current-attempt state with the line, speaker, phase,
-      attempt number, start time, and latest error. Show it with a live elapsed
-      timer so slow generation does not look frozen.
-- [ ] Clear stale process metadata on restart and distinguish generation
-      running in this window, running in another process, and interrupted jobs.
-- [ ] Present generated, failed, skipped, and pending outcomes together, with
-      grouped reasons and focused retry or voice-review actions.
-- [ ] Add a preflight summary that separates candidate lines into ready,
-      missing-reference, recoverable-source-audio, manual-review, and skipped
-      sound-effect counts before generation starts.
-- [ ] Keep narrator and story selection prominent; collapse rarely changed
-      paths behind readiness details and provide a searchable reference chooser
-      with Play/Stop, previous/next reference, duration, and recent choices.
-- [ ] Give story titles and selection details enough space, explain disabled
-      actions, and rename ambiguous line and voice counts.
-- [ ] Collapse raw engine output under technical details and promote actionable
-      warnings with copy-diagnostics support.
-- [ ] Add output-folder and retry-failed actions, friendly job timestamps,
-      persisted layout state, keyboard focus coverage, and status cues that do
-      not depend on color alone.
+- [ ] Add writable story-collection selection that filters exact queue IDs,
+      show its selection details, persist recent narrator/reference choices,
+      and keep rarely changed paths behind readiness details.
+- [ ] Add friendly timestamps for imported histories and resume workspaces.
 
 ## Live mode
 

@@ -27,40 +27,42 @@ from vntts.authoring.workbench import (
 )
 
 
+def create_test_workspace(root):
+    fixture = write_legacy_fixture(root / "legacy")
+    voice_reference = root / "legacy" / "rhiannon.wav"
+    voice_reference.write_bytes(b"voice-reference")
+    Path(fixture["job"]["voice_manifest"]).write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "reference": "rhiannon.wav",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=fixture["job"]["voice_manifest"],
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="stable",
+        narrator_character="Rhiannon",
+    )
+    return fixture, imported, workspace
+
+
 class AuthoringWorkbenchTest(unittest.TestCase):
     def create_workspace(self, root):
-        fixture = write_legacy_fixture(root / "legacy")
-        voice_reference = root / "legacy" / "rhiannon.wav"
-        voice_reference.write_bytes(b"voice-reference")
-        Path(fixture["job"]["voice_manifest"]).write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "voices": [
-                        {
-                            "character": "Rhiannon",
-                            "speaker": "Rhiannon",
-                            "reference": "rhiannon.wav",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        imported = import_legacy_job(
-            fixture["job_directory"], root / "imports"
-        ).destination
-        workspace = create_resume_workspace(
-            imported,
-            root / "workspaces",
-            story_index=fixture["job"]["story_index"],
-            voice_manifest=fixture["job"]["voice_manifest"],
-            backend="moss-tts",
-            model="model with spaces",
-            generation_profile="stable",
-            narrator_character="Rhiannon",
-        )
-        return fixture, imported, workspace
+        return create_test_workspace(root)
 
     def test_resume_workspace_is_separate_hash_bound_and_idempotent(self):
         with TemporaryDirectory() as directory:

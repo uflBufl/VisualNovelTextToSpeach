@@ -65,11 +65,38 @@ item proves that exact selected manifest and references. The pack retains both
 the original queue voice-manifest SHA-256 and selected SHA-256, plus the
 narrator selection when present.
 
-## Remaining graphical work
+## Graphical workbench
 
-This module is the headless safety/status boundary for the Qt authoring
-workbench. The graphical collection chooser, reference playback/navigation,
-live elapsed timer, QProcess stop lifecycle, accessible focus order, persisted
-layout and diagnostic presentation remain backlog work. A preserved or opened
-workspace is not evidence that an imported history has resumed successfully;
-that acceptance gate still requires a controlled real selected retry.
+Run `vntts-authoring-workbench WORKSPACE` to open the Qt shell over the same
+validated boundary. It presents the authoritative pending, generated,
+approved, rejected, failed, missing-reference, recoverable-source-audio,
+manual-review, resolve-audio and skipped categories. The current attempt shows
+its line, voice, phase, attempt, latest error and a derived live elapsed timer.
+Runtime text distinguishes this child, an external owner, interruption,
+attention, review, readiness and completion without relying on color.
+
+The collection pane is deliberately a read-only view of declared story
+collections; it does not imply a filter that the generated command would
+ignore. Voice references are searchable and navigable, and playback revalidates
+the contained snapshot at click time. Review playback separately revalidates
+the exact state-bound generated WAV before playback; approval and rejection
+independently reload state and participate in the generation lease. A state,
+control or path integrity failure stops playback, clears stale rows and disables
+every generation-start/retry, review, open-folder and preview action. Stop
+Generation remains available for a child already owned by this window.
+
+Generation runs through `QProcess` with program and arguments kept separate.
+The dialog polls authoritative state while the child is live, preserves
+ordered merged output with an incremental UTF-8 decoder, and exposes it under
+checkable technical details with copyable diagnostics. Stop first requests
+termination, then a per-launch tokenized timer may kill only that same child;
+user stop, forced stop, failed start, I/O error and exit status remain visible
+across later state polls. Geometry, splitter sizes and technical-detail state
+are stored with `QSettings`, and the controls have an explicit keyboard focus
+chain and accessible names/descriptions.
+
+The remaining graphical backlog includes writable collection selection,
+recent narrator/reference choices and friendlier history timestamps. A
+preserved or opened workspace is not evidence that an imported history has
+resumed successfully; that acceptance gate still requires a controlled real
+selected retry.

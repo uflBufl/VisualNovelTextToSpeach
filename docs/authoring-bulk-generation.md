@@ -123,8 +123,8 @@ therefore fails instead of silently changing synthesis provenance. The
 role-bound narrator selection is part of the control inventory.
 
 The headless projection and safety contract are documented in
-[authoring-workspaces.md](authoring-workspaces.md). Live elapsed-time display
-and the remaining graphical controls are separate UI work.
+[authoring-workspaces.md](authoring-workspaces.md). The Qt workbench projects
+that attempt into a live elapsed-time display without persisting derived time.
 
 After a dedicated selected queue has complete terminal review coverage, use
 the [final game-pack publication boundary](authoring-game-pack-publication.md)
