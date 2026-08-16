@@ -356,6 +356,13 @@ shared corpus/queue documents and typed device-independent rendering; imported
 legacy listening sessions resume without extractor code. See the
 [authoring model-evaluation contract](docs/authoring-model-evaluation.md).
 
+Generic generation-queue planning is also owned by `vntts.authoring`. The
+`vntts-pregenerate preflight-queue` and `build-queue` commands consume only the
+public, collection-aware story-index document and voice-manifest contracts.
+They apply an explicit canonical source-audio policy and report missing voice
+references before generation. See the
+[collection-driven queue contract](docs/authoring-generation-queues.md).
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh

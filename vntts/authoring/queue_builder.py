@@ -1,0 +1,343 @@
+"""Collection-driven voice-generation queue planning and publication."""
+
+from __future__ import annotations
+
+import hashlib
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+
+from vntts_artifacts import (
+    VOICE_GENERATION_QUEUE_SCHEMA,
+    VOICE_GENERATION_QUEUE_SCHEMA_VERSION,
+    StoryIndexDocument,
+    StoryIndexRecord,
+    expected_voice_generation_queue_id,
+    voice_generation_action,
+    write_voice_generation_queue,
+)
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
+    load_voice_manifest,
+    normalize_character_name,
+)
+
+
+class GenerationQueueBuildError(RuntimeError):
+    """A story index cannot be turned into an unambiguous generation queue."""
+
+
+@dataclass(frozen=True)
+class GenerationQueueSummary:
+    story_records: int
+    selected_records: int
+    queue_items: int
+    character_count: int
+    ready: int
+    missing_reference: int
+    recoverable_source_audio: int
+    manual_review: int
+    skipped_available: int
+    skipped_unspeakable: int
+    skipped_unselected: int
+    action_counts: dict[str, int]
+    source_audio_status_counts: dict[str, int]
+    missing_reference_characters: tuple[str, ...]
+
+    def to_dict(self):
+        return {
+            "story_records": self.story_records,
+            "selected_records": self.selected_records,
+            "queue_items": self.queue_items,
+            "character_count": self.character_count,
+            "ready": self.ready,
+            "missing_reference": self.missing_reference,
+            "recoverable_source_audio": self.recoverable_source_audio,
+            "manual_review": self.manual_review,
+            "skipped_available": self.skipped_available,
+            "skipped_unspeakable": self.skipped_unspeakable,
+            "skipped_unselected": self.skipped_unselected,
+            "action_counts": dict(self.action_counts),
+            "source_audio_status_counts": dict(self.source_audio_status_counts),
+            "missing_reference_characters": list(self.missing_reference_characters),
+        }
+
+
+@dataclass(frozen=True)
+class GenerationQueuePlan:
+    metadata: dict[str, object]
+    items: tuple[dict[str, object], ...]
+    summary: GenerationQueueSummary
+
+
+_QUEUE_OWNED_FIELDS = frozenset(
+    {
+        "record_type",
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "text",
+        "speaker",
+        "voice_character",
+        "kind",
+        "previous_text",
+        "next_text",
+        "context",
+        "source_kind",
+        "chapter",
+        "sequence",
+        "collection_id",
+        "source_audio_id",
+        "source_audio_status",
+        "source_audio_reason",
+        "action",
+        "state",
+    }
+)
+
+
+def plan_generation_queue(
+    document: StoryIndexDocument,
+    voice_manifest: tuple[VoiceManifestEntry, ...],
+    *,
+    collection_ids: tuple[str, ...] | None = None,
+    unknown_action: str | None = None,
+    story_index_sha256: str | None = None,
+    voice_manifest_path: Path | None = None,
+    voice_manifest_sha256: str | None = None,
+    generated_at: str | None = None,
+):
+    """Plan a queue from typed shared artifacts without reading producer JSON."""
+    if not isinstance(document, StoryIndexDocument):
+        raise GenerationQueueBuildError("story_index must be a StoryIndexDocument")
+    entries = tuple(voice_manifest)
+    if not all(isinstance(entry, VoiceManifestEntry) for entry in entries):
+        raise GenerationQueueBuildError(
+            "voice_manifest must contain validated VoiceManifestEntry values"
+        )
+
+    selected_collection_ids = _selected_collection_ids(document, collection_ids)
+    selected = tuple(
+        record
+        for record in document.records
+        if selected_collection_ids is None
+        or record.collection_id in selected_collection_ids
+    )
+    voice_index = _voice_index(entries)
+    manifest_directory = (
+        None if voice_manifest_path is None else Path(voice_manifest_path).resolve().parent
+    )
+    reference_availability = {
+        entry: _has_local_reference(entry, manifest_directory) for entry in entries
+    }
+
+    items = []
+    skipped_available = 0
+    skipped_unspeakable = 0
+    ready = 0
+    missing_reference = 0
+    recoverable = 0
+    manual_review = 0
+    missing_characters = set()
+    for record in selected:
+        if not record.speakable:
+            skipped_unspeakable += 1
+            continue
+        action = voice_generation_action(
+            record.source_audio_status,
+            unknown_action=unknown_action,
+        )
+        if action is None:
+            skipped_available += 1
+            continue
+        entry = voice_index.get(normalize_character_name(record.voice_character))
+        voice_character = entry.character if entry is not None else record.voice_character
+        if action == "generate":
+            if entry is not None and reference_availability[entry]:
+                ready += 1
+            else:
+                missing_reference += 1
+                missing_characters.add(voice_character)
+        elif action in {"prefer_source_audio", "resolve_audio"}:
+            recoverable += 1
+        else:
+            manual_review += 1
+        items.append(_queue_item(record, voice_character, action))
+
+    action_counts = _counts(item["action"] for item in items)
+    status_counts = _counts(item["source_audio_status"] for item in items)
+    characters = {str(item["voice_character"]) for item in items}
+    summary = GenerationQueueSummary(
+        story_records=len(document.records),
+        selected_records=len(selected),
+        queue_items=len(items),
+        character_count=len(characters),
+        ready=ready,
+        missing_reference=missing_reference,
+        recoverable_source_audio=recoverable,
+        manual_review=manual_review,
+        skipped_available=skipped_available,
+        skipped_unspeakable=skipped_unspeakable,
+        skipped_unselected=len(document.records) - len(selected),
+        action_counts=action_counts,
+        source_audio_status_counts=status_counts,
+        missing_reference_characters=tuple(sorted(missing_characters, key=str.casefold)),
+    )
+    metadata = {
+        "record_type": "metadata",
+        "schema": VOICE_GENERATION_QUEUE_SCHEMA,
+        "schema_version": VOICE_GENERATION_QUEUE_SCHEMA_VERSION,
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+        "item_count": len(items),
+        "character_count": len(characters),
+        "source_audio_status_counts": status_counts,
+        "action_counts": action_counts,
+        "source_kind_counts": _counts(item["source_kind"] for item in items),
+        "filters": {
+            "collection_ids": []
+            if selected_collection_ids is None
+            else sorted(selected_collection_ids),
+            "unknown_action": unknown_action,
+        },
+    }
+    if document.game is not None:
+        metadata["game"] = document.game
+    if document.language is not None:
+        metadata["language"] = document.language
+    metadata["source_story_index"] = str(document.path)
+    if story_index_sha256 is not None:
+        metadata["source_story_index_sha256"] = story_index_sha256
+    if voice_manifest_path is not None:
+        metadata["source_voice_manifest"] = str(Path(voice_manifest_path).resolve())
+    if voice_manifest_sha256 is not None:
+        metadata["source_voice_manifest_sha256"] = voice_manifest_sha256
+    return GenerationQueuePlan(metadata, tuple(items), summary)
+
+
+def inspect_generation_queue(
+    story_index_path,
+    voice_manifest_path,
+    *,
+    collection_ids: tuple[str, ...] | None = None,
+    unknown_action: str | None = None,
+    generated_at: str | None = None,
+):
+    """Load public shared artifacts and return a non-mutating queue plan."""
+    story_index_path = Path(story_index_path).expanduser().resolve()
+    voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
+    document = StoryIndexDocument.load(story_index_path)
+    _manifest, entries = load_voice_manifest(voice_manifest_path, allow_legacy=False)
+    return plan_generation_queue(
+        document,
+        entries,
+        collection_ids=collection_ids,
+        unknown_action=unknown_action,
+        story_index_sha256=_sha256_file(story_index_path),
+        voice_manifest_path=voice_manifest_path,
+        voice_manifest_sha256=_sha256_file(voice_manifest_path),
+        generated_at=generated_at,
+    )
+
+
+def publish_generation_queue(plan: GenerationQueuePlan, output_path):
+    """Atomically publish a previously inspected queue plan."""
+    if not isinstance(plan, GenerationQueuePlan):
+        raise GenerationQueueBuildError("plan must be a GenerationQueuePlan")
+    return write_voice_generation_queue(output_path, plan.metadata, plan.items)
+
+
+def _selected_collection_ids(document, collection_ids):
+    if collection_ids is None:
+        return None
+    normalized = tuple(dict.fromkeys(str(value).strip() for value in collection_ids))
+    if not normalized or any(not value for value in normalized):
+        raise GenerationQueueBuildError("collection_ids must contain non-empty values")
+    for collection_id in normalized:
+        document.records_for_collection(collection_id)
+    return frozenset(normalized)
+
+
+def _voice_index(entries):
+    result = {}
+    for entry in entries:
+        for name in (entry.character, *entry.aliases):
+            result[normalize_character_name(name)] = entry
+    return result
+
+
+def _has_local_reference(entry, manifest_directory):
+    if entry is None or not entry.references:
+        return False
+    candidates = []
+    root = None if manifest_directory is None else Path(manifest_directory).resolve()
+    for reference in entry.references:
+        if not isinstance(reference, str) or not reference or "\\" in reference:
+            raise GenerationQueueBuildError(
+                "Voice reference must be a non-empty POSIX-relative path"
+            )
+        pure = PurePosixPath(reference)
+        if (
+            pure.is_absolute()
+            or any(part in {"", ".", ".."} for part in reference.split("/"))
+            or (pure.parts and ":" in pure.parts[0])
+        ):
+            raise GenerationQueueBuildError(
+                f"Voice reference must stay inside the manifest directory: {reference!r}"
+            )
+        if root is not None:
+            candidate = (root / Path(*pure.parts)).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError as error:
+                raise GenerationQueueBuildError(
+                    f"Voice reference leaves the manifest directory: {reference!r}"
+                ) from error
+            candidates.append(candidate)
+    if root is None:
+        return True
+    return any(candidate.is_file() for candidate in candidates)
+
+
+def _queue_item(record: StoryIndexRecord, voice_character, action):
+    item = {
+        key: value
+        for key, value in record.producer_fields.items()
+        if key not in _QUEUE_OWNED_FIELDS
+    }
+    item.update(
+        {
+            "record_type": "generation_item",
+            "queue_id": expected_voice_generation_queue_id(
+                record.line_id, record.text_sha256
+            ),
+            "line_id": record.line_id,
+            "text_sha256": record.text_sha256,
+            "text": record.text,
+            "speaker": record.speaker,
+            "voice_character": voice_character,
+            "kind": record.kind,
+            "previous_text": record.previous_text,
+            "next_text": record.next_text,
+            "context": record.context,
+            "source_kind": record.source_kind,
+            "chapter": record.chapter,
+            "sequence": record.sequence,
+            "collection_id": record.collection_id,
+            "source_audio_id": record.source_audio_id,
+            "source_audio_status": record.source_audio_status,
+            "source_audio_reason": record.source_audio_reason or "not_reported",
+            "action": action,
+            "state": "pending",
+        }
+    )
+    return item
+
+
+def _counts(values):
+    return dict(sorted(Counter(str(value) for value in values).items()))
+
+
+def _sha256_file(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()

@@ -4,6 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
+from vntts_artifacts import StoryIndexError, VoiceGenerationQueueError
+from vntts_artifacts.voice_manifest import VoiceManifestError
+
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     default_import_root,
@@ -17,6 +20,11 @@ from vntts.authoring.listening_import import (
     ListeningImportError,
     import_listening_session,
     inspect_listening_session,
+)
+from vntts.authoring.queue_builder import (
+    GenerationQueueBuildError,
+    inspect_generation_queue,
+    publish_generation_queue,
 )
 
 
@@ -62,6 +70,26 @@ def create_parser():
     import_listening.add_argument(
         "--destination-root", type=Path, default=default_import_root()
     )
+    for command, help_text in (
+        ("preflight-queue", "Summarize a collection-driven generation queue"),
+        ("build-queue", "Publish a validated collection-driven generation queue"),
+    ):
+        queue = subparsers.add_parser(command, help=help_text)
+        queue.add_argument("--story-index", type=Path, required=True)
+        queue.add_argument("--voice-manifest", type=Path, required=True)
+        queue.add_argument(
+            "--collection",
+            action="append",
+            dest="collection_ids",
+            help="Include one declared collection; repeat to include more",
+        )
+        queue.add_argument(
+            "--unknown-action",
+            choices=("resolve_audio", "manual_review"),
+            help="Required policy when a selected source-audio status is unknown",
+        )
+        if command == "build-queue":
+            queue.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -91,6 +119,21 @@ def main(argv=None):
         )
         return 0
     try:
+        if arguments.command in {"preflight-queue", "build-queue"}:
+            plan = inspect_generation_queue(
+                arguments.story_index,
+                arguments.voice_manifest,
+                collection_ids=None
+                if arguments.collection_ids is None
+                else tuple(arguments.collection_ids),
+                unknown_action=arguments.unknown_action,
+            )
+            payload = {"summary": plan.summary.to_dict()}
+            if arguments.command == "build-queue":
+                output = publish_generation_queue(plan, arguments.output)
+                payload["output"] = str(output)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
         if arguments.command == "inspect-standalone":
             plan = inspect_standalone_generation(arguments.queue, arguments.output)
             print(json.dumps(plan.summary, indent=2, sort_keys=True))
@@ -129,7 +172,14 @@ def main(argv=None):
                 arguments.job_directory,
                 arguments.destination_root,
             )
-    except (LegacyAuthoringImportError, ListeningImportError) as error:
+    except (
+        GenerationQueueBuildError,
+        LegacyAuthoringImportError,
+        ListeningImportError,
+        StoryIndexError,
+        VoiceGenerationQueueError,
+        VoiceManifestError,
+    ) as error:
         create_parser().error(str(error))
     print(
         json.dumps(

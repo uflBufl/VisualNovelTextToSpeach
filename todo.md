@@ -10,9 +10,6 @@ sections after their implementation has been verified and committed.
 - [ ] Move the generic queue builder, delivery annotations, bulk generation,
       generated-WAV validation, resumable state, approval, and manifest
       publication from `r1999extractor` into `vntts.authoring`.
-- [ ] Build generation jobs from versioned story-index and voice-manifest
-      fields. Interpret missing source audio as an authoring policy without
-      importing Reverse: 1999 modules or understanding game-specific IDs.
 - [ ] Publish a final verified game pack from the authoring workflow after
       generation and review; keep extracted inputs, generated WAVs, and review
       state in application data rather than the repository.

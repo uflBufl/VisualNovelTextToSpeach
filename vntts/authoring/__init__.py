@@ -36,6 +36,14 @@ from vntts.authoring.model_benchmark import (
     build_benchmark_corpus,
     select_representative_items,
 )
+from vntts.authoring.queue_builder import (
+    GenerationQueueBuildError,
+    GenerationQueuePlan,
+    GenerationQueueSummary,
+    inspect_generation_queue,
+    plan_generation_queue,
+    publish_generation_queue,
+)
 
 __all__ = [
     "LegacyAuthoringImportError",
@@ -47,6 +55,9 @@ __all__ = [
     "ModelBenchmarkError",
     "ModelListeningError",
     "ModelVariant",
+    "GenerationQueueBuildError",
+    "GenerationQueuePlan",
+    "GenerationQueueSummary",
     "StandaloneImportInspection",
     "aggregate_listening_report",
     "benchmark_model_variants",
@@ -60,10 +71,13 @@ __all__ = [
     "import_listening_session",
     "import_standalone_generation",
     "inspect_listening_session",
+    "inspect_generation_queue",
     "inspect_standalone_generation",
     "listening_progress",
     "load_listening_session",
     "next_pending_trial",
+    "plan_generation_queue",
+    "publish_generation_queue",
     "record_trial_preference",
     "select_representative_items",
 ]
