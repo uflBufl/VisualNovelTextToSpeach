@@ -118,6 +118,28 @@ of locale. Older import manifests did not preserve source job creation/update
 time, so the UI says that it is unavailable rather than guessing from file
 timestamps.
 
-A preserved or opened workspace is not evidence that an imported history has
-resumed successfully; that acceptance gate still requires a controlled real
-selected retry.
+## Controlled real retry evidence
+
+Clean commit `c77b87c` was used for one real, selection-scoped retry in workspace
+`resume-395a5e5eec0327a3a793b66d-4b727b4671cb0ba2`. The child command contained
+only queue ID `reverse1999:314605:15:d65edc619e8d32c4`, used `retries=0` and
+base seed `0`, and skipped the other 591 queue records. The authoritative
+failure record advanced from attempt 3/seed 2 to attempt 4/seed 3.
+
+The typed MOSS render completed as `limited`, so the executor retained a failed
+record and did not publish a WAV. Post-run verification established all of the
+following:
+
+- the other 337 authoritative state records were byte-for-byte unchanged;
+- the workspace WAV inventory remained exactly the original 197 files, with no
+  added, missing or partial WAV;
+- the approved-only manifest remained empty;
+- the immutable workspace, import and source queue hashes still agreed;
+- all 201 recorded import/source artifacts and both external input hashes still
+  matched their immutable inventory; and
+- `active` was cleared and the generation lease was removed.
+
+This proves safe selected resume, cumulative attempt/seed continuation and
+limited-result non-publication on the real imported history. It is not evidence
+of successful synthesis: the selected line remains failed and no review or
+final-pack decision was made.
