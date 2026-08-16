@@ -42,6 +42,14 @@ Legacy executable and model fields are retained only as provenance and are
 never executed. Historical version 1 jobs with an omitted or null model and
 targets with an omitted or null `episode_count` remain readable.
 
+Version 2 import snapshots preserve the source job's validated, timezone-aware
+`created_at` and optional `updated_at` inside `legacy_job`. A malformed or
+timezone-naive timestamp, or an update earlier than creation, is rejected
+instead of being presented as history.
+Version 1 immutable imports that predate these fields remain readable and
+idempotent; their missing source times stay explicitly unavailable and are
+never inferred from filesystem modification times.
+
 Standalone import never guesses from filenames, timestamps, directory names or
 truncated hashes. The caller must select both the queue and output directory.
 The output is accepted only when `generation-state.json.queue_sha256`, or a

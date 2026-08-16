@@ -32,7 +32,8 @@ LEGACY_JOB_SCHEMA_VERSION = 1
 LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
 LEGACY_STATE_SCHEMA_VERSION = 1
 IMPORT_SCHEMA = "vntts.authoring-legacy-import"
-IMPORT_SCHEMA_VERSION = 1
+IMPORT_SCHEMA_VERSION = 2
+SUPPORTED_IMPORT_SCHEMA_VERSIONS = frozenset({1, IMPORT_SCHEMA_VERSION})
 CONTROL_ARTIFACT_ROLES = {
     "legacy_job",
     "generation_queue",
@@ -574,18 +575,13 @@ def _validate_job(job):
             )
     if job.get("model") is not None and _optional_text(job.get("model")) is None:
         raise LegacyAuthoringImportError("Pregeneration job model must be text or null")
-    try:
-        created_at = datetime.fromisoformat(
-            str(job["created_at"]).replace("Z", "+00:00")
-        )
-    except ValueError as error:
-        raise LegacyAuthoringImportError(
-            "Pregeneration job created_at must be an ISO-8601 timestamp"
-        ) from error
-    if created_at.tzinfo is None:
-        raise LegacyAuthoringImportError(
-            "Pregeneration job created_at must include a timezone"
-        )
+    created_at = _validate_job_timestamp(job["created_at"], "created_at")
+    if job.get("updated_at") is not None:
+        updated_at = _validate_job_timestamp(job["updated_at"], "updated_at")
+        if updated_at < created_at:
+            raise LegacyAuthoringImportError(
+                "Pregeneration job updated_at must not precede created_at"
+            )
     targets = job.get("targets")
     if not isinstance(targets, list):
         raise LegacyAuthoringImportError("Pregeneration job targets must be a list")
@@ -990,7 +986,10 @@ def _import_manifest(plan, import_id):
             "status": plan.job.get("status"),
             "model": plan.job.get("model"),
             "narrator_character": plan.job.get("narrator_character"),
+            "created_at": plan.job.get("created_at"),
         }
+        if plan.job.get("updated_at") is not None:
+            manifest["legacy_job"]["updated_at"] = plan.job["updated_at"]
         if plan.source_diagnostics:
             manifest["source"]["diagnostics"] = list(plan.source_diagnostics)
             manifest["legacy_job"]["snapshot_status"] = plan.runtime_status
@@ -1035,7 +1034,7 @@ def _validate_import_root_collisions(destination_root, plan):
         manifest = _load_json(manifest_path, "existing authoring import")
         if (
             manifest.get("schema") != IMPORT_SCHEMA
-            or manifest.get("schema_version") != IMPORT_SCHEMA_VERSION
+            or manifest.get("schema_version") not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
         ):
             continue
         identities = manifest.get("identities")
@@ -1067,13 +1066,19 @@ def _validate_existing_import(destination, plan):
     manifest = _load_json(manifest_path, "existing authoring import")
     if (
         manifest.get("schema") != IMPORT_SCHEMA
-        or manifest.get("schema_version") != IMPORT_SCHEMA_VERSION
+        or manifest.get("schema_version") not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
     ):
         raise LegacyAuthoringImportError(
             f"Import destination already exists with an unsupported manifest: {destination}"
         )
     expected = _import_manifest(plan, _import_id(plan))
     expected["imported_at"] = manifest.get("imported_at")
+    if manifest.get("schema_version") == 1:
+        expected["schema_version"] = 1
+        expected_legacy = expected.get("legacy_job")
+        if isinstance(expected_legacy, dict):
+            expected_legacy.pop("created_at", None)
+            expected_legacy.pop("updated_at", None)
     source = manifest.get("source")
     if (
         not isinstance(source, dict)
@@ -1386,3 +1391,21 @@ def _load_jsonl_metadata_optional(path):
 
 def _optional_text(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _validate_job_timestamp(value, field):
+    if not isinstance(value, str) or not value.strip():
+        raise LegacyAuthoringImportError(
+            f"Pregeneration job {field} must be an ISO-8601 timestamp"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as error:
+        raise LegacyAuthoringImportError(
+            f"Pregeneration job {field} must be an ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None:
+        raise LegacyAuthoringImportError(
+            f"Pregeneration job {field} must include a timezone"
+        )
+    return parsed

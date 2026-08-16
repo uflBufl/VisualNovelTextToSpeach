@@ -216,9 +216,10 @@ def discover_imports(import_root=None):
             if (
                 manifest.get("schema") == legacy_import.IMPORT_SCHEMA
                 and manifest.get("schema_version")
-                == legacy_import.IMPORT_SCHEMA_VERSION
+                in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
                 and (manifest_path.parent / "queue.jsonl").is_file()
             ):
+                _validate_import_history(manifest)
                 results.append(directory)
                 seen.add(key)
         except (AuthoringWorkbenchError, ValueError):
@@ -270,9 +271,17 @@ def create_resume_workspace(
     )
     if (
         manifest.get("schema") != legacy_import.IMPORT_SCHEMA
-        or manifest.get("schema_version") != legacy_import.IMPORT_SCHEMA_VERSION
+        or manifest.get("schema_version")
+        not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
     ):
         raise AuthoringWorkbenchError("Only validated VNTTS legacy imports can resume")
+    _validate_import_history(manifest)
+    if manifest.get("source", {}).get("kind") != (
+        "reverse1999-extractor-pregeneration-job"
+    ):
+        raise AuthoringWorkbenchError(
+            "Resume workspaces require a job-backed legacy import"
+        )
     import_id = _required_text(manifest.get("import_id"), "Legacy import ID")
     if not _IMPORT_ID_PATTERN.fullmatch(import_id) or source.name != import_id:
         raise AuthoringWorkbenchError(
@@ -840,12 +849,14 @@ def _read_bound_bytes(path, expected_sha256, label):
 
 
 def immutable_history_timestamps(workspace_directory):
-    """Return friendly timestamps sourced only from the immutable import snapshot."""
+    """Return friendly timestamps from immutable source and workspace records."""
     directory, workspace = _load_workspace(workspace_directory)
-    snapshot = _load_json(
+    snapshot, snapshot_sha256, _payload = _load_json_snapshot(
         directory / workspace["source"]["snapshot"],
         "workspace import snapshot",
     )
+    if snapshot_sha256 != workspace["source"]["import_sha256"]:
+        raise AuthoringWorkbenchError("Workspace import snapshot was modified")
     legacy_job = snapshot.get("legacy_job")
     candidates = []
     if isinstance(legacy_job, dict):
@@ -856,6 +867,7 @@ def immutable_history_timestamps(workspace_directory):
             )
         )
     candidates.append(("Imported", snapshot.get("imported_at")))
+    candidates.append(("Workspace created", workspace.get("created_at")))
     values = []
     for kind, value in candidates:
         parsed = _parse_history_timestamp(value)
@@ -1096,6 +1108,10 @@ def _load_workspace(workspace_directory):
         raise AuthoringWorkbenchError("Workspace directory name is not canonical")
     if workspace.get("workspace_id") != directory.name:
         raise AuthoringWorkbenchError("Workspace identity does not match its directory")
+    if _parse_history_timestamp(workspace.get("created_at")) is None:
+        raise AuthoringWorkbenchError(
+            "Workspace creation timestamp is missing or invalid"
+        )
     if (
         workspace.get("queue") != "queue.jsonl"
         or workspace.get("output") != "generated-audio"
@@ -1124,12 +1140,14 @@ def _load_workspace(workspace_directory):
         raise AuthoringWorkbenchError("Workspace import snapshot was modified")
     if (
         snapshot.get("schema") != legacy_import.IMPORT_SCHEMA
-        or snapshot.get("schema_version") != legacy_import.IMPORT_SCHEMA_VERSION
+        or snapshot.get("schema_version")
+        not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
         or snapshot.get("import_id") != expected_import_id
         or snapshot.get("source", {}).get("source_fingerprint")
         != source.get("source_fingerprint")
     ):
         raise AuthoringWorkbenchError("Workspace provenance identity is inconsistent")
+    _validate_import_history(snapshot)
     expected_seed = [
         {"path": "provenance/import.json", "sha256": snapshot_sha256},
         *(
@@ -1201,6 +1219,58 @@ def _workspace_title(manifest, fallback):
         if legacy["title"].strip():
             return legacy["title"].strip()
     return fallback
+
+
+def _validate_import_history(manifest):
+    version = manifest.get("schema_version")
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        raise AuthoringWorkbenchError("Import source provenance is malformed")
+    kind = source.get("kind")
+    job_kind = "reverse1999-extractor-pregeneration-job"
+    standalone_kind = "reverse1999-extractor-standalone-generation"
+    if kind not in {job_kind, standalone_kind}:
+        raise AuthoringWorkbenchError("Import source kind is unsupported")
+    legacy_job = manifest.get("legacy_job")
+    artifacts = manifest.get("artifacts")
+    has_job_artifact = isinstance(artifacts, list) and any(
+        isinstance(value, dict) and value.get("role") == "legacy_job"
+        for value in artifacts
+    )
+    has_job_markers = any(
+        field in source
+        for field in ("job_directory", "job_schema", "job_schema_version")
+    )
+    if kind == standalone_kind:
+        if legacy_job is not None or has_job_artifact or has_job_markers:
+            raise AuthoringWorkbenchError(
+                "Standalone import contains inconsistent legacy job provenance"
+            )
+        return
+    if (
+        not isinstance(legacy_job, dict)
+        or not has_job_artifact
+        or source.get("job_schema") != legacy_import.LEGACY_JOB_SCHEMA
+        or source.get("job_schema_version") != legacy_import.LEGACY_JOB_SCHEMA_VERSION
+        or not isinstance(source.get("job_directory"), str)
+        or not source["job_directory"].strip()
+    ):
+        raise AuthoringWorkbenchError("Version 2 import requires legacy job history")
+    created_at = _parse_history_timestamp(legacy_job.get("created_at"))
+    if version == 2 and created_at is None:
+        raise AuthoringWorkbenchError(
+            "Version 2 import requires a timezone-aware source created_at"
+        )
+    updated_value = legacy_job.get("updated_at")
+    updated_at = _parse_history_timestamp(updated_value)
+    if updated_value is not None and updated_at is None:
+        raise AuthoringWorkbenchError(
+            "Import source updated_at must be a timezone-aware timestamp"
+        )
+    if created_at is not None and updated_at is not None and updated_at < created_at:
+        raise AuthoringWorkbenchError(
+            "Import source updated_at must not precede created_at"
+        )
 
 
 def _legacy_narrator(manifest):

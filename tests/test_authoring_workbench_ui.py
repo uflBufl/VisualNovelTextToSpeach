@@ -434,9 +434,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             settings = self.settings(root)
             dialog = AuthoringWorkbenchDialog(workspace, settings=settings)
 
+            self.assertIn("Source created: ", dialog.readiness_text.text())
+            self.assertIn("Source updated: ", dialog.readiness_text.text())
             self.assertIn("Imported: ", dialog.readiness_text.text())
+            self.assertIn("Workspace created: ", dialog.readiness_text.text())
             self.assertIn(" UTC", dialog.readiness_text.text())
-            self.assertIn("Source job time: unavailable", dialog.readiness_text.text())
+            self.assertNotIn(
+                "Source job time: unavailable", dialog.readiness_text.text()
+            )
             self.assertIn("inputs/story-index.jsonl", dialog.readiness_text.text())
             self.assertTrue(dialog.recent_choice.accessibleName())
             self.assertTrue(dialog.readiness_details.accessibleName())

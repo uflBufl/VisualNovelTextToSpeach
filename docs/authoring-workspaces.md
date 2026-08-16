@@ -6,6 +6,11 @@ are never edited. Queue/state/audio bytes are copied through staging and an
 atomic no-replace rename; the preserved `import.json` remains the root of trust
 for the queue and initial history.
 
+Resume workspaces accept only structurally consistent, job-backed legacy
+imports. Standalone generation snapshots remain preserved by their importer but
+are not reinterpreted as jobs; changing a manifest's source-kind discriminator,
+job markers or legacy-job artifact combination is rejected.
+
 ## Config-addressed identity
 
 A workspace directory is addressed by the complete authoring configuration:
@@ -112,11 +117,13 @@ are stored with `QSettings`, and the controls have an explicit keyboard focus
 chain and accessible names/descriptions.
 
 Checkable readiness details retain the selected collection IDs, exact ready-ID
-count, contained story/voice snapshot paths and short hashes. Existing legacy
-imports expose their immutable `imported_at` in numeric UTC form, independent
-of locale. Older import manifests did not preserve source job creation/update
-time, so the UI says that it is unavailable rather than guessing from file
-timestamps.
+count, contained story/voice snapshot paths and short hashes. The immutable
+history display orders validated source creation/update, import and workspace
+creation times chronologically and formats every value as numeric UTC,
+independent of locale. New imports preserve source job times; older import
+manifests omit them cleanly, so the UI says that source time is unavailable
+instead of guessing from file timestamps. Every workspace records its own
+timezone-aware `created_at` in the validated core document.
 
 ## Controlled real retry evidence
 

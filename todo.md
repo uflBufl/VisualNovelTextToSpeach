@@ -17,12 +17,6 @@ sections after their implementation has been verified and committed.
       are available. Preserve source-audio candidates instead of replacing them
       with generated speech.
 
-### P1 - Make the authoring workbench truthful and actionable
-
-- [ ] Preserve source job creation/update timestamps in future import snapshots
-      and show friendly resume-workspace creation timestamps. Existing immutable
-      import time is already shown; never infer missing history from file mtimes.
-
 ## Live mode
 
 ### P0 - Repair failures observed in the latest Character Story run

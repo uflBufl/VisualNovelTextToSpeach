@@ -17,6 +17,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring as authoring_package
+import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.legacy_import import import_legacy_job
@@ -914,7 +915,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             timestamps = immutable_history_timestamps(created.directory)
 
-        self.assertEqual([value.kind for value in timestamps], ["Imported"])
+        self.assertEqual(
+            [value.kind for value in timestamps],
+            ["Source created", "Source updated", "Imported", "Workspace created"],
+        )
         self.assertEqual(
             [value.instant for value in timestamps],
             sorted(value.instant for value in timestamps),
@@ -925,6 +929,153 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 value.display,
                 r"^[A-Za-z ]+: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$",
             )
+
+    def test_history_timestamps_keep_old_imports_compatible_without_mtime_inference(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            snapshot_path = created.directory / "provenance/import.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["schema_version"] = 1
+            snapshot["legacy_job"].pop("created_at")
+            snapshot["legacy_job"].pop("updated_at")
+            snapshot_path.write_text(
+                json.dumps(snapshot, sort_keys=True), encoding="utf-8"
+            )
+            snapshot_sha256 = sha256_file(snapshot_path)
+            workspace_path = created.directory / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["source"]["import_sha256"] = snapshot_sha256
+            workspace["seed_inventory"][0]["sha256"] = snapshot_sha256
+            workspace_path.write_text(
+                json.dumps(workspace, sort_keys=True), encoding="utf-8"
+            )
+
+            timestamps = immutable_history_timestamps(created.directory)
+
+        self.assertEqual(
+            [value.kind for value in timestamps], ["Imported", "Workspace created"]
+        )
+
+    def test_workspace_creation_timestamp_is_required_authoritative_data(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            workspace_path = created.directory / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["created_at"] = "not-a-timestamp"
+            workspace_path.write_text(
+                json.dumps(workspace, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "creation timestamp is missing or invalid"
+            ):
+                immutable_history_timestamps(created.directory)
+
+    def test_history_timestamps_reject_import_snapshot_swap_after_workspace_load(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            snapshot_path = created.directory / "provenance/import.json"
+            original = snapshot_path.read_bytes()
+            original_loader = workbench_module._load_json_snapshot
+            calls = 0
+
+            def swap_on_history_read(path, label):
+                nonlocal calls
+                calls += 1
+                if calls != 2:
+                    return original_loader(path, label)
+                snapshot = json.loads(original)
+                snapshot["imported_at"] = "2030-01-01T00:00:00+00:00"
+                snapshot_path.write_text(
+                    json.dumps(snapshot, sort_keys=True), encoding="utf-8"
+                )
+                try:
+                    return original_loader(path, label)
+                finally:
+                    snapshot_path.write_bytes(original)
+
+            with (
+                patch(
+                    "vntts.authoring.workbench._load_json_snapshot",
+                    side_effect=swap_on_history_read,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "import snapshot was modified"
+                ),
+            ):
+                immutable_history_timestamps(created.directory)
+
+    def test_version_two_import_rejects_naive_source_time_on_create_and_load(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, created = self.create_workspace(root)
+            import_path = imported / "import.json"
+            import_manifest = json.loads(import_path.read_text(encoding="utf-8"))
+            import_manifest["legacy_job"]["created_at"] = "2026-08-16T16:00:00"
+            import_path.write_text(
+                json.dumps(import_manifest, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "timezone-aware source created_at"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "new-workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=fixture["job"]["voice_manifest"],
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                )
+
+            import_manifest["legacy_job"]["created_at"] = "2026-08-16T16:00:00+00:00"
+            import_manifest["source"]["kind"] = (
+                "reverse1999-extractor-standalone-generation"
+            )
+            import_path.write_text(
+                json.dumps(import_manifest, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError,
+                "inconsistent legacy job provenance",
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "new-workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=fixture["job"]["voice_manifest"],
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                )
+
+            snapshot_path = created.directory / "provenance/import.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["legacy_job"]["created_at"] = "2026-08-16T16:00:00"
+            snapshot_path.write_text(
+                json.dumps(snapshot, sort_keys=True), encoding="utf-8"
+            )
+            snapshot_sha256 = sha256_file(snapshot_path)
+            workspace_path = created.directory / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["source"]["import_sha256"] = snapshot_sha256
+            workspace["seed_inventory"][0]["sha256"] = snapshot_sha256
+            workspace_path.write_text(
+                json.dumps(workspace, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "timezone-aware source created_at"
+            ):
+                immutable_history_timestamps(created.directory)
 
     def test_child_rejects_control_mutation_before_backend_construction(self):
         with TemporaryDirectory() as directory:

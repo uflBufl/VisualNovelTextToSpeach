@@ -155,6 +155,7 @@ def write_legacy_fixture(root, *, job_name="original-job", title="Patch 3.7"):
         "schema": "r1999.pregeneration-job",
         "schema_version": 1,
         "created_at": "2026-08-16T16:00:00+00:00",
+        "updated_at": "2026-08-16T17:00:00+00:00",
         "status": "complete",
         "title": title,
         "targets": [
@@ -193,6 +194,85 @@ def write_legacy_fixture(root, *, job_name="original-job", title="Patch 3.7"):
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_preserves_validated_source_job_timestamps(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+
+            result = import_legacy_job(fixture["job_directory"], root / "app-data")
+
+        self.assertEqual(
+            result.manifest["legacy_job"]["created_at"],
+            "2026-08-16T16:00:00+00:00",
+        )
+        self.assertEqual(
+            result.manifest["legacy_job"]["updated_at"],
+            "2026-08-16T17:00:00+00:00",
+        )
+
+    def test_optional_source_job_update_timestamp_is_strict_and_backward_compatible(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "missing")
+            job_path = fixture["job_directory"] / "job.json"
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            job.pop("updated_at")
+            job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
+
+            result = import_legacy_job(
+                fixture["job_directory"], root / "missing-app-data"
+            )
+
+            invalid = write_legacy_fixture(root / "invalid")
+            invalid_path = invalid["job_directory"] / "job.json"
+            invalid_job = json.loads(invalid_path.read_text(encoding="utf-8"))
+            invalid_job["updated_at"] = "2026-08-16T17:00:00"
+            invalid_path.write_text(
+                json.dumps(invalid_job, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                LegacyAuthoringImportError, "updated_at must include a timezone"
+            ):
+                import_legacy_job(invalid["job_directory"], root / "invalid-app-data")
+
+            reversed_fixture = write_legacy_fixture(root / "reversed")
+            reversed_path = reversed_fixture["job_directory"] / "job.json"
+            reversed_job = json.loads(reversed_path.read_text(encoding="utf-8"))
+            reversed_job["updated_at"] = "2026-08-16T15:59:59+00:00"
+            reversed_path.write_text(
+                json.dumps(reversed_job, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                LegacyAuthoringImportError, "must not precede created_at"
+            ):
+                import_legacy_job(
+                    reversed_fixture["job_directory"], root / "reversed-app-data"
+                )
+
+        self.assertNotIn("updated_at", result.manifest["legacy_job"])
+
+    def test_version_one_import_without_job_timestamps_remains_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            first = import_legacy_job(fixture["job_directory"], root / "app-data")
+            manifest_path = first.destination / "import.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 1
+            manifest["legacy_job"].pop("created_at")
+            manifest["legacy_job"].pop("updated_at")
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True), encoding="utf-8"
+            )
+
+            second = import_legacy_job(fixture["job_directory"], root / "app-data")
+
+        self.assertFalse(second.created)
+        self.assertEqual(second.manifest["schema_version"], 1)
+        self.assertNotIn("created_at", second.manifest["legacy_job"])
+
     def test_reimport_rejects_forged_manifest_inventory_and_identity(self):
         for mutation in ("artifacts", "identity", "summary"):
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
