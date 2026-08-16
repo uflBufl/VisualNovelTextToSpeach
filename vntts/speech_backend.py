@@ -207,6 +207,7 @@ class ChatterboxNanoVoiceRouterBackend:
     """Low-latency English voice cloning with persistent voice conditioning."""
 
     name = "chatterbox-nano"
+    generation_profile = "default"
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
         streaming=False,
@@ -244,11 +245,6 @@ class ChatterboxNanoVoiceRouterBackend:
             import torch
 
             torch_module = torch
-        if audio_output is None:
-            import sounddevice
-
-            audio_output = sounddevice
-
         self.torch_module = torch_module
         device = select_torch_device(torch_module)
         cpu_playback_headroom = (
@@ -290,6 +286,7 @@ class ChatterboxNanoVoiceRouterBackend:
         self.playback_active = False
         self.last_playback_underrun = False
         self.last_synthesis_ms = None
+        self.last_first_audio_ms = None
         self.last_playback_ms = None
         self.audio_cache = BoundedCache(audio_cache_size)
         self.persistent_audio_cache = PersistentAudioCache(
@@ -309,6 +306,17 @@ class ChatterboxNanoVoiceRouterBackend:
     def prepare(self, character, text):
         return self.synthesize(character, text)
 
+    def render(self, request):
+        """Render Chatterbox PCM without importing or opening an audio device."""
+        if not isinstance(request, SynthesisRequest):
+            raise TTSConfigurationError(
+                "Chatterbox Nano received an invalid render request"
+            )
+        spoken_text, profile, cache_policy = self._validate_render_request(request)
+        return SynthesisChunkStream(
+            self._render_chunks(request, spoken_text, profile, cache_policy)
+        )
+
     def prime(self, character):
         """Load or create a speaker embedding before dialogue is complete."""
         with self.synthesis_lock:
@@ -322,33 +330,106 @@ class ChatterboxNanoVoiceRouterBackend:
             return True
 
     def synthesize(self, character, text):
-        normalized_character = normalize_character_name(character) or "narrator"
-        cache_key = normalized_character, " ".join((text or "").split())
+        return self.render(
+            SynthesisRequest(
+                voice=character,
+                text=text,
+                generation_profile=self.generation_profile,
+            )
+        ).collect().pcm.reshape(-1)
+
+    def _validate_render_request(self, request):
+        spoken_text = " ".join((request.text or "").split())
+        if not spoken_text:
+            raise TTSSynthesisError("Chatterbox Nano received empty text")
+        profile = str(request.generation_profile or "default").strip().casefold()
+        if profile != self.generation_profile:
+            raise TTSConfigurationError(
+                "Chatterbox Nano supports only the 'default' generation profile"
+            )
+        if request.seed is not None:
+            raise TTSConfigurationError(
+                "Chatterbox Nano does not expose deterministic seeded generation"
+            )
+        try:
+            cache_policy = SynthesisCachePolicy(request.cache_policy)
+        except ValueError as error:
+            raise TTSConfigurationError(
+                f"Unknown synthesis cache policy {request.cache_policy!r}"
+            ) from error
+        return spoken_text, profile, cache_policy
+
+    def _render_chunks(self, request, spoken_text, profile, cache_policy):
+        normalized_character = normalize_character_name(request.voice) or "narrator"
+        cache_key = normalized_character, spoken_text
+        persistent_key = self._persistent_cache_key(request.voice, spoken_text)
+        started = self.clock()
+        cache_source = "fresh-generation"
+        audio = None
         with self.synthesis_lock:
-            audio = self.audio_cache.get(cache_key)
-            if audio is not None:
-                self.last_synthesis_ms = 0.0
-                return audio
-            persistent_key = self._persistent_cache_key(character, cache_key[1])
-            persistent_audio = self.persistent_audio_cache.get(persistent_key)
-            if persistent_audio is not None:
-                self.audio_cache.put(cache_key, persistent_audio)
-                self.last_synthesis_ms = 0.0
-                return persistent_audio
+            if cache_policy is SynthesisCachePolicy.USE:
+                audio = self.audio_cache.get(cache_key)
+                if audio is not None:
+                    cache_source = "memory-cache"
+                else:
+                    audio = self.persistent_audio_cache.get(persistent_key)
+                    if audio is not None:
+                        cache_source = "persistent-cache"
+                        self.audio_cache.put(cache_key, audio)
+            if request.cancellation_requested():
+                completion = SynthesisCompletion.CANCELLED
+                audio = None
+            else:
+                completion = SynthesisCompletion.COMPLETE
+            if audio is None and completion is SynthesisCompletion.COMPLETE:
+                try:
+                    self.model.conds = self._resolve_conditionals(request.voice)
+                    generated = self.model.generate(spoken_text)
+                    audio = generated.detach().cpu().numpy()
+                except Exception as error:
+                    raise TTSSynthesisError(str(error)) from error
+                audio = np.asarray(audio, dtype=np.float32).squeeze()
+                if request.cancellation_requested():
+                    completion = SynthesisCompletion.CANCELLED
+                    audio = None
+                elif cache_policy is not SynthesisCachePolicy.BYPASS:
+                    self.audio_cache.put(cache_key, audio)
+                    self.persistent_audio_cache.put(persistent_key, audio)
 
-            started = self.clock()
-            try:
-                self.model.conds = self._resolve_conditionals(character)
-                audio = self.model.generate(cache_key[1]).detach().cpu().numpy()
-            except Exception as error:
-                raise TTSSynthesisError(str(error)) from error
-            finally:
-                self.last_synthesis_ms = (self.clock() - started) * 1000
-
-            audio = np.asarray(audio, dtype=np.float32).squeeze()
-            self.audio_cache.put(cache_key, audio)
-            self.persistent_audio_cache.put(persistent_key, audio)
-            return audio
+        elapsed_ms = (self.clock() - started) * 1000
+        first_chunk_ms = 0.0 if cache_source != "fresh-generation" else elapsed_ms
+        self.last_synthesis_ms = first_chunk_ms
+        self.last_first_audio_ms = first_chunk_ms
+        pcm = (
+            np.asarray(audio, dtype=np.float32).reshape(-1, 1)
+            if audio is not None
+            else np.empty((0, 1), dtype=np.float32)
+        )
+        if pcm.size:
+            yield SynthesisChunk(
+                pcm=pcm,
+                sample_rate=self.sample_rate,
+                index=0,
+                elapsed_ms=elapsed_ms,
+            )
+        return SynthesisResult(
+            pcm=pcm,
+            sample_rate=self.sample_rate,
+            completion=completion,
+            limits=SynthesisLimits(max_tokens=None, max_audio_seconds=None),
+            timing=SynthesisTiming(
+                first_chunk_ms=first_chunk_ms if pcm.size else None,
+                total_ms=elapsed_ms,
+            ),
+            diagnostics=SynthesisDiagnostics(
+                backend=self.name,
+                cache_source=cache_source,
+                generation_profile=profile,
+                seed=None,
+                chunk_count=1 if pcm.size else 0,
+                sample_count=len(pcm),
+            ),
+        )
 
     def speak(self, character, text, *, playback_guard=None):
         return self.play(
@@ -367,17 +448,18 @@ class ChatterboxNanoVoiceRouterBackend:
             started = self.clock()
             try:
                 self.playback_active = True
+                audio_output = self._resolve_audio_output()
                 prepared, playback_sample_rate = match_output_sample_rate(
-                    self.audio_output,
+                    audio_output,
                     self._prepare_audio(prepared),
                     self.sample_rate,
                 )
-                self.audio_output.play(
+                audio_output.play(
                     prepared,
                     playback_sample_rate,
                     latency=self.playback_latency,
                 )
-                playback_status = self.audio_output.wait()
+                playback_status = audio_output.wait()
                 self.last_playback_underrun = self._playback_underflowed(
                     playback_status
                 )
@@ -420,8 +502,16 @@ class ChatterboxNanoVoiceRouterBackend:
 
     def stop(self):
         was_playing = self.playback_active
-        self.audio_output.stop()
+        if self.audio_output is not None:
+            self.audio_output.stop()
         return was_playing
+
+    def _resolve_audio_output(self):
+        if self.audio_output is None:
+            import sounddevice
+
+            self.audio_output = sounddevice
+        return self.audio_output
 
     def _playback_underflowed(self, playback_status=None):
         value = getattr(playback_status, "output_underflow", None)

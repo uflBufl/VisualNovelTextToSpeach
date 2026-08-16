@@ -5,7 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 
-import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 
@@ -28,38 +27,6 @@ from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 default_output = get_local_data_directory() / "benchmarks" / "tts"
 default_text = "The tide is turning. We should return before the storm arrives."
 TTS_BENCHMARK_CORPUS_VERSION = 1
-
-
-class DiscardOutputStream:
-    def __init__(self):
-        self.chunks = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-    def write(self, chunk):
-        self.chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
-        return False
-
-    def abort(self):
-        return None
-
-
-class DiscardAudioOutput:
-    def __init__(self):
-        self.streams = []
-
-    def OutputStream(self, **options):
-        del options
-        stream = DiscardOutputStream()
-        self.streams.append(stream)
-        return stream
-
-    def stop(self):
-        return None
 
 
 def _rss_mb():
@@ -85,7 +52,6 @@ def create_backend(
     moss_streaming_interval=None,
 ):
     cache_root = Path(cache_root)
-    output = DiscardAudioOutput()
     common = {
         "persistent_audio_cache_directory": cache_root / "audio",
     }
@@ -99,7 +65,6 @@ def create_backend(
         return ChatterboxNanoVoiceRouterBackend(
             registry,
             conditioning_cache_directory=cache_root / "conditionals",
-            audio_output=output,
             **common,
         )
     if name == "moss-tts":

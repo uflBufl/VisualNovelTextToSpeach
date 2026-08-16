@@ -1,8 +1,8 @@
 # Device-independent speech rendering
 
 `vntts.synthesis` defines the boundary between waveform generation and audio
-device playback. MOSS-TTS and Pocket TTS implement this boundary; Chatterbox
-Nano and XTTS still use their legacy prepared-speech paths.
+device playback. MOSS-TTS, Pocket TTS, and Chatterbox Nano implement this
+boundary; XTTS still uses its legacy prepared-speech path.
 
 Call a rendering backend's `render()` method with a `SynthesisRequest`. The
 request identifies every input that can intentionally change the waveform:
@@ -44,10 +44,10 @@ are independent and remain enabled for all three policies because they do not
 represent a generated attempt.
 
 MOSS profiles are `stable`, `natural`, and `expressive`, and MOSS accepts an
-optional deterministic seed. Pocket currently exposes only its `default`
-profile and rejects a non-null seed instead of silently ignoring it. Pocket's
-model-native token and duration limits are represented as `None`; MOSS reports
-its explicit text-derived safety limits.
+optional deterministic seed. Pocket and Chatterbox currently expose only their
+`default` profile and reject a non-null seed instead of silently ignoring it.
+Their model-native token and duration limits are represented as `None`; MOSS
+reports its explicit text-derived safety limits.
 
 MOSS live playback, voice preview through `speak()`, warm-up, and the benchmark
 all consume the same renderer. MOSS playback drains chunks into its bounded

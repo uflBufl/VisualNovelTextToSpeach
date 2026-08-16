@@ -191,10 +191,12 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         self,
         registry,
         model=None,
-        audio_output=None,
+        audio_output=_default_audio_output,
         conditioning_cache_directory=None,
     ):
         model = model or FakeChatterboxModel()
+        if audio_output is _default_audio_output:
+            audio_output = Mock()
         model_factory = Mock(return_value=model)
         torch_module = Mock()
         torch_module.cuda.is_available.return_value = False
@@ -203,7 +205,7 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
             registry,
             model_factory=model_factory,
             torch_module=torch_module,
-            audio_output=audio_output or Mock(),
+            audio_output=audio_output,
             conditioning_cache_directory=conditioning_cache_directory,
             persistent_audio_cache_directory=(
                 Path(self.temporary_directory.name) / "audio-cache"
@@ -335,9 +337,130 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         first = backend.prepare("Narrator", "Same line.")
         second = backend.prepare("Narrator", "Same line.")
 
-        self.assertIs(first, second)
+        np.testing.assert_array_equal(first, second)
         self.assertEqual(len(model.generated), 1)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
+
+    def test_render_returns_typed_pcm_without_playback(self):
+        audio_output = Mock()
+        backend, model = self.create_backend(
+            CharacterVoiceRegistry(),
+            audio_output=audio_output,
+        )
+
+        result = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="  Render   this. ",
+                generation_profile="default",
+            )
+        ).collect()
+
+        self.assertEqual(model.generated, [("default narrator", "Render this.")])
+        self.assertEqual(result.pcm.shape, (4, 1))
+        self.assertEqual(result.sample_rate, 24_000)
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertIsNone(result.limits.max_tokens)
+        self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
+        audio_output.play.assert_not_called()
+
+    def test_render_only_backend_does_not_import_sounddevice(self):
+        original_import = __import__
+
+        def reject_sounddevice(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise AssertionError("render-only construction imported sounddevice")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=reject_sounddevice):
+            backend, _model = self.create_backend(
+                CharacterVoiceRegistry(),
+                audio_output=None,
+            )
+            result = backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Offline Chatterbox render.",
+                    generation_profile="default",
+                )
+            ).collect()
+
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+
+    def test_render_cache_policies_refresh_and_bypass_generation(self):
+        backend, model = self.create_backend(CharacterVoiceRegistry())
+        base = {
+            "voice": "Narrator",
+            "text": "Cache this.",
+            "generation_profile": "default",
+        }
+
+        fresh = backend.render(SynthesisRequest(**base)).collect()
+        memory = backend.render(SynthesisRequest(**base)).collect()
+        refreshed = backend.render(
+            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.REFRESH)
+        ).collect()
+        bypassed = backend.render(
+            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
+        ).collect()
+
+        self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
+        self.assertEqual(refreshed.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(bypassed.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(len(model.generated), 3)
+
+    def test_cancelled_generation_is_not_returned_or_cached(self):
+        cancelled = Event()
+        model = FakeChatterboxModel()
+
+        def generate(text):
+            model.generated.append((model.conds, text))
+            cancelled.set()
+            return FakeTensor([[0.0, 0.25, -0.25, 0.0]])
+
+        model.generate = generate
+        backend, _model = self.create_backend(
+            CharacterVoiceRegistry(),
+            model=model,
+        )
+        request = SynthesisRequest(
+            voice="Narrator",
+            text="Cancel this.",
+            generation_profile="default",
+            cancellation=cancelled,
+        )
+
+        result = backend.render(request).collect()
+        cancelled.clear()
+        retry = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Cancel this.",
+                generation_profile="default",
+            )
+        ).collect()
+
+        self.assertEqual(result.completion, SynthesisCompletion.CANCELLED)
+        self.assertEqual(result.pcm.size, 0)
+        self.assertEqual(retry.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(len(model.generated), 2)
+
+    def test_seeded_chatterbox_render_is_rejected(self):
+        backend, _model = self.create_backend(CharacterVoiceRegistry())
+
+        with self.assertRaisesRegex(
+            TTSConfigurationError,
+            "does not expose deterministic seeded generation",
+        ):
+            backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Seeded.",
+                    seed=3,
+                    generation_profile="default",
+                )
+            )
 
     def test_audio_cache_survives_backend_restart(self):
         registry = CharacterVoiceRegistry()
