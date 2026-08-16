@@ -13,9 +13,6 @@ sections after their implementation has been verified and committed.
 - [ ] Build generation jobs from versioned story-index and voice-manifest
       fields. Interpret missing source audio as an authoring policy without
       importing Reverse: 1999 modules or understanding game-specific IDs.
-- [ ] Move model benchmarking and blind listening, including their UI and
-      reports, into the authoring package so production-model decisions are
-      owned beside the TTS engines they evaluate.
 - [ ] Publish a final verified game pack from the authoring workflow after
       generation and review; keep extracted inputs, generated WAVs, and review
       state in application data rather than the repository.

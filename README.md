@@ -350,6 +350,12 @@ source files. Use the separate `vntts-pregenerate` command; see the
 validation, idempotency and collision rules. Generation and review remain
 outside the primary player.
 
+Generic multi-model rendering benchmarks and blind A/B review are owned by the
+authoring package through `vntts-benchmark-models` and `vntts-listen`. They use
+shared corpus/queue documents and typed device-independent rendering; imported
+legacy listening sessions resume without extractor code. See the
+[authoring model-evaluation contract](docs/authoring-model-evaluation.md).
+
 Use XTTS with character-specific voices and a default narrator voice:
 
 ```sh
