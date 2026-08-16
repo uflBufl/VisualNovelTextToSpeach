@@ -9,12 +9,17 @@ performs chapter arithmetic.
 
 ## Public API
 
-`plan_generation_queue(document, voice_entries, ...)` accepts a public typed
-story document and validated `VoiceManifestEntry` values. Collection selection
+`plan_generation_queue(document, voice_entries, voice_manifest_path, ...)`
+accepts a public typed story document, validated `VoiceManifestEntry` values
+and their exact source path. Collection selection
 uses declared `collection_id` values and preserves story-index order. Unknown
 producer fields such as emotion, delivery and prompt adapters are copied as
 queue extensions, while canonical queue identity and policy fields cannot be
-overridden by an extension.
+overridden by an extension. The plan binds canonical digests of the complete
+typed story document and voice entries, so it remains publishable even when a
+caller did not inspect raw JSON. Both `StoryIndexDocument.path` and the explicit
+voice-manifest path must identify readable source files; their exact SHA-256
+digests are always bound into publishable queue metadata.
 
 `inspect_generation_queue(story_index, voice_manifest, ...)` loads both inputs
 through the shared readers and binds their exact SHA-256 digests into the queue
@@ -25,9 +30,14 @@ Voice-character aliases are resolved to the manifest's canonical character.
 Every reference must be a POSIX-relative path whose resolved target remains
 inside the manifest directory; absolute paths, parent traversal, backslashes
 and symlink escapes fail preflight before queue publication.
-Preflight treats a generation item as ready only when its resolved character
-has at least one existing local reference. Missing characters, empty reference
-lists and references that do not exist are reported as missing-reference work;
+Preflight treats a generation item as ready only when every configured
+reference for its resolved character exists locally and probes as PCM16 mono
+WAV. This conservative rule is
+valid for cloning backends that consume all references as well as backends that
+use the first one. Pathless typed planning is rejected because it cannot bind
+or verify the exact manifest. Missing characters, empty reference lists,
+references that do not exist and non-decodable references are
+reported as missing-reference work;
 they remain in the queue so authoring can repair them without rebuilding line
 identity.
 

@@ -102,7 +102,9 @@ model ID and include the same sorted pairwise totals as the legacy workflow.
 Current reports must use the current schema and bind the exact current session
 path. If a score is durably saved but report publication fails, CLI/UI surfaces
 that persisted state explicitly and instructs the operator to regenerate the
-derived report; it never claims that the rating was rolled back.
+derived report; it never claims that the rating was rolled back. The workbench
+reloads that persisted session and advances to the next unrated trial (or the
+completed state), preventing a second click on the already-saved rating.
 The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.

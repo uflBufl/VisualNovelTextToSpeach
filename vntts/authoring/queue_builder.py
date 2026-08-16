@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from vntts_artifacts import (
     voice_generation_action,
     write_voice_generation_queue,
 )
+from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     load_voice_manifest,
@@ -100,12 +102,10 @@ _QUEUE_OWNED_FIELDS = frozenset(
 def plan_generation_queue(
     document: StoryIndexDocument,
     voice_manifest: tuple[VoiceManifestEntry, ...],
+    voice_manifest_path,
     *,
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
-    story_index_sha256: str | None = None,
-    voice_manifest_path: Path | None = None,
-    voice_manifest_sha256: str | None = None,
     generated_at: str | None = None,
 ):
     """Plan a queue from typed shared artifacts without reading producer JSON."""
@@ -116,6 +116,16 @@ def plan_generation_queue(
         raise GenerationQueueBuildError(
             "voice_manifest must contain validated VoiceManifestEntry values"
         )
+    document_path = Path(document.path).expanduser().resolve()
+    voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
+    if not document_path.is_file():
+        raise GenerationQueueBuildError(
+            "StoryIndexDocument.path must identify the exact readable source file"
+        )
+    if not voice_manifest_path.is_file():
+        raise GenerationQueueBuildError(
+            "voice_manifest_path must identify the exact readable source file"
+        )
 
     selected_collection_ids = _selected_collection_ids(document, collection_ids)
     selected = tuple(
@@ -125,9 +135,7 @@ def plan_generation_queue(
         or record.collection_id in selected_collection_ids
     )
     voice_index = _voice_index(entries)
-    manifest_directory = (
-        None if voice_manifest_path is None else Path(voice_manifest_path).resolve().parent
-    )
+    manifest_directory = voice_manifest_path.parent
     reference_availability = {
         entry: _has_local_reference(entry, manifest_directory) for entry in entries
     }
@@ -200,18 +208,32 @@ def plan_generation_queue(
             else sorted(selected_collection_ids),
             "unknown_action": unknown_action,
         },
+        "source_story_index_document_sha256": _json_sha256(
+            {
+                "metadata": document.metadata,
+                "records": [record.to_record() for record in document.records],
+            }
+        ),
+        "source_voice_manifest_entries_sha256": _json_sha256(
+            [
+                {
+                    "character": entry.character,
+                    "speaker": entry.speaker,
+                    "aliases": list(entry.aliases),
+                    "references": list(entry.references),
+                }
+                for entry in entries
+            ]
+        ),
     }
     if document.game is not None:
         metadata["game"] = document.game
     if document.language is not None:
         metadata["language"] = document.language
-    metadata["source_story_index"] = str(document.path)
-    if story_index_sha256 is not None:
-        metadata["source_story_index_sha256"] = story_index_sha256
-    if voice_manifest_path is not None:
-        metadata["source_voice_manifest"] = str(Path(voice_manifest_path).resolve())
-    if voice_manifest_sha256 is not None:
-        metadata["source_voice_manifest_sha256"] = voice_manifest_sha256
+    metadata["source_story_index"] = str(document_path)
+    metadata["source_story_index_sha256"] = _sha256_file(document_path)
+    metadata["source_voice_manifest"] = str(voice_manifest_path)
+    metadata["source_voice_manifest_sha256"] = _sha256_file(voice_manifest_path)
     return GenerationQueuePlan(metadata, tuple(items), summary)
 
 
@@ -231,11 +253,9 @@ def inspect_generation_queue(
     return plan_generation_queue(
         document,
         entries,
+        voice_manifest_path,
         collection_ids=collection_ids,
         unknown_action=unknown_action,
-        story_index_sha256=_sha256_file(story_index_path),
-        voice_manifest_path=voice_manifest_path,
-        voice_manifest_sha256=_sha256_file(voice_manifest_path),
         generated_at=generated_at,
     )
 
@@ -270,7 +290,7 @@ def _has_local_reference(entry, manifest_directory):
     if entry is None or not entry.references:
         return False
     candidates = []
-    root = None if manifest_directory is None else Path(manifest_directory).resolve()
+    root = Path(manifest_directory).resolve()
     for reference in entry.references:
         if not isinstance(reference, str) or not reference or "\\" in reference:
             raise GenerationQueueBuildError(
@@ -285,18 +305,22 @@ def _has_local_reference(entry, manifest_directory):
             raise GenerationQueueBuildError(
                 f"Voice reference must stay inside the manifest directory: {reference!r}"
             )
-        if root is not None:
-            candidate = (root / Path(*pure.parts)).resolve()
-            try:
-                candidate.relative_to(root)
-            except ValueError as error:
-                raise GenerationQueueBuildError(
-                    f"Voice reference leaves the manifest directory: {reference!r}"
-                ) from error
-            candidates.append(candidate)
-    if root is None:
-        return True
-    return any(candidate.is_file() for candidate in candidates)
+        candidate = (root / Path(*pure.parts)).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as error:
+            raise GenerationQueueBuildError(
+                f"Voice reference leaves the manifest directory: {reference!r}"
+            ) from error
+        candidates.append(candidate)
+    if not candidates or not all(candidate.is_file() for candidate in candidates):
+        return False
+    try:
+        for candidate in candidates:
+            probe_pcm16_mono_wav(candidate)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _queue_item(record: StoryIndexRecord, voice_character, action):
@@ -341,3 +365,14 @@ def _counts(values):
 def _sha256_file(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _json_sha256(value):
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

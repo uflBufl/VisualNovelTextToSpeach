@@ -343,6 +343,28 @@ class ModelListeningDialog(QDialog):
                 report_path=self.session_path.with_name("report.json"),
             )
         except Exception as error:
+            if "Preference was saved" in str(error):
+                self.stop_audio()
+                self.session = load_listening_session(self.session_path)
+                completed, total = listening_progress(self.session)
+                self.progress.setText(f"Progress: {completed}/{total}")
+                self.current_trial = next_pending_trial(self.session)
+                if self.current_trial is not None:
+                    self.load_next_trial()
+                else:
+                    self.set_playback_indicator("complete")
+                    self.set_preference_buttons_enabled(False)
+                    self.dialogue.setPlainText("Listening session complete.")
+                    for widget in (
+                        self.play_a,
+                        self.play_b,
+                        self.skip_back,
+                        self.seek,
+                        self.skip_forward,
+                    ):
+                        widget.setEnabled(False)
+                self.status.setText(str(error))
+                return
             self.status.setText(f"Unable to save listening score: {error}")
             return
         self.stop_audio()

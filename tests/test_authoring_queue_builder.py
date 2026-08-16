@@ -7,18 +7,25 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from vntts_artifacts import (
+    StoryIndexDocument,
     StoryIndexError,
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     write_story_index_document,
 )
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    write_voice_manifest,
+)
 
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
     inspect_generation_queue,
+    plan_generation_queue,
     publish_generation_queue,
 )
 
@@ -78,7 +85,7 @@ def write_inputs(root, records):
     write_story_index_document(story_path, story_metadata(), records)
     references = root / "references"
     references.mkdir()
-    (references / "ada.wav").write_bytes(b"reference")
+    write_pcm16_wav(references / "ada.wav", [0.0, 0.1, -0.1, 0.0], 16_000)
     manifest_path = root / "voice-manifest.json"
     write_voice_manifest(
         manifest_path,
@@ -328,6 +335,85 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
 
             with self.assertRaisesRegex(GenerationQueueBuildError, "leaves"):
                 inspect_generation_queue(story_path, manifest_path)
+
+    def test_direct_typed_plan_is_publishable_and_binds_typed_inputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "absent")]
+            )
+            document = StoryIndexDocument.load(story_path)
+            _manifest, entries = load_voice_manifest(manifest_path, allow_legacy=False)
+
+            plan = plan_generation_queue(document, entries, manifest_path)
+            output = publish_generation_queue(plan, root / "direct-queue.jsonl")
+            queue = VoiceGenerationQueue.load(output)
+
+        self.assertEqual(queue.items[0].line_id, "line-1")
+        self.assertEqual(plan.summary.ready, 1)
+        self.assertEqual(plan.summary.missing_reference, 0)
+        self.assertRegex(
+            queue.metadata["source_story_index_document_sha256"], r"^[0-9a-f]{64}$"
+        )
+        self.assertRegex(
+            queue.metadata["source_voice_manifest_entries_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertRegex(
+            queue.metadata["source_story_index_sha256"], r"^[0-9a-f]{64}$"
+        )
+        self.assertRegex(
+            queue.metadata["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$"
+        )
+
+    def test_pathless_typed_plan_is_rejected_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "absent")]
+            )
+            document = StoryIndexDocument.load(story_path)
+            _manifest, entries = load_voice_manifest(manifest_path, allow_legacy=False)
+
+            with self.assertRaisesRegex(
+                (GenerationQueueBuildError, TypeError), "voice_manifest_path|required"
+            ):
+                plan_generation_queue(document, entries)
+
+    def test_ready_requires_every_configured_reference_to_exist(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "absent")]
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["voices"][0]["references"] = [
+                "references/missing.wav",
+                "references/ada.wav",
+            ]
+            write_voice_manifest(manifest_path, manifest)
+
+            plan = inspect_generation_queue(story_path, manifest_path)
+
+        self.assertEqual(plan.summary.ready, 0)
+        self.assertEqual(plan.summary.missing_reference, 1)
+
+    def test_ready_rejects_existing_non_wav_reference(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "absent")]
+            )
+            reference = root / "references" / "not-a-wave.wav"
+            reference.write_bytes(b"not a wave")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["voices"][0]["references"] = ["references/not-a-wave.wav"]
+            write_voice_manifest(manifest_path, manifest)
+
+            plan = inspect_generation_queue(story_path, manifest_path)
+
+        self.assertEqual(plan.summary.ready, 0)
+        self.assertEqual(plan.summary.missing_reference, 1)
 
 
 if __name__ == "__main__":

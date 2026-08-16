@@ -418,6 +418,31 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertAlmostEqual(dialog.seek.value(), 90_000, delta=2_000)
             dialog.deleteLater()
 
+    def test_report_failure_advances_from_the_persisted_score(self):
+        with TemporaryDirectory() as directory:
+            session, dialog = self.create_dialog(Path(directory))
+            dialog.started_sides = {"a", "b"}
+            report_path = session.with_name("report.json").resolve()
+            from vntts.authoring import listening as listening_module
+
+            original_write = listening_module.atomic_write_json
+
+            def fail_report(path, value, **kwargs):
+                if Path(path).resolve() == report_path:
+                    raise OSError("synthetic report failure")
+                return original_write(path, value, **kwargs)
+
+            with patch.object(
+                listening_module, "atomic_write_json", side_effect=fail_report
+            ):
+                dialog.save_preference("a")
+
+            self.assertEqual(load_listening_session(session)["completed_count"], 1)
+            self.assertIsNone(dialog.current_trial)
+            self.assertIn("Preference was saved", dialog.status.text())
+            self.assertFalse(dialog.prefer_a.isEnabled())
+            dialog.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
