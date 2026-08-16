@@ -1,0 +1,386 @@
+"""Deterministic live-mode replay from saved game frames."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Event, Lock
+from time import monotonic
+
+from PIL import Image
+from vntts_artifacts.atomic_io import atomic_write_json
+
+from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.cli import cli_error, cli_messages
+from vntts.dialog_capture import (
+    CapturedDialogFrame,
+    fingerprint_dialog_frame,
+    recognize_live_frame,
+)
+from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.live import LiveDialogReader
+from vntts.ocr import DialogRegion
+from vntts.speech_backend import SpeechBackendCapabilities
+from vntts.support import GenerationTimelineLog
+from vntts.versioned_json import read_versioned_json
+
+LIVE_REPLAY_CORPUS_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ReplayDialogue:
+    frames: tuple[CapturedDialogFrame, ...]
+    character: str
+    text: str
+    expected_source: str | None
+
+
+@dataclass(frozen=True)
+class LiveReplayCorpus:
+    name: str
+    dialogue: tuple[ReplayDialogue, ...]
+    story_document: dict
+
+
+class ReplayLiveSpeechBackend:
+    """No-audio backend used after the production route decision is exercised."""
+
+    name = "replay-live-tts"
+    capabilities = SpeechBackendCapabilities(True, False, True)
+
+    def __init__(self):
+        self.last_audio_source = None
+        self.last_synthesis_ms = 0.0
+        self.last_first_audio_ms = 0.0
+        self.last_playback_ms = 0.0
+        self.last_playback_underrun = False
+
+    def prepare(self, character, text):
+        self.last_audio_source = "live:replay-live-tts"
+        return character, text
+
+    def play(self, _prepared, *, playback_guard=None):
+        return playback_guard is None or bool(playback_guard())
+
+    def stop(self):
+        return False
+
+
+class ReplayFrameSource:
+    def __init__(self, dialogue):
+        self.dialogue = tuple(dialogue)
+        self.dialogue_index = 0
+        self.frame_index = 0
+        self.advance_requests = 0
+        self.completed = Event()
+        self.lock = Lock()
+
+    def capture(self):
+        with self.lock:
+            current = self.dialogue[self.dialogue_index]
+            frame = current.frames[self.frame_index]
+            if self.frame_index + 1 < len(current.frames):
+                self.frame_index += 1
+            return frame
+
+    def advance(self):
+        with self.lock:
+            self.advance_requests += 1
+            if self.dialogue_index + 1 >= len(self.dialogue):
+                self.completed.set()
+                return False
+            self.dialogue_index += 1
+            self.frame_index = 0
+            return True
+
+
+class LiveReplayRunner:
+    def __init__(
+        self,
+        corpus,
+        *,
+        recognizer=None,
+        interval_seconds=0.01,
+        timeout_seconds=30.0,
+        audio_source_policy="prefer-game-audio",
+    ):
+        if not corpus.dialogue:
+            raise ValueError("Live replay corpus has no dialogue frames")
+        self.corpus = corpus
+        self.recognizer = recognizer or (
+            lambda frame: recognize_live_frame(frame, minimum_confidence=0)
+        )
+        self.interval_seconds = float(interval_seconds)
+        self.timeout_seconds = float(timeout_seconds)
+        self.audio_source_policy = audio_source_policy
+
+    def run(self):
+        frame_source = ReplayFrameSource(self.corpus.dialogue)
+        resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
+        router = GeneratedAudioFallbackBackend(
+            ReplayLiveSpeechBackend(),
+            None,
+            resolver,
+            audio_source_policy=self.audio_source_policy,
+        )
+        router.set_live_mode_active(True)
+        timelines = GenerationTimelineLog(maximum_entries=len(self.corpus.dialogue) + 1)
+        played = []
+        routes = []
+        errors = []
+        advance_states = []
+
+        def prepare(chunk):
+            prepared = router.prepare(chunk.character, chunk.text)
+            trace = router.last_route_trace
+            routes.append(trace.support_fields() | {"generation": chunk.generation})
+            occurred_at = monotonic()
+            route_details = trace.support_fields()
+            route_details.pop("generation", None)
+            timelines.record(
+                "route-decision",
+                chunk.generation,
+                occurred_at,
+                **route_details,
+            )
+            timelines.record(
+                "voice-resolution",
+                chunk.generation,
+                occurred_at,
+                voice_reference_id=f"replay:{chunk.character.casefold()}",
+            )
+            return prepared
+
+        def play(chunk, prepared):
+            del prepared
+            played.append(
+                {
+                    "generation": chunk.generation,
+                    "character": chunk.character,
+                    "text": chunk.text,
+                }
+            )
+            return True
+
+        executors = [
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"replay-{name}")
+            for name in ("capture", "ocr", "speech", "playback")
+        ]
+        reader = LiveDialogReader(
+            capture_executor=executors[0],
+            ocr_executor=executors[1],
+            speech_executor=executors[2],
+            playback_executor=executors[3],
+            read_snapshot=lambda: (None, ""),
+            capture_frame=frame_source.capture,
+            recognize_frame=self.recognizer,
+            frame_fingerprint=fingerprint_dialog_frame,
+            speak_chunk=lambda _chunk: None,
+            prepare_chunk=prepare,
+            play_prepared=play,
+            report_error=errors.append,
+            interval_seconds=self.interval_seconds,
+            tracker_options={
+                "idle_flush_seconds": max(0.02, self.interval_seconds * 2),
+                "min_chunk_characters": 1,
+                "complete_dialogue_only": self.audio_source_policy != "live-tts-only",
+            },
+            adaptive_options={
+                "fast_interval": self.interval_seconds,
+                "idle_interval": self.interval_seconds,
+                "unfocused_interval": self.interval_seconds,
+            },
+            auto_advance=frame_source.advance,
+            auto_advance_delay_seconds=self.interval_seconds,
+            auto_advance_confirmation_timeout_seconds=max(
+                5.0,
+                self.interval_seconds * 10,
+            ),
+            auto_advance_state_changed=lambda state, generation, attempt: (
+                advance_states.append(
+                    {
+                        "state": state,
+                        "generation": generation,
+                        "attempt": attempt,
+                    }
+                )
+            ),
+            pipeline_event_handler=timelines.record,
+            max_speech_jobs=1,
+            first_pcm_on_prepare=True,
+        )
+        try:
+            reader.start()
+            completed = frame_source.completed.wait(self.timeout_seconds)
+            reader.stop()
+            reader.wait()
+        finally:
+            for executor in executors:
+                executor.shutdown(wait=True, cancel_futures=True)
+            router.stop()
+
+        observed = _group_played_dialogue(played)
+        expected = [
+            {"character": item.character, "text": item.text}
+            for item in self.corpus.dialogue
+        ]
+        route_sources = [route["effective_source"] for route in routes]
+        expected_sources = [
+            item.expected_source
+            for item in self.corpus.dialogue
+            if item.expected_source is not None
+        ]
+        actual_expected_sources = [
+            route["effective_source"]
+            for route, item in zip(routes, self.corpus.dialogue, strict=False)
+            if item.expected_source is not None
+        ]
+        successful = bool(
+            completed
+            and not errors
+            and observed == expected
+            and actual_expected_sources == expected_sources
+            and frame_source.advance_requests == len(self.corpus.dialogue)
+        )
+        return {
+            "schema_version": 1,
+            "corpus": self.corpus.name,
+            "successful": successful,
+            "expected_dialogue": expected,
+            "observed_dialogue": observed,
+            "route_sources": route_sources,
+            "advance_requests": frame_source.advance_requests,
+            "advance_states": advance_states,
+            "errors": [str(error) for error in errors],
+            "timelines": timelines.snapshot(),
+        }
+
+
+def load_live_replay_corpus(path):
+    path = Path(path).expanduser().resolve()
+    document = read_versioned_json(
+        path,
+        schema_version=LIVE_REPLAY_CORPUS_VERSION,
+        document_name="live replay corpus",
+    )
+    name = str(document.get("name") or path.stem).strip()
+    region = _decode_region(document.get("dialog_region"))
+    dialogue = []
+    story_rows = []
+    for index, item in enumerate(document.get("dialogue", ()), start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Live replay dialogue {index} must be an object")
+        character = str(item.get("character") or "Narrator").strip() or "Narrator"
+        text = " ".join(str(item.get("text") or "").split())
+        if not text:
+            raise ValueError(f"Live replay dialogue {index} has no expected text")
+        frame_paths = item.get("frames")
+        if not isinstance(frame_paths, list) or not frame_paths:
+            raise ValueError(f"Live replay dialogue {index} has no frames")
+        frames = tuple(
+            _load_frame(path.parent / frame_path, region) for frame_path in frame_paths
+        )
+        expected_source = str(item.get("expected_source") or "").strip() or None
+        dialogue.append(ReplayDialogue(frames, character, text, expected_source))
+        story_rows.append(
+            {
+                "line_id": str(item.get("line_id") or f"replay:{index}"),
+                "chapter": name,
+                "sequence": index,
+                "speaker_name": character,
+                "text": text,
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "source_audio_status": str(
+                    item.get("source_audio_status") or "missing"
+                ),
+                "source_audio_id": item.get("source_audio_id"),
+                "source_audio_duration_seconds": item.get(
+                    "source_audio_duration_seconds"
+                ),
+            }
+        )
+    if not dialogue:
+        raise ValueError("Live replay corpus has no dialogue entries")
+    return LiveReplayCorpus(name, tuple(dialogue), {"dialogue": story_rows})
+
+
+def _decode_region(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Live replay dialog_region must be an object")
+    return DialogRegion(
+        value["left"],
+        value["top"],
+        value["width"],
+        value["height"],
+    )
+
+
+def _load_frame(path, region):
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"Live replay frame does not exist: {path}")
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    if region is not None:
+        image = region.crop(image)
+    return CapturedDialogFrame(image, 0.0)
+
+
+def _group_played_dialogue(played):
+    grouped = []
+    for item in played:
+        if grouped and grouped[-1]["generation"] == item["generation"]:
+            grouped[-1]["text"] = f"{grouped[-1]['text']} {item['text']}"
+        else:
+            grouped.append(dict(item))
+    return [
+        {"character": item["character"], "text": " ".join(item["text"].split())}
+        for item in grouped
+    ]
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Replay saved visual-novel frames through the live pipeline"
+    )
+    parser.add_argument("corpus", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--audio-source-policy",
+        choices=("live-tts-only", "prefer-generated", "prefer-game-audio"),
+        default="prefer-game-audio",
+    )
+    return parser
+
+
+def main(argv=None):
+    arguments = build_parser().parse_args(argv)
+    try:
+        corpus = load_live_replay_corpus(arguments.corpus)
+        report = LiveReplayRunner(
+            corpus,
+            timeout_seconds=arguments.timeout,
+            audio_source_policy=arguments.audio_source_policy,
+        ).run()
+    except (OSError, TypeError, ValueError) as error:
+        return cli_error(error)
+    output = arguments.output or arguments.corpus.with_suffix(".report.json")
+    atomic_write_json(output, report)
+    return cli_messages(
+        (
+            f"Live replay {'passed' if report['successful'] else 'failed'}",
+            output,
+        ),
+        exit_code=0 if report["successful"] else 1,
+        error=not report["successful"],
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

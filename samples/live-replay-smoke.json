@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "Reverse 1999 saved-frame smoke",
+  "dialog_region": {
+    "left": 0.0,
+    "top": 0.68,
+    "width": 1.0,
+    "height": 0.32
+  },
+  "dialogue": [
+    {
+      "frames": [
+        "01.jpeg",
+        "01.jpeg"
+      ],
+      "character": "Marcus",
+      "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!",
+      "line_id": "replay:marcus:1",
+      "source_audio_status": "available",
+      "expected_source": "game"
+    },
+    {
+      "frames": [
+        "02.png",
+        "02.png"
+      ],
+      "character": "X",
+      "text": "You were the perfect fulcrum! I don't know what I would have done without you.",
+      "line_id": "replay:x:2",
+      "source_audio_status": "missing",
+      "expected_source": "live:replay-live-tts"
+    }
+  ]
+}

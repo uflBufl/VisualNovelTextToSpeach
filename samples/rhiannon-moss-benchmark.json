@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "Rhiannon reported-line regression",
+  "samples": [
+    {
+      "id": "short-hesitation",
+      "character": "Rhiannon",
+      "text": "I, erhm ..."
+    },
+    {
+      "id": "ocr-noise-boundary",
+      "character": "Rhiannon",
+      "text": "Alright, that makes five."
+    },
+    {
+      "id": "clone-probe",
+      "character": "Rhiannon",
+      "text": "That road was really long, so long I thought it'd never end."
+    }
+  ]
+}

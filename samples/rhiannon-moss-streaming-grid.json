@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "model": "moss-tts-local-v1.5-mlx-int8",
+  "platform": "macOS-15.7.7-arm64",
+  "character": "Rhiannon",
+  "text": "That road was really long, so long I thought it'd never end.",
+  "measurements": [
+    {
+      "first_chunk_frames": 16,
+      "streaming_interval_seconds": 1.0,
+      "first_pcm_ms": 1264.154,
+      "realtime_factor": 0.782,
+      "underrun": false,
+      "generation_limited": false
+    },
+    {
+      "first_chunk_frames": 8,
+      "streaming_interval_seconds": 0.5,
+      "first_pcm_ms": 856.023,
+      "realtime_factor": 0.803,
+      "underrun": false,
+      "generation_limited": false
+    },
+    {
+      "first_chunk_frames": 4,
+      "streaming_interval_seconds": 0.25,
+      "first_pcm_ms": 640.443,
+      "realtime_factor": 0.882,
+      "underrun": false,
+      "generation_limited": false
+    }
+  ],
+  "caveat": "Discard-output benchmark; validate underruns with the real audio device. Generated duration varies with sampling, so compare first PCM directly and treat RTF as a guardrail."
+}

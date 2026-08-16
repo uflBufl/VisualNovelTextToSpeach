@@ -97,7 +97,10 @@ On those platforms, press `Ctrl+Shift+L` to start or stop live reading while
 text is appearing.
 Set `VNTTS_LIVE_HOTKEY` to change this shortcut. Live mode recognizes the
 dialog every 200 ms and queues stable sentences or phrases without waiting for
-the whole dialog to finish. One-time reads are ignored while live mode is on.
+the whole dialog to finish. When the profile prefers generated or original game
+audio, live mode waits for one stable complete dialogue instead; those artifacts
+are indexed by the exact full line and must never be replayed once per sentence.
+One-time reads are ignored while live mode is on.
 
 Use the control window to start live reading, read once, pause, skip, replay,
 or emergency-stop speech. Select **Compact controls** to replace it with a
@@ -106,6 +109,94 @@ main window, and the selected view is used on the next launch. On Windows,
 `Ctrl+Shift+P` pauses or resumes,
 `Ctrl+Shift+S` skips, `Ctrl+Shift+R` repeats, and `Ctrl+Shift+X` clears the
 queue. Shortcuts can be changed in Settings.
+
+Auto advance starts only after playback completes and the current dialogue is
+stable. Sending the configured key creates a pending transition; it is reported
+as successful only after OCR observes a new dialogue generation or an empty
+dialogue transition. VNTTS sends at most one automatic key per dialogue
+generation. If the change is not confirmed within the bounded timeout, it keeps
+watching for the next line but does not retry: a second key could skip a line
+that appeared while OCR was still collecting the two frames needed to accept
+it. The compact/full status asks the player to advance manually. While
+confirmation is pending, VNTTS runs OCR again even when the dialogue fingerprint
+is unchanged, so a static or visually similar next screen can still confirm the
+transition. A temporary focus loss postpones dispatch or confirmation without
+consuming the one permitted key.
+
+Reverse: 1999 choices are rendered outside the configured dialogue capture
+region, so VNTTS does not attempt to detect them from dialogue OCR. Pause live
+reading or disable auto advance manually when approaching a rare choice.
+
+Original game audio requires a trustworthy completion signal before VNTTS may
+auto advance. A game pack can declare
+`"source_audio_completion": "duration-seconds"` in story-index metadata and
+provide a positive `source_audio_duration_seconds` for an exact line; VNTTS
+then waits for that interval before the line is considered complete. Legacy
+`display_seconds` is not treated as audio duration. When auto advance is
+enabled and no completion value is available, that source route is rejected
+before playback and the line falls through to generated or live speech.
+
+Each game profile has an explicit **Audio source policy** in Settings:
+
+- **Live TTS only** always uses the selected speech engine. This is the default,
+  including for profiles created before the setting was introduced.
+- **Prefer generated audio** uses a verified generated-audio manifest entry for
+  an exact story-line match, then falls back to the selected live engine.
+- **Prefer original game audio** first lets an exact installed source-audio line
+  with usable completion timing play in the game, then tries verified generated
+  audio, then live synthesis.
+
+Loading a story index does not change this policy. The full Dashboard shows the
+configured engine and policy, whether the generated-audio manifest is available,
+and the effective source of the latest line. For MOSS this source distinguishes
+fresh generation, memory cache, and persistent cache. Each prepared live line
+also writes one generation-scoped record to the runtime support log without
+replacing the player-facing status. The record keeps the effective source,
+stable line ID, exact/ambiguous story match, fallback reason, selected voice
+reference identifier, and artifact preflight state together. In addition,
+`generation-timelines.json` keeps one bounded timeline per generation with
+capture, OCR, stable-text, route, voice, generation, first-PCM, playback,
+key-dispatch, and terminal next-dialogue confirmation or timeout timestamps.
+The first two seconds without a stable replacement are a nonfatal waiting
+state; confirmation remains active for ten seconds and never dispatches a
+second key for the same generation. The same privacy-safe
+timeline is included in exported support bundles; dialogue text and screenshots
+are excluded. Source audio is
+reported as declared available rather than checksum-verified; generated audio
+is reported as verified only after its manifest, checksum, WAV, and metadata
+checks pass.
+
+Tracker-owned speech chunks also carry a generation-local ordinal and a
+privacy-safe hash. Repeated preparation of the same chunk is suppressed, while
+an appended OCR suffix receives a new ordinal. Multiple route events in one
+generation therefore remain distinguishable without retaining dialogue text.
+Story matching may ignore punctuation-only OCR drift when the normalized
+speaker/text pair identifies one unambiguous indexed line. Speaker-name OCR is
+corrected only for a unique high-confidence story or voice match.
+For a verified generated-audio entry, a stable prefix of at least 20 normalized
+characters may start the full indexed line before the typewriter animation
+finishes, but only when that speaker/prefix identifies exactly one eligible
+manifest entry. Short, ambiguous, or corrupted prefixes keep waiting for the
+ordinary exact route. After an exact generated or original-audio route finishes,
+late OCR suffix chunks in that same dialogue generation are suppressed; a real
+next dialogue receives a new generation and remains eligible.
+An idle OCR fragment that is still one unique prefix of a longer indexed line
+is not spoken or auto-advanced. This protects typewriter pauses from turning
+the first half of a line into a complete dialogue.
+
+Use **Narrator voice** in the control window (or **Choose narrator voice...** in
+the tray menu) to audition and assign a live narrator. A saved Narrator choice
+intentionally overrides pregenerated narrator tracks. The same dialog can
+remove that override with **Use pregenerated narrator tracks when available**.
+
+When auto advance is enabled, original game audio is selected only if the story
+index supplies completion duration. A source line without trustworthy timing
+falls through to generated or live speech so unattended reading cannot pause
+indefinitely. Pocket TTS buffers 250 ms of newly generated audio before its
+first real-time write to reduce output underruns; cached audio remains available
+immediately. Once playback has started, a transient OCR generation replacement
+does not cut it short. Pause, Skip, Clear Queue, and Emergency Stop remain
+explicit interruption controls.
 
 Tune live reading with `VNTTS_LIVE_INTERVAL_MS`,
 `VNTTS_LIVE_STABILITY_FRAMES`, `VNTTS_LIVE_IDLE_FLUSH_MS`, and
@@ -131,6 +222,64 @@ uv run vntts-calibrate
 
 One-time screenshots are retained until manually deleted. Live-mode frames are
 not stored. Generated files under `logs/` are ignored by Git.
+
+Replay saved dialogue frames through the real live fingerprint, OCR, exact line
+resolver, audio router, playback-completion, and auto-advance state machine:
+
+```sh
+uv run vntts-replay-live samples/live-replay-smoke.json
+```
+
+The corpus is a versioned JSON document. Each dialogue entry supplies one or
+more saved frames, expected speaker/text, stable line ID, source-audio status,
+and optional expected route. Frames may be full screenshots when the document
+also supplies a normalized `dialog_region`; otherwise they are treated as
+already-cropped dialogue images. The command writes a report next to the corpus
+unless `--output` is provided and fails if any line is stale, duplicated,
+skipped, misrouted, or does not advance.
+
+Run the objective PCM reference preflight before using a cloning reference:
+
+```sh
+uv run vntts-check-reference \
+  data/reverse1999-voices/references/rhiannon-game-01.wav \
+  data/reverse1999-voices/references/rhiannon-game-02.wav \
+  data/reverse1999-voices/references/rhiannon-game-03.wav \
+  --output rhiannon-reference-preflight.json
+```
+
+This rejects invalid format, clipping, extreme silence, very low signal, and DC
+offset. Speaker identity, music/background contamination, and pronunciation
+still require listening; objective ranking does not silently reorder a
+multi-reference voice. The MOSS router currently uses the first configured
+reference, and its path/checksum remains part of prompt and audio cache identity.
+
+Benchmark a versioned per-line MOSS corpus with distinct fresh, memory-cache,
+and persistent-cache measurements:
+
+```sh
+uv run vntts-benchmark-tts \
+  --backend moss-tts \
+  --model '/local/path/to/moss-tts-local-v1.5-mlx-int8' \
+  --manifest data/reverse1999-voices/manifest.json \
+  --corpus samples/rhiannon-moss-benchmark.json
+```
+
+Pass `--model` for an offline, reproducible run; otherwise the backend's model
+identifier may trigger a Hugging Face snapshot check. MOSS generation uses a
+text-length-based token and audio-duration budget. If the model misses EOS, the
+audio is stopped at that budget, marked `generation_limited` in the timeline
+and benchmark, shown in the compact/full status, and not cached. This prevents
+a short hesitation such as `I, erhm ...` from repeating for minutes while still
+letting playback completion and auto advance finish normally.
+
+The default MOSS streaming profile uses 4 first-chunk frames and a 0.25-second
+interval. On the local Rhiannon probe this reduced fresh first PCM from about
+1264 ms at 16/1.0 to 640 ms, while the run remained faster than realtime (RTF
+0.88) and the benchmark sink reported no underrun. Use
+`--moss-first-chunk-frames` and `--moss-streaming-interval` with
+`vntts-benchmark-tts` to repeat the grid on another machine. A real audio-device
+soak is still required because a discard sink cannot expose driver jitter.
 
 For the faster English CPU engine, install its isolated runtime once, select
 Chatterbox Nano in Settings, and restart the app:
@@ -196,6 +345,7 @@ VNTTS_TTS_PROFILE='stable' \
 VNTTS_VOICE_MANIFEST='/path/to/voice-pack/manifest.json' \
 VNTTS_STORY_INDEX='/path/to/story-index.jsonl' \
 VNTTS_GENERATED_AUDIO_MANIFEST='/path/to/generated-audio.json' \
+VNTTS_AUDIO_SOURCE_POLICY='live-tts-only' \
 VNTTS_NARRATOR_SPEAKER='Claribel Dervla' \
 uv run vntts
 ```
@@ -209,12 +359,11 @@ Manual assignments are stored in the active game profile and take effect
 immediately. Pocket TTS exposes its built-in voice catalog in the chooser; XTTS
 exposes the speakers reported by the loaded model; imported character voices are
 available with every cloning backend. An explicit manual assignment also uses
-live synthesis instead of pre-generated story audio, so the selected voice is
-honored consistently.
-When generated audio is configured, VNTTS uses it only for an exact story line
-whose stable line ID and current UTF-8 text SHA-256 match the manifest. Missing,
-modified, partial, ambiguous, or speed-incompatible entries fall back to the
-selected live speech engine.
+live synthesis instead of pre-recorded story audio, so the selected voice is
+honored consistently. Under either preference policy, generated audio is used
+only for an exact story line whose stable line ID and current UTF-8 text SHA-256
+match the manifest. Missing, modified, partial, ambiguous, or speed-incompatible
+entries follow the selected policy's next fallback route.
 
 ## Project layout
 

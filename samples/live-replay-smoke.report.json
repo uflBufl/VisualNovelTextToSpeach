@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "corpus": "Reverse 1999 saved-frame smoke",
+  "successful": true,
+  "expected_dialogue": [
+    {
+      "character": "Marcus",
+      "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!"
+    },
+    {
+      "character": "X",
+      "text": "You were the perfect fulcrum! I don't know what I would have done without you."
+    }
+  ],
+  "observed_dialogue": [
+    {
+      "character": "Marcus",
+      "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!"
+    },
+    {
+      "character": "X",
+      "text": "You were the perfect fulcrum! I don't know what I would have done without you."
+    }
+  ],
+  "route_sources": [
+    "game",
+    "live:replay-live-tts"
+  ],
+  "advance_requests": 2,
+  "advance_states": [
+    {
+      "state": "dispatched",
+      "generation": 1,
+      "attempt": 1
+    },
+    {
+      "state": "confirmed",
+      "generation": 1,
+      "attempt": 1
+    }
+  ],
+  "errors": [],
+  "timelines": [
+    {
+      "generation": 1,
+      "events": [
+        {
+          "stage": "capture",
+          "elapsed_ms": 0.0
+        },
+        {
+          "stage": "ocr",
+          "elapsed_ms": 65.136
+        },
+        {
+          "stage": "stable-text",
+          "elapsed_ms": 65.171
+        },
+        {
+          "stage": "generation-start",
+          "elapsed_ms": 130.313
+        },
+        {
+          "stage": "route-decision",
+          "effective_source": "game",
+          "match_result": "exact",
+          "line_id": "replay:marcus:1",
+          "artifact_preflight_state": "source-audio-declared-available",
+          "elapsed_ms": 130.363
+        },
+        {
+          "stage": "voice-resolution",
+          "voice_reference_id": "replay:marcus",
+          "elapsed_ms": 130.363
+        },
+        {
+          "stage": "first-pcm",
+          "elapsed_ms": 130.682
+        },
+        {
+          "stage": "playback-completion",
+          "elapsed_ms": 130.693
+        },
+        {
+          "stage": "key-dispatch",
+          "attempt": 1,
+          "elapsed_ms": 144.549
+        },
+        {
+          "stage": "confirmed-next-dialogue",
+          "attempt": 1,
+          "elapsed_ms": 1157.838
+        }
+      ]
+    },
+    {
+      "generation": 2,
+      "events": [
+        {
+          "stage": "capture",
+          "elapsed_ms": 0.0
+        },
+        {
+          "stage": "ocr",
+          "elapsed_ms": 66.763
+        },
+        {
+          "stage": "stable-text",
+          "elapsed_ms": 66.825
+        },
+        {
+          "stage": "generation-start",
+          "elapsed_ms": 133.795
+        },
+        {
+          "stage": "route-decision",
+          "effective_source": "live:replay-live-tts",
+          "match_result": "exact",
+          "fallback_reason": "source-audio-missing;generated-audio-library-not-configured",
+          "line_id": "replay:x:2",
+          "artifact_preflight_state": "generated-audio-library-not-configured",
+          "elapsed_ms": 133.854
+        },
+        {
+          "stage": "voice-resolution",
+          "voice_reference_id": "replay:x",
+          "elapsed_ms": 133.854
+        },
+        {
+          "stage": "first-pcm",
+          "elapsed_ms": 133.963
+        },
+        {
+          "stage": "playback-completion",
+          "elapsed_ms": 133.973
+        }
+      ]
+    }
+  ]
+}

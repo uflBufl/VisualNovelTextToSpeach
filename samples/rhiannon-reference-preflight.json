@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "references": [
+    {
+      "path": "data/reverse1999-voices/references/rhiannon-game-01.wav",
+      "sha256": "5bb83cc73fae544e12945c563d820da4b7ffee5f97cebd4e16c79f1d9a3b8778",
+      "sample_rate": 24000,
+      "duration_seconds": 13.46,
+      "peak": 0.707916,
+      "rms": 0.11568,
+      "clipping_fraction": 0.0,
+      "inactive_window_fraction": 0.231798,
+      "leading_silence_seconds": 0.06,
+      "trailing_silence_seconds": 0.18,
+      "dc_offset": 0.00000163,
+      "objective_preflight": "pass",
+      "rejection_reasons": [],
+      "manual_review_required": [
+        "single-speaker-identity",
+        "music-or-background-audio",
+        "spoken-content-and-pronunciation"
+      ]
+    },
+    {
+      "path": "data/reverse1999-voices/references/rhiannon-game-02.wav",
+      "sha256": "76527ff41e12301b51879c1830eadeebeb374e627fd37b038a09ccd7f25340cc",
+      "sample_rate": 24000,
+      "duration_seconds": 13.62,
+      "peak": 0.707916,
+      "rms": 0.114613,
+      "clipping_fraction": 0.0,
+      "inactive_window_fraction": 0.251101,
+      "leading_silence_seconds": 0.08,
+      "trailing_silence_seconds": 0.08,
+      "dc_offset": 0.0000011,
+      "objective_preflight": "pass",
+      "rejection_reasons": [],
+      "manual_review_required": [
+        "single-speaker-identity",
+        "music-or-background-audio",
+        "spoken-content-and-pronunciation"
+      ]
+    },
+    {
+      "path": "data/reverse1999-voices/references/rhiannon-game-03.wav",
+      "sha256": "7b3b1a1da981255a2c64a840a3f9972132ef717a1e8683c383a2b4314a34e008",
+      "sample_rate": 24000,
+      "duration_seconds": 12.83,
+      "peak": 0.707916,
+      "rms": 0.116119,
+      "clipping_fraction": 0.0,
+      "inactive_window_fraction": 0.218069,
+      "leading_silence_seconds": 0.06,
+      "trailing_silence_seconds": 0.12,
+      "dc_offset": 0.00000328,
+      "objective_preflight": "pass",
+      "rejection_reasons": [],
+      "manual_review_required": [
+        "single-speaker-identity",
+        "music-or-background-audio",
+        "spoken-content-and-pronunciation"
+      ]
+    }
+  ],
+  "objective_ranking": [
+    2,
+    3,
+    1
+  ],
+  "selection_policy": "Objective metrics reject unusable files but do not choose speaker similarity. Keep the configured order until the passing references complete a blinded listening comparison."
+}

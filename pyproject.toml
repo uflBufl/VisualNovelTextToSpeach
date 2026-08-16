@@ -48,6 +48,8 @@ vntts-app = "vntts.app:main"
 vntts-calibrate = "vntts.calibration:main"
 vntts-benchmark-ocr = "vntts.ocr_benchmark:main"
 vntts-benchmark-tts = "vntts.tts_benchmark:main"
+vntts-replay-live = "vntts.live_replay:main"
+vntts-check-reference = "vntts.reference_quality:main"
 
 [tool.uv.sources]
 torch = [
