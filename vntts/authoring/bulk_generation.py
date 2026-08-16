@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket
+import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -260,6 +261,7 @@ def run_bulk_generation(
     retries=2,
     include_prefer_source=False,
     include_characters=None,
+    include_queue_ids=None,
     item_filter=None,
     seed=0,
     cancellation=None,
@@ -267,6 +269,7 @@ def run_bulk_generation(
     text_transform=None,
     text_transform_id=None,
     process_checker=None,
+    workspace_output_identity=None,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -304,9 +307,23 @@ def run_bulk_generation(
         )
 
     queue_path = Path(queue_path).expanduser().resolve()
-    output_directory = Path(output_directory).expanduser().resolve()
-    output_directory.mkdir(parents=True, exist_ok=True)
+    output_argument = Path(output_directory).expanduser()
+    if workspace_output_identity is not None:
+        _assert_workspace_output_identity(output_argument, workspace_output_identity)
+    output_directory = output_argument.resolve()
     queue, queue_sha256 = _load_stable_queue(queue_path)
+    selected_queue_ids = None
+    if include_queue_ids is not None:
+        selected_queue_ids = {
+            _required_text(value, "Selected queue ID") for value in include_queue_ids
+        }
+        known_queue_ids = {item.queue_id for item in queue.items}
+        unknown_queue_ids = selected_queue_ids - known_queue_ids
+        if unknown_queue_ids:
+            raise BulkGenerationError(
+                "Selected queue IDs are absent from the bound queue: "
+                + ", ".join(sorted(unknown_queue_ids))
+            )
     controls = _snapshot_control_files(control_files or {})
     control_records = [_stored_control(value) for value in controls]
     provenance_sha256 = _canonical_sha256(
@@ -322,12 +339,17 @@ def run_bulk_generation(
     )
     state_path = output_directory / "generation-state.json"
     manifest_path = output_directory / "manifest.json"
+    output_directory.mkdir(parents=True, exist_ok=True)
 
     with _GenerationLease(
         output_directory,
         queue_sha256,
         process_checker=process_checker or process_is_alive,
     ) as lease:
+        if workspace_output_identity is not None:
+            _assert_workspace_output_identity(
+                output_argument, workspace_output_identity
+            )
         interrupted_job = _guard_job_process(
             output_directory, process_checker or process_is_alive
         )
@@ -371,9 +393,15 @@ def run_bulk_generation(
             skipped_characters = len(candidates) - len(filtered)
             candidates = filtered
         skipped_items = 0
+        if selected_queue_ids is not None:
+            filtered = [
+                item for item in candidates if item.queue_id in selected_queue_ids
+            ]
+            skipped_items += len(candidates) - len(filtered)
+            candidates = filtered
         if item_filter is not None:
             filtered = [item for item in candidates if item_filter(item)]
-            skipped_items = len(candidates) - len(filtered)
+            skipped_items += len(candidates) - len(filtered)
             candidates = filtered
         if limit is not None:
             candidates = candidates[:limit]
@@ -414,6 +442,10 @@ def run_bulk_generation(
                 synthesis_text.encode("utf-8")
             ).hexdigest()
             relative = _audio_relative_path(voice, queue_id)
+            if workspace_output_identity is not None:
+                _assert_workspace_output_identity(
+                    output_argument, workspace_output_identity
+                )
             destination = _within(output_directory, relative, "Generated WAV")
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -461,6 +493,10 @@ def run_bulk_generation(
                     rendered = render(request).collect()
                     _validate_render_result(rendered, request, provider)
                     _assert_control_files_unchanged(controls)
+                    if workspace_output_identity is not None:
+                        _assert_workspace_output_identity(
+                            output_argument, workspace_output_identity
+                        )
                     lease.assert_owned()
                     _write_active_phase(state_path, state, "validating")
                     write_pcm16_wav(partial, rendered.pcm, rendered.sample_rate)
@@ -468,6 +504,10 @@ def run_bulk_generation(
                     speech_quality = inspect_generated_speech(partial)
                     file_sha256 = sha256_file(partial)
                     _write_active_phase(state_path, state, "publishing")
+                    if workspace_output_identity is not None:
+                        _assert_workspace_output_identity(
+                            output_argument, workspace_output_identity
+                        )
                     os.replace(partial, destination)
                     state["items"][queue_id] = {
                         "status": "generated",
@@ -551,6 +591,10 @@ def run_bulk_generation(
                 break
 
         _assert_sources_unchanged(queue_path, queue_sha256, controls)
+        if workspace_output_identity is not None:
+            _assert_workspace_output_identity(
+                output_argument, workspace_output_identity
+            )
         lease.assert_owned()
         publish_generated_manifest(
             state_path, manifest_path=manifest_path, _lease_held=True
@@ -705,7 +749,8 @@ def process_is_alive(pid):
     return True
 
 
-def _process_started_at(pid):
+def process_started_at(pid):
+    """Return the operating-system process start identity when inspectable."""
     try:
         pid = int(pid)
         completed = subprocess.run(
@@ -717,6 +762,10 @@ def _process_started_at(pid):
     except (TypeError, ValueError, OSError, subprocess.CalledProcessError):
         return None
     return completed.stdout.strip() or None
+
+
+# Private compatibility for the existing publication lease until its next schema bump.
+_process_started_at = process_started_at
 
 
 class _GenerationLease:
@@ -743,7 +792,9 @@ class _GenerationLease:
             live = same_host and self.process_checker(lease.get("pid"))
             recorded_start = lease.get("process_started_at")
             if live and recorded_start is not None:
-                live = recorded_start == _process_started_at(lease.get("pid"))
+                actual_start = process_started_at(lease.get("pid"))
+                if actual_start is not None:
+                    live = recorded_start == actual_start
             if not same_host or live:
                 raise BulkGenerationError(
                     f"Another generation process is active with PID {lease.get('pid')}"
@@ -755,7 +806,7 @@ class _GenerationLease:
             "queue_sha256": self.queue_sha256,
             "pid": os.getpid(),
             "hostname": socket.gethostname(),
-            "process_started_at": _process_started_at(os.getpid()),
+            "process_started_at": process_started_at(os.getpid()),
             "lease_id": self.lease_id,
             "started_at": _now(),
         }
@@ -1403,6 +1454,32 @@ def _assert_sources_unchanged(queue_path, queue_sha256, controls):
             "Generation queue changed during the run; state was not published"
         )
     _assert_control_files_unchanged(controls)
+
+
+def _assert_workspace_output_identity(output_directory, identity):
+    if not isinstance(identity, dict) or set(identity) != {"path", "device", "inode"}:
+        raise BulkGenerationSourceChangedError("Workspace output identity is malformed")
+    path = Path(output_directory).expanduser()
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    expected = Path(identity["path"])
+    if absolute != expected or path.is_symlink():
+        raise BulkGenerationSourceChangedError(
+            "Workspace output directory changed or leaves its workspace"
+        )
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise BulkGenerationSourceChangedError(
+            f"Workspace output directory became unavailable: {error}"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_dev != identity["device"]
+        or metadata.st_ino != identity["inode"]
+    ):
+        raise BulkGenerationSourceChangedError(
+            "Workspace output directory identity changed"
+        )
 
 
 def _assert_control_files_unchanged(controls):

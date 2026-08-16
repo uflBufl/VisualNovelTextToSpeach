@@ -175,6 +175,38 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
 
+    def test_exact_queue_id_selection_validates_before_writes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            output = root / "output"
+            renderer = SyntheticRenderer()
+
+            result = self.run_generation(
+                queue,
+                output,
+                renderer,
+                include_queue_ids=[second["queue_id"]],
+            )
+            state = load_generation_state(result.state, queue)
+
+            self.assertEqual(set(state["items"]), {second["queue_id"]})
+            self.assertEqual(
+                [request.text for request in renderer.requests], [second["text"]]
+            )
+
+            untouched = root / "unknown-output"
+            with self.assertRaisesRegex(BulkGenerationError, "absent"):
+                self.run_generation(
+                    queue,
+                    untouched,
+                    SyntheticRenderer(),
+                    include_queue_ids=["unknown:queue-id"],
+                )
+            self.assertFalse(untouched.exists())
+
     def test_stale_active_consumes_attempt_and_continues_next_seed_in_legacy_state(
         self,
     ):
@@ -453,6 +485,45 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     SyntheticRenderer(),
                     process_checker=lambda _pid: True,
                 )
+
+    def test_live_lease_with_unknown_start_identity_blocks_takeover(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            output.mkdir()
+            lease_path = output / ".generation-lease.json"
+            atomic_write_json(
+                lease_path,
+                {
+                    "schema": "vntts.authoring-generation-lease",
+                    "schema_version": 1,
+                    "queue_sha256": sha256_file(queue),
+                    "pid": 123,
+                    "hostname": bulk_module.socket.gethostname(),
+                    "process_started_at": "known-start",
+                    "lease_id": "live-unknown-start",
+                },
+            )
+
+            with (
+                patch(
+                    "vntts.authoring.bulk_generation.process_started_at",
+                    return_value=None,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "Another generation"),
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    process_checker=lambda _pid: True,
+                )
+
+            preserved = json.loads(lease_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(preserved["lease_id"], "live-unknown-start")
 
     def test_sparse_legacy_failure_resumes_without_rewriting_schema(self):
         with TemporaryDirectory() as directory:
@@ -793,6 +864,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         str(voice_manifest),
                         "--backend",
                         "pocket-tts",
+                        "--narrator-character",
+                        "Hero",
                         "--retries",
                         "0",
                     ]
@@ -801,6 +874,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(generated["generated"], 1)
             self.assertEqual(renderer.stop_calls, 1)
+            state = load_generation_state(output / "generation-state.json", queue)
+            controls = next(iter(state["synthesis_controls"].values()))
+            self.assertTrue(
+                any(
+                    control["role"] == "narrator_selection:Hero"
+                    and control["sha256"] == sha256_file(reference)
+                    for control in controls
+                )
+            )
 
             review_output = StringIO()
             with redirect_stdout(review_output):

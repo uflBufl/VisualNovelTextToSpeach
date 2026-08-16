@@ -116,9 +116,15 @@ uv run vntts-pregenerate status \
   --queue /path/to/generation-queue.jsonl
 ```
 
-The current commands are headless. Live elapsed-time display, grouped skip
-reasons, focused retry controls and process status in the graphical authoring
-workbench remain separate UI work.
+Config-addressed resume workspaces use repeated `--queue-id` arguments for an
+exact focused retry. Their child process also supplies expected voice-control
+hashes and the output directory identity; a changed reference or directory swap
+therefore fails instead of silently changing synthesis provenance. The
+role-bound narrator selection is part of the control inventory.
+
+The headless projection and safety contract are documented in
+[authoring-workspaces.md](authoring-workspaces.md). Live elapsed-time display
+and the remaining graphical controls are separate UI work.
 
 After a dedicated selected queue has complete terminal review coverage, use
 the [final game-pack publication boundary](authoring-game-pack-publication.md)

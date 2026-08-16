@@ -167,6 +167,11 @@ def create_parser():
     )
     generate.add_argument("--queue", type=Path, required=True)
     generate.add_argument("--output", type=Path, required=True)
+    generate.add_argument(
+        "--workspace",
+        type=Path,
+        help="Canonical config-addressed workspace that binds this child run",
+    )
     generate.add_argument("--voice-manifest", type=Path, required=True)
     generate.add_argument(
         "--backend",
@@ -185,6 +190,12 @@ def create_parser():
     generate.add_argument("--seed", type=int, default=0)
     generate.add_argument("--include-prefer-source", action="store_true")
     generate.add_argument("--character", action="append", dest="characters")
+    generate.add_argument(
+        "--queue-id",
+        action="append",
+        dest="queue_ids",
+        help="Generate only one exact queue ID; repeat for a focused retry",
+    )
     review = subparsers.add_parser(
         "review", help="Approve or reject one generated queue item"
     )
@@ -284,9 +295,42 @@ def main(argv=None):
             return 0
         if arguments.command == "generate":
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
+            expected_workspace_controls = None
+            workspace_output_identity = None
+            if arguments.workspace is not None:
+                from vntts.authoring.workbench import (
+                    AuthoringWorkbenchError,
+                    generation_control_bindings,
+                    generation_output_identity,
+                )
+
+                try:
+                    expected_workspace_controls = generation_control_bindings(
+                        arguments.workspace,
+                        queue=arguments.queue,
+                        output=arguments.output,
+                        voice_manifest=voice_manifest,
+                        backend=arguments.backend,
+                        model=arguments.model,
+                        generation_profile=arguments.generation_profile,
+                        narrator_character=arguments.narrator_character,
+                    )
+                    workspace_output_identity = generation_output_identity(
+                        arguments.workspace
+                    )
+                except AuthoringWorkbenchError as error:
+                    raise BulkGenerationError(str(error)) from error
             registry, voice_manifest_sha256 = _load_stable_voice_registry(
                 voice_manifest
             )
+            if (
+                expected_workspace_controls is not None
+                and expected_workspace_controls.get(voice_manifest)
+                != voice_manifest_sha256
+            ):
+                raise BulkGenerationError(
+                    "Workspace voice manifest changed before backend construction"
+                )
             control_files = {"voice_manifest": (voice_manifest, voice_manifest_sha256)}
             for index, reference in enumerate(
                 sorted(
@@ -299,10 +343,26 @@ def main(argv=None):
                 ),
                 start=1,
             ):
+                reference_sha256 = sha256_control_path(reference)
+                if (
+                    expected_workspace_controls is not None
+                    and expected_workspace_controls.get(reference) != reference_sha256
+                ):
+                    raise BulkGenerationError(
+                        f"Workspace voice reference changed: {reference}"
+                    )
                 control_files[f"voice_reference:{index:04d}"] = (
                     reference,
-                    sha256_control_path(reference),
+                    reference_sha256,
                 )
+            if expected_workspace_controls is not None:
+                observed_paths = {
+                    Path(value[0]).resolve() for value in control_files.values()
+                }
+                if observed_paths != set(expected_workspace_controls):
+                    raise BulkGenerationError(
+                        "Workspace voice control inventory differs from the manifest"
+                    )
             if arguments.model:
                 model_path = Path(arguments.model).expanduser()
                 if model_path.exists():
@@ -317,6 +377,11 @@ def main(argv=None):
                 if narrator_voice is not None and narrator_voice.references
                 else None
             )
+            if narrator_reference is not None:
+                control_files[f"narrator_selection:{arguments.narrator_character}"] = (
+                    narrator_reference,
+                    sha256_control_path(narrator_reference),
+                )
             if arguments.backend == "moss-tts" and narrator_reference is None:
                 raise BulkGenerationError(
                     f"Narrator voice {arguments.narrator_character!r} has no reference"
@@ -356,6 +421,7 @@ def main(argv=None):
                         retries=arguments.retries,
                         include_prefer_source=arguments.include_prefer_source,
                         include_characters=arguments.characters,
+                        include_queue_ids=arguments.queue_ids,
                         item_filter=ready_spoken_item,
                         seed=arguments.seed,
                         control_files=control_files,
@@ -369,6 +435,7 @@ def main(argv=None):
                             if arguments.backend == "moss-tts"
                             else None
                         ),
+                        workspace_output_identity=workspace_output_identity,
                     )
                 finally:
                     stop = getattr(backend, "stop", None)
@@ -512,3 +579,7 @@ def main(argv=None):
         )
     )
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

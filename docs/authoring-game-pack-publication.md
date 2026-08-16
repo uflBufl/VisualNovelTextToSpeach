@@ -15,7 +15,10 @@ Final publication requires all of the following:
 - state contains exactly the selected queue IDs, with every item terminal as
   approved or rejected; active, failed, pending or partial state is rejected;
 - queue metadata contains non-optional source paths and SHA-256 bindings for
-  the selected story index and voice manifest, and both match exactly;
+  its original story index and voice manifest. Story identity must still match
+  exactly. A deliberate replacement voice snapshot is allowed only when every
+  terminal state item proves that exact selected manifest and references in its
+  synthesis-control inventory;
 - every approved line ID/text hash exists in the bound story index;
 - current-schema state contains the per-control inventory captured by bulk
   synthesis. The manifest and every referenced voice WAV must retain the same
@@ -29,6 +32,12 @@ review authority and is never rewritten by this command. A fresh approved-only
 manifest is built inside staging from the exact state snapshot. Rejected audio,
 partial WAVs, queue/state files and review diagnostics remain in application
 data and are not shipped.
+
+When a proven replacement voice snapshot is published, the raw game-pack
+authoring extension retains the original queue voice-manifest SHA-256, the
+selected SHA-256, an explicit override flag and the role-bound narrator
+selection. It never rewrites the queue to pretend the replacement was its
+original source.
 
 ## Atomic and non-destructive behavior
 

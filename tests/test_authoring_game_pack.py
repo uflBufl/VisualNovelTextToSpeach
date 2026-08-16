@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import math
+import shutil
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -183,6 +184,68 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_deliberate_voice_override_requires_and_preserves_state_controls(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root)
+            original_voice_sha256 = sha256_file(fixture["voices"])
+            replacement_root = root / "replacement"
+            replacement_reference = replacement_root / "references" / "hero.wav"
+            write_pcm16_wav(replacement_reference, audio_samples() * 0.5, 16_000)
+            replacement_manifest = replacement_root / "voice-manifest.json"
+            write_voice_manifest(
+                replacement_manifest,
+                {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Hero",
+                            "speaker": "replacement-hero",
+                            "references": ["references/hero.wav"],
+                        }
+                    ],
+                },
+            )
+            shutil.rmtree(fixture["output"])
+            generated = run_bulk_generation(
+                fixture["queue"],
+                fixture["output"],
+                SyntheticRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+                control_files={
+                    "voice_manifest": replacement_manifest,
+                    "voice_reference:0001": replacement_reference,
+                },
+            )
+            fixture["state"] = generated.state
+            fixture["manifest"] = generated.manifest
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+            review_generation_item(
+                fixture["state"], fixture["items"][1]["queue_id"], "rejected"
+            )
+
+            result = publish(
+                fixture,
+                root / "final-pack",
+                voice_manifest_path=replacement_manifest,
+            )
+            pack = load_game_pack(result.manifest)
+            provenance = pack.extensions["vntts.authoring"]
+            replacement_voice_sha256 = sha256_file(replacement_manifest)
+
+        self.assertTrue(provenance["voice_manifest_override"])
+        self.assertEqual(
+            provenance["queue_voice_manifest_sha256"], original_voice_sha256
+        )
+        self.assertEqual(
+            provenance["selected_voice_manifest_sha256"],
+            replacement_voice_sha256,
+        )
+
     def test_publishes_approved_projection_without_mutating_authoring_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -129,7 +129,10 @@ def publish_final_game_pack(
 
                 story = _load_story(story_copy)
                 voice_entries = _load_voices(voice_copy)
-                _validate_source_bindings(
+                narrator_selection = _verify_voice_control_provenance(
+                    state, queue, voice_manifest_path, voice_entries
+                )
+                voice_override = _validate_source_bindings(
                     queue.metadata,
                     queue_path=queue_path,
                     story_index_path=story_index_path,
@@ -138,9 +141,6 @@ def publish_final_game_pack(
                     voice_manifest_sha256=voice_sha256,
                 )
                 _validate_story_identity(state, story)
-                _verify_voice_control_provenance(
-                    state, voice_manifest_path, voice_entries
-                )
                 _copy_voice_references(
                     voice_manifest_path,
                     voice_copy,
@@ -199,6 +199,12 @@ def publish_final_game_pack(
                             "vntts.authoring": {
                                 "source_queue_sha256": queue_sha256,
                                 "source_state_sha256": state_sha256,
+                                "selected_voice_manifest_sha256": voice_sha256,
+                                "queue_voice_manifest_sha256": queue.metadata.get(
+                                    "source_voice_manifest_sha256"
+                                ),
+                                "voice_manifest_override": voice_override,
+                                "narrator_selection": narrator_selection,
                                 **counts,
                             },
                         },
@@ -502,23 +508,7 @@ def _validate_source_bindings(
     story_sha256,
     voice_manifest_sha256,
 ):
-    bindings = (
-        (
-            "source_story_index",
-            "source_story_index_sha256",
-            story_index_path,
-            story_sha256,
-            "story index",
-        ),
-        (
-            "source_voice_manifest",
-            "source_voice_manifest_sha256",
-            voice_manifest_path,
-            voice_manifest_sha256,
-            "voice manifest",
-        ),
-    )
-    for path_field, hash_field, actual_path, actual_hash, label in bindings:
+    def declared_binding(path_field, hash_field, label):
         declared_path = queue_metadata.get(path_field)
         declared_hash = queue_metadata.get(hash_field)
         if not isinstance(declared_path, str) or not declared_path.strip():
@@ -532,14 +522,27 @@ def _validate_source_bindings(
         bound_path = Path(declared_path).expanduser()
         if not bound_path.is_absolute():
             bound_path = queue_path.parent / bound_path
-        if bound_path.resolve() != actual_path.resolve():
-            raise FinalGamePackError(
-                f"Generation queue {label} path does not match the selected source"
-            )
-        if declared_hash != actual_hash:
-            raise FinalGamePackError(
-                f"Generation queue {label} checksum does not match the selected source"
-            )
+        return bound_path.resolve(), declared_hash
+
+    story_path, declared_story_sha256 = declared_binding(
+        "source_story_index", "source_story_index_sha256", "story index"
+    )
+    if story_path != story_index_path.resolve():
+        raise FinalGamePackError(
+            "Generation queue story index path does not match the selected source"
+        )
+    if declared_story_sha256 != story_sha256:
+        raise FinalGamePackError(
+            "Generation queue story index checksum does not match the selected source"
+        )
+
+    voice_path, declared_voice_sha256 = declared_binding(
+        "source_voice_manifest", "source_voice_manifest_sha256", "voice manifest"
+    )
+    return (
+        voice_path != voice_manifest_path.resolve()
+        or declared_voice_sha256 != voice_manifest_sha256
+    )
 
 
 def _load_stable_state(state_path, queue, queue_sha256):
@@ -573,7 +576,7 @@ def _validate_story_identity(state, story):
             )
 
 
-def _verify_voice_control_provenance(state, voice_manifest_path, voice_entries):
+def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_entries):
     registry = state.get("synthesis_controls")
     if not isinstance(registry, dict):
         raise FinalGamePackError(
@@ -594,6 +597,8 @@ def _verify_voice_control_provenance(state, voice_manifest_path, voice_entries):
                 _source_sha256(source, "voice reference"),
                 lambda role: role.startswith("voice_reference:"),
             )
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    narrator_selections = set()
     for queue_id, result in state["items"].items():
         provenance = result.get("synthesis_provenance_sha256")
         controls = registry.get(provenance)
@@ -632,6 +637,29 @@ def _verify_voice_control_provenance(state, voice_manifest_path, voice_entries):
                 raise FinalGamePackError(
                     f"Voice input {path} does not match synthesis controls for {queue_id!r}"
                 )
+        item = queue_by_id[queue_id]
+        narrator_controls = [
+            control
+            for control in controls
+            if str(control.get("role", "")).startswith("narrator_selection:")
+        ]
+        if item.voice_character == "Narrator" and len(narrator_controls) != 1:
+            raise FinalGamePackError(
+                f"Narrator item {queue_id!r} lacks one role-bound narrator selection"
+            )
+        for control in narrator_controls:
+            narrator_selections.add(
+                (
+                    control["role"].removeprefix("narrator_selection:"),
+                    control["sha256"],
+                )
+            )
+    if len(narrator_selections) > 1:
+        raise FinalGamePackError("Generation state mixes multiple narrator selections")
+    if not narrator_selections:
+        return None
+    character, digest = next(iter(narrator_selections))
+    return {"character": character, "reference_sha256": digest}
 
 
 def _validate_generated_story_records(records, story):
