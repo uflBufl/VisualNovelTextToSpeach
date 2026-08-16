@@ -33,6 +33,13 @@ LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
 LEGACY_STATE_SCHEMA_VERSION = 1
 IMPORT_SCHEMA = "vntts.authoring-legacy-import"
 IMPORT_SCHEMA_VERSION = 1
+CONTROL_ARTIFACT_ROLES = {
+    "legacy_job",
+    "generation_queue",
+    "generation_state",
+    "generated_audio_manifest",
+    "stale_generated_audio_manifest",
+}
 
 
 class LegacyAuthoringImportError(RuntimeError):
@@ -63,6 +70,16 @@ class LegacyImportResult:
 
 
 @dataclass(frozen=True)
+class StandaloneImportInspection:
+    queue_path: Path
+    output_directory: Path
+    logical_identity: str
+    source_fingerprint: str
+    summary: dict[str, object]
+    diagnostics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _CopyArtifact:
     role: str
     source: Path
@@ -83,6 +100,7 @@ class _ImportPlan:
     external_inputs: tuple[dict[str, object], ...]
     logical_identity: str
     manifest_diagnostics: tuple[str, ...]
+    source_kind: str = "reverse1999-extractor-pregeneration-job"
 
 
 def default_legacy_jobs_root(*, environment=None):
@@ -120,6 +138,12 @@ def discover_legacy_jobs(jobs_root=None):
                 destinations.add(_resolve_path(job_directory, value))
         try:
             plan = _build_import_plan(job_directory)
+            running_error = None
+            if plan.job.get("status") == "running":
+                running_error = (
+                    "Legacy job is still marked running. Discovery cannot certify a "
+                    "stable snapshot; stop the producer and retry before import."
+                )
             candidates.append(
                 LegacyImportCandidate(
                     job_directory=job_directory,
@@ -127,6 +151,7 @@ def discover_legacy_jobs(jobs_root=None):
                     status=_optional_text(plan.job.get("status")) or "unknown",
                     queue_items=len(plan.queue.items),
                     generated_items=int(plan.summary["generated_items"]),
+                    compatibility_error=running_error,
                     diagnostics=plan.manifest_diagnostics,
                 )
             )
@@ -174,6 +199,7 @@ def import_legacy_job(job_directory, destination_root=None):
                 )
         manifest = _import_manifest(plan, import_id)
         atomic_write_json(staging / "import.json", manifest, sort_keys=True)
+        _verify_source_controls_unchanged(plan)
         try:
             staging.rename(destination)
         except OSError:
@@ -185,6 +211,178 @@ def import_legacy_job(job_directory, destination_root=None):
         if staging is not None and staging.exists():
             shutil.rmtree(staging)
     return LegacyImportResult(destination, manifest, True)
+
+
+def inspect_standalone_generation(queue_path, output_directory):
+    """Validate one explicit queue/output pairing without copying it."""
+    plan = _build_standalone_import_plan(queue_path, output_directory)
+    queue_artifact = next(
+        artifact for artifact in plan.artifacts if artifact.role == "generation_queue"
+    )
+    return StandaloneImportInspection(
+        queue_path=queue_artifact.source,
+        output_directory=plan.job_directory,
+        logical_identity=plan.logical_identity,
+        source_fingerprint=plan.source_fingerprint,
+        summary=plan.summary,
+        diagnostics=plan.manifest_diagnostics,
+    )
+
+
+def import_standalone_generation(queue_path, output_directory, destination_root=None):
+    """Import one explicitly selected standalone queue/output pair."""
+    plan = _build_standalone_import_plan(queue_path, output_directory)
+    destination_root = Path(destination_root or default_import_root()).expanduser().resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    import_id = _import_id(plan)
+    destination = destination_root / import_id
+    if destination.exists():
+        return _validate_existing_import(destination, plan)
+    _validate_import_root_collisions(destination_root, plan)
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{import_id}-", dir=destination_root))
+    try:
+        for artifact in plan.artifacts:
+            target = staging / artifact.destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(artifact.source, target)
+            if sha256_file(target) != artifact.sha256:
+                raise LegacyAuthoringImportError(
+                    f"Copied artifact changed during import: {artifact.source}"
+                )
+        manifest = _import_manifest(plan, import_id)
+        atomic_write_json(staging / "import.json", manifest, sort_keys=True)
+        _verify_source_controls_unchanged(plan)
+        try:
+            staging.rename(destination)
+        except OSError:
+            if destination.exists():
+                return _validate_existing_import(destination, plan)
+            raise
+        staging = None
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+    return LegacyImportResult(destination, manifest, True)
+
+
+def _build_standalone_import_plan(queue_path, output_directory):
+    queue_path = Path(queue_path).expanduser().resolve()
+    output = Path(output_directory).expanduser().resolve()
+    if not output.is_dir():
+        raise LegacyAuthoringImportError(
+            f"Standalone generation output is not a directory: {output}"
+        )
+    try:
+        queue = VoiceGenerationQueue.load(queue_path)
+    except VoiceGenerationQueueError as error:
+        raise LegacyAuthoringImportError(
+            f"Incompatible standalone generation queue {queue_path}: {error}"
+        ) from error
+    queue_sha256 = sha256_file(queue_path)
+    state_path = output / "generation-state.json"
+    manifest_path = output / "manifest.json"
+    if not state_path.is_file() and not manifest_path.is_file():
+        raise LegacyAuthoringImportError(
+            "Standalone output must contain generation-state.json or manifest.json"
+        )
+
+    artifacts = {}
+    _add_artifact(artifacts, "generation_queue", queue_path, Path("queue.jsonl"))
+    state = None
+    state_items = {}
+    generated_files = {}
+    if state_path.is_file():
+        state = _load_json(state_path, "generation state")
+        if state.get("queue_sha256") != queue_sha256:
+            raise LegacyAuthoringImportError(
+                "Explicit standalone pairing failed: generation-state.json does not "
+                "contain the selected queue's full SHA-256"
+            )
+        state_items, generated_files = _validate_state(
+            state, state_path, output, queue, queue_sha256
+        )
+        _add_artifact(
+            artifacts,
+            "generation_state",
+            state_path,
+            Path("generated-audio/generation-state.json"),
+        )
+        for source, relative in generated_files.values():
+            _add_artifact(
+                artifacts, "generated_wav", source, Path("generated-audio") / relative
+            )
+
+    generated_index = None
+    diagnostics = ()
+    if manifest_path.is_file():
+        raw_manifest = _load_json(manifest_path, "generated-audio manifest")
+        manifest_queue_sha256 = raw_manifest.get("source_queue_sha256")
+        if state is None and manifest_queue_sha256 != queue_sha256:
+            raise LegacyAuthoringImportError(
+                "Explicit standalone pairing failed: manifest.json does not contain "
+                "the selected queue's full SHA-256"
+            )
+        generated_index, manifest_files, diagnostics = _validate_generated_manifest(
+            manifest_path,
+            output,
+            queue,
+            queue_sha256,
+            state_items,
+            state_exists=state is not None,
+        )
+        current = not diagnostics
+        _add_artifact(
+            artifacts,
+            "generated_audio_manifest" if current else "stale_generated_audio_manifest",
+            manifest_path,
+            (
+                Path("generated-audio/manifest.json")
+                if current
+                else Path("legacy/stale-generated-audio-manifest.json")
+            ),
+        )
+        for source, relative in manifest_files.values():
+            _add_artifact(
+                artifacts, "generated_wav", source, Path("generated-audio") / relative
+            )
+
+    summary = _generation_summary(queue, state_items, generated_index, diagnostics)
+    ordered_artifacts = tuple(
+        sorted(artifacts.values(), key=lambda item: item.destination.as_posix())
+    )
+    logical_identity = hashlib.sha256(
+        f"{queue_sha256}\n{output}".encode("utf-8")
+    ).hexdigest()
+    if state is not None:
+        fingerprint_input = _meaningful_source_fingerprint(queue_sha256, state_items)
+    else:
+        fingerprint_input = json.dumps(
+            {
+                "queue_sha256": queue_sha256,
+                "artifacts": [
+                    (item.destination.as_posix(), item.sha256) for item in ordered_artifacts
+                ],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    plan = _ImportPlan(
+        job_directory=output,
+        job={},
+        queue=queue,
+        state=state,
+        generated_index=generated_index,
+        artifacts=ordered_artifacts,
+        source_fingerprint=hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest(),
+        summary=summary,
+        external_inputs=(),
+        logical_identity=logical_identity,
+        manifest_diagnostics=diagnostics,
+        source_kind="reverse1999-extractor-standalone-generation",
+    )
+    _verify_source_controls_unchanged(plan)
+    return plan
 
 
 def _build_import_plan(job_directory):
@@ -200,6 +398,10 @@ def _build_import_plan(job_directory):
             f"{LEGACY_JOB_SCHEMA!r} version {LEGACY_JOB_SCHEMA_VERSION}"
         )
     _validate_job(job)
+    if _live_pid(job.get("pid")):
+        raise LegacyAuthoringImportError(
+            "Pregeneration source is active; retry import when the legacy job is idle"
+        )
 
     queue_path = _job_path(job_directory, job.get("queue"), "queue")
     try:
@@ -282,40 +484,15 @@ def _build_import_plan(job_directory):
                 Path("generated-audio") / relative,
             )
 
-    statuses = Counter(
-        str(value.get("status") or "unknown")
-        for value in state_items.values()
-        if isinstance(value, dict)
+    summary = _generation_summary(
+        queue, state_items, generated_index, manifest_diagnostics
     )
-    reviews = Counter(
-        str(value.get("review_status") or "unreviewed")
-        for value in state_items.values()
-        if isinstance(value, dict)
-    )
-    summary = {
-        "queue_items": len(queue.items),
-        "state_items": len(state_items),
-        "generated_items": statuses["generated"] + statuses["approved"],
-        "status_counts": dict(sorted(statuses.items())),
-        "review_counts": dict(sorted(reviews.items())),
-        "generated_manifest_entries": (
-            len(generated_index.entries) if generated_index is not None else 0
-        ),
-        "generated_manifest_state": (
-            "absent"
-            if generated_index is None
-            else "stale"
-            if manifest_diagnostics
-            else "current"
-        ),
-        "generated_manifest_diagnostics": list(manifest_diagnostics),
-    }
     ordered_artifacts = tuple(sorted(artifacts.values(), key=lambda item: item.destination.as_posix()))
     logical_identity = hashlib.sha256(
         f"{queue_sha256}\n{output}".encode("utf-8")
     ).hexdigest()
     fingerprint_input = _meaningful_source_fingerprint(queue_sha256, state_items)
-    return _ImportPlan(
+    plan = _ImportPlan(
         job_directory=job_directory,
         job=job,
         queue=queue,
@@ -328,6 +505,39 @@ def _build_import_plan(job_directory):
         logical_identity=logical_identity,
         manifest_diagnostics=manifest_diagnostics,
     )
+    _verify_source_controls_unchanged(plan)
+    return plan
+
+
+def _generation_summary(queue, state_items, generated_index, diagnostics):
+    statuses = Counter(
+        str(value.get("status") or "unknown")
+        for value in state_items.values()
+        if isinstance(value, dict)
+    )
+    reviews = Counter(
+        str(value.get("review_status") or "unreviewed")
+        for value in state_items.values()
+        if isinstance(value, dict)
+    )
+    return {
+        "queue_items": len(queue.items),
+        "state_items": len(state_items),
+        "generated_items": statuses["generated"] + statuses["approved"],
+        "status_counts": dict(sorted(statuses.items())),
+        "review_counts": dict(sorted(reviews.items())),
+        "generated_manifest_entries": (
+            len(generated_index.entries) if generated_index is not None else 0
+        ),
+        "generated_manifest_state": (
+            "absent"
+            if generated_index is None
+            else "stale"
+            if diagnostics
+            else "current"
+        ),
+        "generated_manifest_diagnostics": list(diagnostics),
+    }
 
 
 def _validate_job(job):
@@ -406,9 +616,10 @@ def _discover_unsupported_legacy_artifacts(
             continue
         queue_items = 0
         error = (
-            "Standalone generation queue is discoverable but cannot be imported "
-            "until it is paired with its generation output or wrapped in a "
-            "r1999.pregeneration-job v1 document. Source files were not changed."
+            "Standalone queue requires an explicit full-SHA pairing. Select this "
+            "queue and one output with `vntts-pregenerate inspect-standalone "
+            "--queue ... --output ...` before import; no filename or timestamp "
+            "matching is performed."
         )
         try:
             queue_items = len(VoiceGenerationQueue.load(path).items)
@@ -446,9 +657,9 @@ def _discover_unsupported_legacy_artifacts(
                 queue_items=0,
                 generated_items=0,
                 compatibility_error=(
-                    "Standalone generation state/manifest is discoverable but cannot "
-                    "be imported until its exact source queue is selected. Source "
-                    "files were not changed."
+                    "Standalone output requires an explicitly selected queue whose "
+                    "full SHA-256 matches its state/manifest. Use "
+                    "`vntts-pregenerate inspect-standalone --queue ... --output ...`."
                 ),
                 kind="standalone-generation-output",
             )
@@ -457,21 +668,35 @@ def _discover_unsupported_legacy_artifacts(
         document = _load_json_optional(session_path)
         if document.get("schema") != "r1999.model-listening-session":
             continue
-        candidates.append(
-            LegacyImportCandidate(
-                job_directory=session_path.parent.resolve(),
-                title=session_path.parent.name,
-                status="unsupported",
-                queue_items=0,
-                generated_items=0,
-                compatibility_error=(
-                    "Blind-listening session, key and report are discoverable, but "
-                    "their non-destructive import is not implemented yet. Keep the "
-                    "entire session directory unchanged."
-                ),
-                kind="model-listening-session",
-            )
+        from vntts.authoring.listening_import import (
+            ListeningImportError,
+            inspect_listening_session,
         )
+
+        try:
+            inspection = inspect_listening_session(session_path.parent)
+            candidates.append(
+                LegacyImportCandidate(
+                    job_directory=session_path.parent.resolve(),
+                    title=session_path.parent.name,
+                    status="preserve-ready",
+                    queue_items=inspection.trial_count,
+                    generated_items=inspection.completed_count,
+                    kind="model-listening-session",
+                )
+            )
+        except ListeningImportError as error:
+            candidates.append(
+                LegacyImportCandidate(
+                    job_directory=session_path.parent.resolve(),
+                    title=session_path.parent.name,
+                    status="incompatible",
+                    queue_items=0,
+                    generated_items=0,
+                    compatibility_error=str(error),
+                    kind="model-listening-session",
+                )
+            )
     return candidates
 
 
@@ -724,24 +949,16 @@ def _external_inputs(job_directory, job):
 
 
 def _import_manifest(plan, import_id):
-    return {
+    manifest = {
         "schema": IMPORT_SCHEMA,
         "schema_version": IMPORT_SCHEMA_VERSION,
         "import_id": import_id,
         "imported_at": datetime.now(timezone.utc).isoformat(),
         "source": {
-            "kind": "reverse1999-extractor-pregeneration-job",
-            "job_directory": str(plan.job_directory),
-            "job_schema": LEGACY_JOB_SCHEMA,
-            "job_schema_version": LEGACY_JOB_SCHEMA_VERSION,
+            "kind": plan.source_kind,
+            "source_directory": str(plan.job_directory),
             "source_fingerprint": plan.source_fingerprint,
             "logical_identity": plan.logical_identity,
-        },
-        "legacy_job": {
-            "title": plan.job.get("title"),
-            "status": plan.job.get("status"),
-            "model": plan.job.get("model"),
-            "narrator_character": plan.job.get("narrator_character"),
         },
         "summary": plan.summary,
         "identities": _import_identities(plan),
@@ -756,6 +973,21 @@ def _import_manifest(plan, import_id):
             for artifact in plan.artifacts
         ],
     }
+    if plan.source_kind == "reverse1999-extractor-pregeneration-job":
+        manifest["source"].update(
+            {
+                "job_directory": str(plan.job_directory),
+                "job_schema": LEGACY_JOB_SCHEMA,
+                "job_schema_version": LEGACY_JOB_SCHEMA_VERSION,
+            }
+        )
+        manifest["legacy_job"] = {
+            "title": plan.job.get("title"),
+            "status": plan.job.get("status"),
+            "model": plan.job.get("model"),
+            "narrator_character": plan.job.get("narrator_character"),
+        }
+    return manifest
 
 
 def _import_identities(plan):
@@ -842,7 +1074,31 @@ def _validate_existing_import(destination, plan):
                 f"Existing imported artifact is missing or modified: {path}. "
                 "No files were overwritten."
             )
+    _verify_source_controls_unchanged(plan)
     return LegacyImportResult(destination, manifest, False)
+
+
+def _verify_source_controls_unchanged(plan):
+    for artifact in plan.artifacts:
+        if artifact.role not in CONTROL_ARTIFACT_ROLES:
+            continue
+        if not artifact.source.is_file() or sha256_file(artifact.source) != artifact.sha256:
+            raise LegacyAuthoringImportError(
+                "Legacy source is active or changed during import; retry when idle. "
+                "No application data was published."
+            )
+
+
+def _live_pid(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return False
+    try:
+        os.kill(value, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _add_artifact(artifacts, role, source, destination):

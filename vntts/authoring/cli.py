@@ -10,6 +10,13 @@ from vntts.authoring.legacy_import import (
     default_legacy_jobs_root,
     discover_legacy_jobs,
     import_legacy_job,
+    import_standalone_generation,
+    inspect_standalone_generation,
+)
+from vntts.authoring.listening_import import (
+    ListeningImportError,
+    import_listening_session,
+    inspect_listening_session,
 )
 
 
@@ -27,6 +34,34 @@ def create_parser():
     )
     migrate.add_argument("job_directory", type=Path)
     migrate.add_argument("--destination-root", type=Path, default=default_import_root())
+    inspect_standalone = subparsers.add_parser(
+        "inspect-standalone",
+        help="Validate one explicitly paired standalone queue and output",
+    )
+    inspect_standalone.add_argument("--queue", type=Path, required=True)
+    inspect_standalone.add_argument("--output", type=Path, required=True)
+    import_standalone = subparsers.add_parser(
+        "import-standalone",
+        help="Non-destructively import one explicitly paired queue and output",
+    )
+    import_standalone.add_argument("--queue", type=Path, required=True)
+    import_standalone.add_argument("--output", type=Path, required=True)
+    import_standalone.add_argument(
+        "--destination-root", type=Path, default=default_import_root()
+    )
+    inspect_listening = subparsers.add_parser(
+        "inspect-listening",
+        help="Validate one selected legacy blind-listening session",
+    )
+    inspect_listening.add_argument("session_directory", type=Path)
+    import_listening = subparsers.add_parser(
+        "import-listening",
+        help="Non-destructively preserve one selected blind-listening session",
+    )
+    import_listening.add_argument("session_directory", type=Path)
+    import_listening.add_argument(
+        "--destination-root", type=Path, default=default_import_root()
+    )
     return parser
 
 
@@ -56,11 +91,45 @@ def main(argv=None):
         )
         return 0
     try:
-        result = import_legacy_job(
-            arguments.job_directory,
-            arguments.destination_root,
-        )
-    except LegacyAuthoringImportError as error:
+        if arguments.command == "inspect-standalone":
+            plan = inspect_standalone_generation(arguments.queue, arguments.output)
+            print(json.dumps(plan.summary, indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "import-standalone":
+            result = import_standalone_generation(
+                arguments.queue,
+                arguments.output,
+                arguments.destination_root,
+            )
+        elif arguments.command == "inspect-listening":
+            inspection = inspect_listening_session(arguments.session_directory)
+            print(
+                json.dumps(
+                    {
+                        "session_directory": str(inspection.session_directory),
+                        "trial_count": inspection.trial_count,
+                        "completed_count": inspection.completed_count,
+                        "audio_count": inspection.audio_count,
+                        "report_present": inspection.report_present,
+                        "logical_identity": inspection.logical_identity,
+                        "source_fingerprint": inspection.source_fingerprint,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        elif arguments.command == "import-listening":
+            result = import_listening_session(
+                arguments.session_directory,
+                arguments.destination_root,
+            )
+        else:
+            result = import_legacy_job(
+                arguments.job_directory,
+                arguments.destination_root,
+            )
+    except (LegacyAuthoringImportError, ListeningImportError) as error:
         create_parser().error(str(error))
     print(
         json.dumps(

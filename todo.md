@@ -22,11 +22,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Preserve existing generation work
 
-- [ ] Read and migrate existing `r1999.pregeneration-job`, generation queue,
-      generation state, review decisions, and generated-audio manifests without
-      deleting, overwriting, or regenerating valid local artifacts. Job-backed
-      generation is supported; standalone outputs and blind-listening sessions
-      are discoverable but still require non-destructive import.
 - [ ] Keep compatibility with current queue IDs, line IDs, text hashes, seeds,
       attempts, and approval state until all existing jobs have been imported
       and resumed successfully in VNTTS.

@@ -1,9 +1,11 @@
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.audio import (
@@ -26,6 +28,8 @@ from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     discover_legacy_jobs,
     import_legacy_job,
+    import_standalone_generation,
+    inspect_standalone_generation,
 )
 
 
@@ -189,6 +193,114 @@ def write_legacy_fixture(root, *, job_name="original-job", title="Patch 3.7"):
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_active_job_and_source_mutation_during_copy_are_deferred(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            job_path = fixture["job_directory"] / "job.json"
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            job["status"] = "running"
+            job["pid"] = os.getpid()
+            job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(LegacyAuthoringImportError, "active"):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            job["status"] = "complete"
+            job["pid"] = None
+            job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
+            original_copy = __import__("shutil").copy2
+            mutated = False
+
+            def mutate_after_queue_copy(source, destination):
+                nonlocal mutated
+                result = original_copy(source, destination)
+                if Path(source).resolve() == fixture["queue"].resolve() and not mutated:
+                    state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                    state["active"]["updated_at"] = "2026-08-16T17:00:02+00:00"
+                    fixture["state"].write_text(
+                        json.dumps(state, sort_keys=True), encoding="utf-8"
+                    )
+                    mutated = True
+                return result
+
+            with patch(
+                "vntts.authoring.legacy_import.shutil.copy2",
+                side_effect=mutate_after_queue_copy,
+            ), self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"):
+                import_legacy_job(fixture["job_directory"], root / "app-data")
+
+            self.assertFalse((root / "app-data" / "legacy-").exists())
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_standalone_import_requires_and_preserves_exact_queue_output_pair(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            source_hashes = {
+                name: sha256_file(fixture[name])
+                for name in ("queue", "state", "manifest", "wav")
+            }
+
+            plan = inspect_standalone_generation(
+                fixture["queue"], fixture["state"].parent
+            )
+            first = import_standalone_generation(
+                fixture["queue"], fixture["state"].parent, root / "app-data"
+            )
+            second = import_standalone_generation(
+                fixture["queue"], fixture["state"].parent, root / "app-data"
+            )
+
+            self.assertEqual(plan.summary["generated_items"], 1)
+            self.assertTrue(first.created)
+            self.assertFalse(second.created)
+            self.assertEqual(first.destination, second.destination)
+            self.assertFalse((first.destination / "legacy/job.json").exists())
+            self.assertEqual(
+                source_hashes,
+                {
+                    name: sha256_file(fixture[name])
+                    for name in ("queue", "state", "manifest", "wav")
+                },
+            )
+
+    def test_standalone_pairing_rejects_different_full_queue_hash(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            other = write_legacy_fixture(root / "other", title="same-prefix-name")
+            queue_text = other["queue"].read_text(encoding="utf-8")
+            other["queue"].write_text(
+                queue_text.replace(
+                    "2026-08-16T17:00:00+00:00", "2026-08-16T17:00:01+00:00"
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                LegacyAuthoringImportError, "full SHA-256"
+            ):
+                inspect_standalone_generation(
+                    other["queue"], fixture["state"].parent
+                )
+
+    def test_manifest_only_standalone_output_is_preserved_as_unconfirmed_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            fixture["state"].unlink()
+
+            result = import_standalone_generation(
+                fixture["queue"], fixture["manifest"].parent, root / "app-data"
+            )
+
+            self.assertEqual(
+                result.manifest["summary"]["generated_manifest_state"], "stale"
+            )
+            self.assertTrue(
+                (result.destination / "legacy/stale-generated-audio-manifest.json").is_file()
+            )
+
     def test_import_preserves_identity_attempts_review_and_valid_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -507,9 +619,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         self.assertIn("standalone-generation-output", kinds)
         self.assertIn("model-listening-session", kinds)
         for candidate in candidates:
-            if candidate.kind != "pregeneration-job":
+            if candidate.kind.startswith("standalone-"):
                 self.assertFalse(candidate.compatible)
-                self.assertIn("discoverable", candidate.compatibility_error)
+                self.assertIn("explicit", candidate.compatibility_error)
+            if candidate.kind == "model-listening-session":
+                self.assertFalse(candidate.compatible)
+                self.assertIn("Unsupported", candidate.compatibility_error)
 
     def test_cli_import_reports_idempotent_destination(self):
         with TemporaryDirectory() as directory:
