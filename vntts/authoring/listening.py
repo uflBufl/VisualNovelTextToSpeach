@@ -10,12 +10,14 @@ import os
 import random
 import re
 import shutil
+import stat
+import struct
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.cli import cli_error, cli_success
@@ -24,6 +26,7 @@ from vntts.settings import get_local_data_directory
 SESSION_SCHEMA = "vntts.model-listening-session"
 KEY_SCHEMA = "vntts.model-listening-key"
 REPORT_SCHEMA = "vntts.model-listening-report"
+MODEL_REPORT_SCHEMA = "vntts.voice-model-report"
 LEGACY_SESSION_SCHEMA = "r1999.model-listening-session"
 LEGACY_KEY_SCHEMA = "r1999.model-listening-key"
 LEGACY_REPORT_SCHEMA = "r1999.model-listening-report"
@@ -73,19 +76,9 @@ def create_listening_session_from_reports(report_paths, output_directory, *, see
     audio_by_model = defaultdict(dict)
     corpus_items = {}
     for report_path in resolved_paths:
-        report = _load_json(report_path, "model report")
-        samples = report.get("samples")
-        backend = str(report.get("backend") or report.get("provider") or "").strip()
-        if not backend or not isinstance(samples, list) or not samples:
-            raise ModelListeningError(
-                f"Model report is missing backend samples: {report_path}"
-            )
-        model_id = str(report.get("model_id") or "").strip()
-        if not model_id:
-            label = str(report.get("label") or "").strip()
-            language = str(report.get("language") or "").strip()
-            variant = " / ".join(part for part in (backend, language, label) if part)
-            model_id = f"legacy/{variant}"
+        report, samples = _load_model_report(report_path)
+        backend = report["backend"]
+        model_id = report["model_id"]
         metadata = model_metadata.setdefault(
             model_id,
             {
@@ -98,30 +91,25 @@ def create_listening_session_from_reports(report_paths, output_directory, *, see
         report_name = str(report_path)
         if report_name not in metadata["reports"]:
             metadata["reports"].append(report_name)
-        for index, sample in enumerate(samples, start=1):
-            if not isinstance(sample, dict):
-                raise ModelListeningError(f"Model report sample is invalid: {report_path}")
-            text = str(sample.get("text") or "").strip()
+        for sample in samples:
+            text = sample["text"]
             normalized = _normalized_text(text)
-            audio = Path(str(sample.get("audio") or "")).expanduser().resolve()
-            if not normalized or not audio.is_file():
-                raise ModelListeningError(
-                    f"Model report sample text or audio is missing: {report_path}"
-                )
+            audio = sample["resolved_audio"]
             text_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-            sample_id = str(sample.get("id") or sample.get("line_id") or "").strip()
-            identity = sample_id or text_hash
+            sample_id = sample["id"]
+            identity = sample_id
             queue_id = f"corpus:{identity}:{text_hash[:16]}"
             existing = audio_by_model[model_id].get(queue_id)
-            if existing is not None and existing != audio:
+            audio_record = {"path": audio, "sha256": sample["audio_sha256"]}
+            if existing is not None and existing != audio_record:
                 raise ModelListeningError(
                     f"Model {model_id} has multiple outputs for sample {identity!r}"
                 )
-            audio_by_model[model_id][queue_id] = audio
+            audio_by_model[model_id][queue_id] = audio_record
             current = corpus_items.get(queue_id)
             item = {
                 "queue_id": queue_id,
-                "line_id": sample_id or f"sample-{index}",
+                "line_id": sample["line_id"],
                 "text_sha256": text_hash,
                 "text": text,
             }
@@ -210,14 +198,23 @@ def _write_listening_session(
         }
         for side, model_id in zip(("a", "b"), sides, strict=True):
             _link_blind_audio(
-                audio_by_model[model_id][item["queue_id"]],
+                audio_by_model[model_id][item["queue_id"]]["path"],
                 output_directory / aliases[side],
+            )
+            _verify_pcm_audio(
+                output_directory / aliases[side],
+                audio_by_model[model_id][item["queue_id"]]["sha256"],
+                "blind audio alias",
             )
         trials.append(
             {
                 "trial_id": trial_id,
                 **item,
                 "audio": {side: path.as_posix() for side, path in aliases.items()},
+                "audio_sha256": {
+                    side: audio_by_model[model_id][item["queue_id"]]["sha256"]
+                    for side, model_id in zip(("a", "b"), sides, strict=True)
+                },
                 "rating": None,
             }
         )
@@ -226,11 +223,17 @@ def _write_listening_session(
                 "trial_id": trial_id,
                 "a": {
                     "model_id": sides[0],
-                    "source": str(audio_by_model[sides[0]][item["queue_id"]]),
+                    "source": str(audio_by_model[sides[0]][item["queue_id"]]["path"]),
+                    "audio_sha256": audio_by_model[sides[0]][item["queue_id"]][
+                        "sha256"
+                    ],
                 },
                 "b": {
                     "model_id": sides[1],
-                    "source": str(audio_by_model[sides[1]][item["queue_id"]]),
+                    "source": str(audio_by_model[sides[1]][item["queue_id"]]["path"]),
+                    "audio_sha256": audio_by_model[sides[1]][item["queue_id"]][
+                        "sha256"
+                    ],
                 },
             }
         )
@@ -245,8 +248,7 @@ def _write_listening_session(
         "models": models,
         "assignments": assignments,
     }
-    atomic_write_json(key_path, key, sort_keys=True)
-    key_path.chmod(0o600)
+    _atomic_write_private_json(key_path, key)
     session = {
         "schema": SESSION_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -279,6 +281,10 @@ def load_listening_session(path):
         "dimensions"
     ) != list(LEGACY_DIMENSIONS):
         raise ModelListeningError("Listening session decision mode is invalid")
+    current_schema = session.get("schema") == SESSION_SCHEMA
+    legacy_audio_hashes = (
+        {} if current_schema else _legacy_import_audio_hashes(path.parent)
+    )
     trial_ids = [trial.get("trial_id") for trial in trials if isinstance(trial, dict)]
     if len(trial_ids) != len(trials) or len(set(trial_ids)) != len(trials):
         raise ModelListeningError("Listening session trial IDs are invalid")
@@ -286,6 +292,25 @@ def load_listening_session(path):
     if session.get("completed_count") != completed:
         raise ModelListeningError("Listening session progress is inconsistent")
     for trial in trials:
+        if current_schema:
+            line_id = trial.get("line_id")
+            text = trial.get("text")
+            text_hash = trial.get("text_sha256")
+            if not isinstance(line_id, str) or not line_id.strip():
+                raise ModelListeningError(
+                    f"Listening trial line identity is invalid: {trial['trial_id']}"
+                )
+            if not isinstance(text, str) or not text or not _is_sha256(text_hash):
+                raise ModelListeningError(
+                    f"Listening trial text identity is invalid: {trial['trial_id']}"
+                )
+            if (
+                hashlib.sha256(_normalized_text(text).encode("utf-8")).hexdigest()
+                != text_hash
+            ):
+                raise ModelListeningError(
+                    f"Listening trial text hash changed: {trial['trial_id']}"
+                )
         rating = trial.get("rating")
         if rating is not None and (
             not isinstance(rating, dict) or rating.get("preference") not in {"a", "b", "tie"}
@@ -294,15 +319,31 @@ def load_listening_session(path):
         audio = trial.get("audio")
         if not isinstance(audio, dict) or set(audio) != {"a", "b"}:
             raise ModelListeningError(f"Listening trial audio is invalid: {trial['trial_id']}")
-        for relative in audio.values():
+        expected_hashes = trial.get("audio_sha256")
+        if current_schema and (
+            not isinstance(expected_hashes, dict) or set(expected_hashes) != {"a", "b"}
+        ):
+            raise ModelListeningError(
+                f"Listening trial audio hashes are invalid: {trial['trial_id']}"
+            )
+        for side, relative in audio.items():
             candidate = _within(path.parent, relative, "listening trial audio")
             if not candidate.is_file():
                 raise ModelListeningError(f"Listening trial audio is missing: {candidate}")
+            expected_hash = (
+                expected_hashes.get(side)
+                if isinstance(expected_hashes, dict)
+                else legacy_audio_hashes.get(relative)
+            )
+            _verify_pcm_audio(candidate, expected_hash, "listening trial audio")
+    _load_blind_key(path, session)
     return session
 
 
 def _load_blind_key(session_path, session):
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
+    if key_path.is_file() and stat.S_IMODE(key_path.stat().st_mode) != 0o600:
+        raise ModelListeningError("Listening session blind key mode must be 0600")
     if not key_path.is_file() or sha256_file(key_path) != session.get("blind_key_sha256"):
         raise ModelListeningError("Listening session blind key is missing or changed")
     expected_schema = (
@@ -329,11 +370,40 @@ def _load_blind_key(session_path, session):
     if len(assignment_ids) != len(assignments) or sorted(assignment_ids) != sorted(trial_ids):
         raise ModelListeningError("Listening session blind assignments are incomplete")
     for assignment in assignments:
+        trial = next(
+            item
+            for item in session["trials"]
+            if item["trial_id"] == assignment["trial_id"]
+        )
         sides = []
         for side in ("a", "b"):
             value = assignment.get(side)
             if not isinstance(value, dict) or value.get("model_id") not in model_ids:
                 raise ModelListeningError("Listening session blind assignment is invalid")
+            if session.get("schema") == SESSION_SCHEMA:
+                expected_hash = value.get("audio_sha256")
+                if not _is_sha256(expected_hash):
+                    raise ModelListeningError(
+                        "Listening session blind assignment audio hash is invalid"
+                    )
+                source = Path(str(value.get("source") or "")).expanduser()
+                if source.is_file():
+                    _verify_pcm_audio(source.resolve(), expected_hash, "blind source audio")
+                if trial["audio_sha256"].get(side) != expected_hash:
+                    raise ModelListeningError(
+                        "Listening session alias and assignment hashes disagree"
+                    )
+            else:
+                source = Path(str(value.get("source") or "")).expanduser()
+                if source.is_file():
+                    alias = _within(
+                        key_path.parent,
+                        trial["audio"][side],
+                        "legacy blind audio alias",
+                    )
+                    _verify_pcm_audio(
+                        source.resolve(), sha256_file(alias), "blind source audio"
+                    )
             sides.append(value["model_id"])
         if sides[0] == sides[1]:
             raise ModelListeningError("Listening trial cannot compare a model with itself")
@@ -349,7 +419,14 @@ def listening_progress(session):
     return completed, len(session["trials"])
 
 
-def record_trial_preference(session_path, trial_id, preference, *, overwrite=False):
+def record_trial_preference(
+    session_path,
+    trial_id,
+    preference,
+    *,
+    overwrite=False,
+    report_path=None,
+):
     if preference not in {"a", "b", "tie"}:
         raise ModelListeningError("Preference must be a, b, or tie")
     session_path = Path(session_path).expanduser().resolve()
@@ -364,6 +441,14 @@ def record_trial_preference(session_path, trial_id, preference, *, overwrite=Fal
     session["completed_count"] = listening_progress(session)[0]
     session["updated_at"] = _utc_now()
     atomic_write_json(session_path, session, sort_keys=True)
+    if report_path is not None:
+        try:
+            aggregate_listening_report(session_path, report_path)
+        except (ModelListeningError, OSError) as error:
+            raise ModelListeningError(
+                "Preference was saved, but the listening report could not be updated; "
+                "run `vntts-listen report` to recover it"
+            ) from error
     return session
 
 
@@ -395,17 +480,27 @@ def ensure_listening_report(session_path, output_path=None):
     session = load_listening_session(session_path)
     key = _load_blind_key(session_path, session)
     expected = _report_fields(session, key)
+    expected_schema = (
+        LEGACY_REPORT_SCHEMA
+        if session.get("schema") == LEGACY_SESSION_SCHEMA
+        else REPORT_SCHEMA
+    )
     if output_path.is_file():
         try:
             current = _load_schema(
                 output_path,
-                {REPORT_SCHEMA, LEGACY_REPORT_SCHEMA},
+                {expected_schema},
                 "listening report",
             )
         except ModelListeningError:
             current = None
-        if current is not None and all(current.get(field) == value for field, value in expected.items()):
-            return current
+        if current is not None and all(
+            current.get(field) == value for field, value in expected.items()
+        ):
+            if session.get("schema") == LEGACY_SESSION_SCHEMA or current.get(
+                "session"
+            ) == str(session_path):
+                return current
     return aggregate_listening_report(session_path, output_path)
 
 
@@ -494,6 +589,159 @@ def _report_fields(session, key):
             for (left, right), values in sorted(pairwise.items())
         ],
     }
+
+
+def _load_model_report(path):
+    report = _load_schema(path, {MODEL_REPORT_SCHEMA}, "model report")
+    backend = report.get("backend")
+    model_id = report.get("model_id")
+    samples = report.get("samples")
+    if not isinstance(backend, str) or not backend.strip():
+        raise ModelListeningError(f"Model report backend is invalid: {path}")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ModelListeningError(f"Model report model_id is invalid: {path}")
+    if not isinstance(samples, list) or not samples:
+        raise ModelListeningError(f"Model report samples are invalid: {path}")
+    parsed = []
+    seen_ids = set()
+    report_root = Path(path).expanduser().resolve().parent
+    for index, sample in enumerate(samples, start=1):
+        if not isinstance(sample, dict):
+            raise ModelListeningError(f"Model report sample {index} must be an object")
+        sample_id = sample.get("id")
+        line_id = sample.get("line_id")
+        text = sample.get("text")
+        text_hash = sample.get("text_sha256")
+        audio_hash = sample.get("audio_sha256")
+        if not isinstance(sample_id, str) or not sample_id.strip():
+            raise ModelListeningError(f"Model report sample {index} id is invalid")
+        if sample_id in seen_ids:
+            raise ModelListeningError(f"Duplicate model report sample ID: {sample_id!r}")
+        seen_ids.add(sample_id)
+        if not isinstance(line_id, str) or not line_id.strip():
+            raise ModelListeningError(f"Model report sample {index} line_id is invalid")
+        if not isinstance(text, str) or not text:
+            raise ModelListeningError(f"Model report sample {index} text is invalid")
+        if not _is_sha256(text_hash) or hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest() != text_hash:
+            raise ModelListeningError(
+                f"Model report sample {index} text_sha256 does not match exact text"
+            )
+        if not _is_sha256(audio_hash):
+            raise ModelListeningError(
+                f"Model report sample {index} audio_sha256 is invalid"
+            )
+        raw_audio = sample.get("audio")
+        if not isinstance(raw_audio, str) or not raw_audio.strip():
+            raise ModelListeningError(f"Model report sample {index} audio is invalid")
+        audio = Path(raw_audio).expanduser()
+        if not audio.is_absolute():
+            audio = report_root / audio
+        audio = audio.resolve()
+        _verify_pcm_audio(audio, audio_hash, "model report audio")
+        parsed.append(
+            {
+                **sample,
+                "id": sample_id.strip(),
+                "line_id": line_id.strip(),
+                "text": text,
+                "text_sha256": text_hash,
+                "audio_sha256": audio_hash,
+                "resolved_audio": audio,
+            }
+        )
+    return {
+        **report,
+        "backend": backend.strip(),
+        "model_id": model_id.strip(),
+    }, parsed
+
+
+def _verify_pcm_audio(path, expected_hash, label):
+    path = Path(path)
+    if not path.is_file():
+        raise ModelListeningError(f"{label.title()} is missing: {path}")
+    try:
+        _probe_supported_wav(path)
+    except (OSError, ValueError, struct.error) as error:
+        raise ModelListeningError(f"{label.title()} is not a supported WAV: {path}") from error
+    if expected_hash is not None and (
+        not _is_sha256(expected_hash) or sha256_file(path) != expected_hash
+    ):
+        raise ModelListeningError(f"{label.title()} checksum changed: {path}")
+
+
+def _probe_supported_wav(path):
+    """Validate the PCM16 or legacy float32 WAV envelope without decoding."""
+    with Path(path).open("rb") as stream:
+        header = stream.read(12)
+        if len(header) != 12 or header[:4] not in {b"RIFF", b"RF64"} or header[8:] != b"WAVE":
+            raise ValueError("missing RIFF/WAVE header")
+        format_fields = None
+        data_size = None
+        while chunk := stream.read(8):
+            if len(chunk) != 8:
+                raise ValueError("truncated WAV chunk")
+            chunk_id, chunk_size = struct.unpack("<4sI", chunk)
+            payload = stream.read(chunk_size)
+            if len(payload) != chunk_size:
+                raise ValueError("truncated WAV payload")
+            if chunk_size % 2:
+                stream.read(1)
+            if chunk_id == b"fmt " and chunk_size >= 16:
+                format_fields = struct.unpack("<HHIIHH", payload[:16])
+            elif chunk_id == b"data":
+                data_size = chunk_size
+        if format_fields is None or not data_size:
+            raise ValueError("missing WAV format or audio data")
+        format_tag, channels, sample_rate, _byte_rate, _block_align, bits = format_fields
+        if channels not in {1, 2} or sample_rate <= 0 or (format_tag, bits) not in {
+            (1, 16),
+            (3, 32),
+        }:
+            raise ValueError("unsupported WAV encoding")
+
+
+def _legacy_import_audio_hashes(root):
+    manifest_path = Path(root) / "import.json"
+    if not manifest_path.is_file():
+        return {}
+    manifest = _load_json(manifest_path, "listening import manifest")
+    if (
+        manifest.get("schema") != "vntts.authoring-listening-import"
+        or manifest.get("schema_version") != 1
+        or not isinstance(manifest.get("artifacts"), list)
+    ):
+        raise ModelListeningError("Unsupported listening import manifest schema")
+    result = {}
+    for artifact in manifest["artifacts"]:
+        if not isinstance(artifact, dict) or artifact.get("role") != "blind_audio":
+            continue
+        relative = artifact.get("path")
+        digest = artifact.get("sha256")
+        _within(root, relative, "imported blind audio")
+        if not _is_sha256(digest):
+            raise ModelListeningError("Imported blind audio hash is invalid")
+        result[relative] = digest
+    return result
+
+
+def _atomic_write_private_json(path, value):
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with atomic_output_path(path) as temporary:
+        temporary.chmod(0o600)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(rendered)
+        temporary.chmod(0o600)
+    return path
+
+
+def _is_sha256(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _within(root, value, label):
@@ -589,9 +837,7 @@ def main(argv=None):
                 options.trial_id,
                 options.preference,
                 overwrite=options.overwrite,
-            )
-            aggregate_listening_report(
-                options.session, Path(options.session).resolve().with_name("report.json")
+                report_path=Path(options.session).resolve().with_name("report.json"),
             )
             completed, total = listening_progress(updated)
             return cli_success(f"Saved {options.trial_id}; progress: {completed}/{total}")

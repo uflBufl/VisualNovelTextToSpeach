@@ -8,8 +8,8 @@ chapters or interprets game-specific line IDs.
 
 `vntts-benchmark-models` accepts exactly one of:
 
-- a version 1 TTS benchmark corpus with stable sample IDs, voice characters and
-  text; or
+- a strict `vntts.tts-benchmark-corpus` version 1 document with unique stable
+  sample IDs, line IDs, exact UTF-8 text hashes and voice characters; or
 - a public `vntts.voice-generation-queue` version 1 document, converted to a
   corpus with deterministic round-robin sampling over delivery/emotion labels.
 
@@ -17,12 +17,20 @@ Only queue records with `action=generate` are eligible. Queue IDs, line IDs,
 text hashes and voice-character choices are copied as opaque shared fields; no
 game arithmetic is reproduced.
 
+The authoring corpus loader preserves exact text, including leading and
+trailing whitespace, and rejects text-hash drift, duplicate IDs and missing
+line identity. It does not reuse the live benchmark loader, whose whitespace
+normalization is intentionally unsuitable for authoring identity.
+
 Every configured model is evaluated over the same corpus through its typed
 `render(SynthesisRequest)` API with `cache_policy=bypass`. The benchmark never
 opens an audio output or uses a fake playback sink. Cancelled or limited renders
 fail the model report rather than publishing partial audio. Successful reports
-use the VNTTS-owned `vntts.voice-model-report` version 1 schema and retain PCM
-timing, sample rate, sample count, duration, peak, seed and generation profile.
+use the VNTTS-owned `vntts.voice-model-report` version 1 schema and retain WAV
+SHA-256, PCM timing, sample rate, sample count, duration, peak, seed and
+generation profile. Completion diagnostics must return the requested seed and
+profile. Model IDs are converted to contained output/cache directory names;
+dot paths, path escape and case-insensitive destination collisions are rejected.
 The aggregate `vntts.voice-model-benchmark` version 1 document records the exact
 corpus and per-model report paths; model selection remains a manual decision.
 
@@ -72,9 +80,11 @@ The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across
 models. It creates every model pair that shares a sample, shuffles trial order
 and A/B orientation deterministically from the seed, then hardlinks or copies
-neutral relative WAV aliases. Model identities, source paths and A/B assignment
-stay only in mode-0600 `.blind-key.json`; the public session never names a
-model.
+neutral relative WAV aliases. Every report source and copied alias is probed as
+a supported WAV and bound by SHA-256. Model identities, source paths and A/B
+assignment stay only in `.blind-key.json`; it is created atomically with mode
+0600, and every resume operation rejects a changed mode. The public session
+never names a model.
 
 Runtime commands are:
 
@@ -89,6 +99,10 @@ uv run vntts-listen ui --session /path/to/session.json
 Scoring is append-safe by default: rating an already completed trial requires
 explicit `--overwrite`. Reports rank models by preference rate, then wins, then
 model ID and include the same sorted pairwise totals as the legacy workflow.
+Current reports must use the current schema and bind the exact current session
+path. If a score is durably saved but report publication fails, CLI/UI surfaces
+that persisted state explicitly and instructs the operator to regenerate the
+derived report; it never claims that the rating was rolled back.
 The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.
@@ -99,6 +113,12 @@ The runtime dual-reads VNTTS-owned version 1 session/key/report schemas and the
 legacy `r1999.model-listening-*` version 1 schemas. Imported sessions use only
 their copied relative aliases at runtime; stale absolute source-report and
 assignment provenance is not required to resume.
+
+Current sessions bind each alias hash in both the public trial and hidden
+assignment. Imported legacy sessions, whose original schema had no alias hash,
+verify aliases against the non-destructive import inventory; an original source
+WAV is also compared when it still exists. Both PCM16 and the float32/stereo WAV
+forms present in the preserved legacy benchmark are probed without conversion.
 
 Loading, checking progress or opening a completed imported session does not
 rerandomize trials, rewrite the hidden key or regenerate an already equivalent

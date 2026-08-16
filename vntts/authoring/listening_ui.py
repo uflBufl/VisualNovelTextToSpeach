@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.authoring.listening import (
-    aggregate_listening_report,
     ensure_listening_report,
     listening_progress,
     load_listening_session,
@@ -338,10 +337,10 @@ class ModelListeningDialog(QDialog):
             return
         try:
             record_trial_preference(
-                self.session_path, self.current_trial["trial_id"], preference
-            )
-            aggregate_listening_report(
-                self.session_path, self.session_path.with_name("report.json")
+                self.session_path,
+                self.current_trial["trial_id"],
+                preference,
+                report_path=self.session_path.with_name("report.json"),
             )
         except Exception as error:
             self.status.setText(f"Unable to save listening score: {error}")

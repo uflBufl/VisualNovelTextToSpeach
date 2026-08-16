@@ -73,6 +73,7 @@ def write_listening_fixture(root):
     }
     key_path = session_root / ".blind-key.json"
     key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
+    key_path.chmod(0o600)
     session = {
         "schema": "r1999.model-listening-session",
         "schema_version": 1,

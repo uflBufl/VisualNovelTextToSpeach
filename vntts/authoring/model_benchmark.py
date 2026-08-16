@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -22,7 +23,7 @@ from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisRequest,
 )
-from vntts.tts_benchmark import create_backend, load_tts_benchmark_corpus
+from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
 CORPUS_SCHEMA = "vntts.tts-benchmark-corpus"
@@ -101,6 +102,57 @@ def build_benchmark_corpus(queue_path, output_path, *, sample_size=24, name=None
     return document
 
 
+def load_benchmark_corpus(path):
+    """Load the authoring corpus without normalizing exact identity or text."""
+    path = Path(path).expanduser().resolve()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ModelBenchmarkError(f"Unable to read benchmark corpus {path}: {error}") from error
+    if not isinstance(document, dict) or (
+        document.get("schema") != CORPUS_SCHEMA
+        or document.get("schema_version") != SCHEMA_VERSION
+    ):
+        raise ModelBenchmarkError("Unsupported authoring benchmark corpus schema")
+    raw_samples = document.get("samples")
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ModelBenchmarkError("Authoring benchmark corpus has no samples")
+    samples = []
+    seen_ids = set()
+    for index, sample in enumerate(raw_samples, start=1):
+        if not isinstance(sample, dict):
+            raise ModelBenchmarkError(f"Benchmark corpus sample {index} must be an object")
+        sample_id = _required_text(sample.get("id"), f"sample {index} id")
+        line_id = _required_text(sample.get("line_id"), f"sample {index} line_id")
+        character = _required_text(
+            sample.get("character"), f"sample {index} character"
+        )
+        text = sample.get("text")
+        if not isinstance(text, str) or not text:
+            raise ModelBenchmarkError(f"Benchmark corpus sample {index} text is invalid")
+        text_hash = _required_sha256(
+            sample.get("text_sha256"), f"sample {index} text_sha256"
+        )
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash:
+            raise ModelBenchmarkError(
+                f"Benchmark corpus sample {index} text_sha256 does not match exact text"
+            )
+        if sample_id in seen_ids:
+            raise ModelBenchmarkError(f"Duplicate benchmark corpus sample ID: {sample_id!r}")
+        seen_ids.add(sample_id)
+        samples.append(
+            {
+                **sample,
+                "id": sample_id,
+                "line_id": line_id,
+                "character": character,
+                "text": text,
+                "text_sha256": text_hash,
+            }
+        )
+    return {**document, "samples": samples}
+
+
 def benchmark_renderer(
     variant,
     backend,
@@ -133,6 +185,13 @@ def benchmark_renderer(
                 f"Model {variant.model_id!r} did not complete sample {sample['id']!r}: "
                 f"{result.completion.value}"
             )
+        if (
+            result.diagnostics.seed != request.seed
+            or result.diagnostics.generation_profile != request.generation_profile
+        ):
+            raise ModelBenchmarkError(
+                f"Model {variant.model_id!r} returned diagnostics for a different request"
+            )
         safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(sample["id"])).strip("-")
         audio_path = write_pcm16_wav(
             audio_root / f"{index:04d}-{safe_id or 'sample'}.wav",
@@ -144,6 +203,7 @@ def benchmark_renderer(
             {
                 **sample,
                 "audio": str(audio_path),
+                "audio_sha256": _sha256_file(audio_path),
                 "sample_rate": info.sample_rate,
                 "sample_count": info.sample_count,
                 "duration_seconds": round(info.duration_seconds, 6),
@@ -179,7 +239,7 @@ def benchmark_model_variants(
     backend_factory=create_backend,
 ):
     """Benchmark multiple model variants over one exact corpus."""
-    corpus = load_tts_benchmark_corpus(corpus_path)
+    corpus = load_benchmark_corpus(corpus_path)
     variants = tuple(variants)
     if len(variants) < 2:
         raise ModelBenchmarkError("At least two model variants are required")
@@ -187,18 +247,23 @@ def benchmark_model_variants(
     if len(model_ids) != len(set(model_ids)):
         raise ModelBenchmarkError("Model variant IDs must be unique")
     safe_model_ids = [_safe_name(model_id) for model_id in model_ids]
-    if len(safe_model_ids) != len(set(safe_model_ids)):
+    if len(safe_model_ids) != len({value.casefold() for value in safe_model_ids}):
         raise ModelBenchmarkError("Model variant IDs collide as output directory names")
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     reports = []
     with TemporaryDirectory() as cache:
-        for variant in variants:
+        cache_root = Path(cache).resolve()
+        for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
+            cache_directory = _contained_child(cache_root, safe_model_id, "model cache")
+            model_output = _contained_child(
+                output_directory, safe_model_id, "model output"
+            )
             try:
                 backend = backend_factory(
                     variant.backend,
                     registry,
-                    Path(cache) / _safe_name(variant.model_id),
+                    cache_directory,
                     model_name=variant.model,
                 )
             except (TypeError, ValueError) as error:
@@ -208,11 +273,11 @@ def benchmark_model_variants(
                     variant,
                     backend,
                     corpus["samples"],
-                    output_directory / _safe_name(variant.model_id),
+                    model_output,
                     seed=seed,
                 )
                 reports.append(
-                    str(output_directory / _safe_name(variant.model_id) / "report.json")
+                    str(model_output / "report.json")
                 )
             finally:
                 stop = getattr(backend, "stop", None)
@@ -257,7 +322,41 @@ def load_model_variants(path):
 
 
 def _safe_name(value):
-    return re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-") or "model"
+    if not isinstance(value, str) or not value.strip() or value.strip() in {".", ".."}:
+        raise ModelBenchmarkError("Model variant ID is not a safe output name")
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-._")
+    if not safe or safe in {".", ".."}:
+        raise ModelBenchmarkError("Model variant ID is not a safe output name")
+    return safe
+
+
+def _contained_child(root, name, label):
+    root = Path(root).resolve()
+    child = (root / name).resolve()
+    try:
+        child.relative_to(root)
+    except ValueError as error:
+        raise ModelBenchmarkError(f"{label.title()} leaves its root") from error
+    if child == root:
+        raise ModelBenchmarkError(f"{label.title()} must be a child directory")
+    return child
+
+
+def _required_text(value, label):
+    if not isinstance(value, str) or not value.strip():
+        raise ModelBenchmarkError(f"Benchmark corpus {label} must be non-empty text")
+    return value.strip()
+
+
+def _required_sha256(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ModelBenchmarkError(f"Benchmark corpus {label} must be lowercase SHA-256")
+    return value
+
+
+def _sha256_file(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def create_parser():

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +13,7 @@ from vntts.authoring.model_benchmark import (
     benchmark_model_variants,
     benchmark_renderer,
     build_benchmark_corpus,
+    load_benchmark_corpus,
     select_representative_items,
 )
 from vntts.synthesis import (
@@ -105,6 +107,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
         self.assertEqual(corpus["samples"][0]["character"], "Voice")
         self.assertEqual(corpus["samples"][0]["line_id"], "line:any")
+        self.assertEqual(corpus["samples"][0]["text_sha256"], text_hash)
 
     def test_renderer_uses_typed_bypass_request_and_never_plays(self):
         backend = FakeRenderBackend()
@@ -123,6 +126,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(backend.requests[0].seed, 11)
         self.assertEqual(backend.play_calls, 0)
         self.assertEqual(report["samples"][0]["sample_rate"], 16_000)
+        self.assertRegex(report["samples"][0]["audio_sha256"], r"^[0-9a-f]{64}$")
 
     def test_limited_render_is_not_published_as_benchmark_sample(self):
         with TemporaryDirectory() as directory, self.assertRaisesRegex(
@@ -139,9 +143,12 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             corpus = root / "corpus.json"
+            text_hash = hashlib.sha256(b" Same line. ").hexdigest()
             corpus.write_text(
-                '{"schema_version":1,"name":"Shared","samples":['
-                '{"id":"one","character":"Voice","text":"Same line."}]}',
+                '{"schema":"vntts.tts-benchmark-corpus","schema_version":1,'
+                '"name":"Shared","samples":['
+                '{"id":"one","line_id":"line-one","character":"Voice",'
+                f'"text":" Same line. ","text_sha256":"{text_hash}"}}]}}',
                 encoding="utf-8",
             )
             backends = []
@@ -163,6 +170,117 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(aggregate["sample_count"], 1)
         self.assertEqual(len(aggregate["reports"]), 2)
         self.assertTrue(all(len(backend.requests) == 1 for backend in backends))
+        self.assertTrue(all(backend.requests[0].text == " Same line. " for backend in backends))
+
+    def test_strict_corpus_preserves_identity_and_rejects_drift_or_duplicates(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "corpus.json"
+            text = "  Exact text stays padded.  "
+            text_hash = hashlib.sha256(text.encode()).hexdigest()
+            document = {
+                "schema": "vntts.tts-benchmark-corpus",
+                "schema_version": 1,
+                "samples": [
+                    {
+                        "id": "stable-id",
+                        "line_id": "opaque-line",
+                        "character": "Voice",
+                        "text": text,
+                        "text_sha256": text_hash,
+                    }
+                ],
+            }
+            path.write_text(json.dumps(document), encoding="utf-8")
+            loaded = load_benchmark_corpus(path)
+            self.assertEqual(loaded["samples"][0]["text"], text)
+            self.assertEqual(loaded["samples"][0]["line_id"], "opaque-line")
+            document["samples"][0]["text_sha256"] = "0" * 64
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ModelBenchmarkError, "exact text"):
+                load_benchmark_corpus(path)
+            document["samples"][0]["text_sha256"] = text_hash
+            document["samples"].append(dict(document["samples"][0]))
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ModelBenchmarkError, "Duplicate"):
+                load_benchmark_corpus(path)
+
+    def test_rejects_unsafe_and_casefold_colliding_model_destinations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "Exact."
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "one",
+                                "line_id": "line-one",
+                                "character": "Voice",
+                                "text": text,
+                                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for variants, pattern in (
+                ((ModelVariant("..", "fake"), ModelVariant("safe", "fake")), "safe"),
+                ((ModelVariant("Model", "fake"), ModelVariant("model", "fake")), "collide"),
+            ):
+                with self.subTest(pattern=pattern), self.assertRaisesRegex(
+                    ModelBenchmarkError, pattern
+                ):
+                    benchmark_model_variants(
+                        corpus,
+                        variants,
+                        CharacterVoiceRegistry(),
+                        root / f"output-{pattern}",
+                    )
+
+    def test_rejects_diagnostics_that_do_not_match_request(self):
+        class WrongDiagnostics(FakeRenderBackend):
+            def render(self, request):
+                stream = super().render(request)
+
+                def produce():
+                    chunks = []
+                    for chunk in stream:
+                        chunks.append(chunk)
+                        yield chunk
+                    result = stream.result
+                    return SynthesisResult(
+                        pcm=result.pcm,
+                        sample_rate=result.sample_rate,
+                        completion=result.completion,
+                        limits=result.limits,
+                        timing=result.timing,
+                        diagnostics=SynthesisDiagnostics(
+                            backend=result.diagnostics.backend,
+                            cache_source=result.diagnostics.cache_source,
+                            generation_profile="different",
+                            seed=999,
+                            chunk_count=len(chunks),
+                            sample_count=result.diagnostics.sample_count,
+                        ),
+                    )
+
+                return SynthesisChunkStream(produce())
+
+        with TemporaryDirectory() as directory, self.assertRaisesRegex(
+            ModelBenchmarkError, "different request"
+        ):
+            benchmark_renderer(
+                ModelVariant("fake/wrong", "fake"),
+                WrongDiagnostics(),
+                [{"id": "one", "character": "Voice", "text": "Exact."}],
+                directory,
+                seed=12,
+            )
 
 
 if __name__ == "__main__":

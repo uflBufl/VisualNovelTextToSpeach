@@ -1,9 +1,10 @@
+import hashlib
 import json
 import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
@@ -11,6 +12,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from tests.test_authoring_listening_import import write_listening_fixture
 from vntts.authoring.listening import (
+    REPORT_SCHEMA,
     ModelListeningError,
     aggregate_listening_report,
     create_listening_session,
@@ -57,9 +59,12 @@ def write_model_reports(root, *, item_count=2):
             samples.append(
                 {
                     "id": f"sample-{item_index}",
+                    "line_id": f"line-{item_index}",
                     "character": "Voice",
                     "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
                     "audio": str(audio),
+                    "audio_sha256": sha256_file(audio),
                 }
             )
         report = root / f"report-{model_index}.json"
@@ -233,6 +238,111 @@ class AuthoringListeningTest(unittest.TestCase):
                         aggregate_listening_report(session_path)
                     else:
                         load_listening_session(session_path)
+
+    def test_rejects_schema_less_reports_and_changed_or_invalid_audio(self):
+        for mutation, pattern in (
+            ("schema", "Unsupported model report schema"),
+            ("checksum", "checksum changed"),
+            ("not-wav", "supported WAV"),
+        ):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                document = json.loads(reports[0].read_text(encoding="utf-8"))
+                if mutation == "schema":
+                    del document["schema"]
+                    schema_less = reports[0].with_suffix(".txt")
+                    schema_less.write_text(json.dumps(document), encoding="utf-8")
+                    reports[0] = schema_less
+                else:
+                    audio = Path(document["samples"][0]["audio"])
+                    if mutation == "checksum":
+                        write_pcm16_wav(audio, np.full(800, 0.3, dtype=np.float32), 16_000)
+                    else:
+                        audio.write_bytes(b"not a wave")
+                        document["samples"][0]["audio_sha256"] = sha256_file(audio)
+                        reports[0].write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ModelListeningError, pattern):
+                    create_listening_session_from_reports(reports, root / "session")
+
+    def test_resume_rejects_alias_checksum_and_hidden_key_mode_changes(self):
+        for mutation, pattern in (("alias", "checksum changed"), ("mode", "0600")):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_path = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session"
+                )
+                if mutation == "alias":
+                    session = json.loads(session_path.read_text(encoding="utf-8"))
+                    alias = session_path.parent / session["trials"][0]["audio"]["a"]
+                    write_pcm16_wav(alias, np.full(800, 0.4, dtype=np.float32), 16_000)
+                else:
+                    session_path.with_name(".blind-key.json").chmod(0o644)
+                with self.assertRaisesRegex(ModelListeningError, pattern):
+                    load_listening_session(session_path)
+
+    def test_imported_legacy_alias_is_bound_to_preservation_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            imported = import_listening_session(
+                write_listening_fixture(root), root / "app-data"
+            ).destination
+            alias = next((imported / "audio").glob("*.wav"))
+            write_pcm16_wav(alias, np.full(800, 0.4, dtype=np.float32), 16_000)
+            with self.assertRaisesRegex(ModelListeningError, "checksum changed"):
+                load_listening_session(imported / "session.json")
+
+    def test_current_report_requires_current_schema_and_session_binding(self):
+        for mutation in ("schema", "session"):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_path = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session"
+                )
+                trial = load_listening_session(session_path)["trials"][0]
+                report_path = session_path.with_name("report.json")
+                record_trial_preference(
+                    session_path, trial["trial_id"], "tie", report_path=report_path
+                )
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                if mutation == "schema":
+                    report["schema"] = "r1999.model-listening-report"
+                else:
+                    report["session"] = "/forged/session.json"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+
+                repaired = ensure_listening_report(session_path)
+
+                self.assertEqual(repaired["schema"], REPORT_SCHEMA)
+                self.assertEqual(repaired["session"], str(session_path.resolve()))
+
+    def test_report_failure_explicitly_preserves_and_reports_saved_rating(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            trial_id = load_listening_session(session_path)["trials"][0]["trial_id"]
+            report_path = session_path.with_name("report.json")
+            from vntts.authoring import listening as listening_module
+
+            original_write = listening_module.atomic_write_json
+
+            def fail_report(path, value, **kwargs):
+                if Path(path).resolve() == report_path.resolve():
+                    raise OSError("synthetic report failure")
+                return original_write(path, value, **kwargs)
+
+            with patch.object(
+                listening_module, "atomic_write_json", side_effect=fail_report
+            ), self.assertRaisesRegex(ModelListeningError, "Preference was saved"):
+                record_trial_preference(
+                    session_path, trial_id, "a", report_path=report_path
+                )
+
+            saved = load_listening_session(session_path)
+            self.assertEqual(saved["trials"][0]["rating"]["preference"], "a")
+            self.assertFalse(report_path.exists())
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")
