@@ -10,11 +10,95 @@ from PIL import Image
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
 from vntts.support import (
+    GenerationTimelineLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
     collect_ocr_metrics,
     redact_text,
 )
+
+
+class GenerationTimelineLogTest(unittest.TestCase):
+    def test_keeps_one_ordered_privacy_safe_timeline_per_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "timelines.json"
+            timelines = GenerationTimelineLog(path=path)
+
+            timelines.record("stable-text", 3, 10.2)
+            timelines.record("capture", 3, 10.0)
+            timelines.record("ocr", 3, 10.1)
+            timelines.record(
+                "route-decision",
+                3,
+                10.3,
+                effective_source="moss-tts:fresh-generation",
+                line_id="reverse1999:3",
+                private_text="must not be retained",
+            )
+            timelines.record("key-dispatch", 3, 11.0, attempt=1)
+            timelines.record("auto-advance-timeout", 3, 20.0, attempt=1)
+
+            snapshot = timelines.snapshot()
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["generation"], 3)
+        self.assertEqual(
+            [event["stage"] for event in snapshot[0]["events"]],
+            [
+                "capture",
+                "ocr",
+                "stable-text",
+                "route-decision",
+                "key-dispatch",
+                "auto-advance-timeout",
+            ],
+        )
+        self.assertEqual(snapshot[0]["events"][1]["elapsed_ms"], 100.0)
+        self.assertNotIn("private_text", str(snapshot))
+        self.assertEqual(persisted["timelines"], snapshot)
+
+    def test_merges_details_when_a_stage_is_reported_twice(self):
+        timelines = GenerationTimelineLog()
+
+        timelines.record("playback-completion", 1, 3.0, underflowed=True)
+        timelines.record("playback-completion", 1, 3.1)
+
+        event = timelines.snapshot()[0]["events"][0]
+        self.assertTrue(event["underflowed"])
+
+    def test_keeps_distinct_privacy_safe_route_events_for_multiple_chunks(self):
+        timelines = GenerationTimelineLog()
+
+        timelines.record(
+            "route-decision",
+            1,
+            1.0,
+            chunk_id="chunk-a",
+            chunk_ordinal=1,
+            chunk_characters=12,
+        )
+        timelines.record(
+            "route-decision",
+            1,
+            2.0,
+            chunk_id="chunk-b",
+            chunk_ordinal=2,
+            chunk_characters=4,
+        )
+
+        events = timelines.snapshot()[0]["events"]
+        self.assertEqual(
+            [event["chunk_id"] for event in events], ["chunk-a", "chunk-b"]
+        )
+        self.assertNotIn("dialogue", str(events))
+
+    def test_rejects_unknown_stage_and_ignores_generation_zero(self):
+        timelines = GenerationTimelineLog()
+
+        self.assertFalse(timelines.record("capture", 0, 1.0))
+        with self.assertRaisesRegex(ValueError, "Unknown generation timeline stage"):
+            timelines.record("dialogue-text", 1, 1.0)
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
@@ -57,6 +141,41 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertIn("<home>", entry["message"])
         self.assertNotIn(str(Path.home()), entry["message"])
 
+    def test_audio_route_fields_are_kept_in_one_sanitized_record(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "runtime.log"
+            log = RuntimeSupportLog(
+                clock=lambda: datetime(2026, 8, 10, tzinfo=timezone.utc),
+                path=path,
+            )
+
+            log.add(
+                "audio-route",
+                "Audio route selected",
+                generation=7,
+                effective_source="moss-tts:fresh-generation",
+                match_result="exact",
+                fallback_reason="generated-audio-entry-not-found",
+                voice_reference_id="voice:rhiannon-v2:reference-1",
+                line_id="reverse1999:24006:12",
+                artifact_preflight_state="generated-audio-entry-not-found",
+            )
+
+            entry = log.snapshot()[0]
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(entry["generation"], 7)
+        self.assertEqual(entry["match_result"], "exact")
+        self.assertEqual(
+            entry["voice_reference_id"],
+            "voice:rhiannon-v2:reference-1",
+        )
+        self.assertEqual(
+            entry["artifact_preflight_state"],
+            "generated-audio-entry-not-found",
+        )
+        self.assertEqual(persisted["line_id"], "reverse1999:24006:12")
+        self.assertEqual(persisted["generation"], 7)
+
 
 class SupportBundleBuilderTest(unittest.TestCase):
     def test_bundle_excludes_dialog_images_text_and_environment_values(self):
@@ -96,6 +215,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 log,
                 diagnostic=diagnostic,
                 dependency_probe=lambda: {"test": "ok"},
+                generation_timelines=GenerationTimelineLog(),
             ).build(directory / "support.zip")
             with zipfile.ZipFile(output) as archive:
                 names = set(archive.namelist())
@@ -108,6 +228,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 "manifest.json",
                 "sanitized-settings.json",
                 "runtime-events.json",
+                "generation-timelines.json",
                 "ocr-metrics.json",
                 "diagnostics.json",
                 "dependencies.json",

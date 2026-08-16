@@ -4,7 +4,7 @@ import platform
 import re
 import sys
 import zipfile
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +17,147 @@ from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.versioned_json import read_versioned_json
 
+audio_route_fields = (
+    "generation",
+    "effective_source",
+    "match_result",
+    "fallback_reason",
+    "voice_reference_id",
+    "line_id",
+    "artifact_preflight_state",
+    "chunk_id",
+    "chunk_ordinal",
+    "chunk_characters",
+)
+
+generation_timeline_stages = (
+    "capture",
+    "ocr",
+    "stable-text",
+    "route-decision",
+    "voice-resolution",
+    "generation-start",
+    "first-pcm",
+    "playback-completion",
+    "key-dispatch",
+    "confirmed-next-dialogue",
+    "auto-advance-timeout",
+    "duplicate-chunk-suppressed",
+)
+
+generation_timeline_detail_fields = (
+    "effective_source",
+    "match_result",
+    "fallback_reason",
+    "voice_reference_id",
+    "line_id",
+    "artifact_preflight_state",
+    "attempt",
+    "underflowed",
+    "generation_limited",
+    "chunk_id",
+    "chunk_ordinal",
+    "chunk_characters",
+)
+
+
+class GenerationTimelineLog:
+    """Keep one bounded, privacy-safe pipeline timeline per generation."""
+
+    def __init__(self, maximum_entries=200, *, path=None):
+        self.maximum_entries = max(1, int(maximum_entries))
+        self.path = Path(path).expanduser() if path is not None else None
+        self.timelines = OrderedDict()
+        self.lock = RLock()
+
+    def record(self, stage, generation, occurred_at, **details):
+        if stage not in generation_timeline_stages:
+            raise ValueError(f"Unknown generation timeline stage: {stage}")
+        try:
+            generation = int(generation)
+            occurred_at = float(occurred_at)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Timeline generation and timestamp must be numeric"
+            ) from error
+        if generation < 1:
+            return False
+
+        with self.lock:
+            timeline = self.timelines.setdefault(
+                generation,
+                {"generation": generation, "events": OrderedDict()},
+            )
+            event_key = (
+                f"{stage}:{details['chunk_id']}"
+                if stage in {"route-decision", "voice-resolution"}
+                and details.get("chunk_id")
+                else stage
+            )
+            existing = timeline["events"].get(event_key, {})
+            event = {
+                "stage": stage,
+                "occurred_at": occurred_at,
+                **{
+                    key: _sanitize_event_value(details[key])
+                    for key in generation_timeline_detail_fields
+                    if key in details and details[key] is not None
+                },
+            }
+            # A stage can be reported by both the controller and the reader.
+            # Preserve richer source-specific details while updating its time.
+            timeline["events"][event_key] = {**existing, **event}
+            self.timelines.move_to_end(generation)
+            while len(self.timelines) > self.maximum_entries:
+                self.timelines.popitem(last=False)
+            self._persist_locked()
+        return True
+
+    def snapshot(self):
+        with self.lock:
+            return [
+                self._serialize_timeline(value) for value in self.timelines.values()
+            ]
+
+    def _persist_locked(self):
+        if self.path is None:
+            return
+        try:
+            from vntts_artifacts.atomic_io import atomic_write_json
+
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(
+                self.path,
+                {"version": 1, "timelines": self.snapshot()},
+            )
+        except OSError:
+            pass
+
+    @staticmethod
+    def _serialize_timeline(timeline):
+        events = list(timeline["events"].values())
+        if not events:
+            return {"generation": timeline["generation"], "events": []}
+        started_at = min(event["occurred_at"] for event in events)
+        serialized = []
+        for event in sorted(
+            events,
+            key=lambda value: (
+                value["occurred_at"],
+                generation_timeline_stages.index(value["stage"]),
+            ),
+        ):
+            serialized.append(
+                {key: value for key, value in event.items() if key != "occurred_at"}
+                | {
+                    "elapsed_ms": round(
+                        (event["occurred_at"] - started_at) * 1000,
+                        3,
+                    )
+                }
+            )
+        return {"generation": timeline["generation"], "events": serialized}
+
 
 class RuntimeSupportLog:
     def __init__(self, maximum_entries=200, *, clock=None, path=None):
@@ -25,13 +166,16 @@ class RuntimeSupportLog:
         self.lock = RLock()
         self.path = Path(path).expanduser() if path is not None else None
 
-    def add(self, level, message):
+    def add(self, level, message, **details):
         with self.lock:
             entry = {
                 "recorded_at": self.clock().isoformat(),
                 "level": str(level),
                 "message": str(message),
             }
+            entry.update(
+                (key, details[key]) for key in audio_route_fields if key in details
+            )
             self.entries.append(entry)
             if self.path is not None:
                 try:
@@ -56,11 +200,13 @@ class SupportBundleBuilder:
         *,
         diagnostic=None,
         dependency_probe=None,
+        generation_timelines=None,
     ):
         self.settings = settings
         self.event_log = event_log
         self.diagnostic = diagnostic
         self.dependency_probe = dependency_probe or collect_dependency_status
+        self.generation_timelines = generation_timelines
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -79,6 +225,14 @@ class SupportBundleBuilder:
             "sanitized-settings.json": sanitize_settings(self.settings),
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
+            },
+            "generation-timelines.json": {
+                "version": 1,
+                "timelines": (
+                    self.generation_timelines.snapshot()
+                    if self.generation_timelines is not None
+                    else []
+                ),
             },
             "ocr-metrics.json": collect_ocr_metrics(
                 self.settings.ocr_diagnostics_directory
@@ -115,11 +269,23 @@ def sanitize_settings(settings):
 
 
 def sanitize_event(entry):
-    return {
+    sanitized = {
         "recorded_at": entry.get("recorded_at"),
         "level": entry.get("level"),
         "message": redact_text(entry.get("message", "")),
     }
+    sanitized.update(
+        (key, _sanitize_event_value(entry[key]))
+        for key in audio_route_fields
+        if key in entry
+    )
+    return sanitized
+
+
+def _sanitize_event_value(value):
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_text(value)
 
 
 def redact_text(value):

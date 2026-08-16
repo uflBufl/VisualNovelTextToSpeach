@@ -1,7 +1,8 @@
 import unittest
 from concurrent.futures import Future
-from threading import Event, Thread
-from unittest.mock import Mock
+from queue import Queue
+from threading import Event, Lock, Thread
+from unittest.mock import Mock, patch
 
 from vntts.live import (
     AdaptiveCapturePolicy,
@@ -31,6 +32,355 @@ class ImmediateExecutor:
         except Exception as error:
             future.set_exception(error)
         return future
+
+
+class QueuedExecutor:
+    def __init__(self):
+        self.jobs = []
+        self.lock = Lock()
+        self.available = Event()
+
+    def submit(self, function, *arguments):
+        future = Future()
+        with self.lock:
+            self.jobs.append((future, function, arguments))
+            self.available.set()
+        return future
+
+    def run_next(self):
+        if not self.available.wait(timeout=1):
+            raise AssertionError("Expected an executor job")
+        with self.lock:
+            future, function, arguments = self.jobs.pop(0)
+            if not self.jobs:
+                self.available.clear()
+        if future.set_running_or_notify_cancel():
+            try:
+                future.set_result(function(*arguments))
+            except Exception as error:
+                future.set_exception(error)
+        return future
+
+
+class ManualTimer:
+    def __init__(self, interval, function, args=()):
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.started = False
+        self.cancelled = False
+        self.fired = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        if not self.started or self.cancelled or self.fired:
+            return False
+        self.fired = True
+        self.function(*self.args)
+        return True
+
+
+class ManualTimerScheduler:
+    def __init__(self):
+        self.timers = []
+
+    def create(self, interval, function, args=()):
+        timer = ManualTimer(interval, function, args)
+        self.timers.append(timer)
+        return timer
+
+    def pending(self, function_name):
+        return [
+            timer
+            for timer in self.timers
+            if timer.started
+            and not timer.cancelled
+            and not timer.fired
+            and timer.function.__name__ == function_name
+        ]
+
+    def fire_next(self, function_name):
+        timers = self.pending(function_name)
+        if not timers:
+            raise AssertionError(f"Expected pending timer for {function_name}")
+        self.assert_single_timer(timers, function_name)
+        timers[0].fire()
+        return timers[0]
+
+    @staticmethod
+    def assert_single_timer(timers, function_name):
+        if len(timers) != 1:
+            raise AssertionError(
+                f"Expected one {function_name} timer, found {len(timers)}"
+            )
+
+
+class RecordingCapturePolicy:
+    def __init__(self, completed, *, base_interval, **_options):
+        self.completed = completed
+        self.base_interval = base_interval
+
+    def observe(self, character, text, *, focused=True):
+        self.completed.put((character, text, focused))
+        return self.base_interval
+
+
+class AutoAdvanceFakeFrameHarness:
+    def __init__(self):
+        self.clock = FakeClock()
+        self.completed_observations = Queue()
+        self.speech_executor = QueuedExecutor()
+        self.playback_executor = QueuedExecutor()
+        self.timer_scheduler = ManualTimerScheduler()
+        self.focused = True
+        self.advance_calls = []
+        self.played = []
+        self.states = []
+        self.pipeline_events = []
+        self.errors = []
+        self.recognized_frames = []
+        self.stop_event = Event()
+        self.reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=self.speech_executor,
+            playback_executor=self.playback_executor,
+            read_snapshot=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=self._recognize,
+            speak_chunk=Mock(),
+            prepare_chunk=lambda chunk: f"audio:{chunk.text}",
+            play_prepared=self._play,
+            report_error=self.errors.append,
+            focus_probe=lambda: self.focused,
+            adaptive_policy_factory=lambda **options: RecordingCapturePolicy(
+                self.completed_observations,
+                **options,
+            ),
+            tracker_options={
+                "clock": self.clock,
+                "idle_flush_seconds": 0.1,
+            },
+            auto_advance=self._advance,
+            auto_advance_delay_seconds=0.2,
+            auto_advance_confirmation_timeout_seconds=0.5,
+            auto_advance_state_changed=lambda state, generation, attempt: (
+                self.states.append((state, generation, attempt))
+            ),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                self.pipeline_events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        self.reader.stop_event = self.stop_event
+        self.worker = Thread(target=self.reader._run_ocr, args=(self.stop_event,))
+
+    def start(self):
+        self.worker.start()
+
+    def stop(self):
+        self.stop_event.set()
+        with self.reader.pause_condition:
+            self.reader.pause_condition.notify_all()
+        self.worker.join(timeout=1)
+        if self.worker.is_alive():
+            raise AssertionError("OCR worker did not stop")
+
+    def push(self, character, text, *, background, fingerprint="same-glyphs"):
+        frame = {
+            "character": character,
+            "text": text,
+            "background": background,
+        }
+        with self.reader.pause_condition:
+            self.reader.latest_frame = frame
+            self.reader.latest_frame_fingerprint = fingerprint
+            self.reader.frame_version += 1
+            self.reader.pause_condition.notify_all()
+        observed = self.completed_observations.get(timeout=1)
+        if observed[:2] != (character, text):
+            raise AssertionError(
+                f"Expected processed observation {(character, text)!r}, "
+                f"received {observed[:2]!r}"
+            )
+
+    def prepare_ready_dialogue(self):
+        self.push("Rhiannon", "I, erhm ...", background="first")
+        self.push("Rhiannon", "I, erhm ...", background="animated-a")
+        self.clock.advance(0.2)
+        self.push("Rhiannon", "I, erhm ...", background="animated-b")
+
+    def finish_playback(self):
+        self.speech_executor.run_next()
+        self.playback_executor.run_next()
+
+    def _recognize(self, frame):
+        self.recognized_frames.append(frame)
+        return frame["character"], frame["text"]
+
+    def _play(self, chunk, prepared):
+        self.played.append((chunk, prepared))
+        return True
+
+    def _advance(self):
+        self.advance_calls.append(self.reader.active_generation)
+        return True
+
+
+class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_delayed_next_screen_confirms_after_playback_without_duplicate_press(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        with patch(
+            "vntts.live.Timer",
+            side_effect=harness.timer_scheduler.create,
+        ):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.prepare_ready_dialogue()
+
+            self.assertEqual(
+                harness.timer_scheduler.pending("_run_auto_advance"),
+                [],
+            )
+            self.assertEqual(harness.reader.dialog_ready_generation, 1)
+            harness.speech_executor.run_next()
+            self.assertEqual(
+                harness.timer_scheduler.pending("_run_auto_advance"),
+                [],
+            )
+
+            harness.playback_executor.run_next()
+
+            self.assertEqual(len(harness.played), 1)
+            self.assertIsNotNone(
+                harness.reader.get_pipeline_metrics().last_playback_completed_at
+            )
+            self.assertEqual(
+                len(harness.timer_scheduler.pending("_run_auto_advance")),
+                1,
+            )
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(harness.states, [("dispatched", 1, 1)])
+
+            recognized_before_advance = len(harness.recognized_frames)
+            harness.push(
+                "Rhiannon",
+                "I, erhm ...",
+                background="delayed-transition-a",
+            )
+            harness.push(
+                "Rhiannon",
+                "I, erhm ...",
+                background="delayed-transition-b",
+            )
+            self.assertEqual(
+                len(harness.recognized_frames),
+                recognized_before_advance + 2,
+            )
+            self.assertEqual(harness.advance_calls, [1])
+
+            harness.push("Hotelier", "The next line.", background="next-a")
+            harness.push("Hotelier", "The next line.", background="next-b")
+
+            self.assertEqual(harness.reader.active_generation, 2)
+            self.assertIsNone(harness.reader.pending_auto_advance_generation)
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(
+                harness.states,
+                [("dispatched", 1, 1), ("confirmed", 1, 1)],
+            )
+            stages = {
+                stage
+                for stage, generation, _occurred_at, _details in harness.pipeline_events
+                if generation == 1
+            }
+            self.assertTrue(
+                {
+                    "ocr",
+                    "stable-text",
+                    "generation-start",
+                    "first-pcm",
+                    "playback-completion",
+                    "key-dispatch",
+                    "confirmed-next-dialogue",
+                }.issubset(stages)
+            )
+            self.assertEqual(
+                harness.timer_scheduler.pending("_auto_advance_confirmation_expired"),
+                [],
+            )
+            self.assertEqual(harness.errors, [])
+
+    def test_unconfirmed_press_is_not_retried_after_focus_returns(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        with patch(
+            "vntts.live.Timer",
+            side_effect=harness.timer_scheduler.create,
+        ):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.prepare_ready_dialogue()
+            harness.finish_playback()
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+
+            self.assertEqual(harness.advance_calls, [1])
+            harness.focused = False
+            harness.timer_scheduler.fire_next("_auto_advance_confirmation_expired")
+            self.assertEqual(
+                len(
+                    harness.timer_scheduler.pending(
+                        "_auto_advance_confirmation_expired"
+                    )
+                ),
+                1,
+            )
+
+            harness.focused = True
+            harness.timer_scheduler.fire_next("_auto_advance_confirmation_expired")
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(harness.states[-1], ("waiting", 1, 1))
+            self.assertIsNone(harness.reader.failed_auto_advance_generation)
+            harness.timer_scheduler.fire_next("_auto_advance_confirmation_expired")
+            self.assertEqual(harness.states[-1], ("failed", 1, 1))
+            self.assertEqual(harness.reader.failed_auto_advance_generation, 1)
+            self.assertIsNone(harness.reader.pending_auto_advance_generation)
+            self.assertEqual(harness.errors, [])
+
+            harness.push(
+                "Hotelier",
+                "The recovered line.",
+                background="recovery-a",
+                fingerprint="recovery-a",
+            )
+            harness.push(
+                "Hotelier",
+                "The recovered line.",
+                background="recovery-b",
+                fingerprint="recovery-b",
+            )
+
+            self.assertEqual(harness.reader.active_generation, 2)
+            self.assertEqual(
+                harness.states,
+                [
+                    ("dispatched", 1, 1),
+                    ("waiting", 1, 1),
+                    ("failed", 1, 1),
+                ],
+            )
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertIsNone(harness.reader.failed_auto_advance_generation)
+            timeout_events = [
+                event
+                for event in harness.pipeline_events
+                if event[0] == "auto-advance-timeout" and event[1] == 1
+            ]
+            self.assertEqual(len(timeout_events), 1)
 
 
 class AdaptiveSpeechBackpressureTest(unittest.TestCase):
@@ -118,6 +468,69 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(1, "Narrator", "A quiet morning")],
         )
 
+    def test_exact_route_mode_emits_one_complete_multi_sentence_dialogue(self):
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+        )
+        text = "The road was long. We should rest now."
+
+        tracker.observe("Rhiannon", text)
+        self.assertEqual(tracker.observe("Rhiannon", text), [])
+        self.clock.advance(0.8)
+
+        self.assertEqual(
+            tracker.observe("Rhiannon", text),
+            [SpeechChunk(1, "Rhiannon", text)],
+        )
+
+    def test_exact_route_mode_can_emit_unique_full_line_before_idle(self):
+        full_text = "These old ones are enough to carry everyone."
+        resolver = Mock(return_value=full_text)
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+            early_dialogue_resolver=resolver,
+        )
+
+        tracker.observe("Kamuta", "These old ones are enough")
+        chunks = tracker.observe("Kamuta", "These old ones are enough to")
+
+        self.assertEqual(chunks, [SpeechChunk(1, "Kamuta", full_text)])
+        resolver.assert_called_once_with("Kamuta", "These old ones are enough")
+
+    def test_exact_route_mode_does_not_emit_unresolved_prefix(self):
+        resolver = Mock(return_value=None)
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+            early_dialogue_resolver=resolver,
+        )
+
+        tracker.observe("Kamuta", "An ambiguous generated line")
+
+        self.assertEqual(
+            tracker.observe("Kamuta", "An ambiguous generated line grows"),
+            [],
+        )
+
+    def test_exact_route_mode_does_not_idle_flush_known_incomplete_prefix(self):
+        incomplete_probe = Mock(return_value=True)
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+            incomplete_dialogue_probe=incomplete_probe,
+        )
+        partial = "A single room will be four coins"
+
+        tracker.observe("Hotelier", partial)
+        tracker.observe("Hotelier", partial)
+        self.clock.advance(0.8)
+
+        self.assertEqual(tracker.observe("Hotelier", partial), [])
+        self.assertEqual(tracker.committed_position, 0)
+        incomplete_probe.assert_called_with("Hotelier", partial)
+
     def test_short_clause_waits_but_long_clause_is_emitted(self):
         tracker = self.create_tracker(
             min_chunk_characters=10,
@@ -159,11 +572,13 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         first_generation = tracker.generation
         self.assertEqual(tracker.observe("Bob", "Goodbye."), [])
 
-        self.assertGreater(tracker.generation, first_generation)
+        self.assertEqual(tracker.generation, first_generation)
         self.assertEqual(
             tracker.observe("Bob", "Goodbye."),
-            [SpeechChunk(tracker.generation, "Bob", "Goodbye.")],
+            [SpeechChunk(first_generation + 1, "Bob", "Goodbye.")],
         )
+
+        self.assertGreater(tracker.generation, first_generation)
 
     def test_unrelated_text_from_same_speaker_starts_new_generation(self):
         tracker = self.create_tracker()
@@ -171,6 +586,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         tracker.observe("Alice", "The first dialogue is complete.")
         tracker.observe("Alice", "The first dialogue is complete.")
         first_generation = tracker.generation
+        tracker.observe("Alice", "Something entirely different appears.")
+
+        self.assertEqual(tracker.generation, first_generation)
         tracker.observe("Alice", "Something entirely different appears.")
 
         self.assertGreater(tracker.generation, first_generation)
@@ -212,6 +630,17 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             ],
         )
 
+        tracker.observe(
+            "Alice",
+            "First sentence. Second sentence. Third sentence.",
+        )
+        chunks = tracker.observe(
+            "Alice",
+            "First sentence. Second sentence. Third sentence.",
+        )
+        self.assertEqual([chunk.ordinal for chunk in chunks], [3])
+        self.assertIsNotNone(chunks[0].chunk_id)
+
     def test_noise_only_text_is_committed_without_being_spoken(self):
         tracker = self.create_tracker()
 
@@ -231,6 +660,72 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         tracker.observe("Alice", "First sentence. Second")
 
         self.assertTrue(tracker.is_idle_complete())
+
+    def test_changing_ocr_suffix_does_not_block_completed_dialog(self):
+        tracker = self.create_tracker(idle_flush_seconds=0.7)
+
+        tracker.observe("Rhiannon", "Alright, that makes five. ae")
+        self.assertEqual(
+            tracker.observe("Rhiannon", "Alright, that makes five. vee nee"),
+            [SpeechChunk(1, "Rhiannon", "Alright, that makes five.")],
+        )
+        self.clock.advance(0.4)
+        tracker.observe("Rhiannon", "Alright, that makes five. oo")
+        self.clock.advance(0.4)
+        tracker.observe("Rhiannon", "Alright, that makes five. ee")
+
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_short_ellipsis_line_becomes_ready_for_auto_advance(self):
+        tracker = self.create_tracker(idle_flush_seconds=0.4)
+
+        tracker.observe("Adar Llwch Gwin Fledgling", "Coo...")
+        self.assertEqual(
+            tracker.observe("Adar Llwch Gwin Fledgling", "Coo..."),
+            [SpeechChunk(1, "Adar Llwch Gwin Fledgling", "Coo...")],
+        )
+        self.clock.advance(0.5)
+        tracker.observe("Adar Llwch Gwin Fledgling", "Coo...")
+
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_short_line_is_not_repeated_by_speaker_and_background_ocr_noise(self):
+        tracker = self.create_tracker(idle_flush_seconds=0.4)
+
+        tracker.observe("Rhiannon", "I, erhm ... oe in")
+        self.assertEqual(
+            tracker.observe("Rhiannon", "I, erhm ..."),
+            [SpeechChunk(1, "Rhiannon", "I, erhm ...")],
+        )
+        generation = tracker.generation
+
+        noisy_observations = [
+            ("Narrator", "Rhiannon or Coe - I, erhm ..."),
+            ("Rhiannon", "I, erhm ..."),
+            ("Narrator", "Rhiannon wy ie A I, ethm wd fea ey"),
+            ("Rhiannon", "I, erhm ..."),
+            ("Narrator", 'Rhiannon i " % a A'),
+            ("Rhiannon", "I, erhm ..."),
+        ]
+        for character, text in noisy_observations:
+            self.assertEqual(tracker.observe(character, text), [])
+
+        self.assertEqual(tracker.generation, generation)
+        self.clock.advance(0.5)
+        self.assertEqual(tracker.observe("Rhiannon", "I, erhm ..."), [])
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_repeated_wrong_speaker_does_not_reopen_committed_dialog(self):
+        tracker = self.create_tracker()
+        tracker.observe("Rhiannon", "I, erhm ...")
+        tracker.observe("Rhiannon", "I, erhm ...")
+        generation = tracker.generation
+
+        tracker.observe("Narrator", "Rhiannon - I, erhm ...")
+        tracker.observe("Narrator", "Rhiannon - I, erhm ...")
+
+        self.assertEqual(tracker.generation, generation)
+        self.assertEqual(tracker.character, "Rhiannon")
 
 
 class AdaptiveCapturePolicyTest(unittest.TestCase):
@@ -292,6 +787,30 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         speak_chunk.assert_called_once_with(SpeechChunk(1, "Alice", "Hello."))
 
+    def test_capture_loop_waits_for_unknown_voice_decision_before_speaking(self):
+        stop_event = Event()
+        observations = 0
+
+        def read_snapshot():
+            nonlocal observations
+            observations += 1
+            if observations == 3:
+                stop_event.set()
+            return "Unknown", "Hello."
+
+        decision = Mock(side_effect=[False, True])
+        speak_chunk = Mock()
+        reader = self.create_reader(
+            read_snapshot=read_snapshot,
+            dialog_observed=decision,
+            speak_chunk=speak_chunk,
+        )
+
+        reader._run(stop_event)
+
+        self.assertEqual(decision.call_count, 2)
+        speak_chunk.assert_called_once_with(SpeechChunk(1, "Unknown", "Hello."))
+
     def test_stale_generation_is_not_spoken(self):
         speak_chunk = Mock()
         reader = self.create_reader(speak_chunk=speak_chunk)
@@ -336,6 +855,37 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIsNotNone(metrics.last_playback_started_at)
         self.assertIsNotNone(metrics.last_playback_completed_at)
 
+    def test_duplicate_tracked_chunk_is_prepared_only_once(self):
+        prepare = Mock(return_value="audio")
+        events = []
+        reader = self.create_reader(
+            prepare_chunk=prepare,
+            play_prepared=Mock(),
+            playback_executor=ImmediateExecutor(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        reader.active_generation = 1
+        chunk = SpeechChunk(1, "Alice", "Hello.", ordinal=1)
+
+        self.assertEqual(reader._prepare_if_current(chunk), "audio")
+        self.assertIsNone(reader._prepare_if_current(chunk))
+
+        prepare.assert_called_once_with(chunk)
+        self.assertIn(
+            (
+                "duplicate-chunk-suppressed",
+                1,
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "chunk_ordinal": 1,
+                    "chunk_characters": 6,
+                },
+            ),
+            events,
+        )
+
     def test_streaming_backend_records_first_pcm_from_backend_callback(self):
         reader = self.create_reader(first_pcm_on_prepare=False)
 
@@ -355,17 +905,141 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIsNotNone(metrics.last_speaker_resolved_at)
         self.assertIsNotNone(metrics.last_ocr_stable_at)
 
-    def test_auto_advance_runs_once_for_ready_focused_generation(self):
+    def test_auto_advance_is_confirmed_only_after_generation_changes(self):
+        auto_advance = Mock(return_value=True)
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        auto_advance.assert_called_once_with()
+        self.assertEqual(reader.last_auto_advance_dispatched_generation, 3)
+        self.assertEqual(reader.pending_auto_advance_generation, 3)
+        self.assertIsNone(reader.get_pipeline_metrics().last_auto_advance_at)
+        self.assertIsNotNone(
+            reader.get_pipeline_metrics().last_auto_advance_dispatched_at
+        )
+        timer.return_value.start.assert_called_once_with()
+        state_changed.assert_called_once_with("dispatched", 3, 1)
+
+        reader._set_generation(4)
+
+        self.assertIsNone(reader.pending_auto_advance_generation)
+        self.assertIsNotNone(reader.get_pipeline_metrics().last_auto_advance_at)
+        state_changed.assert_called_with("confirmed", 3, 1)
+
+    def test_unconfirmed_auto_advance_never_sends_a_second_key(self):
+        auto_advance = Mock(return_value=True)
+        report_error = Mock()
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            report_error=report_error,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            reader._auto_advance_confirmation_expired(3, 1)
+            reader._auto_advance_confirmation_expired(3, 1, True)
+
+        auto_advance.assert_called_once_with()
+        self.assertEqual(reader.failed_auto_advance_generation, 3)
+        self.assertIsNone(reader.pending_auto_advance_generation)
+        self.assertIsNone(reader.auto_advance_timer)
+        report_error.assert_not_called()
+        state_changed.assert_any_call("waiting", 3, 1)
+        state_changed.assert_any_call("failed", 3, 1)
+
+    def test_late_next_dialogue_confirms_without_another_key(self):
+        auto_advance = Mock(return_value=True)
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            reader._auto_advance_confirmation_expired(3, 1)
+            reader._set_generation(4)
+
+        auto_advance.assert_called_once_with()
+        state_changed.assert_called_with("confirmed", 3, 1)
+        self.assertIsNone(reader.failed_auto_advance_generation)
+
+    def test_disabling_auto_advance_cancels_pending_confirmation(self):
+        reader = self.create_reader(auto_advance=Mock(return_value=True))
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            confirmation_timer = reader.auto_advance_timer
+
+            self.assertFalse(reader.set_auto_advance(None))
+
+        confirmation_timer.cancel.assert_called_once_with()
+        self.assertIsNone(reader.pending_auto_advance_generation)
+        self.assertIsNone(reader.last_auto_advance_dispatched_generation)
+
+    def test_initial_auto_advance_waits_for_focus_without_consuming_the_press(self):
+        auto_advance = Mock(return_value=True)
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            focus_probe=Mock(return_value=False),
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        auto_advance.assert_not_called()
+        timer.assert_called_once()
+        timer.return_value.start.assert_called_once_with()
+
+    def test_auto_advance_confirmation_options_are_bounded(self):
+        with self.assertRaisesRegex(ValueError, "timeout_seconds must be positive"):
+            self.create_reader(auto_advance_confirmation_timeout_seconds=0)
+        with self.assertRaisesRegex(ValueError, "must be greater"):
+            self.create_reader(
+                auto_advance_confirmation_timeout_seconds=2,
+                auto_advance_terminal_timeout_seconds=2,
+            )
+
+    def test_source_audio_without_completion_blocks_only_current_generation(self):
         auto_advance = Mock(return_value=True)
         reader = self.create_reader(auto_advance=auto_advance)
         reader.active_generation = 3
         reader.dialog_ready_generation = 3
 
-        reader._run_auto_advance(3)
-        reader._run_auto_advance(3)
+        self.assertTrue(
+            reader.block_auto_advance_for_generation(
+                3,
+                "Original game audio completion is unavailable",
+            )
+        )
+        with patch("vntts.live.Timer") as timer:
+            reader._maybe_auto_advance()
 
-        auto_advance.assert_called_once_with()
-        self.assertEqual(reader.advanced_generation, 3)
+        timer.assert_not_called()
+        self.assertEqual(reader.auto_advance_blocked_generation, 3)
+        self.assertIn("completion", reader.auto_advance_block_reason)
+
+        reader._set_generation(4)
+
+        self.assertIsNone(reader.auto_advance_blocked_generation)
+        self.assertIsNone(reader.auto_advance_block_reason)
 
     def test_new_dialog_allows_active_playback_to_finish_cleanly(self):
         interrupt_speech = Mock(return_value=True)
@@ -392,6 +1066,69 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         interrupt_speech.assert_called_once_with()
         self.assertFalse(reader.wait_until_playable(old_chunk))
+
+    def test_new_dialog_finishes_active_non_interrupting_playback(self):
+        interrupt_speech = Mock()
+        reader = self.create_reader(
+            interrupt_speech=interrupt_speech,
+            interrupt_on_dialog_replacement=False,
+        )
+        reader.active_generation = 1
+        old_chunk = SpeechChunk(1, "Alice", "Finish this line.")
+        reader.current_chunk = old_chunk
+
+        reader._set_generation(2)
+
+        interrupt_speech.assert_not_called()
+        self.assertTrue(reader.wait_until_playable(old_chunk))
+
+    def test_exact_route_seals_generation_against_late_ocr_suffix(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        events = []
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            pipeline_event_handler=(
+                lambda stage, generation, occurred_at, **details: events.append(
+                    (stage, generation, details)
+                )
+            ),
+        )
+        reader.active_generation = 4
+        current = SpeechChunk(4, "Rhiannon", "I, erhm ...", ordinal=1)
+        reader.current_chunk = current
+
+        self.assertTrue(reader.seal_generation(4))
+        reader._schedule([SpeechChunk(4, "Rhiannon", "oe in", ordinal=2)])
+
+        speech_executor.submit.assert_not_called()
+        self.assertEqual(events[0][0], "late-chunk-suppressed")
+        self.assertFalse(
+            reader.wait_until_playable(SpeechChunk(4, "Rhiannon", "oe in"))
+        )
+
+    def test_new_dialog_unseals_previous_exact_route(self):
+        reader = self.create_reader()
+        reader.active_generation = 4
+        reader.sealed_generation = 4
+
+        reader._set_generation(5)
+
+        self.assertIsNone(reader.sealed_generation)
+        self.assertTrue(reader.wait_until_playable(SpeechChunk(5, "Hotelier", "Next")))
+
+    def test_explicit_skip_still_stops_non_interrupting_playback(self):
+        reader = self.create_reader(
+            interrupt_speech=Mock(return_value=True),
+            interrupt_on_dialog_replacement=False,
+        )
+        chunk = SpeechChunk(1, "Alice", "Stop this line.")
+        reader.active_generation = 1
+        reader.current_chunk = chunk
+
+        self.assertTrue(reader.skip_current())
+
+        self.assertFalse(reader.wait_until_playable(chunk))
 
     def test_new_dialog_cancels_stale_queued_speech(self):
         speech_executor = Mock()
@@ -527,6 +1264,22 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertTrue(pending.cancelled())
         interrupt_speech.assert_called_once_with()
         speech_executor.submit.assert_not_called()
+
+    def test_clear_interrupts_speech_preparation_that_is_already_running(self):
+        interrupt_speech = Mock()
+        reader = self.create_reader(interrupt_speech=interrupt_speech)
+        preparing = Future()
+        preparing.set_running_or_notify_cancel()
+        reader.speech_futures[preparing] = SpeechChunk(
+            4,
+            "Alice",
+            "Still synthesizing.",
+        )
+
+        self.assertTrue(reader.clear_queue())
+
+        self.assertFalse(preparing.cancelled())
+        interrupt_speech.assert_called_once_with()
 
     def test_emergency_stop_blocks_pending_ocr_until_explicit_resume(self):
         speech_executor = Mock()
@@ -751,7 +1504,7 @@ class LiveDialogReaderTest(unittest.TestCase):
             reader.pause_condition.notify_all()
         self.assertTrue(second_observed.wait(timeout=1))
         with reader.pause_condition:
-            reader.advanced_generation = reader.active_generation
+            reader.pending_auto_advance_generation = reader.active_generation
             reader.latest_frame = "first frame after auto advance"
             reader.latest_frame_fingerprint = "same text"
             reader.frame_version = 3

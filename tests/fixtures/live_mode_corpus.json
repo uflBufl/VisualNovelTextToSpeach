@@ -29,11 +29,6 @@
     "expected_speakers": ["Fatutu", "Kamuta"]
   },
   {
-    "name": "choice_layout",
-    "text": "Ask about the island\nLeave the conversation",
-    "must_not_auto_advance": true
-  },
-  {
     "name": "animated_background",
     "text_mask_is_unchanged": true,
     "expected_ocr_calls": 1

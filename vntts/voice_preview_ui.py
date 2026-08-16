@@ -23,6 +23,7 @@ class VoicePreviewDialog(QDialog):
         preview_handler,
         assignment_handler,
         current_assignment_handler,
+        clear_assignment_handler=None,
         *,
         initial_character=None,
         parent=None,
@@ -31,8 +32,9 @@ class VoicePreviewDialog(QDialog):
         self.preview_handler = preview_handler
         self.assignment_handler = assignment_handler
         self.current_assignment_handler = current_assignment_handler
+        self.clear_assignment_handler = clear_assignment_handler
         self.signals = VoicePreviewSignals()
-        self.setWindowTitle("Choose character voices")
+        self.setWindowTitle("Choose narrator or character voice")
         self.setMinimumWidth(560)
 
         self.character = QComboBox()
@@ -51,8 +53,13 @@ class VoicePreviewDialog(QDialog):
         self.text.setMinimumHeight(100)
         self.preview_button = QPushButton("Play selected voice")
         self.assign_button = QPushButton("Use for this character")
+        self.automatic_button = QPushButton("Use automatic voice routing")
         self.preview_button.clicked.connect(self.preview)
         self.assign_button.clicked.connect(self.assign)
+        self.automatic_button.clicked.connect(self.clear_assignment)
+        self.automatic_button.setVisible(clear_assignment_handler is not None)
+        self.routing_note = QLabel()
+        self.routing_note.setWordWrap(True)
         self.status = QLabel(
             "Choose a target, listen to candidates, then save the one you prefer."
         )
@@ -60,11 +67,13 @@ class VoicePreviewDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Narrator or character", self.character)
+        form.addRow("Routing", self.routing_note)
         form.addRow("Candidate voice", self.voice)
         form.addRow("", self.description)
         form.addRow("Preview text", self.text)
         form.addRow("", self.preview_button)
         form.addRow("", self.assign_button)
+        form.addRow("", self.automatic_button)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
@@ -73,9 +82,9 @@ class VoicePreviewDialog(QDialog):
         layout.addWidget(buttons)
         self.signals.finished.connect(self.preview_finished)
         self.voice.currentIndexChanged.connect(self.update_description)
-        self.character.currentTextChanged.connect(self.select_current_assignment)
+        self.character.currentTextChanged.connect(self.target_changed)
         self.update_description()
-        self.select_current_assignment()
+        self.target_changed()
 
     def update_description(self):
         self.description.setText(self.voice.currentData(3) or "")
@@ -85,6 +94,26 @@ class VoicePreviewDialog(QDialog):
         index = self.voice.findData(source_id)
         if index >= 0:
             self.voice.setCurrentIndex(index)
+
+    def target_changed(self):
+        narrator = self.character.currentText().strip().casefold() == "narrator"
+        if narrator:
+            self.routing_note.setText(
+                "Selecting a voice here makes narration always use live TTS and "
+                "overrides pregenerated narrator tracks."
+            )
+            self.assign_button.setText("Always use selected live narrator voice")
+            self.automatic_button.setText(
+                "Use pregenerated narrator tracks when available"
+            )
+        else:
+            self.routing_note.setText(
+                "A saved character override takes priority over original, "
+                "pregenerated, and automatic voice routing."
+            )
+            self.assign_button.setText("Use for this character")
+            self.automatic_button.setText("Use automatic voice routing")
+        self.select_current_assignment()
 
     def preview(self):
         try:
@@ -122,4 +151,20 @@ class VoicePreviewDialog(QDialog):
             return
         self.status.setText(
             f"Saved {self.voice.currentText()} for {character or 'the selected target'}"
+        )
+
+    def clear_assignment(self):
+        if self.clear_assignment_handler is None:
+            return
+        character = self.character.currentText().strip()
+        try:
+            self.clear_assignment_handler(character)
+        except Exception as error:
+            self.status.setText(f"Unable to restore automatic routing: {error}")
+            return
+        self.select_current_assignment()
+        self.status.setText(
+            "Pregenerated narrator tracks restored"
+            if character.casefold() == "narrator"
+            else f"Automatic voice routing restored for {character}"
         )

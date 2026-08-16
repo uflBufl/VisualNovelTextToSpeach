@@ -3,10 +3,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from vntts.ocr import DialogRegion, get_dialog_region
-from vntts.settings import get_config_directory
+from vntts.settings import (
+    audio_source_policies,
+    default_audio_source_policy,
+    get_config_directory,
+)
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-profiles_schema_version = 2
+profiles_schema_version = 3
 
 
 def get_profiles_path():
@@ -24,6 +28,7 @@ class GameProfile:
     voice_manifest: str | None
     story_index: str | None
     generated_audio_manifest: str | None
+    audio_source_policy: str
     voice_assignments: dict[str, str]
 
     @classmethod
@@ -38,6 +43,7 @@ class GameProfile:
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,
+            audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
         )
 
@@ -65,6 +71,7 @@ class GameProfile:
             generated_audio_manifest=_optional_text(
                 values.get("generated_audio_manifest")
             ),
+            audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
             voice_assignments=_voice_assignments(values.get("voice_assignments")),
         )
 
@@ -82,6 +89,7 @@ class GameProfile:
             voice_manifest=self.voice_manifest,
             story_index=self.story_index,
             generated_audio_manifest=self.generated_audio_manifest,
+            audio_source_policy=self.audio_source_policy,
             voice_assignments=dict(self.voice_assignments),
         )
 
@@ -95,6 +103,7 @@ class GameProfile:
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
             generated_audio_manifest=settings.generated_audio_manifest,
+            audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
         )
 
@@ -224,6 +233,10 @@ def _validated_name(name):
 
 def _optional_text(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _audio_source_policy(value):
+    return value if value in audio_source_policies else default_audio_source_policy
 
 
 def _voice_assignments(value):

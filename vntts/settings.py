@@ -9,7 +9,14 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 18
+settings_schema_version = 19
+
+audio_source_policies = {
+    "live-tts-only",
+    "prefer-generated",
+    "prefer-game-audio",
+}
+default_audio_source_policy = "live-tts-only"
 
 
 def _platform_app_name():
@@ -65,6 +72,7 @@ class AppSettings:
     ocr_minimum_confidence: int = 60
     ocr_language: str = "eng"
     speech_backend: str = "pocket-tts"
+    audio_source_policy: str = default_audio_source_policy
     tts_model: str | None = None
     tts_speaker: str | None = None
     tts_language: str | None = None
@@ -104,6 +112,7 @@ class AppSettings:
             "ocr_language",
             "auto_advance_key",
             "speech_backend",
+            "audio_source_policy",
             "emergency_stop_hotkey",
         )
         optional_string_fields = (
@@ -207,6 +216,10 @@ class AppSettings:
             warn("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
 
+        if parsed["audio_source_policy"] not in audio_source_policies:
+            warn("Invalid 'audio_source_policy' setting; using its default")
+            parsed["audio_source_policy"] = defaults.audio_source_policy
+
         voice_assignments = values.get("voice_assignments", defaults.voice_assignments)
         if isinstance(voice_assignments, dict) and all(
             isinstance(character, str)
@@ -250,6 +263,7 @@ class AppSettings:
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
             "VNTTS_OCR_LANGUAGE": "ocr_language",
             "VNTTS_SPEECH_BACKEND": "speech_backend",
+            "VNTTS_AUDIO_SOURCE_POLICY": "audio_source_policy",
             "VNTTS_CAPTURE_MODE": "capture_mode",
             "VNTTS_GAME_WINDOW_TITLE": "game_window_title",
         }

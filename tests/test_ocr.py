@@ -16,9 +16,9 @@ from vntts.ocr import (
     UncertainFrameRecorder,
     calculate_ocr_confidence,
     clean_dialog_lines,
+    clean_dialog_lines_from_data,
     crop_dialog_text,
     default_dialog_region,
-    detect_choice_layout,
     load_dialog_region,
     parse_dialog_region,
     parse_recognized_dialog,
@@ -195,36 +195,6 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertEqual(speaker[0], "Marcus")
 
-    def test_separated_short_rows_are_detected_as_a_choice_menu(self):
-        data = {
-            "text": ["Ask", "about", "the", "island", "Leave", "quietly"],
-            "conf": [95] * 6,
-            "block_num": [1] * 6,
-            "par_num": [1, 1, 1, 1, 2, 2],
-            "line_num": [1] * 6,
-            "left": [300, 370, 470, 540, 305, 390],
-            "top": [80, 80, 80, 80, 180, 180],
-            "width": [60, 90, 50, 90, 70, 100],
-            "height": [35] * 6,
-        }
-
-        self.assertTrue(detect_choice_layout(data, image_width=1200))
-
-    def test_tightly_wrapped_dialog_is_not_a_choice_menu(self):
-        data = {
-            "text": ["This", "is", "normal", "wrapped", "dialogue"],
-            "conf": [95] * 5,
-            "block_num": [1] * 5,
-            "par_num": [1, 1, 1, 2, 2],
-            "line_num": [1] * 5,
-            "left": [40, 120, 160, 40, 180],
-            "top": [80, 80, 80, 120, 120],
-            "width": [70, 30, 110, 120, 130],
-            "height": [35] * 5,
-        }
-
-        self.assertFalse(detect_choice_layout(data, image_width=1200))
-
     def test_sparse_layout_fallback_recovers_nameplate_merged_with_separator(self):
         merged_data = {
             "text": ["Fatutu", "fe", "Oe", ">", "Kamuta", "...", "~"],
@@ -276,6 +246,59 @@ class RecognizedDialogTest(unittest.TestCase):
     def test_dialog_cleanup_removes_only_trailing_non_speech_glyphs(self):
         self.assertEqual(clean_dialog_lines("Kamuta ... _\n"), ["Kamuta ..."])
         self.assertEqual(clean_dialog_lines("Wait!\n"), ["Wait!"])
+
+    def test_dialog_cleanup_removes_low_confidence_background_suffix(self):
+        data = {
+            "text": ["Alright,", "that", "makes", "five.", "ae"],
+            "conf": [96, 95, 96, 96, 42],
+        }
+
+        self.assertEqual(
+            clean_dialog_lines_from_data(
+                data,
+                ["Alright, that makes five. ae"],
+            ),
+            ["Alright, that makes five."],
+        )
+
+    def test_dialog_cleanup_preserves_confident_sentence_after_sentence(self):
+        data = {
+            "text": ["Hello.", "How", "are", "you?"],
+            "conf": [96, 92, 94, 95],
+        }
+
+        self.assertEqual(
+            clean_dialog_lines_from_data(data, ["Hello. How are you?"]),
+            ["Hello. How are you?"],
+        )
+
+    def test_recognition_removes_background_suffix_from_dialog_result(self):
+        frame_data = {
+            "text": ["Rhiannon", "Alright,", "that", "makes", "five.", "ae"],
+            "conf": [96, 96, 95, 96, 96, 42],
+            "block_num": [1] * 6,
+            "par_num": [1, 2, 2, 2, 2, 2],
+            "line_num": [1] * 6,
+            "left": [50, 40, 190, 280, 400, 900],
+            "top": [30, 150, 150, 150, 150, 150],
+            "width": [160, 130, 70, 100, 80, 30],
+            "height": [45, 40, 40, 40, 40, 20],
+        }
+        dialog_data = {
+            "text": ["Alright,", "that", "makes", "five.", "ae"],
+            "conf": [96, 95, 96, 96, 42],
+        }
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (1000, 300), "black"),
+            recognize_text=Mock(return_value="Alright, that makes five. ae\n"),
+            recognize_data=Mock(side_effect=[frame_data, dialog_data]),
+            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
+            minimum_confidence=0,
+        )
+
+        self.assertEqual(result.character, "Rhiannon")
+        self.assertEqual(result.text, "Alright, that makes five.")
 
     def test_dialog_crop_preserves_the_right_edge_of_long_text(self):
         image = Image.new("RGB", (1000, 400), "white")

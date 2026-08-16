@@ -56,6 +56,27 @@ class SettingsTest(unittest.TestCase):
     def test_pocket_tts_is_the_default_backend(self):
         self.assertEqual(AppSettings().speech_backend, "pocket-tts")
 
+    def test_live_tts_is_the_default_audio_source_policy(self):
+        self.assertEqual(AppSettings().audio_source_policy, "live-tts-only")
+
+    def test_audio_source_policy_can_be_selected_from_environment(self):
+        settings = AppSettings().with_environment_overrides(
+            {"VNTTS_AUDIO_SOURCE_POLICY": "prefer-game-audio"}
+        )
+
+        self.assertEqual(settings.audio_source_policy, "prefer-game-audio")
+
+    def test_unknown_audio_source_policy_uses_default(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"audio_source_policy": "surprise-me"},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(settings.audio_source_policy, "live-tts-only")
+        self.assertTrue(any("audio_source_policy" in value for value in warnings))
+
     def test_unknown_speech_backend_uses_default(self):
         warnings = []
 
@@ -106,6 +127,7 @@ class SettingsTest(unittest.TestCase):
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 tts_language="en",
                 generated_audio_manifest="audio/generated.json",
+                audio_source_policy="prefer-generated",
                 voice_assignments={
                     "Narrator": "preset:alba",
                     "Marcus": "preset:anna",

@@ -114,7 +114,6 @@ class OCRResult:
     profile: str
     attempts: int
     corrections: tuple[str, ...] = ()
-    choice_detected: bool = False
 
     def is_confident(self, minimum=default_minimum_ocr_confidence):
         return bool(self.text.strip()) and self.confidence >= minimum
@@ -352,6 +351,7 @@ def _recognize_preprocessed_dialog(
                 output_type=pytesseract.Output.DICT,
                 lang=language,
             )
+            dialog_lines = clean_dialog_lines_from_data(dialog_data, dialog_lines)
             return OCRResult(
                 character,
                 " ".join(dialog_lines),
@@ -372,43 +372,7 @@ def _recognize_preprocessed_dialog(
         calculate_ocr_confidence(data),
         profile_name,
         attempt,
-        choice_detected=detect_choice_layout(
-            data,
-            image_width=image.width,
-        ),
     )
-
-
-def detect_choice_layout(data, *, image_width=None):
-    """Recognize separated short response rows without guessing their text."""
-    if not _has_ocr_geometry(data):
-        return False
-    lines = [line for line in extract_ocr_lines(data) if len(line.text) >= 2]
-    if not 2 <= len(lines) <= 6:
-        return False
-
-    normalized = [line.text.lstrip() for line in lines]
-    marked = sum(
-        text.startswith((">", "•", "-", "1.", "2.", "3.", "A.", "B."))
-        for text in normalized
-    )
-    if marked >= 2:
-        return True
-
-    heights = sorted(max(1, line.bottom - line.top) for line in lines)
-    median_height = heights[len(heights) // 2]
-    separated_rows = sum(
-        following.top - current.bottom >= median_height * 0.75
-        for current, following in zip(lines, lines[1:])
-    )
-    if separated_rows == 0:
-        return False
-
-    if image_width is None:
-        image_width = max(line.right for line in lines)
-    short_rows = sum(line.right - line.left <= image_width * 0.8 for line in lines)
-    aligned = max(line.left for line in lines) - min(line.left for line in lines)
-    return short_rows == len(lines) and aligned <= image_width * 0.2
 
 
 def recognize_speaker(image, voice_registry, recognize_data):
@@ -583,6 +547,48 @@ def clean_dialog_lines(text):
         ):
             lines.append(line)
     return lines
+
+
+def clean_dialog_lines_from_data(data, fallback_lines):
+    """Remove low-confidence background words appended after a full sentence."""
+    fallback_lines = list(fallback_lines)
+    words = []
+    confidences = data.get("conf", [])
+    for position, text in enumerate(data.get("text", [])):
+        text = text.strip()
+        if not text or position >= len(confidences):
+            continue
+        try:
+            confidence = float(confidences[position])
+        except (TypeError, ValueError):
+            continue
+        if confidence < 0:
+            continue
+        words.append((text, confidence))
+
+    terminal_position = None
+    for position, (text, confidence) in enumerate(words):
+        if text.rstrip("\"'”’)]}").endswith((".", "!", "?", "…")) and confidence >= 60:
+            terminal_position = position
+
+    if terminal_position is None or terminal_position == len(words) - 1:
+        return fallback_lines
+
+    suffix = words[terminal_position + 1 :]
+    if not all(
+        _is_suspicious_trailing_word(word, confidence) for word, confidence in suffix
+    ):
+        return fallback_lines
+
+    cleaned = clean_dialog_lines(
+        " ".join(word for word, _confidence in words[: terminal_position + 1])
+    )
+    return cleaned or fallback_lines
+
+
+def _is_suspicious_trailing_word(word, confidence):
+    alphanumeric_characters = sum(character.isalnum() for character in word)
+    return confidence < 45 or (alphanumeric_characters <= 3 and confidence < 65)
 
 
 def _strip_trailing_ocr_glyphs(line):

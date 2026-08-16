@@ -3,6 +3,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from difflib import SequenceMatcher
 from threading import Event, Lock
 from time import monotonic
 
@@ -25,8 +26,11 @@ from vntts.dialog_capture import (
     report_runtime_error,
 )
 from vntts.generated_audio import (
+    AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
+    PreparedGeneratedAudio,
+    PreparedSourceAudioPassThrough,
 )
 from vntts.history import DialogueHistory
 from vntts.live import (
@@ -46,6 +50,7 @@ from vntts.services.tts_engine import TTSEngine
 from vntts.settings import AppSettings
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
+    MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
     XTTSVoiceRouterBackend,
@@ -196,6 +201,8 @@ class AppController:
         chapter_voice_preloader=None,
         generated_audio_library_factory=GeneratedAudioLibrary.load_optional,
         generated_audio_backend_factory=GeneratedAudioFallbackBackend,
+        route_trace_handler=None,
+        pipeline_event_handler=None,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -215,6 +222,10 @@ class AppController:
         )
         self.generated_audio_library_factory = generated_audio_library_factory
         self.generated_audio_backend_factory = generated_audio_backend_factory
+        self.route_trace_handler = route_trace_handler or (lambda _trace: None)
+        self.pipeline_event_handler = pipeline_event_handler or (
+            lambda _stage, _generation, _occurred_at, **_details: None
+        )
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -234,12 +245,17 @@ class AppController:
         self.live_speech_backpressure = self.speech_backpressure_factory()
         self.schedule_dialog_read = None
         self.last_diagnostic = None
+        self.last_audio_source_description = "Not selected"
+        self.last_audio_route_trace = None
         self.capture_interval_ms = self.settings.live_interval_ms
         self.game_focused = True
         self.diagnostic_lock = Lock()
         self.voice_prime_lock = Lock()
         self.primed_voice_keys = set()
         self.reported_unknown_speakers = set()
+        self.pending_unknown_speakers = set()
+        self.narrator_fallback_speakers = set()
+        self.narrator_fallback_names = {}
         self.voice_prime_futures = set()
         self.shutdown_requested = Event()
 
@@ -308,6 +324,7 @@ class AppController:
                     backend_options.update(
                         model_name=self.settings.tts_model,
                         language=self.settings.tts_language or "English",
+                        generation_profile=self.settings.tts_profile,
                     )
                 self.tts = backend_factory(
                     registry,
@@ -414,6 +431,8 @@ class AppController:
                     else None
                 ),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
+                auto_advance_state_changed=self._auto_advance_state_changed,
+                pipeline_event_handler=self.pipeline_event_handler,
                 max_speech_jobs=max_speech_jobs,
                 interrupt_on_dialog_replacement=bool(
                     getattr(
@@ -425,7 +444,7 @@ class AppController:
                 first_pcm_on_prepare=not bool(
                     getattr(backend_capabilities, "streaming", False)
                 ),
-                **get_live_configuration(self.settings),
+                **self._get_live_configuration(),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
                 self.capture_executor,
@@ -464,13 +483,23 @@ class AppController:
     def toggle_live(self):
         if not self.is_ready:
             return False
-        if not self.live_reader.is_running and self.capture_target is not None:
+        starting = not self.live_reader.is_running
+        if starting and self.capture_target is not None:
             try:
                 self.capture_target.get_geometry()
             except Exception as error:
                 self.error_handler(ScreenCaptureError(str(error)))
                 self.status_handler("Live reading could not start")
                 return False
+        if starting:
+            # Unknown-speaker prompts are deduplicated within one live session,
+            # not for the entire application lifetime. A speaker dismissed
+            # during a one-time read must still be reported when live reading
+            # begins.
+            self.reported_unknown_speakers.clear()
+            self.pending_unknown_speakers.clear()
+            self.narrator_fallback_speakers.clear()
+            self.narrator_fallback_names.clear()
         running = self.live_reader.toggle()
         if running:
             self.live_reader.max_speech_jobs = self.live_speech_backpressure.reset()
@@ -522,8 +551,10 @@ class AppController:
 
     def set_auto_advance_enabled(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
+        if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
+            self.speech_backend.require_source_audio_completion = bool(enabled)
         if self.live_reader is not None:
-            self.live_reader.auto_advance = (
+            self.live_reader.set_auto_advance(
                 self._auto_advance_dialog if enabled else None
             )
         self.status_handler(
@@ -553,8 +584,8 @@ class AppController:
         choices = [
             VoiceChoice(
                 default_voice_choice_id,
-                "Narrator / backend default",
-                "Use the same fallback voice as unmapped dialogue",
+                "Backend default live voice",
+                "Use the speech backend's default live voice",
             )
         ]
         if self.settings.speech_backend == "pocket-tts":
@@ -645,9 +676,49 @@ class AppController:
                 self.voice_router.registry.resolve_source(source_id)
             )
         self._clear_voice_runtime_cache()
-        self.reported_unknown_speakers.discard(normalize_character_name(character))
+        character_key = normalize_character_name(character)
+        self.reported_unknown_speakers.discard(character_key)
+        self.pending_unknown_speakers.discard(character_key)
+        self.narrator_fallback_speakers.discard(character_key)
         self.status_handler(f"{choice.label} assigned to {character}")
         return self.settings
+
+    def clear_voice_assignment(self, character):
+        character = (character or "").strip()
+        if not character:
+            raise ValueError("Enter a narrator or character name")
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before changing a voice")
+        character_key = normalize_character_name(character)
+        assignments = {
+            configured_character: configured_source
+            for configured_character, configured_source in (
+                self.settings.voice_assignments or {}
+            ).items()
+            if normalize_character_name(configured_character) != character_key
+        }
+        self.voice_router.registry.assignments.pop(character_key, None)
+        self.settings = self.settings.updated(voice_assignments=assignments)
+        if character_key == "narrator":
+            self._apply_narrator_voice(None)
+        self._clear_voice_runtime_cache()
+        self.status_handler(
+            "Pregenerated narrator tracks enabled when available"
+            if character_key == "narrator"
+            else f"Automatic voice routing restored for {character}"
+        )
+        return self.settings
+
+    def allow_narrator_fallback(self, character):
+        character = (character or "").strip()
+        key = normalize_character_name(character)
+        if not key or key == "narrator":
+            return False
+        self.pending_unknown_speakers.discard(key)
+        self.narrator_fallback_speakers.add(key)
+        self.narrator_fallback_names[key] = character
+        self.status_handler(f"Using narrator voice for {character}")
+        return True
 
     def preview_voice(self, character, text):
         if not self.is_ready:
@@ -757,10 +828,17 @@ class AppController:
         if self.speech_backend is not None:
             set_volume = getattr(self.speech_backend, "set_volume", None)
             set_speed = getattr(self.speech_backend, "set_speed", None)
+            set_generation_profile = getattr(
+                self.speech_backend,
+                "set_generation_profile",
+                None,
+            )
             if callable(set_volume):
                 set_volume(self.settings.output_volume_percent / 100)
             if callable(set_speed):
                 set_speed(self.settings.speech_rate_percent / 100)
+            if callable(set_generation_profile):
+                set_generation_profile(self.settings.tts_profile)
         if self.live_reader is None:
             return
 
@@ -777,10 +855,10 @@ class AppController:
             self.settings.ocr_language,
             self.correction_dictionary,
         )
-        live_configuration = get_live_configuration(self.settings)
+        live_configuration = self._get_live_configuration()
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
         self.live_reader.tracker_options = live_configuration["tracker_options"]
-        self.live_reader.auto_advance = (
+        self.live_reader.set_auto_advance(
             self._auto_advance_dialog if self.settings.auto_advance_enabled else None
         )
         self.live_reader.auto_advance_delay_seconds = (
@@ -805,6 +883,41 @@ class AppController:
             self._set_backend_live_mode(True)
             self.live_reader.start()
 
+    def _get_live_configuration(self):
+        configuration = get_live_configuration(self.settings)
+        tracker_options = dict(configuration["tracker_options"])
+        tracker_options["complete_dialogue_only"] = (
+            self.settings.audio_source_policy != "live-tts-only"
+        )
+        if tracker_options["complete_dialogue_only"] and self.settings.story_index:
+            tracker_options["incomplete_dialogue_probe"] = (
+                self.chapter_voice_preloader.is_unique_incomplete_prefix
+            )
+        if (
+            isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+            and self.speech_backend.library is not None
+        ):
+            tracker_options["early_dialogue_resolver"] = (
+                self._resolve_early_generated_dialogue
+            )
+        return {**configuration, "tracker_options": tracker_options}
+
+    def _resolve_early_generated_dialogue(self, character, text):
+        backend = self.speech_backend
+        if not isinstance(backend, GeneratedAudioFallbackBackend):
+            return None
+        if (
+            find_voice_assignment(self.settings.voice_assignments, character)
+            is not None
+        ):
+            return None
+        line = self.chapter_voice_preloader.resolve_unique_prefix(
+            character,
+            text,
+            candidate_filter=backend.has_generated_line,
+        )
+        return line.text if line is not None else None
+
     def _set_backend_live_mode(self, active):
         configure = getattr(self.speech_backend, "set_live_mode_active", None)
         if callable(configure):
@@ -819,33 +932,57 @@ class AppController:
             else self.speech_backend
         )
         self.speech_backend = live_backend
-        if not self.settings.generated_audio_manifest:
+        policy = self.settings.audio_source_policy
+        if policy == "live-tts-only":
+            self.status_handler(f"Audio policy: live TTS only ({live_backend.name})")
             return False
         if not self.settings.story_index:
             self.status_handler(
-                "Generated audio disabled: configure a story index for stable line IDs"
+                "Audio fallback disabled: configure a story index for stable line IDs"
             )
             return False
-        library = self.generated_audio_library_factory(
-            self.settings.generated_audio_manifest,
-            warn=self.status_handler,
-        )
-        if library is None:
+        library = None
+        if self.settings.generated_audio_manifest:
+            library = self.generated_audio_library_factory(
+                self.settings.generated_audio_manifest,
+                warn=self.status_handler,
+            )
+        if policy == "prefer-generated" and library is None:
+            self.status_handler(
+                f"Generated audio unavailable; using live TTS ({live_backend.name})"
+            )
             return False
+        backend_options = {
+            "volume": self.settings.output_volume_percent / 100,
+            "speed": self.settings.speech_rate_percent / 100,
+            "audio_source_policy": policy,
+        }
+        if policy == "prefer-game-audio":
+            backend_options["require_source_audio_completion"] = (
+                self.settings.auto_advance_enabled
+            )
         self.speech_backend = self.generated_audio_backend_factory(
             live_backend,
             library,
             self.chapter_voice_preloader,
-            volume=self.settings.output_volume_percent / 100,
-            speed=self.settings.speech_rate_percent / 100,
+            **backend_options,
         )
         self.speech_backend.voice_override = lambda character: (
             find_voice_assignment(self.settings.voice_assignments, character)
             is not None
         )
-        self.status_handler(
-            f"Loaded {len(library.index.entries)} generated audio entries"
-        )
+        if policy == "prefer-game-audio":
+            suffix = (
+                ", then generated/live TTS"
+                if library is not None
+                else ", then live TTS"
+            )
+            self.status_handler(f"Audio policy: original game audio{suffix}")
+        elif library is not None:
+            self.status_handler(
+                f"Audio policy: {len(library.index.entries)} generated entries, "
+                "then live TTS"
+            )
         return True
 
     def refresh_corrections(self):
@@ -866,7 +1003,7 @@ class AppController:
         )
 
     def _recognize_live_frame(self, frame):
-        return recognize_live_frame(
+        character, text = recognize_live_frame(
             frame,
             self.voice_router.registry,
             self.settings.ocr_minimum_confidence,
@@ -877,6 +1014,7 @@ class AppController:
             self.settings.ocr_language,
             self.correction_dictionary,
         )
+        return self._canonical_observed_character(character), text
 
     def _preview_voice(self, character, text):
         try:
@@ -949,15 +1087,49 @@ class AppController:
         if not text:
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
-            return
-        self._offer_unknown_speaker_mapping(character)
+            return True
+        character = self._canonical_observed_character(character)
+        speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
         self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
+        return not speech_deferred
 
-    def _offer_unknown_speaker_mapping(self, character):
+    def _canonical_observed_character(self, character):
+        original = str(character or "Narrator").strip() or "Narrator"
+        canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
+        if callable(canonicalize):
+            canonical = canonicalize(original)
+            if isinstance(canonical, str) and normalize_character_name(
+                canonical
+            ) != normalize_character_name(original):
+                return canonical
+
+        registry = getattr(self.voice_router, "registry", None)
+        if registry is not None:
+            voice = registry.resolve_closest(original, minimum_similarity=0.86)
+            if voice is not None and isinstance(getattr(voice, "character", None), str):
+                return voice.character
+
+        normalized = normalize_character_name(original)
+        ranked = sorted(
+            (
+                SequenceMatcher(None, normalized, candidate).ratio(),
+                candidate,
+            )
+            for candidate in self.narrator_fallback_speakers
+            if len(normalized) >= 5 and len(candidate) >= 5
+        )
+        if ranked:
+            best_score, best_key = ranked[-1]
+            second_score = ranked[-2][0] if len(ranked) > 1 else 0.0
+            if best_score >= 0.86 and best_score - second_score >= 0.08:
+                return self.narrator_fallback_names.get(best_key, original)
+        return original
+
+    def _offer_unknown_speaker_mapping(self, character, text=None):
         key = normalize_character_name(character)
         if not key or key == "narrator" or self.voice_router is None:
             return False
@@ -966,9 +1138,29 @@ class AppController:
             return False
         if self.voice_router.registry.resolve_closest(character) is not None:
             return False
+        if key in self.narrator_fallback_speakers:
+            return False
+        source_audio_check = getattr(
+            self.speech_backend,
+            "will_use_source_audio",
+            None,
+        )
+        if (
+            text
+            and callable(source_audio_check)
+            and source_audio_check(character, text) is True
+        ):
+            return False
+        if key in self.pending_unknown_speakers:
+            return True
         if key in self.reported_unknown_speakers:
             return False
         self.reported_unknown_speakers.add(key)
+        self.pending_unknown_speakers.add(key)
+        self.status_handler(
+            f"No voice is assigned to {character.strip()}; speech is waiting "
+            "for a voice choice"
+        )
         self.unknown_speaker_handler(character.strip())
         return True
 
@@ -1039,14 +1231,24 @@ class AppController:
     def _auto_advance_dialog(self):
         if not self.settings.auto_advance_enabled or not self._is_game_focused():
             return False
-        with self.diagnostic_lock:
-            snapshot = self.last_diagnostic
-        if snapshot is not None and snapshot.choice_detected:
-            self.status_handler("Auto advance paused: choice menu detected")
-            return False
         DialogueAdvancer(self.settings.auto_advance_key).advance()
-        self.status_handler("Advanced to the next dialogue")
         return True
+
+    def _auto_advance_state_changed(self, state, _generation, _attempt):
+        if state == "dispatched":
+            self.status_handler("Auto advance key sent; waiting for dialogue change")
+        elif state == "waiting":
+            self.status_handler(
+                "The game is still changing; auto advance is continuing to wait. "
+                "No second key will be sent."
+            )
+        elif state == "failed":
+            self.status_handler(
+                "Dialogue change was not confirmed after the extended wait; no "
+                "second key was sent. Advance manually."
+            )
+        elif state == "confirmed":
+            self.status_handler("Auto advance confirmed by new dialogue")
 
     def _capture_state_changed(self, focused, interval_seconds):
         lost_focus = self.game_focused and not focused
@@ -1089,6 +1291,7 @@ class AppController:
                 synthesis_ms=getattr(metric_source, "last_synthesis_ms", None),
                 playback_ms=getattr(metric_source, "last_playback_ms", None),
                 last_first_audio_ms=getattr(metric_source, "last_first_audio_ms", None),
+                audio_source=self.last_audio_source_description,
             )
         with self.diagnostic_lock:
             self.last_diagnostic = snapshot
@@ -1105,24 +1308,70 @@ class AppController:
             self._refresh_diagnostic_metrics()
 
     def _prepare_live_chunk(self, chunk):
-        print(f"Preparing {chunk.character} (live)")
-        print(chunk.text)
         try:
-            return self.speech_backend.prepare(chunk.character, chunk.text)
+            prepared = self.speech_backend.prepare(chunk.character, chunk.text)
+            self.last_audio_source_description = self._describe_audio_source(prepared)
+            trace = self._build_audio_route_trace(chunk, prepared)
+            self.last_audio_route_trace = trace
+            try:
+                self.route_trace_handler(trace)
+            except Exception as error:
+                self.error_handler(error)
+            self._record_pipeline_route(chunk, trace)
+            return prepared
         finally:
             self._refresh_diagnostic_metrics()
 
     def _play_live_chunk(self, chunk, audio):
-        print(f"{chunk.character} is speaking now (live)")
+        source = self._describe_audio_source(audio)
+        self.last_audio_source_description = source
+        self.status_handler(f"Audio source for {chunk.character}: {source}")
+        if (
+            isinstance(audio, PreparedSourceAudioPassThrough)
+            and audio.completion_seconds is None
+        ):
+            reason = (
+                f"Auto advance paused for original game audio line {audio.line_id}: "
+                "completion timing is unavailable. Advance manually or select "
+                "Live TTS only."
+            )
+            if self.live_reader.block_auto_advance_for_generation(
+                chunk.generation,
+                reason,
+            ):
+                self.status_handler(reason)
         playback_started = monotonic()
         try:
             result = self.speech_backend.play(
                 audio,
                 playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
             )
+            if result and isinstance(
+                audio,
+                (PreparedGeneratedAudio, PreparedSourceAudioPassThrough),
+            ):
+                self.live_reader.seal_generation(chunk.generation)
             underflowed = bool(
                 getattr(self.speech_backend, "last_playback_underrun", False)
             )
+            generation_limited = (
+                getattr(self.speech_backend, "last_generation_limited", False) is True
+            )
+            try:
+                self.pipeline_event_handler(
+                    "playback-completion",
+                    chunk.generation,
+                    monotonic(),
+                    underflowed=underflowed,
+                    generation_limited=generation_limited,
+                )
+            except Exception as error:
+                self.error_handler(error)
+            if generation_limited:
+                self.status_handler(
+                    "MOSS stopped at the dialogue safety limit; the line was not "
+                    "cached. Auto advance remains safe after playback completes."
+                )
             jobs, changed = self.live_speech_backpressure.observe_playback(
                 underflowed=underflowed,
             )
@@ -1143,6 +1392,145 @@ class AppController:
             return result
         finally:
             self._refresh_diagnostic_metrics()
+
+    def _describe_audio_source(self, prepared):
+        if isinstance(prepared, PreparedSourceAudioPassThrough):
+            completion = (
+                f", completion {prepared.completion_seconds:.2f}s"
+                if prepared.completion_seconds is not None
+                else ", completion unavailable"
+            )
+            return f"Original game audio (line {prepared.line_id}{completion})"
+        if isinstance(prepared, PreparedGeneratedAudio):
+            return f"Generated audio (line {prepared.line_id})"
+        if isinstance(prepared, MossTTSPreparedSpeech):
+            source = {
+                "fresh-generation": "fresh generation",
+                "memory-cache": "memory cache",
+                "persistent-cache": "persistent cache",
+            }.get(prepared.cache_source, prepared.cache_source)
+            return f"MOSS {source} (voice {prepared.voice_key})"
+        backend = (
+            self.speech_backend.live_backend
+            if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+            else self.speech_backend
+        )
+        name = getattr(backend, "name", self.settings.speech_backend)
+        return f"Live TTS ({name})"
+
+    def _record_pipeline_route(self, chunk, trace):
+        occurred_at = monotonic()
+        try:
+            self.pipeline_event_handler(
+                "route-decision",
+                chunk.generation,
+                occurred_at,
+                effective_source=trace.effective_source,
+                match_result=trace.match_result,
+                fallback_reason=trace.fallback_reason,
+                line_id=trace.line_id,
+                artifact_preflight_state=trace.artifact_preflight_state,
+                chunk_id=trace.chunk_id,
+                chunk_ordinal=trace.chunk_ordinal,
+                chunk_characters=trace.chunk_characters,
+            )
+            self.pipeline_event_handler(
+                "voice-resolution",
+                chunk.generation,
+                occurred_at,
+                voice_reference_id=trace.voice_reference_id,
+            )
+        except Exception as error:
+            self.error_handler(error)
+
+    def _build_audio_route_trace(self, chunk, prepared):
+        route = getattr(self.speech_backend, "last_route_trace", None)
+        if route is None:
+            line, match_result = self._resolve_trace_line(chunk)
+            effective_source = getattr(
+                self.speech_backend,
+                "last_audio_source",
+                None,
+            )
+            if not effective_source:
+                effective_source = f"live:{getattr(self.speech_backend, 'name', 'tts')}"
+            if self.settings.audio_source_policy == "live-tts-only":
+                fallback_reason = "policy-live-tts-only"
+                artifact_state = "not-requested-live-tts-policy"
+            elif not self.settings.story_index:
+                fallback_reason = "story-index-not-configured"
+                artifact_state = "story-index-not-configured"
+            else:
+                fallback_reason = "audio-route-wrapper-unavailable"
+                artifact_state = "audio-artifact-unavailable"
+            route = AudioRouteTrace(
+                None,
+                effective_source,
+                match_result,
+                fallback_reason,
+                None,
+                line.line_id if line is not None else None,
+                artifact_state,
+            )
+        voice_reference_id = (
+            None
+            if isinstance(
+                prepared,
+                (PreparedGeneratedAudio, PreparedSourceAudioPassThrough),
+            )
+            else self._voice_reference_identifier(chunk.character, prepared)
+        )
+        return replace(
+            route,
+            generation=chunk.generation,
+            voice_reference_id=voice_reference_id,
+            chunk_id=chunk.chunk_id,
+            chunk_ordinal=chunk.ordinal,
+            chunk_characters=len(chunk.text),
+        )
+
+    def _resolve_trace_line(self, chunk):
+        resolve = getattr(
+            self.chapter_voice_preloader,
+            "resolve_exact_with_result",
+            None,
+        )
+        if callable(resolve):
+            return resolve(chunk.character, chunk.text)
+        line = self.chapter_voice_preloader.resolve_exact(
+            chunk.character,
+            chunk.text,
+        )
+        return line, "exact" if line is not None else "no-match"
+
+    def _voice_reference_identifier(self, character, prepared):
+        voice_key = str(getattr(prepared, "voice_key", "")).strip()
+        registry = getattr(self.voice_router, "registry", None)
+        voice = registry.resolve(character) if registry is not None else None
+        if voice is not None and getattr(voice, "references", ()):
+            key = voice_key or normalize_character_name(voice.character)
+            return f"voice:{key}:reference-1"
+        live_backend = (
+            self.speech_backend.live_backend
+            if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+            else self.speech_backend
+        )
+        if (
+            voice is None
+            and voice_key == "narrator"
+            and isinstance(live_backend, MossTTSVoiceRouterBackend)
+            and live_backend.narrator_reference
+        ):
+            return "voice:narrator:reference-1"
+        narrator = normalize_character_name(character) in {"", "narrator"}
+        if voice is None and narrator and self.settings.tts_speaker_wav:
+            return f"voice:{voice_key or 'narrator'}:reference-1"
+        if voice_key:
+            return f"voice:{voice_key}:built-in"
+        if voice is not None:
+            return f"speaker:{voice.speaker}"
+        narrator_speaker = getattr(self.voice_router, "narrator_speaker", None)
+        return f"speaker:{narrator_speaker}" if narrator_speaker else None
 
     def _refresh_diagnostic_metrics(self):
         with self.diagnostic_lock:

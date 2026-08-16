@@ -1,5 +1,6 @@
 import ctypes
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -50,6 +51,7 @@ class ControlDashboard(QMainWindow):
         self.mode = QLabel("Stopped")
         self.speaker = QLabel("Narrator")
         self.voice = QLabel("Not loaded")
+        self.audio_source = QLabel("Not selected")
         self.confidence = QLabel("-")
         self.latency = QLabel("-")
         self.configuration = QLabel()
@@ -78,6 +80,7 @@ class ControlDashboard(QMainWindow):
         details.addRow("Mode", self.mode)
         details.addRow("Speaker", self.speaker)
         details.addRow("Voice", self.voice)
+        details.addRow("Audio source", self.audio_source)
         details.addRow("OCR confidence", self.confidence)
         details.addRow("Latest latency", self.latency)
         details.addRow("Configuration", self.configuration)
@@ -109,7 +112,7 @@ class ControlDashboard(QMainWindow):
         setup_buttons = (
             ("Check readiness", self.readiness_requested),
             ("Calibrate capture", self.calibration_requested),
-            ("Manage voices", self.voices_requested),
+            ("Narrator voice", self.voices_requested),
             ("Diagnostics and logs", self.diagnostics_requested),
             ("Settings", self.settings_requested),
         )
@@ -160,8 +163,23 @@ class ControlDashboard(QMainWindow):
             if settings.capture_mode == "window"
             else "Calibrated screen region"
         )
+        policy = {
+            "live-tts-only": "Live TTS only",
+            "prefer-generated": "Generated audio, then live TTS",
+            "prefer-game-audio": "Original game audio, then generated/live TTS",
+        }.get(settings.audio_source_policy, settings.audio_source_policy)
+        manifest = settings.generated_audio_manifest
+        generated_audio = (
+            "not configured"
+            if not manifest
+            else "available"
+            if Path(manifest).expanduser().is_file()
+            else "missing; open Settings"
+        )
         self.configuration.setText(
             f"Backend: {settings.speech_backend}\n"
+            f"Audio policy: {policy}\n"
+            f"Generated audio: {generated_audio}\n"
             f"Capture: {capture}\n"
             f"OCR: {settings.ocr_language}"
         )
@@ -200,6 +218,7 @@ class ControlDashboard(QMainWindow):
     def set_diagnostic(self, snapshot):
         self.speaker.setText(snapshot.character or "Narrator")
         self.voice.setText(snapshot.voice or "Default narrator")
+        self.audio_source.setText(snapshot.audio_source or "Not selected")
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
         parts = []
         if snapshot.capture_ms is not None:
@@ -241,20 +260,46 @@ class CompactController(QWidget):
     stop_requested = Signal()
     full_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, platform=None):
         super().__init__(parent)
+        platform = sys.platform if platform is None else platform
         self._live = False
         self.setWindowTitle("VNTTS controls")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        if platform == "darwin":
+            # Qt hides tool windows when their application becomes inactive on
+            # macOS unless this is set before the native window is shown. The
+            # game taking focus must not make the in-game controls disappear.
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(540)
 
-        self.mode = QLabel("Starting...")
+        self.mode = QLabel("Starting")
         self.mode.setStyleSheet("font-weight: 600;")
+        self.mode.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.status = QLabel("Initializing...")
+        self.status.setWordWrap(True)
+        self.status.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.speaker = QLabel("Narrator")
-        self.speaker.setMinimumWidth(80)
-        self.speaker.setMaximumWidth(130)
+        self.speaker.setMinimumWidth(120)
+        self.speaker.setWordWrap(True)
+        self.speaker.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.speaker.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         self.speaker.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -268,6 +313,18 @@ class CompactController(QWidget):
         self.stop_button.setStyleSheet(
             "QPushButton { color: #a21818; font-weight: 600; }"
         )
+        for button in (
+            self.read_button,
+            self.live_button,
+            self.pause_button,
+            self.skip_button,
+            self.stop_button,
+            self.full_button,
+        ):
+            button.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed,
+            )
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
@@ -275,17 +332,28 @@ class CompactController(QWidget):
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.full_button.clicked.connect(self.full_requested.emit)
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
-        layout.addWidget(self.mode)
-        layout.addWidget(self.speaker)
-        layout.addWidget(self.read_button)
-        layout.addWidget(self.live_button)
-        layout.addWidget(self.pause_button)
-        layout.addWidget(self.skip_button)
-        layout.addWidget(self.stop_button)
-        layout.addWidget(self.full_button)
+        layout.setSpacing(4)
+        information = QHBoxLayout()
+        information.setSpacing(8)
+        information.addWidget(self.mode)
+        information.addWidget(self.status, 4)
+        information.addWidget(self.speaker, 2)
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+        for button in (
+            self.read_button,
+            self.live_button,
+            self.pause_button,
+            self.skip_button,
+            self.stop_button,
+            self.full_button,
+        ):
+            controls.addWidget(button)
+        controls.addStretch(1)
+        layout.addLayout(information)
+        layout.addLayout(controls)
         self.set_ready(False)
 
     def show_for_game(self, geometry=None):
@@ -322,12 +390,20 @@ class CompactController(QWidget):
         self.raise_()
 
     def set_status(self, message):
-        if not self._live:
-            self.mode.setText(message)
+        self.status.setText(message)
+        self.status.setStyleSheet("")
         self.setToolTip(message)
+        self._fit_content()
+
+    def set_warning(self, message):
+        self.status.setText(message)
+        self.status.setStyleSheet("color: #a21818; font-weight: 600;")
+        self.setToolTip(message)
+        self._fit_content()
 
     def set_dialogue(self, speaker, _text):
         self.speaker.setText(speaker or "Narrator")
+        self._fit_content()
 
     def set_ready(self, ready):
         for button in (
@@ -343,10 +419,19 @@ class CompactController(QWidget):
         self._live = bool(running)
         self.mode.setText("Live" if running else "Stopped")
         self.live_button.setText("Stop live" if running else "Start live")
+        self._fit_content()
 
     def set_paused(self, paused):
         self.mode.setText("Paused" if paused else ("Live" if self._live else "Stopped"))
         self.pause_button.setText("Resume" if paused else "Pause")
+        self._fit_content()
+
+    def _fit_content(self):
+        right = self.x() + self.width()
+        top = self.y()
+        self.adjustSize()
+        if self.isVisible():
+            self.move(right - self.width(), top)
 
 
 def configure_floating_window(window, *, platform=None):

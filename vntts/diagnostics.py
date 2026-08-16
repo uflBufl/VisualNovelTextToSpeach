@@ -21,10 +21,10 @@ class DiagnosticSnapshot:
     capture_interval_ms: float | None = None
     game_focused: bool | None = None
     corrections: tuple[str, ...] = ()
-    choice_detected: bool = False
     speech_queue_depth: int = 0
     max_speech_queue_depth: int = 0
     last_first_audio_ms: float | None = None
+    audio_source: str = "Not selected"
 
 
 def resolve_voice_label(voice_router, character):

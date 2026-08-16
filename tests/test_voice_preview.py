@@ -16,7 +16,12 @@ class VoicePreviewDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def create_dialog(self, preview_handler=None, assignment_handler=None):
+    def create_dialog(
+        self,
+        preview_handler=None,
+        assignment_handler=None,
+        clear_assignment_handler=None,
+    ):
         return VoicePreviewDialog(
             ["Narrator", "Marcus"],
             [
@@ -26,6 +31,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
             preview_handler or Mock(),
             assignment_handler or Mock(),
             Mock(return_value="preset:alba"),
+            clear_assignment_handler,
         )
 
     def test_plays_selected_candidate_and_reports_completion(self):
@@ -64,6 +70,28 @@ class VoicePreviewDialogTest(unittest.TestCase):
         dialog.preview()
 
         self.assertEqual(dialog.status.text(), "Preview failed: engine unavailable")
+        dialog.deleteLater()
+
+    def test_narrator_controls_explain_and_restore_generated_routing(self):
+        clear_assignment_handler = Mock()
+        dialog = self.create_dialog(
+            clear_assignment_handler=clear_assignment_handler,
+        )
+
+        self.assertIn("overrides pregenerated", dialog.routing_note.text())
+        self.assertEqual(
+            dialog.assign_button.text(),
+            "Always use selected live narrator voice",
+        )
+        self.assertEqual(
+            dialog.automatic_button.text(),
+            "Use pregenerated narrator tracks when available",
+        )
+
+        dialog.automatic_button.click()
+
+        clear_assignment_handler.assert_called_once_with("Narrator")
+        self.assertEqual(dialog.status.text(), "Pregenerated narrator tracks restored")
         dialog.deleteLater()
 
 

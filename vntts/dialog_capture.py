@@ -10,7 +10,7 @@ from time import monotonic
 from uuid import uuid4
 
 import mss
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
@@ -151,16 +151,45 @@ def capture_live_frame(screenshot_directory, capture_target=None, *, clock=monot
 
 
 def fingerprint_dialog_frame(frame):
-    """Cheap fingerprint that preserves small glyph changes after downsampling."""
-    grayscale = frame.image.convert("L").resize(
-        (256, 64),
-        Image.Resampling.LANCZOS,
-    )
-    # Coarse quantization ignores insignificant capture noise, while retaining
-    # several intensity levels so a new sentence cannot disappear like it did
-    # in the previous 96x54 binary mask.
-    quantized = grayscale.point(tuple((value // 16) * 16 for value in range(256)))
-    return blake2b(quantized.tobytes(), digest_size=16).digest()
+    """Fingerprint bright dialogue glyphs while ignoring the animated backdrop."""
+    grayscale = frame.image.convert("L")
+    # Dialogue boxes in supported games are translucent, so hashing the whole
+    # crop makes character animation and video behind the box look like new
+    # dialogue. Keep only the bright glyph cores before downsampling. Using the
+    # cores also avoids tiny anti-aliasing changes where text meets the moving
+    # background while still preserving additions to typewriter text.
+    width, height = grayscale.size
+
+    def glyph_band(top, bottom, output_height, minimum_brightness):
+        band = grayscale.crop((0, top, width, bottom))
+        brightest = band.getextrema()[1]
+        # Fully covered glyph pixels keep the same value even when the
+        # anti-aliased edge is composited over a changing background.
+        glyph_threshold = max(minimum_brightness, brightest)
+        mask = (
+            band.point(
+                tuple(255 if value >= glyph_threshold else 0 for value in range(256))
+            )
+            .filter(ImageFilter.MaxFilter(5))
+            .resize(
+                (256, output_height),
+                Image.Resampling.LANCZOS,
+            )
+        )
+        # Collapse resize ringing so sub-pixel capture noise cannot invalidate
+        # the cache.
+        return mask.point(
+            tuple(255 if value >= 32 else 0 for value in range(256))
+        ).tobytes()
+
+    # Speaker labels are often dimmer than dialogue, so fingerprint the upper
+    # label and lower text bands independently. The overlap accommodates games
+    # whose first dialogue line starts unusually high.
+    label_bottom = max(1, round(height * 0.36))
+    dialog_top = min(height - 1, round(height * 0.25))
+    label = glyph_band(0, label_bottom, 27, 180)
+    dialog = glyph_band(dialog_top, height, 45, 200)
+    return blake2b(label + dialog, digest_size=16).digest()
 
 
 def recognize_live_frame(
@@ -199,7 +228,6 @@ def recognize_live_frame(
         capture_ms=frame.capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
-        choice_detected=result.choice_detected,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -281,7 +309,6 @@ def analyze_dialog_snapshot(
         capture_ms=capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
-        choice_detected=result.choice_detected,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)

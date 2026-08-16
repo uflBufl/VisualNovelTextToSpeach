@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from vntts.app import (  # noqa: E402
     SettingsDialog,
@@ -16,6 +17,7 @@ from vntts.app import (  # noqa: E402
 )
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
+from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -77,7 +79,8 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertTrue(tray_application.speaker_mapping_action.isVisible())
         self.assertEqual(
-            tray_application.voice_preview_action.text(), "Choose voices..."
+            tray_application.voice_preview_action.text(),
+            "Choose narrator voice...",
         )
         self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
         self.assertEqual(
@@ -123,6 +126,62 @@ class TrayApplicationTest(unittest.TestCase):
         save.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_live_status_is_mirrored_from_tray_to_compact_window(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.set_live(True)
+
+        tray_application.set_status(
+            "Auto advance paused: source-audio completion is unavailable"
+        )
+
+        self.assertEqual(tray_application.compact_controller.mode.text(), "Live")
+        self.assertEqual(
+            tray_application.compact_controller.status.text(),
+            "Auto advance paused: source-audio completion is unavailable",
+        )
+        self.assertEqual(
+            tray_application.status_action.text(),
+            tray_application.compact_controller.status.text(),
+        )
+        tray_application.shutdown()
+
+    def test_audio_route_trace_goes_to_support_log_without_replacing_status(self):
+        controller_factory = Mock(return_value=Mock())
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=controller_factory,
+        )
+        tray_application.set_status("Live reading active")
+        trace_handler = controller_factory.call_args.kwargs["route_trace_handler"]
+
+        trace_handler(
+            AudioRouteTrace(
+                3,
+                "moss-tts:fresh-generation",
+                "exact",
+                "generated-audio-entry-not-found",
+                "voice:rhiannon-v2:reference-1",
+                "reverse1999:3",
+                "generated-audio-entry-not-found",
+            )
+        )
+
+        event = tray_application.support_log.snapshot()[-1]
+        self.assertEqual(event["level"], "audio-route")
+        self.assertEqual(event["generation"], 3)
+        self.assertEqual(event["line_id"], "reverse1999:3")
+        self.assertEqual(
+            tray_application.compact_controller.status.text(),
+            "Live reading active",
+        )
+        tray_application.shutdown()
+
     def test_unknown_speaker_adds_mapping_action_and_notification(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -131,7 +190,11 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        with patch.object(tray_application.tray, "showMessage") as notification:
+        with (
+            patch.object(tray_application.tray, "showMessage") as notification,
+            patch("vntts.app.configure_floating_window") as configure_window,
+            patch("vntts.app.sys.platform", "darwin"),
+        ):
             tray_application.signals.unknown_speaker.emit("Selone")
             self.application.processEvents()
 
@@ -140,6 +203,83 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.speaker_mapping_action.text(), "Manage voice for Selone..."
         )
         self.assertIn("narrator voice", notification.call_args.args[1])
+        self.assertIn("No voice is assigned", tray_application.dashboard.status.text())
+        self.assertEqual(
+            tray_application.compact_controller.status.text(),
+            "Voice needed: Selone",
+        )
+        self.assertIsInstance(
+            tray_application.unknown_speaker_prompt,
+            QMessageBox,
+        )
+        self.assertIsNone(tray_application.unknown_speaker_prompt.parent())
+        self.assertIn(
+            "Selone",
+            tray_application.unknown_speaker_prompt.text(),
+        )
+        self.assertTrue(
+            tray_application.unknown_speaker_prompt.testAttribute(
+                Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow
+            )
+        )
+        configure_window.assert_called_once_with(
+            tray_application.unknown_speaker_prompt
+        )
+        tray_application.unknown_speaker_continue_button.click()
+        self.application.processEvents()
+        controller.allow_narrator_fallback.assert_called_once_with("Selone")
+        tray_application.shutdown()
+
+    def test_voice_mapping_resumes_live_mode_after_assignment(self):
+        controller = Mock()
+        controller.is_live_running = True
+
+        def toggle_live():
+            controller.is_live_running = not controller.is_live_running
+            return controller.is_live_running
+
+        controller.toggle_live.side_effect = toggle_live
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch.object(
+            tray_application,
+            "open_speaker_mapping",
+            return_value=True,
+        ):
+            tray_application._open_pending_speaker_mapping("Selone")
+
+        self.assertTrue(controller.is_live_running)
+        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.live_reader.wait.assert_called_once_with()
+        self.assertFalse(tray_application.resume_live_after_unknown_mapping)
+        tray_application.shutdown()
+
+    def test_narrator_choice_resumes_live_after_cancelled_voice_mapping(self):
+        controller = Mock()
+        controller.is_live_running = False
+
+        def toggle_live():
+            controller.is_live_running = True
+            return True
+
+        controller.toggle_live.side_effect = toggle_live
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.resume_live_after_unknown_mapping = True
+
+        tray_application._continue_unknown_with_narrator("Selone")
+
+        controller.allow_narrator_fallback.assert_called_once_with("Selone")
+        controller.toggle_live.assert_called_once_with()
+        self.assertTrue(controller.is_live_running)
+        self.assertFalse(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
 
     def test_macos_tray_icon_is_a_distinct_adaptive_mask(self):
@@ -319,6 +459,20 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.speech_rate.isEnabled())
         dialog.deleteLater()
 
+    def test_settings_select_explicit_audio_source_policy(self):
+        dialog = SettingsDialog(AppSettings(audio_source_policy="prefer-game-audio"))
+
+        self.assertEqual(
+            dialog.audio_source_policy.currentData(),
+            "prefer-game-audio",
+        )
+        dialog.audio_source_policy.setCurrentIndex(
+            dialog.audio_source_policy.findData("live-tts-only")
+        )
+
+        self.assertEqual(dialog.settings().audio_source_policy, "live-tts-only")
+        dialog.deleteLater()
+
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
             AppSettings(
@@ -331,6 +485,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.tts_model.isEnabled())
         self.assertTrue(dialog.tts_language.isEnabled())
         self.assertTrue(dialog.narrator_reference.isEnabled())
+        self.assertTrue(dialog.tts_profile.isEnabled())
         self.assertIn("MOSS-TTS-Local-Transformer", dialog.tts_model.text())
         self.assertFalse(dialog.speech_rate.isEnabled())
         self.assertEqual(dialog.settings().tts_speaker_wav, "matilda.wav")
@@ -422,6 +577,7 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
         controller = Mock()
+        controller.is_live_running = False
         controller.available_voice_characters.return_value = ["Narrator", "Marcus"]
         choices = [Mock(id="preset:alba", label="Alba")]
         controller.available_voice_choices.return_value = choices
@@ -441,13 +597,42 @@ class TrayApplicationTest(unittest.TestCase):
             controller.preview_voice_choice,
             tray_application.assign_voice,
             controller.voice_assignment_for,
+            tray_application.clear_voice_assignment,
             initial_character="Narrator",
         )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_narrator_voice_dialog_pauses_live_and_restores_it(self):
+        controller = Mock()
+        controller.is_live_running = True
+        controller.available_voice_characters.return_value = ["Narrator"]
+        controller.available_voice_choices.return_value = []
+
+        def toggle_live():
+            controller.is_live_running = not controller.is_live_running
+            return controller.is_live_running
+
+        controller.toggle_live.side_effect = toggle_live
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.side_effect = lambda: self.assertFalse(controller.is_live_running)
+
+        with patch("vntts.app.VoicePreviewDialog", return_value=dialog):
+            tray_application.open_voice_previews()
+
+        self.assertTrue(controller.is_live_running)
+        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.live_reader.wait.assert_called_once_with()
+        tray_application.shutdown()
+
     def test_history_dialog_uses_controller_session_and_replay(self):
         controller = Mock()
+        controller.is_live_running = False
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -460,6 +645,31 @@ class TrayApplicationTest(unittest.TestCase):
 
         factory.assert_called_once_with(controller.history, controller.replay_dialog)
         dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_history_dialog_pauses_live_capture_and_restores_it_after_close(self):
+        controller = Mock()
+        controller.is_live_running = True
+
+        def toggle_live():
+            controller.is_live_running = not controller.is_live_running
+            return controller.is_live_running
+
+        controller.toggle_live.side_effect = toggle_live
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.side_effect = lambda: self.assertFalse(controller.is_live_running)
+
+        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog):
+            tray_application.open_history()
+
+        self.assertTrue(controller.is_live_running)
+        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.live_reader.wait.assert_called_once_with()
         tray_application.shutdown()
 
     def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
@@ -495,6 +705,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.settings,
             tray_application.support_log,
             diagnostic=diagnostic,
+            generation_timelines=tray_application.generation_timelines,
         )
         builder.build.assert_called_once_with("support.zip")
         self.assertIn("Support bundle saved", tray_application.status_action.text())

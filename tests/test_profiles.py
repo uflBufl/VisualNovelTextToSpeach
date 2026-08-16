@@ -10,7 +10,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.ocr import DialogRegion  # noqa: E402
-from vntts.profiles import GameProfileStore  # noqa: E402
+from vntts.profiles import (  # noqa: E402
+    GameProfile,
+    GameProfileStore,
+    profiles_schema_version,
+)
 from vntts.profiles_ui import GameProfilesDialog  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
@@ -27,6 +31,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 voice_manifest="voices/reverse-1999.json",
                 story_index="story/reverse-1999.jsonl",
                 generated_audio_manifest="audio/generated.json",
+                audio_source_policy="prefer-generated",
                 voice_assignments={"Narrator": "preset:alba"},
             )
             store = GameProfileStore(path)
@@ -42,6 +47,7 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.voice_manifest, "voices/reverse-1999.json")
         self.assertEqual(applied.story_index, "story/reverse-1999.jsonl")
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
+        self.assertEqual(applied.audio_source_policy, "prefer-generated")
         self.assertEqual(applied.voice_assignments, {"Narrator": "preset:alba"})
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
@@ -57,6 +63,23 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(removed, original)
         self.assertEqual(store.profiles, [renamed])
 
+    def test_legacy_profile_without_audio_policy_migrates_to_live_tts(self):
+        profile = GameProfile.from_mapping(
+            {
+                "id": "legacy",
+                "name": "Legacy game",
+                "capture_mode": "screen",
+                "dialog_region": {
+                    "left": 0.1,
+                    "top": 0.6,
+                    "width": 0.8,
+                    "height": 0.3,
+                },
+            }
+        )
+
+        self.assertEqual(profile.audio_source_policy, "live-tts-only")
+
     def test_duplicate_profile_names_are_rejected_case_insensitively(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
@@ -70,7 +93,9 @@ class GameProfileStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
             path.write_text(
-                json.dumps({"schema_version": 3, "profiles": []}),
+                json.dumps(
+                    {"schema_version": profiles_schema_version + 1, "profiles": []}
+                ),
                 encoding="utf-8",
             )
 

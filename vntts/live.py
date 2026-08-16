@@ -1,7 +1,8 @@
 import os
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
+from hashlib import sha256
 from threading import Condition, Event, RLock, Timer
 from time import monotonic
 
@@ -11,6 +12,16 @@ class SpeechChunk:
     generation: int
     character: str
     text: str
+    ordinal: int | None = field(default=None, compare=False)
+
+    @property
+    def chunk_id(self):
+        if self.ordinal is None:
+            return None
+        character = " ".join((self.character or "Narrator").casefold().split())
+        text = " ".join((self.text or "").casefold().split())
+        payload = f"{self.generation}\0{self.ordinal}\0{character}\0{text}"
+        return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -27,6 +38,7 @@ class LivePipelineMetrics:
     last_synthesis_at: float | None = None
     last_playback_at: float | None = None
     last_auto_advance_at: float | None = None
+    last_auto_advance_dispatched_at: float | None = None
     last_text_visible_at: float | None = None
     last_ocr_stable_at: float | None = None
     last_speaker_resolved_at: float | None = None
@@ -127,6 +139,9 @@ class IncrementalDialogTracker:
         idle_flush_seconds=0.7,
         min_chunk_characters=20,
         complete_sentences_only=True,
+        complete_dialogue_only=False,
+        early_dialogue_resolver=None,
+        incomplete_dialogue_probe=None,
         clock=monotonic,
     ):
         if stability_frames < 2:
@@ -140,13 +155,21 @@ class IncrementalDialogTracker:
         self.idle_flush_seconds = idle_flush_seconds
         self.min_chunk_characters = min_chunk_characters
         self.complete_sentences_only = complete_sentences_only
+        self.complete_dialogue_only = bool(complete_dialogue_only)
+        self.early_dialogue_resolver = early_dialogue_resolver
+        self.incomplete_dialogue_probe = incomplete_dialogue_probe
         self.clock = clock
         self.generation = 0
         self.character = None
         self.latest_text = ""
         self.committed_position = 0
         self.last_change_at = None
+        self.stable_text = ""
+        self.last_stable_change_at = None
         self.history = deque(maxlen=stability_frames)
+        self.pending_character = None
+        self.pending_history = deque(maxlen=stability_frames)
+        self.next_chunk_ordinal = 1
 
     def observe(self, character, text):
         now = self.clock()
@@ -158,10 +181,17 @@ class IncrementalDialogTracker:
                 self._clear_dialog()
             return []
 
+        if self._is_speaker_noise_over_committed_text(character, text):
+            self._clear_pending_dialog()
+            return []
+
         if self._is_new_dialog(character, text):
+            if self.latest_text:
+                return self._observe_new_dialog_candidate(character, text, now)
             self._start_dialog(character, text, now)
             return []
 
+        self._clear_pending_dialog()
         if text != self.latest_text:
             self.last_change_at = now
         self.character = character
@@ -172,7 +202,27 @@ class IncrementalDialogTracker:
             return []
 
         stable_text = os.path.commonprefix(list(self.history))
+        if stable_text != self.stable_text:
+            self.stable_text = stable_text
+            self.last_stable_change_at = now
         idle = now - self.last_change_at >= self.idle_flush_seconds
+        if (
+            self.complete_dialogue_only
+            and not idle
+            and self.committed_position == 0
+            and self.early_dialogue_resolver is not None
+        ):
+            resolved_text = self.early_dialogue_resolver(character, stable_text)
+            if resolved_text:
+                return self._emit(resolved_text, flush=True)
+        if (
+            self.complete_dialogue_only
+            and idle
+            and self.committed_position == 0
+            and self.incomplete_dialogue_probe is not None
+            and self.incomplete_dialogue_probe(character, stable_text)
+        ):
+            return []
         return self._emit(stable_text, flush=idle)
 
     def flush(self):
@@ -181,11 +231,17 @@ class IncrementalDialogTracker:
         return self._emit(self.latest_text, flush=True)
 
     def is_idle_complete(self):
-        if not self.latest_text or self.last_change_at is None:
+        if (
+            not self.latest_text
+            or len(self.history) < self.stability_frames
+            or self.last_stable_change_at is None
+            or not self.stable_text.strip()
+        ):
             return False
+        stable_length = len(self.stable_text.rstrip())
         return (
-            self.committed_position >= len(self.latest_text)
-            and self.clock() - self.last_change_at >= self.idle_flush_seconds
+            self.committed_position >= stable_length
+            and self.clock() - self.last_stable_change_at >= self.idle_flush_seconds
         )
 
     def _is_new_dialog(self, character, text):
@@ -204,14 +260,75 @@ class IncrementalDialogTracker:
         meaningful_prefix = min(8, max(1, len(self.latest_text) // 3))
         return len(common_prefix) < meaningful_prefix and similarity < 0.5
 
+    def _is_speaker_noise_over_committed_text(self, character, text):
+        """Ignore a speaker wobble that still contains the spoken dialogue.
+
+        The nameplate is a small OCR target and can temporarily be recognized
+        as Narrator while the dialogue crop also picks up background glyphs.
+        Once the stable dialogue has been committed, that must not create a new
+        speech generation for the same words.
+        """
+        if character == self.character or self.committed_position == 0:
+            return False
+        committed = self.latest_text[: self.committed_position]
+        committed_key = self._comparison_key(committed)
+        text_key = self._comparison_key(text)
+        if len(committed_key) < 4 or not text_key:
+            return False
+        return committed_key in text_key or text_key in committed_key
+
+    def _observe_new_dialog_candidate(self, character, text, now):
+        if not self._matches_pending_dialog(character, text):
+            self.pending_character = character
+            self.pending_history.clear()
+        self.pending_history.append(text)
+
+        if len(self.pending_history) < self.stability_frames:
+            return []
+
+        candidate_history = list(self.pending_history)
+        self._start_dialog(character, text, now)
+        self.history.clear()
+        self.history.extend(candidate_history)
+        stable_text = os.path.commonprefix(candidate_history)
+        self.stable_text = stable_text
+        self.last_stable_change_at = now
+        self._clear_pending_dialog()
+        return self._emit(stable_text, flush=False)
+
+    def _matches_pending_dialog(self, character, text):
+        if character != self.pending_character or not self.pending_history:
+            return False
+        previous = self.pending_history[-1]
+        if text == previous or text.startswith(previous) or previous.startswith(text):
+            return True
+        common_prefix = os.path.commonprefix([previous, text])
+        meaningful_prefix = min(8, max(1, len(previous) // 3))
+        similarity = SequenceMatcher(None, previous, text).ratio()
+        return len(common_prefix) >= meaningful_prefix or similarity >= 0.5
+
+    def _clear_pending_dialog(self):
+        self.pending_character = None
+        self.pending_history.clear()
+
+    @staticmethod
+    def _comparison_key(text):
+        return "".join(
+            character.casefold() for character in text if character.isalnum()
+        )
+
     def _start_dialog(self, character, text, now):
         self.generation += 1
         self.character = character
         self.latest_text = text
         self.committed_position = 0
         self.last_change_at = now
+        self.stable_text = ""
+        self.last_stable_change_at = now
         self.history.clear()
         self.history.append(text)
+        self.next_chunk_ordinal = 1
+        self._clear_pending_dialog()
 
     def _clear_dialog(self):
         self.generation += 1
@@ -219,9 +336,15 @@ class IncrementalDialogTracker:
         self.latest_text = ""
         self.committed_position = 0
         self.last_change_at = None
+        self.stable_text = ""
+        self.last_stable_change_at = None
         self.history.clear()
+        self.next_chunk_ordinal = 1
+        self._clear_pending_dialog()
 
     def _emit(self, stable_text, *, flush):
+        if self.complete_dialogue_only and not flush:
+            return []
         if len(stable_text) <= self.committed_position:
             return []
 
@@ -235,11 +358,23 @@ class IncrementalDialogTracker:
         if not text or not any(character.isalnum() for character in text):
             return []
 
-        return [
-            SpeechChunk(self.generation, self.character, sentence)
-            for sentence in self._split_sentences(text)
-            if any(character.isalnum() for character in sentence)
-        ]
+        sentences = (
+            [text] if self.complete_dialogue_only else self._split_sentences(text)
+        )
+        chunks = []
+        for sentence in sentences:
+            if not any(character.isalnum() for character in sentence):
+                continue
+            chunks.append(
+                SpeechChunk(
+                    self.generation,
+                    self.character,
+                    sentence,
+                    ordinal=self.next_chunk_ordinal,
+                )
+            )
+            self.next_chunk_ordinal += 1
+        return chunks
 
     @staticmethod
     def _split_sentences(text):
@@ -320,6 +455,10 @@ class LiveDialogReader:
         adaptive_options=None,
         auto_advance=None,
         auto_advance_delay_seconds=0.35,
+        auto_advance_confirmation_timeout_seconds=2.0,
+        auto_advance_terminal_timeout_seconds=10.0,
+        auto_advance_state_changed=None,
+        pipeline_event_handler=None,
         max_speech_jobs=2,
         interrupt_on_dialog_replacement=False,
         first_pcm_on_prepare=True,
@@ -349,6 +488,30 @@ class LiveDialogReader:
         self.adaptive_options = adaptive_options or {}
         self.auto_advance = auto_advance
         self.auto_advance_delay_seconds = auto_advance_delay_seconds
+        if auto_advance_confirmation_timeout_seconds <= 0:
+            raise ValueError(
+                "auto_advance_confirmation_timeout_seconds must be positive"
+            )
+        self.auto_advance_confirmation_timeout_seconds = float(
+            auto_advance_confirmation_timeout_seconds
+        )
+        if (
+            auto_advance_terminal_timeout_seconds
+            <= auto_advance_confirmation_timeout_seconds
+        ):
+            raise ValueError(
+                "auto_advance_terminal_timeout_seconds must be greater than "
+                "auto_advance_confirmation_timeout_seconds"
+            )
+        self.auto_advance_terminal_timeout_seconds = float(
+            auto_advance_terminal_timeout_seconds
+        )
+        self.auto_advance_state_changed = auto_advance_state_changed or (
+            lambda _state, _generation, _attempt: None
+        )
+        self.pipeline_event_handler = pipeline_event_handler or (
+            lambda _stage, _generation, _occurred_at, **_details: None
+        )
         if max_speech_jobs < 1:
             raise ValueError("max_speech_jobs must be positive")
         self.max_speech_jobs = max_speech_jobs
@@ -367,11 +530,19 @@ class LiveDialogReader:
         self.current_chunk = None
         self.last_spoken_chunk = None
         self.cancelled_chunk_ids = set()
+        self.prepared_chunk_ids = set()
+        self.sealed_generation = None
         self.paused = False
         self.emergency_stopped = False
         self.last_observation = None
+        self.deferred_observation = None
         self.dialog_ready_generation = None
-        self.advanced_generation = None
+        self.last_auto_advance_dispatched_generation = None
+        self.pending_auto_advance_generation = None
+        self.failed_auto_advance_generation = None
+        self.auto_advance_attempts = 0
+        self.auto_advance_blocked_generation = None
+        self.auto_advance_block_reason = None
         self.auto_advance_timer = None
         self.latest_frame = None
         self.latest_frame_fingerprint = None
@@ -410,8 +581,15 @@ class LiveDialogReader:
             self.active_generation = 0
             self.suppressed_generation = None
             self.last_observation = None
+            self.deferred_observation = None
+            self.prepared_chunk_ids.clear()
             self.dialog_ready_generation = None
-            self.advanced_generation = None
+            self.last_auto_advance_dispatched_generation = None
+            self.pending_auto_advance_generation = None
+            self.failed_auto_advance_generation = None
+            self.auto_advance_attempts = 0
+            self.auto_advance_blocked_generation = None
+            self.auto_advance_block_reason = None
             self._cancel_auto_advance_locked()
             self.latest_frame = None
             self.latest_frame_fingerprint = None
@@ -441,7 +619,31 @@ class LiveDialogReader:
                 return False
             self.stop_event.set()
             self._cancel_auto_advance_locked()
+            self.pending_auto_advance_generation = None
+            self.auto_advance_attempts = 0
             self.pause_condition.notify_all()
+        return True
+
+    def set_auto_advance(self, callback):
+        with self.state_lock:
+            self.auto_advance = callback
+            if callback is None:
+                self._cancel_auto_advance_locked()
+                self.pending_auto_advance_generation = None
+                self.failed_auto_advance_generation = None
+                self.last_auto_advance_dispatched_generation = None
+                self.auto_advance_attempts = 0
+                return False
+        self._maybe_auto_advance()
+        return True
+
+    def block_auto_advance_for_generation(self, generation, reason):
+        with self.state_lock:
+            if generation != self.active_generation:
+                return False
+            self._cancel_auto_advance_locked()
+            self.auto_advance_blocked_generation = generation
+            self.auto_advance_block_reason = str(reason).strip() or None
         return True
 
     def toggle(self):
@@ -480,6 +682,9 @@ class LiveDialogReader:
         if chunks_to_resume:
             self._schedule(chunks_to_resume)
         self._schedule_deferred_if_possible()
+        if not self.paused:
+            self._resume_auto_advance_confirmation()
+            self._maybe_auto_advance()
         return self.paused
 
     def enqueue(self, character, text):
@@ -519,9 +724,17 @@ class LiveDialogReader:
             has_current_speech = self.current_chunk is not None
             self.pause_condition.notify_all()
             self._cancel_auto_advance_locked()
+            self.pending_auto_advance_generation = None
+            self.auto_advance_attempts = 0
+            self.auto_advance_blocked_generation = None
+            self.auto_advance_block_reason = None
         for future in futures:
             future.cancel()
-        if has_current_speech:
+        # A preparation future may already be running before it becomes
+        # ``current_chunk``. Future.cancel() cannot stop that work, so notify
+        # the backend as well; otherwise application shutdown can wait forever
+        # for the speech executor after the user presses Quit.
+        if has_current_speech or futures:
             self._interrupt_speech()
         return (
             has_current_speech
@@ -538,6 +751,8 @@ class LiveDialogReader:
             self.emergency_stopped = True
             self.stop_event.set()
             self._cancel_auto_advance_locked()
+            self.pending_auto_advance_generation = None
+            self.auto_advance_attempts = 0
             self.pause_condition.notify_all()
         cleared = self.clear_queue()
         self.release_waiters()
@@ -556,17 +771,50 @@ class LiveDialogReader:
 
     def wait_until_playable(self, chunk):
         with self.pause_condition:
+            finish_active_playback = bool(
+                self.current_chunk == chunk and not self.interrupt_on_dialog_replacement
+            )
             while (
                 self.paused
-                and chunk.generation == self.active_generation
+                and (
+                    chunk.generation == self.active_generation or finish_active_playback
+                )
                 and self.suppressed_generation != chunk.generation
             ):
                 self.pause_condition.wait()
             return (
-                chunk.generation == self.active_generation
+                (chunk.generation == self.active_generation or finish_active_playback)
+                and (
+                    self.sealed_generation != chunk.generation or finish_active_playback
+                )
                 and self.suppressed_generation != chunk.generation
                 and id(chunk) not in self.cancelled_chunk_ids
             )
+
+    def seal_generation(self, generation):
+        """Suppress OCR suffix chunks after an exact full-line route completed."""
+        stale_futures = []
+        with self.pause_condition:
+            if generation != self.active_generation:
+                return False
+            self.sealed_generation = generation
+            stale_futures = [
+                future
+                for future, chunk in self.speech_futures.items()
+                if chunk != self.current_chunk and chunk.generation == generation
+            ]
+            self.paused_chunks = [
+                chunk for chunk in self.paused_chunks if chunk.generation != generation
+            ]
+            if (
+                self.deferred_chunk is not None
+                and self.deferred_chunk.generation == generation
+            ):
+                self.deferred_chunk = None
+            self.pause_condition.notify_all()
+        for future in stale_futures:
+            future.cancel()
+        return True
 
     def wait(self):
         with self.state_lock:
@@ -642,7 +890,7 @@ class LiveDialogReader:
             try:
                 with self.state_lock:
                     awaiting_post_advance_dialog = (
-                        self.advanced_generation == self.active_generation
+                        self.pending_auto_advance_generation == self.active_generation
                     )
                 if (
                     fingerprint == cached_fingerprint
@@ -668,7 +916,12 @@ class LiveDialogReader:
                             last_ocr_at=now,
                             last_speaker_resolved_at=now,
                         )
-                self._report_observation(character, text)
+                observation_accepted = self._report_observation(character, text)
+                if not observation_accepted:
+                    interval = policy.observe(character, text, focused=True)
+                    with self.state_lock:
+                        self.next_capture_interval = interval
+                    continue
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
@@ -700,7 +953,11 @@ class LiveDialogReader:
                 continue
             try:
                 character, text = self.read_snapshot()
-                self._report_observation(character, text)
+                if not self._report_observation(character, text):
+                    interval = policy.observe(character, text, focused=True)
+                    self.capture_state_changed(True, interval)
+                    stop_event.wait(interval)
+                    continue
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
@@ -730,12 +987,28 @@ class LiveDialogReader:
     def _set_generation(self, generation):
         stale_futures = []
         interrupt_current = False
+        confirmed_advance = None
         with self.pause_condition:
+            previous_generation = self.active_generation
             changed = generation != self.active_generation
             self.active_generation = generation
             if self.suppressed_generation != generation:
                 self.suppressed_generation = None
             if changed:
+                self.prepared_chunk_ids.clear()
+                self.sealed_generation = None
+                self.failed_auto_advance_generation = None
+                if self.pending_auto_advance_generation == previous_generation:
+                    confirmed_advance = (
+                        previous_generation,
+                        self.auto_advance_attempts,
+                    )
+                    self.pending_auto_advance_generation = None
+                    self.auto_advance_attempts = 0
+                    self.pipeline_metrics = replace(
+                        self.pipeline_metrics,
+                        last_auto_advance_at=monotonic(),
+                    )
                 interrupt_current = bool(
                     self.interrupt_on_dialog_replacement
                     and self.current_chunk is not None
@@ -743,6 +1016,8 @@ class LiveDialogReader:
                 if interrupt_current:
                     self.cancelled_chunk_ids.add(id(self.current_chunk))
                 self.dialog_ready_generation = None
+                self.auto_advance_blocked_generation = None
+                self.auto_advance_block_reason = None
                 self._cancel_auto_advance_locked()
                 stale_futures = [
                     future
@@ -760,17 +1035,49 @@ class LiveDialogReader:
                 ):
                     self.deferred_chunk = None
                 self.pause_condition.notify_all()
+            metrics = self.pipeline_metrics
         # Most backends finish active playback to avoid clicks. Streaming
         # backends that cooperatively cancel generation opt into interruption.
         for future in stale_futures:
             future.cancel()
         if interrupt_current:
             self._interrupt_speech()
+        if changed and generation > 0:
+            for stage, occurred_at in (
+                ("capture", metrics.last_capture_at),
+                ("ocr", metrics.last_ocr_at),
+                ("stable-text", monotonic()),
+            ):
+                if occurred_at is not None:
+                    self._report_pipeline_event(stage, generation, occurred_at)
+        if confirmed_advance is not None:
+            confirmed_generation, attempt = confirmed_advance
+            self._report_pipeline_event(
+                "confirmed-next-dialogue",
+                confirmed_generation,
+                monotonic(),
+                attempt=attempt,
+            )
+            self._report_auto_advance_state(
+                "confirmed",
+                confirmed_generation,
+                attempt,
+            )
 
     def _schedule(self, chunks):
         for chunk in chunks:
             with self.pause_condition:
                 if self.emergency_stopped:
+                    continue
+                if self.sealed_generation == chunk.generation:
+                    self._report_pipeline_event(
+                        "late-chunk-suppressed",
+                        chunk.generation,
+                        monotonic(),
+                        chunk_id=chunk.chunk_id,
+                        chunk_ordinal=chunk.ordinal,
+                        chunk_characters=len(chunk.text),
+                    )
                     continue
                 if self.suppressed_generation == chunk.generation:
                     continue
@@ -807,8 +1114,26 @@ class LiveDialogReader:
     def _prepare_if_current(self, chunk):
         if not self.wait_until_playable(chunk):
             return None
+        if chunk.chunk_id is not None:
+            with self.state_lock:
+                if chunk.chunk_id in self.prepared_chunk_ids:
+                    duplicate = True
+                else:
+                    self.prepared_chunk_ids.add(chunk.chunk_id)
+                    duplicate = False
+            if duplicate:
+                self._report_pipeline_event(
+                    "duplicate-chunk-suppressed",
+                    chunk.generation,
+                    monotonic(),
+                    chunk_id=chunk.chunk_id,
+                    chunk_ordinal=chunk.ordinal,
+                    chunk_characters=len(chunk.text),
+                )
+                return None
         with self.state_lock:
             self._record_speech_metrics_locked(generation_started=True)
+        self._report_pipeline_event("generation-start", chunk.generation, monotonic())
         try:
             return self.prepare_chunk(chunk)
         except Exception as error:
@@ -856,6 +1181,8 @@ class LiveDialogReader:
             self.current_chunk = chunk
             self.last_spoken_chunk = chunk
             self._record_speech_metrics_locked(playback_started=True)
+        if self.first_pcm_on_prepare:
+            self._report_pipeline_event("first-pcm", chunk.generation, monotonic())
         try:
             self.play_prepared(chunk, prepared)
         except Exception as error:
@@ -866,6 +1193,11 @@ class LiveDialogReader:
                 if self.current_chunk == chunk:
                     self.current_chunk = None
                 self.cancelled_chunk_ids.discard(id(chunk))
+            self._report_pipeline_event(
+                "playback-completion",
+                chunk.generation,
+                monotonic(),
+            )
 
     def _speak_if_current(self, chunk):
         if not self.wait_until_playable(chunk):
@@ -877,6 +1209,9 @@ class LiveDialogReader:
                 generation_started=True,
                 playback_started=True,
             )
+        now = monotonic()
+        self._report_pipeline_event("generation-start", chunk.generation, now)
+        self._report_pipeline_event("first-pcm", chunk.generation, now)
 
         try:
             self.speak_chunk(chunk)
@@ -888,21 +1223,32 @@ class LiveDialogReader:
                 if self.current_chunk == chunk:
                     self.current_chunk = None
                 self.cancelled_chunk_ids.discard(id(chunk))
+            self._report_pipeline_event(
+                "playback-completion",
+                chunk.generation,
+                monotonic(),
+            )
 
     def _report_observation(self, character, text):
         if character is None and not text:
             if self.last_observation is not None:
                 self.dialog_observed("Narrator", "")
             self.last_observation = None
-            return
+            self.deferred_observation = None
+            return True
         observation = (character, " ".join((text or "").split()))
-        if observation == self.last_observation:
-            return
+        if (
+            observation == self.last_observation
+            and observation != self.deferred_observation
+        ):
+            return True
         self.last_observation = observation
         if text:
             with self.state_lock:
                 self._record_speech_metrics_locked(text_visible=True)
-        self.dialog_observed(*observation)
+        accepted = self.dialog_observed(*observation) is not False
+        self.deferred_observation = None if accepted else observation
+        return accepted
 
     def _interrupt_speech(self):
         try:
@@ -916,7 +1262,10 @@ class LiveDialogReader:
             self.dialog_ready_generation = (
                 tracker.generation if tracker.is_idle_complete() else None
             )
-            if self.dialog_ready_generation is None:
+            if (
+                self.dialog_ready_generation is None
+                and self.pending_auto_advance_generation is None
+            ):
                 self._cancel_auto_advance_locked()
         self._maybe_auto_advance()
 
@@ -926,7 +1275,9 @@ class LiveDialogReader:
             if (
                 self.auto_advance is None
                 or self.dialog_ready_generation != generation
-                or self.advanced_generation == generation
+                or self.pending_auto_advance_generation == generation
+                or self.failed_auto_advance_generation == generation
+                or self.auto_advance_blocked_generation == generation
                 or self.auto_advance_timer is not None
                 or self.current_chunk is not None
                 or self.speech_futures
@@ -949,9 +1300,11 @@ class LiveDialogReader:
         with self.state_lock:
             self.auto_advance_timer = None
             if (
-                generation != self.active_generation
+                self.auto_advance is None
+                or generation != self.active_generation
                 or self.dialog_ready_generation != generation
-                or self.advanced_generation == generation
+                or self.failed_auto_advance_generation == generation
+                or self.last_auto_advance_dispatched_generation == generation
                 or self.current_chunk is not None
                 or self.speech_futures
                 or self.deferred_chunk is not None
@@ -961,6 +1314,10 @@ class LiveDialogReader:
             ):
                 return
         if not self._is_focused():
+            # A nonmodal voice prompt can own focus exactly when speech ends.
+            # Keep a delayed attempt alive so returning to the game cannot
+            # strand a ready dialogue forever.
+            self._maybe_auto_advance()
             return
         try:
             advanced = self.auto_advance()
@@ -968,13 +1325,147 @@ class LiveDialogReader:
             self.report_error(error)
             return
         if advanced is not False:
+            dispatched = None
             with self.state_lock:
                 if generation == self.active_generation:
-                    self.advanced_generation = generation
+                    self.auto_advance_attempts = 1
+                    attempt = 1
+                    self.last_auto_advance_dispatched_generation = generation
+                    self.pending_auto_advance_generation = generation
                     self.pipeline_metrics = replace(
                         self.pipeline_metrics,
-                        last_auto_advance_at=monotonic(),
+                        last_auto_advance_dispatched_at=monotonic(),
                     )
+                    timer = Timer(
+                        self.auto_advance_confirmation_timeout_seconds,
+                        self._auto_advance_confirmation_expired,
+                        args=(generation, attempt, False),
+                    )
+                    timer.daemon = True
+                    self.auto_advance_timer = timer
+                    dispatched = attempt, timer
+            if dispatched is not None:
+                attempt, timer = dispatched
+                self._report_pipeline_event(
+                    "key-dispatch",
+                    generation,
+                    monotonic(),
+                    attempt=attempt,
+                )
+                self._report_auto_advance_state("dispatched", generation, attempt)
+                timer.start()
+
+    def _auto_advance_confirmation_expired(
+        self,
+        generation,
+        attempt,
+        terminal=False,
+    ):
+        with self.state_lock:
+            self.auto_advance_timer = None
+            if (
+                generation != self.active_generation
+                or self.pending_auto_advance_generation != generation
+                or self.auto_advance_attempts != attempt
+                or self.stop_event.is_set()
+            ):
+                return
+            paused = self.paused
+        if paused or not self._is_focused():
+            self._schedule_auto_advance_confirmation(
+                generation,
+                attempt,
+                terminal=terminal,
+            )
+            return
+        if not terminal:
+            self._report_auto_advance_state("waiting", generation, attempt)
+            self._schedule_auto_advance_confirmation(
+                generation,
+                attempt,
+                delay_seconds=(
+                    self.auto_advance_terminal_timeout_seconds
+                    - self.auto_advance_confirmation_timeout_seconds
+                ),
+                terminal=True,
+            )
+            return
+        with self.state_lock:
+            if (
+                generation != self.active_generation
+                or self.pending_auto_advance_generation != generation
+                or self.auto_advance_attempts != attempt
+            ):
+                return
+            self.failed_auto_advance_generation = generation
+            self.pending_auto_advance_generation = None
+            self.auto_advance_attempts = 0
+        self._report_pipeline_event(
+            "auto-advance-timeout",
+            generation,
+            monotonic(),
+            attempt=attempt,
+        )
+        self._report_auto_advance_state("failed", generation, attempt)
+
+    def _schedule_auto_advance_confirmation(
+        self,
+        generation,
+        attempt,
+        *,
+        delay_seconds=None,
+        terminal=False,
+    ):
+        with self.state_lock:
+            if (
+                generation != self.active_generation
+                or self.pending_auto_advance_generation != generation
+                or self.auto_advance_timer is not None
+                or self.stop_event.is_set()
+            ):
+                return
+            timer = Timer(
+                (
+                    self.auto_advance_confirmation_timeout_seconds
+                    if delay_seconds is None
+                    else delay_seconds
+                ),
+                self._auto_advance_confirmation_expired,
+                args=(generation, attempt, terminal),
+            )
+            timer.daemon = True
+            self.auto_advance_timer = timer
+        timer.start()
+
+    def _resume_auto_advance_confirmation(self):
+        with self.state_lock:
+            generation = self.pending_auto_advance_generation
+            attempt = self.auto_advance_attempts
+        if generation is not None and attempt:
+            self._schedule_auto_advance_confirmation(generation, attempt)
+
+    def _report_auto_advance_state(self, state, generation, attempt):
+        try:
+            self.auto_advance_state_changed(state, generation, attempt)
+        except Exception as error:
+            self.report_error(error)
+
+    def _report_pipeline_event(
+        self,
+        stage,
+        generation,
+        occurred_at=None,
+        **details,
+    ):
+        try:
+            self.pipeline_event_handler(
+                stage,
+                generation,
+                monotonic() if occurred_at is None else occurred_at,
+                **details,
+            )
+        except Exception as error:
+            self.report_error(error)
 
     def _cancel_auto_advance_locked(self):
         timer = self.auto_advance_timer
@@ -1026,11 +1517,14 @@ class LiveDialogReader:
         )
 
     def record_first_pcm(self, timestamp=None):
+        occurred_at = monotonic() if timestamp is None else timestamp
         with self.state_lock:
             self.pipeline_metrics = replace(
                 self.pipeline_metrics,
-                last_first_pcm_at=monotonic() if timestamp is None else timestamp,
+                last_first_pcm_at=occurred_at,
             )
+            generation = self.active_generation
+        self._report_pipeline_event("first-pcm", generation, occurred_at)
 
     def _defer_chunk_locked(self, chunk):
         deferred = self.deferred_chunk
@@ -1042,6 +1536,7 @@ class LiveDialogReader:
             chunk.generation,
             chunk.character,
             f"{deferred.text}{separator}{chunk.text}",
+            ordinal=deferred.ordinal,
         )
 
     def _schedule_deferred_if_possible(self):

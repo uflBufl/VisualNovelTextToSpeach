@@ -41,7 +41,11 @@ from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.calibration import show_calibration_overlay
 from vntts.controller import AppController
-from vntts.dashboard_ui import CompactController, ControlDashboard
+from vntts.dashboard_ui import (
+    CompactController,
+    ControlDashboard,
+    configure_floating_window,
+)
 from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnings
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
@@ -87,7 +91,11 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.speech_backend import default_moss_tts_model
-from vntts.support import RuntimeSupportLog, SupportBundleBuilder
+from vntts.support import (
+    GenerationTimelineLog,
+    RuntimeSupportLog,
+    SupportBundleBuilder,
+)
 from vntts.support_ui import SupportCenterDialog
 from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
@@ -222,6 +230,25 @@ class SettingsDialog(QDialog):
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
+        self.audio_source_policy = QComboBox()
+        self.audio_source_policy.addItem(
+            "Live TTS only (selected speech engine)",
+            "live-tts-only",
+        )
+        self.audio_source_policy.addItem(
+            "Prefer generated audio, then live TTS",
+            "prefer-generated",
+        )
+        self.audio_source_policy.addItem(
+            "Prefer original game audio, then generated/live TTS",
+            "prefer-game-audio",
+        )
+        self.audio_source_policy.setCurrentIndex(
+            max(
+                0,
+                self.audio_source_policy.findData(settings.audio_source_policy),
+            )
+        )
         self.ocr_minimum_confidence = QSpinBox()
         self.ocr_minimum_confidence.setRange(0, 100)
         self.ocr_minimum_confidence.setSuffix("%")
@@ -316,6 +343,7 @@ class SettingsDialog(QDialog):
 
         speech_form = QFormLayout()
         speech_form.addRow("Speech engine", self.speech_backend)
+        speech_form.addRow("Audio source policy", self.audio_source_policy)
         speech_form.addRow("Speech model", self.tts_model)
         speech_form.addRow("TTS language", self.tts_language)
         speech_form.addRow("Narrator reference", narrator_reference_layout)
@@ -490,7 +518,7 @@ class SettingsDialog(QDialog):
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
-        self.tts_profile.setEnabled(uses_xtts)
+        self.tts_profile.setEnabled(uses_xtts or uses_moss)
         self.speech_rate.setEnabled(uses_xtts)
         self.update_terms_control()
 
@@ -581,6 +609,7 @@ class SettingsDialog(QDialog):
                 "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
                 "ocr_language": self.ocr_language.text().strip(),
                 "speech_backend": self.speech_backend.currentData(),
+                "audio_source_policy": self.audio_source_policy.currentData(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_language": optional_text(self.tts_language),
                 "tts_speaker_wav": optional_text(self.narrator_reference),
@@ -630,16 +659,6 @@ class TrayApplication(QObject):
         self.settings = settings or load_app_settings()
         self.signals = AppSignals()
         self.last_controller_error = None
-        self.controller = controller_factory(
-            self.settings,
-            status_handler=self.signals.status_changed.emit,
-            dialog_handler=self.signals.dialog_changed.emit,
-            diagnostic_handler=self.signals.diagnostics_changed.emit,
-            unknown_speaker_handler=self.signals.unknown_speaker.emit,
-            error_handler=self.report_controller_error,
-        )
-        self.profile_store = profile_store or GameProfileStore.load()
-        self.correction_store = correction_store or OCRCorrectionStore.load()
         self.support_log = RuntimeSupportLog(
             path=(
                 get_local_data_directory() / "runtime.log"
@@ -647,12 +666,36 @@ class TrayApplication(QObject):
                 else None
             )
         )
+        self.generation_timelines = GenerationTimelineLog(
+            path=(
+                get_local_data_directory() / "generation-timelines.json"
+                if uses_saved_settings
+                else None
+            )
+        )
+        self.controller = controller_factory(
+            self.settings,
+            status_handler=self.signals.status_changed.emit,
+            dialog_handler=self.signals.dialog_changed.emit,
+            diagnostic_handler=self.signals.diagnostics_changed.emit,
+            unknown_speaker_handler=self.signals.unknown_speaker.emit,
+            error_handler=self.report_controller_error,
+            route_trace_handler=self.record_audio_route,
+            pipeline_event_handler=self.generation_timelines.record,
+        )
+        self.profile_store = profile_store or GameProfileStore.load()
+        self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
         self.calibration_overlay = None
         self.onboarding_wizard = None
         self.diagnostics_dialog = None
         self.readiness_dialog = None
         self.support_dialog = None
+        self.unknown_speaker_prompt = None
+        self.unknown_speaker_choose_button = None
+        self.unknown_speaker_continue_button = None
+        self.unknown_speaker_mapping_in_progress = None
+        self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
         self.pending_unknown_speaker = None
         self.restore_compact_after_calibration = False
@@ -685,7 +728,7 @@ class TrayApplication(QObject):
         self.ocr_review_action = QAction("Review uncertain OCR...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
-        self.voice_preview_action = QAction("Choose voices...")
+        self.voice_preview_action = QAction("Choose narrator voice...")
         self.speaker_mapping_action = QAction("Manage character voices...")
         self.history_action = QAction("Dialogue history...")
         self.support_action = QAction("Diagnostics and logs...")
@@ -780,7 +823,7 @@ class TrayApplication(QObject):
         self.dashboard.stop_requested.connect(self.emergency_stop)
         self.dashboard.readiness_requested.connect(self.open_readiness)
         self.dashboard.calibration_requested.connect(self.calibrate)
-        self.dashboard.voices_requested.connect(self.open_speaker_mapping)
+        self.dashboard.voices_requested.connect(self.open_voice_previews)
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
         self.dashboard.compact_requested.connect(self.show_compact_controls)
@@ -1218,24 +1261,146 @@ class TrayApplication(QObject):
         )
 
     def open_voice_previews(self):
+        resume_live = bool(self.controller.is_live_running)
+        if resume_live:
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+            if self.controller.live_reader is not None:
+                self.controller.live_reader.wait()
         dialog = VoicePreviewDialog(
             self.controller.available_voice_characters(),
             self.controller.available_voice_choices(),
             self.controller.preview_voice_choice,
             self.assign_voice,
             self.controller.voice_assignment_for,
+            self.clear_voice_assignment,
             initial_character="Narrator",
         )
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            if resume_live and not self.controller.is_live_running:
+                running = self.controller.toggle_live()
+                self.signals.live_changed.emit(running)
 
     def offer_speaker_mapping(self, speaker):
         self.pending_unknown_speaker = speaker
         self.speaker_mapping_action.setText(f"Manage voice for {speaker}...")
+        message = (
+            f"No voice is assigned to {speaker}. Speech is waiting for you to "
+            "choose a voice or allow the narrator voice."
+        )
+        self.set_status(message)
+        self.compact_controller.set_warning(f"Voice needed: {speaker}")
         self.tray.showMessage(
             "Character voice not mapped",
-            f"{speaker} is using the narrator voice. Open the tray menu to map it.",
-            QSystemTrayIcon.MessageIcon.Information,
+            message,
+            QSystemTrayIcon.MessageIcon.Warning,
         )
+        self._show_unknown_speaker_prompt(speaker)
+
+    def _show_unknown_speaker_prompt(self, speaker):
+        if self.unknown_speaker_prompt is not None:
+            self.unknown_speaker_prompt.close()
+        # A QMessageBox parented to a hidden dashboard becomes a macOS sheet.
+        # Qt then exposes and dims the whole dashboard behind it, which looks
+        # like a large empty window. Keep this prompt as a small independent
+        # tool window instead.
+        prompt = QMessageBox()
+        prompt.setWindowModality(Qt.WindowModality.NonModal)
+        prompt.setWindowFlag(Qt.WindowType.Tool, True)
+        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        if sys.platform == "darwin":
+            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        prompt.setIcon(QMessageBox.Icon.Warning)
+        prompt.setWindowTitle("Character voice not mapped")
+        prompt.setText(f"Choose a voice for {speaker}?")
+        prompt.setInformativeText(
+            "VNTTS can continue with the narrator voice, but this character will "
+            "not have a distinct voice until you assign one."
+        )
+        choose = prompt.addButton("Choose voice...", QMessageBox.ButtonRole.ActionRole)
+        continue_button = prompt.addButton(
+            "Continue with narrator", QMessageBox.ButtonRole.AcceptRole
+        )
+        prompt.setEscapeButton(continue_button)
+        prompt.setProperty("vntts_unknown_speaker", speaker)
+        self.unknown_speaker_prompt = prompt
+        self.unknown_speaker_choose_button = choose
+        self.unknown_speaker_continue_button = continue_button
+        prompt.buttonClicked.connect(self._unknown_speaker_prompt_clicked)
+        prompt.finished.connect(self._unknown_speaker_prompt_finished)
+        prompt.open()
+        # Keep the prompt visible above a fullscreen game and exclude it from
+        # screen-region OCR so the warning cannot become dialogue itself.
+        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
+
+    def _unknown_speaker_prompt_clicked(self, button):
+        prompt = self.sender()
+        speaker = (
+            prompt.property("vntts_unknown_speaker")
+            if isinstance(prompt, QMessageBox)
+            else self.pending_unknown_speaker
+        )
+        if button is self.unknown_speaker_choose_button:
+            prompt.setProperty("vntts_unknown_resolved", True)
+            self.unknown_speaker_mapping_in_progress = speaker
+            QTimer.singleShot(0, lambda: self._open_pending_speaker_mapping(speaker))
+        elif button is self.unknown_speaker_continue_button:
+            prompt.setProperty("vntts_unknown_resolved", True)
+            self._continue_unknown_with_narrator(speaker)
+
+    def _unknown_speaker_prompt_finished(self, _result):
+        prompt = self.sender()
+        speaker = (
+            prompt.property("vntts_unknown_speaker")
+            if isinstance(prompt, QMessageBox)
+            else self.pending_unknown_speaker
+        )
+        if (
+            speaker
+            and not prompt.property("vntts_unknown_resolved")
+            and speaker != self.unknown_speaker_mapping_in_progress
+        ):
+            # Closing the prompt is equivalent to its escape button: never
+            # leave the current dialogue silently deferred.
+            self._continue_unknown_with_narrator(speaker)
+        if prompt is self.unknown_speaker_prompt:
+            self.unknown_speaker_prompt = None
+            self.unknown_speaker_choose_button = None
+            self.unknown_speaker_continue_button = None
+
+    def _continue_unknown_with_narrator(self, speaker):
+        self.controller.allow_narrator_fallback(speaker)
+        if (
+            self.resume_live_after_unknown_mapping
+            and not self.controller.is_live_running
+        ):
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+        self.resume_live_after_unknown_mapping = False
+
+    def _open_pending_speaker_mapping(self, speaker=None):
+        speaker = speaker or self.pending_unknown_speaker
+        self.resume_live_after_unknown_mapping = bool(
+            self.resume_live_after_unknown_mapping or self.controller.is_live_running
+        )
+        if self.controller.is_live_running:
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+            if self.controller.live_reader is not None:
+                self.controller.live_reader.wait()
+        self.pending_unknown_speaker = speaker
+        assigned = self.open_speaker_mapping()
+        self.unknown_speaker_mapping_in_progress = None
+        if not assigned:
+            self.pending_unknown_speaker = speaker
+            self._show_unknown_speaker_prompt(speaker)
+            return
+        if self.resume_live_after_unknown_mapping:
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+        self.resume_live_after_unknown_mapping = False
 
     def open_speaker_mapping(self):
         initial_character = self.pending_unknown_speaker or "Narrator"
@@ -1245,17 +1410,27 @@ class TrayApplication(QObject):
             self.controller.preview_voice_choice,
             self.assign_voice,
             self.controller.voice_assignment_for,
+            self.clear_voice_assignment,
             initial_character=initial_character,
         )
         dialog.exec()
+        assigned = self.controller.voice_assignment_for(initial_character) is not None
         self.pending_unknown_speaker = None
         self.speaker_mapping_action.setText("Manage character voices...")
+        return assigned
 
     def assign_voice(self, character, source_id):
         self.settings = self.controller.assign_voice(character, source_id)
         path = self.settings.save()
         self._sync_active_profile()
         self.set_status(f"Voice for {character} saved to {path}")
+        return self.settings
+
+    def clear_voice_assignment(self, character):
+        self.settings = self.controller.clear_voice_assignment(character)
+        path = self.settings.save()
+        self._sync_active_profile()
+        self.set_status(f"Automatic voice routing for {character} saved to {path}")
         return self.settings
 
     def open_support_center(self):
@@ -1275,7 +1450,22 @@ class TrayApplication(QObject):
             self.controller.history,
             self.controller.replay_dialog,
         )
-        dialog.exec()
+        # Region capture has no game-window focus probe. Leaving it running
+        # while this modal window covers the calibrated region makes OCR read
+        # the history list, append that text to the history, and repeat. Stop
+        # capture for the modal session, then restore the previous live state.
+        resume_live = bool(self.controller.is_live_running)
+        if resume_live:
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+            if self.controller.live_reader is not None:
+                self.controller.live_reader.wait()
+        try:
+            dialog.exec()
+        finally:
+            if resume_live and not self.controller.is_live_running:
+                running = self.controller.toggle_live()
+                self.signals.live_changed.emit(running)
 
     def export_support_bundle(self):
         path, _selected_filter = QFileDialog.getSaveFileName(
@@ -1294,6 +1484,7 @@ class TrayApplication(QObject):
                     self.settings,
                     self.support_log,
                     diagnostic=self.controller.get_latest_diagnostic(),
+                    generation_timelines=self.generation_timelines,
                 ).build(path)
             except Exception as error:
                 self.signals.support_export_finished.emit(False, str(error))
@@ -1327,6 +1518,13 @@ class TrayApplication(QObject):
         self.tray.setToolTip(f"{application_name}\n{message}")
         self.dashboard.set_status(message)
         self.compact_controller.set_status(message)
+
+    def record_audio_route(self, trace):
+        self.support_log.add(
+            "audio-route",
+            trace.message(),
+            **trace.support_fields(),
+        )
 
     def set_dialog(self, character, text):
         if not text:
@@ -1379,6 +1577,12 @@ class TrayApplication(QObject):
         self.signals.error_reported.emit(message)
 
     def shutdown(self):
+        self.resume_live_after_unknown_mapping = False
+        if self.unknown_speaker_prompt is not None:
+            self.unknown_speaker_prompt.close()
+            self.unknown_speaker_prompt = None
+            self.unknown_speaker_choose_button = None
+            self.unknown_speaker_continue_button = None
         self.dashboard.keep_running_on_close = False
         self.dashboard._quitting = True
         self.dashboard.close()

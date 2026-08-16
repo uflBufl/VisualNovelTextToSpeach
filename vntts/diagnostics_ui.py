@@ -45,7 +45,6 @@ class DiagnosticsDialog(QDialog):
         self.first_audio = QLabel("-")
         self.queue_depth = QLabel("0")
         self.game_focus = QLabel("-")
-        self.choice_detected = QLabel("-")
         self.corrections = QLabel("None")
         self.corrections.setWordWrap(True)
 
@@ -63,7 +62,6 @@ class DiagnosticsDialog(QDialog):
         details.addRow("First audio", self.first_audio)
         details.addRow("Speech queue", self.queue_depth)
         details.addRow("Game focused", self.game_focus)
-        details.addRow("Choice menu", self.choice_detected)
         details.addRow("OCR corrections", self.corrections)
 
         self.warning = QLabel()
@@ -141,7 +139,6 @@ class DiagnosticsDialog(QDialog):
             if snapshot.game_focused is None
             else ("Yes" if snapshot.game_focused else "No")
         )
-        self.choice_detected.setText("Yes" if snapshot.choice_detected else "No")
         self.corrections.setText(
             "\n".join(snapshot.corrections) if snapshot.corrections else "None"
         )
