@@ -27,6 +27,7 @@ SESSION_SCHEMA = "vntts.model-listening-session"
 KEY_SCHEMA = "vntts.model-listening-key"
 REPORT_SCHEMA = "vntts.model-listening-report"
 MODEL_REPORT_SCHEMA = "vntts.voice-model-report"
+TTS_MODEL_REPORT_SCHEMA = "vntts.tts-benchmark-report"
 LEGACY_SESSION_SCHEMA = "r1999.model-listening-session"
 LEGACY_KEY_SCHEMA = "r1999.model-listening-key"
 LEGACY_REPORT_SCHEMA = "r1999.model-listening-report"
@@ -592,7 +593,9 @@ def _report_fields(session, key):
 
 
 def _load_model_report(path):
-    report = _load_schema(path, {MODEL_REPORT_SCHEMA}, "model report")
+    report = _load_schema(
+        path, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
+    )
     backend = report.get("backend")
     model_id = report.get("model_id")
     samples = report.get("samples")

@@ -127,6 +127,24 @@ class AuthoringListeningTest(unittest.TestCase):
 
         self.assertEqual(trial_count, 1)
 
+    def test_starts_from_strict_single_backend_tts_reports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            for index, report_path in enumerate(reports, start=1):
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                report["schema"] = "vntts.tts-benchmark-report"
+                report["model_id"] = f"tts/model-{index}"
+                report["backend"] = f"tts-backend-{index}"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            session_path = create_listening_session_from_reports(
+                reports, root / "session", seed=9
+            )
+            session = load_listening_session(session_path)
+
+        self.assertEqual(session["trial_count"], 1)
+
     def test_scores_resumes_overwrites_and_builds_ranked_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

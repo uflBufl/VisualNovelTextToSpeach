@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import platform
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ from time import perf_counter, process_time
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
+from vntts_artifacts.file_integrity import sha256_file
 
 try:
     import resource
@@ -27,6 +29,8 @@ from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 default_output = get_local_data_directory() / "benchmarks" / "tts"
 default_text = "The tide is turning. We should return before the storm arrives."
 TTS_BENCHMARK_CORPUS_VERSION = 1
+TTS_BENCHMARK_REPORT_SCHEMA = "vntts.tts-benchmark-report"
+TTS_BENCHMARK_REPORT_VERSION = 1
 
 
 def _rss_mb():
@@ -124,6 +128,7 @@ def benchmark_backend(
     *,
     benchmark_samples=None,
     corpus_name=None,
+    model_id=None,
     backend_factory=create_backend,
     clock=perf_counter,
     cpu_clock=process_time,
@@ -253,9 +258,14 @@ def benchmark_backend(
             samples.append(
                 {
                     "id": sample_id,
+                    "line_id": str(item.get("line_id") or sample_id),
                     "character": character,
                     "text": sample_text,
+                    "text_sha256": hashlib.sha256(
+                        sample_text.encode("utf-8")
+                    ).hexdigest(),
                     "audio": str(audio_path),
+                    "audio_sha256": sha256_file(audio_path),
                     "duration_seconds": duration_seconds,
                     "conditioning_ms": conditioning_ms,
                     "first_audio_ms": first_audio_ms,
@@ -299,7 +309,10 @@ def benchmark_backend(
         if callable(stop):
             stop()
     return {
+        "schema": TTS_BENCHMARK_REPORT_SCHEMA,
+        "schema_version": TTS_BENCHMARK_REPORT_VERSION,
         "version": 1,
+        "model_id": str(model_id or backend_name),
         "backend": backend_name,
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -389,6 +402,7 @@ def main(argv=None):
         arguments.output,
         benchmark_samples=corpus["samples"] if corpus is not None else None,
         corpus_name=corpus["name"] if corpus is not None else None,
+        model_id=f"{arguments.backend}/{arguments.model or 'default'}",
         backend_factory=backend_factory,
     )
     report_path = write_report(report, arguments.output)

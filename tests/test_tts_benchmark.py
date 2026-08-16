@@ -138,8 +138,13 @@ class TTSBenchmarkTest(unittest.TestCase):
             )
 
         sample = report["samples"][0]
+        self.assertEqual(report["schema"], "vntts.tts-benchmark-report")
+        self.assertEqual(report["model_id"], "fake")
         self.assertEqual(sample["duration_seconds"], 1.0)
         self.assertEqual(sample["first_audio_ms"], 125.0)
+        self.assertEqual(sample["line_id"], "Kamuta")
+        self.assertRegex(sample["text_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(sample["audio_sha256"], r"^[0-9a-f]{64}$")
 
     def test_benchmark_uses_device_independent_rendering_when_available(self):
         registry = CharacterVoiceRegistry(

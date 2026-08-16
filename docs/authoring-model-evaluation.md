@@ -76,6 +76,12 @@ uv run vntts-listen start-reports \
   --seed 42
 ```
 
+The single-backend `vntts-benchmark-tts` command publishes the strict
+`vntts.tts-benchmark-report` version 1 adapter schema with stable line/text
+identity and WAV hashes, so its reports can use the same `start-reports`
+boundary. Historical schema-less reports are intentionally rejected and must
+be regenerated.
+
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across
 models. It creates every model pair that shares a sample, shuffles trial order
