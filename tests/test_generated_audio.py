@@ -112,6 +112,28 @@ class GeneratedAudioTest(unittest.TestCase):
         backend.stop.return_value = False
         return backend
 
+    def test_route_wrapper_has_no_payload_only_or_mutable_metric_facade(self):
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(),
+            None,
+            self.create_resolver(),
+            audio_output=FakeAudioOutput(),
+        )
+
+        self.assertFalse(hasattr(backend, "prepare"))
+        self.assertFalse(hasattr(backend, "play"))
+        for attribute in (
+            "last_route_trace",
+            "last_audio_source",
+            "last_synthesis_ms",
+            "last_first_audio_ms",
+            "last_playback_ms",
+            "last_playback_underrun",
+            "last_generation_limited",
+            "last_cache_source",
+        ):
+            self.assertFalse(hasattr(backend, attribute), attribute)
+
     def test_exact_line_uses_verified_generated_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -124,17 +146,17 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
             )
 
-            prepared = backend.prepare("ADA", "Hello.")
+            route = backend.prepare_route("ADA", "Hello.")
 
-        self.assertIsInstance(prepared, PreparedGeneratedAudio)
-        self.assertEqual(prepared.line_id, "game:1")
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertEqual(route.prepared.line_id, "game:1")
         live.prepare.assert_not_called()
-        self.assertEqual(backend.last_synthesis_ms, 0.0)
-        self.assertEqual(backend.last_route_trace.effective_source, "generated")
-        self.assertEqual(backend.last_route_trace.match_result, "exact")
-        self.assertEqual(backend.last_route_trace.line_id, "game:1")
+        self.assertEqual(route.synthesis_ms, 0.0)
+        self.assertEqual(route.trace.effective_source, "generated")
+        self.assertEqual(route.trace.match_result, "exact")
+        self.assertEqual(route.trace.line_id, "game:1")
         self.assertEqual(
-            backend.last_route_trace.artifact_preflight_state,
+            route.trace.artifact_preflight_state,
             "generated-audio-entry-verified",
         )
 
@@ -223,15 +245,15 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             backend.set_live_mode_active(True)
 
-            prepared = backend.prepare("Ada", "Hello.")
+            route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertIsInstance(prepared, PreparedGeneratedAudio)
-        self.assertEqual(backend.last_route_trace.effective_source, "generated")
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertEqual(route.trace.effective_source, "generated")
         self.assertEqual(
-            backend.last_route_trace.fallback_reason,
+            route.trace.fallback_reason,
             "source-audio-missing",
         )
-        self.assertEqual(backend.last_route_trace.match_result, "exact")
+        self.assertEqual(route.trace.match_result, "exact")
 
     def test_normalized_exact_remains_eligible_and_ambiguous_match_uses_live(self):
         with TemporaryDirectory() as directory:
@@ -270,9 +292,13 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
             )
 
-            self.assertEqual(backend.prepare("Ada", "Hello."), "live-audio")
-            self.assertEqual(backend.prepare("Ada", "Changed."), "live-audio")
+            first = backend.prepare_route("Ada", "Hello.")
+            changed = backend.prepare_route("Ada", "Changed.")
 
+        self.assertIsInstance(first, LiveTTSRoute)
+        self.assertIsInstance(changed, LiveTTSRoute)
+        self.assertEqual(first.prepared, "live-audio")
+        self.assertEqual(changed.prepared, "live-audio")
         self.assertEqual(live.prepare.call_count, 2)
 
     def test_manual_voice_override_skips_matching_generated_audio(self):
@@ -287,15 +313,16 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             backend.voice_override = lambda character: character == "Ada"
 
-            prepared = backend.prepare("Ada", "Hello.")
+            route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertEqual(prepared, "live-audio")
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertEqual(route.prepared, "live-audio")
         live.prepare.assert_called_once_with("Ada", "Hello.")
         self.assertEqual(
-            backend.last_route_trace.fallback_reason,
+            route.trace.fallback_reason,
             "manual-voice-override",
         )
-        self.assertEqual(backend.last_route_trace.match_result, "skipped")
+        self.assertEqual(route.trace.match_result, "skipped")
 
     def test_available_game_audio_bypasses_generated_and_live_tts(self):
         with TemporaryDirectory() as directory:
@@ -313,12 +340,12 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             backend.set_live_mode_active(True)
 
-            prepared = backend.prepare("Ada", "Hello.")
+            route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertIsInstance(prepared, PreparedSourceAudioPassThrough)
-        self.assertEqual(prepared.source_audio_id, "voice-7")
-        self.assertIsNone(prepared.completion_seconds)
-        self.assertEqual(backend.last_audio_source, "game")
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertEqual(route.prepared.source_audio_id, "voice-7")
+        self.assertIsNone(route.prepared.completion_seconds)
+        self.assertEqual(route.trace.effective_source, "game")
         live.prepare.assert_not_called()
 
     def test_auto_advance_falls_back_when_game_audio_has_no_completion(self):
@@ -336,13 +363,14 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         backend.set_live_mode_active(True)
 
-        prepared = backend.prepare("Ada", "Hello.")
+        route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertEqual(prepared, "live-audio")
-        self.assertEqual(backend.last_audio_source, "live:live-test")
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertEqual(route.prepared, "live-audio")
+        self.assertEqual(route.trace.effective_source, "live:live-test")
         self.assertIn(
             "source-audio-completion-unavailable",
-            backend.last_route_trace.fallback_reason,
+            route.trace.fallback_reason,
         )
         self.assertFalse(backend.will_use_source_audio("Ada", "Hello."))
 
@@ -373,11 +401,12 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         backend.set_live_mode_active(True)
 
-        prepared = backend.prepare("Ada", "Hello.")
+        route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertIsInstance(prepared, PreparedSourceAudioPassThrough)
-        self.assertTrue(backend.play(prepared))
-        self.assertIsNone(backend.last_playback_ms)
+        self.assertIsInstance(route, SourceAudioRoute)
+        outcome = backend.play_route(route)
+        self.assertIs(outcome.status, PlaybackStatus.PASSTHROUGH_UNOBSERVED)
+        self.assertIsNone(outcome.playback_ms)
         live.prepare.assert_not_called()
 
     def test_story_audio_with_explicit_completion_waits_before_finishing(self):
@@ -394,12 +423,13 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         backend.set_live_mode_active(True)
 
-        prepared = backend.prepare("Ada", "Hello.")
+        route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertEqual(prepared.completion_seconds, 0.001)
-        self.assertEqual(prepared.completion_source, "story-index")
-        self.assertTrue(backend.play(prepared))
-        self.assertIsNotNone(backend.last_playback_ms)
+        self.assertEqual(route.prepared.completion_seconds, 0.001)
+        self.assertEqual(route.prepared.completion_source, "story-index")
+        outcome = backend.play_route(route)
+        self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
+        self.assertIsNotNone(outcome.playback_ms)
 
     def test_one_time_read_does_not_silently_pass_through_game_audio(self):
         live = self.create_live_backend()
@@ -410,9 +440,10 @@ class GeneratedAudioTest(unittest.TestCase):
             audio_output=FakeAudioOutput(),
         )
 
-        prepared = backend.prepare("Ada", "Hello.")
+        route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertEqual(prepared, "live-audio")
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertEqual(route.prepared, "live-audio")
         live.prepare.assert_called_once_with("Ada", "Hello.")
 
     def test_live_tts_policy_skips_game_and_generated_audio(self):
@@ -428,10 +459,11 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             backend.set_live_mode_active(True)
 
-            prepared = backend.prepare("Ada", "Hello.")
+            route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertEqual(prepared, "live-audio")
-        self.assertEqual(backend.last_audio_source, "live:live-test")
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertEqual(route.prepared, "live-audio")
+        self.assertEqual(route.trace.effective_source, "live:live-test")
         live.prepare.assert_called_once_with("Ada", "Hello.")
 
     def test_generated_policy_does_not_pass_through_game_audio(self):
@@ -447,10 +479,10 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             backend.set_live_mode_active(True)
 
-            prepared = backend.prepare("Ada", "Hello.")
+            route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertIsInstance(prepared, PreparedGeneratedAudio)
-        self.assertEqual(backend.last_audio_source, "generated")
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertEqual(route.trace.effective_source, "generated")
         live.prepare.assert_not_called()
 
     def test_invalid_audio_source_policy_is_rejected(self):
@@ -477,8 +509,8 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
             )
 
-            self.assertEqual(backend.prepare("Ada", "Hello."), "live-audio")
-            self.assertEqual(backend.prepare("Ada", "Hello."), "live-audio")
+            self.assertIsInstance(backend.prepare_route("Ada", "Hello."), LiveTTSRoute)
+            self.assertIsInstance(backend.prepare_route("Ada", "Hello."), LiveTTSRoute)
 
         self.assertEqual(len(warnings), 1)
         self.assertIn("missing or modified", warnings[0])
@@ -492,16 +524,21 @@ class GeneratedAudioTest(unittest.TestCase):
             volume=0.5,
             audio_output=audio_output,
         )
-        prepared = PreparedGeneratedAudio(
-            "game:1",
-            hashlib.sha256(b"Hello.").hexdigest(),
-            np.array([0.0, 0.5, -0.5], dtype=np.float32),
-            24_000,
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                hashlib.sha256(b"Hello.").hexdigest(),
+                np.array([0.0, 0.5, -0.5], dtype=np.float32),
+                24_000,
+            ),
+            Mock(effective_source="generated"),
         )
 
-        self.assertFalse(backend.play(prepared, playback_guard=lambda: False))
+        interrupted = backend.play_route(route, playback_guard=lambda: False)
+        self.assertIs(interrupted.status, PlaybackStatus.INTERRUPTED)
         self.assertEqual(audio_output.plays, [])
-        self.assertTrue(backend.play(prepared, playback_guard=lambda: True))
+        completed = backend.play_route(route, playback_guard=lambda: True)
+        self.assertIs(completed.status, PlaybackStatus.COMPLETED)
 
         played, sample_rate, options = audio_output.plays[0]
         np.testing.assert_allclose(played, [0.0, 0.25, -0.25])
@@ -670,8 +707,6 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(outcome.cache_source, "fresh-generation")
         self.assertEqual(outcome.audio_source, "live:live-test")
         self.assertTrue(outcome.generation_limited)
-        self.assertEqual(backend.last_synthesis_ms, 5.0)
-        self.assertEqual(backend.last_cache_source, "fresh-generation")
 
 
 if __name__ == "__main__":

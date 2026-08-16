@@ -17,7 +17,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
 )
 
-from vntts.services.tts_engine import AudioPlaybackError, match_output_sample_rate
+from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
 
@@ -260,15 +260,6 @@ class GeneratedAudioFallbackBackend:
         self.generated_reservations = BoundedCache(32)
         self.active_playback_source = None
         self.playback_active = False
-        self.last_synthesis_ms = None
-        self.last_first_audio_ms = None
-        self.last_playback_ms = None
-        self.last_playback_underrun = False
-        self.last_generation_limited = False
-        self.last_cache_source = None
-        self.last_audio_source = None
-        self.last_line_id = None
-        self.last_route_trace = None
         self.live_mode_active = False
         self.voice_override = None
         self.set_volume(volume, delegate=False)
@@ -341,10 +332,6 @@ class GeneratedAudioFallbackBackend:
             and getattr(line, "source_audio_status", "unknown") == "available"
             and not source_audio_missing_completion
         ):
-            self.last_synthesis_ms = 0.0
-            self.last_first_audio_ms = None
-            self.last_audio_source = "game"
-            self.last_line_id = line.line_id
             trace = AudioRouteTrace(
                 None,
                 "game",
@@ -354,7 +341,6 @@ class GeneratedAudioFallbackBackend:
                 line.line_id,
                 "source-audio-declared-available",
             )
-            self.last_route_trace = trace
             return SourceAudioRoute(
                 PreparedSourceAudioPassThrough(
                     line.line_id,
@@ -390,10 +376,6 @@ class GeneratedAudioFallbackBackend:
                     line.text_sha256,
                 )
             if prepared is not None:
-                self.last_synthesis_ms = 0.0
-                self.last_first_audio_ms = 0.0
-                self.last_audio_source = "generated"
-                self.last_line_id = line.line_id
                 trace = AudioRouteTrace(
                     None,
                     "generated",
@@ -403,7 +385,6 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     artifact_preflight_state,
                 )
-                self.last_route_trace = trace
                 return GeneratedAudioRoute(prepared, trace)
             fallback_reasons.append(artifact_preflight_state)
         elif line is not None and self.audio_source_policy in {
@@ -417,37 +398,30 @@ class GeneratedAudioFallbackBackend:
             fallback_reasons.append(artifact_preflight_state)
         prepared = self.live_backend.prepare(character, text)
         live_source = getattr(self.live_backend, "last_audio_source", None)
-        self.last_audio_source = (
+        effective_source = (
             live_source
             if isinstance(live_source, str) and live_source
             else f"live:{self.live_backend.name}"
         )
-        self.last_line_id = line.line_id if line is not None else None
-        self.last_synthesis_ms = getattr(self.live_backend, "last_synthesis_ms", None)
-        self.last_first_audio_ms = getattr(
-            self.live_backend, "last_first_audio_ms", None
-        )
+        line_id = line.line_id if line is not None else None
+        synthesis_ms = getattr(self.live_backend, "last_synthesis_ms", None)
+        first_audio_ms = getattr(self.live_backend, "last_first_audio_ms", None)
         trace = AudioRouteTrace(
             None,
-            self.last_audio_source,
+            effective_source,
             match_result,
             ";".join(dict.fromkeys(fallback_reasons)) or None,
             None,
-            self.last_line_id,
+            line_id,
             artifact_preflight_state,
         )
-        self.last_route_trace = trace
         return LiveTTSRoute(
             prepared,
             trace,
-            self.last_synthesis_ms,
-            self.last_first_audio_ms,
+            synthesis_ms,
+            first_audio_ms,
             _prepared_cache_source(prepared, self.live_backend),
         )
-
-    def prepare(self, character, text):
-        """Compatibility facade returning the route's backend-native payload."""
-        return self.prepare_route(character, text).prepared
 
     def _resolve_line(self, character, text, voice_overridden):
         if voice_overridden:
@@ -461,35 +435,12 @@ class GeneratedAudioFallbackBackend:
     def play_route(self, route, *, playback_guard=None):
         """Play one immutable route and return metrics bound to that route."""
         if isinstance(route, SourceAudioRoute):
-            outcome = self._play_source_route(route, playback_guard)
-        elif isinstance(route, GeneratedAudioRoute):
-            outcome = self._play_generated_route(route, playback_guard)
-        elif isinstance(route, LiveTTSRoute):
-            outcome = self._play_live_route(route, playback_guard)
-        else:
-            raise TypeError(f"Unsupported audio route: {type(route).__name__}")
-        self.last_playback_ms = outcome.playback_ms
-        self.last_playback_underrun = outcome.underflowed
-        self.last_generation_limited = outcome.generation_limited
-        self.last_first_audio_ms = outcome.first_audio_ms
-        self.last_synthesis_ms = outcome.synthesis_ms
-        self.last_cache_source = outcome.cache_source
-        return outcome
-
-    def play(self, prepared, *, playback_guard=None):
-        """Compatibility facade returning the historical boolean result."""
-        route = (
-            prepared
-            if isinstance(
-                prepared,
-                (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute),
-            )
-            else self._compatibility_route(prepared)
-        )
-        outcome = self.play_route(route, playback_guard=playback_guard)
-        if outcome.status is PlaybackStatus.FAILED:
-            raise AudioPlaybackError(outcome.error or "Audio playback failed")
-        return outcome.successful
+            return self._play_source_route(route, playback_guard)
+        if isinstance(route, GeneratedAudioRoute):
+            return self._play_generated_route(route, playback_guard)
+        if isinstance(route, LiveTTSRoute):
+            return self._play_live_route(route, playback_guard)
+        raise TypeError(f"Unsupported audio route: {type(route).__name__}")
 
     def _play_source_route(self, route, playback_guard):
         prepared = route.prepared
@@ -620,28 +571,6 @@ class GeneratedAudioFallbackBackend:
                 getattr(self.live_backend, "last_generation_limited", False) is True
             ),
             first_audio_ms=first_audio_ms,
-        )
-
-    def _compatibility_route(self, prepared):
-        trace = self.last_route_trace or AudioRouteTrace(
-            None,
-            f"live:{self.live_backend.name}",
-            "unknown",
-            "compatibility-facade",
-            None,
-            None,
-            "not-applicable",
-        )
-        if isinstance(prepared, PreparedSourceAudioPassThrough):
-            return SourceAudioRoute(prepared, trace)
-        if isinstance(prepared, PreparedGeneratedAudio):
-            return GeneratedAudioRoute(prepared, trace)
-        return LiveTTSRoute(
-            prepared,
-            trace,
-            self.last_synthesis_ms,
-            self.last_first_audio_ms,
-            _prepared_cache_source(prepared, self.live_backend),
         )
 
     def prime(self, character):

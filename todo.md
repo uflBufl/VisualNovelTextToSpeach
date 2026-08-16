@@ -79,11 +79,10 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Simplify the live speech boundary after the P0 replay passes
 
-- [ ] Remove the transitional `GeneratedAudioFallbackBackend.prepare()`/`play()`
-      compatibility facade and mutable `last_*` metrics after every remaining
-      caller consumes the typed route decision and route-local playback outcome.
-- [ ] Replace mutable backend `last_*` compatibility metrics with the generation
-      timeline now used by diagnostics and support bundles.
+- [ ] Migrate the individual live TTS backend adapters and generic benchmark
+      from their legacy `prepare()`/`play()` and `last_*` metric surface to
+      typed playback outcomes. The generated/source route wrapper is already
+      typed; this residual concerns the standalone backend APIs.
 - [ ] Document the final routing precedence, source-audio completion contract,
       cache semantics, and auto-advance confirmation behavior in the README and
       game-pack contract.

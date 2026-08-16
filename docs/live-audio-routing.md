@@ -41,9 +41,14 @@ same stage/chunk merge, while multiple chunks in one OCR generation remain
 distinct. Live synthesis continues to use the backend's existing cache policy;
 source and generated routes bypass live synthesis caches.
 
-`GeneratedAudioFallbackBackend.prepare()` and `.play()` remain a compatibility
-facade for callers not yet moved to typed decisions. New controller and replay
-paths consume route decisions and playback outcomes directly. Real driver
-underrun, device-stop latency, game-audio alignment, focus/key confirmation,
-and long-soak behavior remain hardware acceptance gates rather than software
-unit-test claims.
+`GeneratedAudioFallbackBackend` is an internal route selector/player, not an
+exported backend API. All repository callers use `prepare_route()` and
+`play_route()`; it therefore has no payload-only `prepare()`/`play()` facade and
+does not mirror outcomes through mutable `last_*` fields. No deprecated alias is
+kept because this wrapper was never an application entry point or documented
+extension interface. The individual live TTS backends retain their existing
+public APIs while they are migrated independently.
+
+Real driver underrun, device-stop latency, game-audio alignment, focus/key
+confirmation, and long-soak behavior remain hardware acceptance gates rather
+than software unit-test claims.
