@@ -5,12 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Offline authoring and application responsibility split
 
-### P1 - Move generic generation authoring into VNTTS
-
-- [ ] Move generic delivery-annotation authoring into `vntts.authoring`; the
-      collection-driven queue builder and typed resumable generation/review
-      executor are now owned here.
-
 ### P1 - Preserve existing generation work
 
 - [ ] Keep compatibility with current queue IDs, line IDs, text hashes, seeds,

@@ -26,6 +26,15 @@ through the shared readers and binds their exact SHA-256 digests into the queue
 metadata. It returns a plan without writing anything. `publish_generation_queue`
 validates that plan through the shared queue writer and publishes atomically.
 
+Delivery annotations default to a lossless `preserve` overlay, so existing
+story-owned emotion, delivery, prompt adapters and unknown extensions retain
+their exact queue representation. The optional
+`legacy-english-heuristic-v1` policy fills only wholly unannotated records and
+records per-item provenance in queue-owned metadata without affecting queue IDs
+or text hashes. Partial source annotations are reported but never completed or
+overwritten. See the
+[delivery-annotation contract](authoring-delivery-annotations.md).
+
 Voice-character aliases are resolved to the manifest's canonical character.
 Every reference must be a POSIX-relative path whose resolved target remains
 inside the manifest directory; absolute paths, parent traversal, backslashes
@@ -68,6 +77,7 @@ Preflight one or more declared collections without creating output:
 uv run vntts-pregenerate preflight-queue \
   --story-index /path/to/story-index.jsonl \
   --voice-manifest /path/to/voice-manifest.json \
+  --delivery-policy preserve \
   --collection main-story \
   --unknown-action resolve_audio
 ```

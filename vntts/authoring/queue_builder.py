@@ -25,6 +25,14 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.delivery import (
+    DELIVERY_ANNOTATION_VERSION,
+    LEGACY_ENGLISH_POLICY,
+    PRESERVE_DELIVERY_POLICY,
+    DeliveryAnnotationError,
+    apply_delivery_policy,
+)
+
 
 class GenerationQueueBuildError(RuntimeError):
     """A story index cannot be turned into an unambiguous generation queue."""
@@ -106,6 +114,7 @@ def plan_generation_queue(
     *,
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
+    delivery_policy: str | None = None,
     generated_at: str | None = None,
 ):
     """Plan a queue from typed shared artifacts without reading producer JSON."""
@@ -139,6 +148,17 @@ def plan_generation_queue(
     reference_availability = {
         entry: _has_local_reference(entry, manifest_directory) for entry in entries
     }
+    delivery_policy = (
+        PRESERVE_DELIVERY_POLICY
+        if delivery_policy is None
+        else str(delivery_policy).strip()
+    )
+    if delivery_policy not in {PRESERVE_DELIVERY_POLICY, LEGACY_ENGLISH_POLICY}:
+        raise GenerationQueueBuildError(
+            f"Unsupported delivery_policy: {delivery_policy!r}"
+        )
+    annotation_origins = Counter()
+    policy_generated_items = []
 
     items = []
     skipped_available = 0
@@ -160,7 +180,9 @@ def plan_generation_queue(
             skipped_available += 1
             continue
         entry = voice_index.get(normalize_character_name(record.voice_character))
-        voice_character = entry.character if entry is not None else record.voice_character
+        voice_character = (
+            entry.character if entry is not None else record.voice_character
+        )
         if action == "generate":
             if entry is not None and reference_availability[entry]:
                 ready += 1
@@ -171,7 +193,22 @@ def plan_generation_queue(
             recoverable += 1
         else:
             manual_review += 1
-        items.append(_queue_item(record, voice_character, action))
+        item = _queue_item(record, voice_character, action)
+        try:
+            application = apply_delivery_policy(item, delivery_policy)
+        except DeliveryAnnotationError as error:
+            raise GenerationQueueBuildError(
+                f"Unable to annotate story line {record.line_id!r}: {error}"
+            ) from error
+        annotation_origins[application.origin] += 1
+        items.append(application.record)
+        if application.provenance is not None:
+            policy_generated_items.append(
+                {
+                    "queue_id": application.record["queue_id"],
+                    **application.provenance,
+                }
+            )
 
     action_counts = _counts(item["action"] for item in items)
     status_counts = _counts(item["source_audio_status"] for item in items)
@@ -190,7 +227,9 @@ def plan_generation_queue(
         skipped_unselected=len(document.records) - len(selected),
         action_counts=action_counts,
         source_audio_status_counts=status_counts,
-        missing_reference_characters=tuple(sorted(missing_characters, key=str.casefold)),
+        missing_reference_characters=tuple(
+            sorted(missing_characters, key=str.casefold)
+        ),
     )
     metadata = {
         "record_type": "metadata",
@@ -234,6 +273,17 @@ def plan_generation_queue(
     metadata["source_story_index_sha256"] = _sha256_file(document_path)
     metadata["source_voice_manifest"] = str(voice_manifest_path)
     metadata["source_voice_manifest_sha256"] = _sha256_file(voice_manifest_path)
+    if delivery_policy != PRESERVE_DELIVERY_POLICY:
+        metadata["delivery_annotation_policy"] = {
+            "name": delivery_policy,
+            "version": DELIVERY_ANNOTATION_VERSION,
+            "mode": "missing-only",
+            "policy_generated_count": annotation_origins["policy"],
+            "source_complete_count": annotation_origins["source_complete"],
+            "source_partial_count": annotation_origins["source_partial"],
+            "unannotated_count": annotation_origins["none"],
+            "generated_items": policy_generated_items,
+        }
     return GenerationQueuePlan(metadata, tuple(items), summary)
 
 
@@ -243,6 +293,7 @@ def inspect_generation_queue(
     *,
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
+    delivery_policy: str | None = None,
     generated_at: str | None = None,
 ):
     """Load public shared artifacts and return a non-mutating queue plan."""
@@ -256,6 +307,7 @@ def inspect_generation_queue(
         voice_manifest_path,
         collection_ids=collection_ids,
         unknown_action=unknown_action,
+        delivery_policy=delivery_policy,
         generated_at=generated_at,
     )
 

@@ -363,6 +363,12 @@ They apply an explicit canonical source-audio policy and report missing voice
 references before generation. See the
 [collection-driven queue contract](docs/authoring-generation-queues.md).
 
+Queue planning preserves source-owned delivery metadata by default. Authors can
+explicitly opt into the deterministic `legacy-english-heuristic-v1` overlay for
+otherwise unannotated English records; policy provenance is separate from
+producer extensions and queue identity remains unchanged. See
+[delivery-annotation authoring](docs/authoring-delivery-annotations.md).
+
 The same authoring entry point now resumes typed, device-independent bulk
 generation and owns generated-WAV validation, cumulative attempts/seeds,
 approval/rejection and approved-only manifest publication. It dual-reads

@@ -15,6 +15,15 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.delivery import (
+    DELIVERY_ANNOTATION_VERSION,
+    LEGACY_ENGLISH_POLICY,
+    PRESERVE_DELIVERY_POLICY,
+    DeliveryAnnotationError,
+    DeliveryPolicyApplication,
+    annotate_delivery,
+    apply_delivery_policy,
+)
 from vntts.authoring.game_pack import (
     FinalGamePackError,
     FinalGamePackResult,
@@ -69,6 +78,11 @@ __all__ = [
     "AudioQuality",
     "BulkGenerationError",
     "BulkGenerationResult",
+    "DELIVERY_ANNOTATION_VERSION",
+    "LEGACY_ENGLISH_POLICY",
+    "PRESERVE_DELIVERY_POLICY",
+    "DeliveryAnnotationError",
+    "DeliveryPolicyApplication",
     "FinalGamePackError",
     "FinalGamePackResult",
     "SpeechQuality",
@@ -86,6 +100,8 @@ __all__ = [
     "GenerationQueueSummary",
     "StandaloneImportInspection",
     "aggregate_listening_report",
+    "annotate_delivery",
+    "apply_delivery_policy",
     "benchmark_model_variants",
     "benchmark_renderer",
     "build_benchmark_corpus",

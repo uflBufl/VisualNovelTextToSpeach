@@ -20,6 +20,12 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.delivery import (
+    LEGACY_ENGLISH_POLICY,
+    PRESERVE_DELIVERY_POLICY,
+    DeliveryAnnotationError,
+    apply_delivery_policy,
+)
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
@@ -148,6 +154,12 @@ def create_parser():
             choices=("resolve_audio", "manual_review"),
             help="Required policy when a selected source-audio status is unknown",
         )
+        queue.add_argument(
+            "--delivery-policy",
+            choices=(PRESERVE_DELIVERY_POLICY, LEGACY_ENGLISH_POLICY),
+            default=PRESERVE_DELIVERY_POLICY,
+            help="Preserve source annotations or opt into the legacy English heuristic",
+        )
         if command == "build-queue":
             queue.add_argument("--output", type=Path, required=True)
     generate = subparsers.add_parser(
@@ -202,6 +214,15 @@ def create_parser():
         type=_producer_record,
         help="Producer identity as NAME=VERSION; repeat for upstream producers",
     )
+    annotate = subparsers.add_parser(
+        "annotate-delivery",
+        help="Print one provenance-marked legacy English delivery annotation",
+    )
+    annotate.add_argument("--text", required=True)
+    annotate.add_argument("--speaker", default="Narrator")
+    annotate.add_argument("--previous-text")
+    annotate.add_argument("--next-text")
+    annotate.add_argument("--kind", default="dialogue")
     return parser
 
 
@@ -231,6 +252,36 @@ def main(argv=None):
         )
         return 0
     try:
+        if arguments.command == "annotate-delivery":
+            application = apply_delivery_policy(
+                {
+                    "text": arguments.text,
+                    "speaker": arguments.speaker,
+                    "previous_text": arguments.previous_text,
+                    "next_text": arguments.next_text,
+                    "kind": arguments.kind,
+                },
+                LEGACY_ENGLISH_POLICY,
+            )
+            print(
+                json.dumps(
+                    {
+                        "annotation": {
+                            key: application.record[key]
+                            for key in (
+                                "annotation_version",
+                                "emotion",
+                                "delivery",
+                                "prompt_adapters",
+                            )
+                        },
+                        "provenance": application.provenance,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "generate":
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
             registry, voice_manifest_sha256 = _load_stable_voice_registry(
@@ -391,6 +442,7 @@ def main(argv=None):
                 if arguments.collection_ids is None
                 else tuple(arguments.collection_ids),
                 unknown_action=arguments.unknown_action,
+                delivery_policy=arguments.delivery_policy,
             )
             payload = {"summary": plan.summary.to_dict()}
             if arguments.command == "build-queue":
@@ -439,6 +491,7 @@ def main(argv=None):
     except (
         GenerationQueueBuildError,
         BulkGenerationError,
+        DeliveryAnnotationError,
         FinalGamePackError,
         LegacyAuthoringImportError,
         ListeningImportError,
