@@ -12,9 +12,17 @@ from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     activate_moss_tts_runtime,
+    moss_generation_limits,
     normalize_moss_language,
 )
+from vntts.synthesis import (
+    SynthesisCachePolicy,
+    SynthesisCompletion,
+    SynthesisRequest,
+)
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+_default_audio_output = object()
 
 
 class FakeMossResult:
@@ -49,6 +57,22 @@ class CoordinatedMossModel(FakeMossModel):
         yield FakeMossResult([[0.0, 0.2, -0.2], [0.0, -0.2, 0.2]])
         self.second_chunk_ready.set()
         yield FakeMossResult([[0.1, 0.0], [-0.1, 0.0]])
+
+
+class EndlessMossModel(FakeMossModel):
+    sample_rate = 10
+
+    def generate(self, **arguments):
+        self.generate_calls.append(arguments)
+        while True:
+            yield FakeMossResult(np.full(10, 0.1, dtype=np.float32))
+
+
+class ErrorAfterFirstMossModel(FakeMossModel):
+    def generate(self, **arguments):
+        self.generate_calls.append(arguments)
+        yield FakeMossResult([[0.0, 0.2], [0.0, -0.2]])
+        raise RuntimeError("generation was closed")
 
 
 class FakeOutputStream:
@@ -117,11 +141,13 @@ class MossTTSBackendTest(unittest.TestCase):
         registry=None,
         narrator_reference=None,
         prompt_cache_directory=None,
-        audio_output=None,
+        audio_output=_default_audio_output,
+        generation_profile="stable",
     ):
         model = model or FakeMossModel()
         model_factory = Mock(return_value=model)
-        audio_output = audio_output or FakeAudioOutput()
+        if audio_output is _default_audio_output:
+            audio_output = FakeAudioOutput()
         resolved_narrator_reference = (
             None
             if narrator_reference is False
@@ -147,27 +173,253 @@ class MossTTSBackendTest(unittest.TestCase):
             prompt_code_loader=lambda path: path.read_text(encoding="utf-8"),
             prompt_code_saver=save_codes,
             array_evaluator=lambda _value: None,
+            generation_profile=generation_profile,
         )
-        model_factory.assert_called_once_with(backend.model_name, lazy=True)
+        model_factory.assert_called_once_with(backend.model_name, lazy=False)
         return backend, model, audio_output
 
     def test_streams_stereo_audio_with_realtime_buffering(self):
         backend, model, output = self.create_backend()
 
         prepared = backend.prepare("Narrator", "  Hello   Timekeeper. ")
+        self.assertEqual(prepared.cache_source, "fresh-generation")
         self.assertTrue(backend.play(prepared))
 
         self.assertEqual(len(model.generate_calls), 1)
         call = model.generate_calls[0]
         self.assertEqual(call["text"], "Hello Timekeeper.")
         self.assertEqual(call["language"], "English")
+        self.assertEqual(call["mode"], "generation")
+        self.assertTrue(call["do_sample"])
+        self.assertEqual(call["audio_temperature"], 0.8)
+        self.assertEqual(call["audio_top_p"], 0.8)
+        self.assertEqual(call["audio_top_k"], 25)
+        self.assertEqual(call["audio_repetition_penalty"], 1.0)
         self.assertTrue(call["stream"])
-        self.assertEqual(call["streaming_first_chunk_frames"], 16)
-        self.assertEqual(call["streaming_interval"], 1.0)
+        self.assertEqual(call["streaming_first_chunk_frames"], 4)
+        self.assertEqual(call["streaming_interval"], 0.25)
+        self.assertEqual(call["max_tokens"], prepared.max_tokens)
         self.assertEqual(output.streams[0].options["samplerate"], 48_000)
         self.assertEqual(output.streams[0].options["channels"], 2)
         self.assertEqual(output.streams[0].writes[0].shape, (3, 2))
         self.assertIsNotNone(backend.last_first_audio_ms)
+
+    def test_render_returns_typed_pcm_without_opening_an_audio_device(self):
+        backend, model, output = self.create_backend()
+
+        stream = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Render this line.",
+                seed=7,
+                generation_profile="natural",
+            )
+        )
+        chunks = list(stream)
+        result = stream.result
+
+        self.assertEqual(output.streams, [])
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertEqual(result.sample_rate, 48_000)
+        self.assertEqual(result.pcm.shape, (5, 2))
+        self.assertEqual([chunk.index for chunk in chunks], [0, 1])
+        self.assertTrue(all(chunk.sample_rate == 48_000 for chunk in chunks))
+        self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(result.diagnostics.generation_profile, "natural")
+        self.assertEqual(result.diagnostics.seed, 7)
+        self.assertEqual(result.limits, backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Render this line.",
+                seed=7,
+                generation_profile="natural",
+            )
+        ).collect().limits)
+        self.assertEqual(len(model.generate_calls), 1)
+
+    def test_render_only_backend_does_not_import_sounddevice(self):
+        original_import = __import__
+
+        def reject_sounddevice(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise AssertionError("render-only construction imported sounddevice")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=reject_sounddevice):
+            backend, _model, audio_output = self.create_backend(audio_output=None)
+            result = backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Offline MOSS render.",
+                )
+            ).collect()
+
+        self.assertIsNone(audio_output)
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+
+    def test_render_cancellation_returns_partial_pcm_without_caching_it(self):
+        backend, model, output = self.create_backend()
+        cancelled = Event()
+        stream = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Cancel this line.",
+                cancellation=cancelled,
+            )
+        )
+
+        first = next(stream)
+        cancelled.set()
+        remaining = list(stream)
+
+        self.assertEqual(output.streams, [])
+        self.assertEqual(remaining, [])
+        self.assertEqual(stream.result.completion, SynthesisCompletion.CANCELLED)
+        np.testing.assert_array_equal(stream.result.pcm, first.pcm)
+        self.assertEqual(len(model.generate_calls), 1)
+        self.assertEqual(
+            backend.prepare("Narrator", "Cancel this line.").cache_source,
+            "fresh-generation",
+        )
+
+    def test_render_cancellation_keeps_typed_result_when_generator_raises(self):
+        backend, _model, _output = self.create_backend(
+            model=ErrorAfterFirstMossModel()
+        )
+        cancelled = Event()
+        stream = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Cancel while closing.",
+                cancellation=cancelled,
+            )
+        )
+
+        next(stream)
+        cancelled.set()
+        list(stream)
+
+        self.assertEqual(stream.result.completion, SynthesisCompletion.CANCELLED)
+        self.assertEqual(stream.result.diagnostics.chunk_count, 1)
+
+    def test_bypass_cache_renders_each_seeded_request_fresh(self):
+        backend, model, _output = self.create_backend()
+        random = Mock()
+        backend._mlx = SimpleNamespace(random=random)
+        request = SynthesisRequest(
+            voice="Narrator",
+            text="Retry this line.",
+            seed=11,
+            cache_policy=SynthesisCachePolicy.BYPASS,
+        )
+
+        first = backend.render(request).collect()
+        second = backend.render(request).collect()
+
+        self.assertEqual(first.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(second.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(len(model.generate_calls), 2)
+        self.assertEqual(random.seed.call_args_list, [unittest.mock.call(11)] * 2)
+
+    def test_refresh_cache_skips_read_then_replaces_reusable_audio(self):
+        backend, model, _output = self.create_backend()
+        base = {
+            "voice": "Narrator",
+            "text": "Refresh this line.",
+            "seed": 5,
+        }
+
+        first = backend.render(SynthesisRequest(**base)).collect()
+        refreshed = backend.render(
+            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.REFRESH)
+        ).collect()
+        reused = backend.render(SynthesisRequest(**base)).collect()
+
+        self.assertEqual(first.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(refreshed.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(reused.diagnostics.cache_source, "memory-cache")
+        self.assertEqual(len(model.generate_calls), 2)
+
+    def test_render_reports_missed_eos_limit_without_caching_partial_audio(self):
+        model = EndlessMossModel()
+        backend, _model, output = self.create_backend(model=model)
+
+        result = backend.render(
+            SynthesisRequest(voice="Narrator", text="I, erhm ...")
+        ).collect()
+
+        self.assertEqual(output.streams, [])
+        self.assertEqual(result.completion, SynthesisCompletion.LIMITED)
+        self.assertLessEqual(
+            len(result.pcm),
+            round(model.sample_rate * result.limits.max_audio_seconds),
+        )
+        self.assertEqual(
+            backend.prepare("Narrator", "I, erhm ...").cache_source,
+            "fresh-generation",
+        )
+
+    def test_short_text_has_a_bounded_generation_budget_in_cache_identity(self):
+        backend, _model, _output = self.create_backend()
+        backend.persistent_cache_keys.key = Mock(return_value="bounded-key")
+
+        prepared = backend.prepare("Narrator", "I, erhm ...")
+
+        self.assertEqual(
+            (prepared.max_tokens, prepared.max_audio_seconds),
+            moss_generation_limits("I, erhm ..."),
+        )
+        self.assertEqual(prepared.max_audio_seconds, 3.0)
+        self.assertLess(prepared.max_tokens, 4096)
+        self.assertEqual(prepared.persistent_cache_key, "bounded-key")
+        cache_settings = backend.persistent_cache_keys.key.call_args.kwargs
+        self.assertEqual(cache_settings["max_tokens"], prepared.max_tokens)
+        self.assertEqual(
+            cache_settings["max_audio_seconds"],
+            prepared.max_audio_seconds,
+        )
+
+    def test_missed_eos_is_cut_at_the_text_length_audio_budget(self):
+        model = EndlessMossModel()
+        backend, _model, output = self.create_backend(model=model)
+
+        prepared = backend.prepare("Narrator", "I, erhm ...")
+        self.assertTrue(backend.play(prepared))
+
+        written_samples = sum(len(chunk) for chunk in output.streams[0].writes)
+        self.assertLessEqual(
+            written_samples,
+            round(model.sample_rate * prepared.max_audio_seconds),
+        )
+        self.assertTrue(backend.last_generation_limited)
+        self.assertEqual(
+            backend.prepare("Narrator", "I, erhm ...").cache_source,
+            "fresh-generation",
+        )
+
+    def test_expressive_profile_uses_upstream_moss_sampling_temperature(self):
+        backend, model, _output = self.create_backend(generation_profile="expressive")
+
+        self.assertTrue(backend.speak("Narrator", "An expressive line."))
+
+        self.assertEqual(model.generate_calls[0]["audio_temperature"], 1.7)
+
+    def test_switching_profile_invalidates_in_memory_generated_audio(self):
+        backend, model, _output = self.create_backend()
+        self.assertTrue(backend.speak("Narrator", "The same line."))
+
+        self.assertTrue(backend.set_generation_profile("natural"))
+        self.assertTrue(backend.speak("Narrator", "The same line."))
+
+        self.assertEqual(len(model.generate_calls), 2)
+        self.assertEqual(model.generate_calls[-1]["audio_temperature"], 1.2)
+
+    def test_invalid_generation_profile_is_actionable(self):
+        with self.assertRaisesRegex(
+            TTSConfigurationError,
+            "Unknown MOSS-TTS voice profile",
+        ):
+            self.create_backend(generation_profile="chaotic")
 
     def test_generates_next_chunk_while_current_chunk_is_playing(self):
         model = CoordinatedMossModel()
@@ -184,12 +436,31 @@ class MossTTSBackendTest(unittest.TestCase):
     def test_repeated_line_reuses_complete_stereo_audio_cache(self):
         backend, model, output = self.create_backend()
 
-        self.assertTrue(backend.speak("Narrator", "Same line."))
-        self.assertTrue(backend.speak("Narrator", "Same line."))
+        first = backend.prepare("Narrator", "Same line.")
+        self.assertEqual(first.cache_source, "fresh-generation")
+        self.assertTrue(backend.play(first))
+        second = backend.prepare("Narrator", "Same line.")
+        self.assertEqual(second.cache_source, "memory-cache")
+        self.assertTrue(backend.play(second))
 
         self.assertEqual(len(model.generate_calls), 1)
         self.assertEqual(len(output.streams), 2)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
+
+    def test_complete_audio_cache_survives_backend_restart(self):
+        first_backend, first_model, _output = self.create_backend()
+        first = first_backend.prepare("Narrator", "Persistent line.")
+        self.assertTrue(first_backend.play(first))
+
+        second_model = FakeMossModel()
+        second_backend, _model, _output = self.create_backend(model=second_model)
+        second = second_backend.prepare("Narrator", "Persistent line.")
+
+        self.assertEqual(first.cache_source, "fresh-generation")
+        self.assertEqual(second.cache_source, "persistent-cache")
+        self.assertTrue(second_backend.play(second))
+        self.assertEqual(len(first_model.generate_calls), 1)
+        self.assertEqual(second_model.generate_calls, [])
 
     def test_prompt_codes_survive_backend_restart(self):
         first_backend, first_model, _output = self.create_backend()
@@ -220,6 +491,16 @@ class MossTTSBackendTest(unittest.TestCase):
         backend.prepare("Matilda", "Bonjour!")
 
         self.assertEqual(model.encoded_references, [str(reference.resolve())])
+
+    def test_unknown_character_falls_back_to_narrator_reference(self):
+        backend, model, _output = self.create_backend()
+
+        backend.prepare("Hotelier", "Welcome to the hotel.")
+
+        self.assertEqual(
+            model.encoded_references,
+            [str(self.narrator_reference.resolve())],
+        )
 
     def test_missing_narrator_reference_is_actionable(self):
         backend, _model, _output = self.create_backend(narrator_reference=False)

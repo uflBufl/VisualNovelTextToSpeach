@@ -1,6 +1,7 @@
 import os
+import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -25,6 +26,17 @@ from vntts.speech_backend_runtime import (
     validate_speed,
     validate_volume,
     voice_artifact_cache_path,
+)
+from vntts.synthesis import (
+    SynthesisCachePolicy,
+    SynthesisChunk,
+    SynthesisChunkStream,
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisRequest,
+    SynthesisResult,
+    SynthesisTiming,
 )
 from vntts.voices import is_narrator, normalize_character_name
 
@@ -56,6 +68,9 @@ class PocketTTSPreparedSpeech:
     cache_key: tuple[str, str]
     persistent_cache_key: str
     cached_audio: np.ndarray | None = None
+    cache_source: str = "fresh-generation"
+    generation_profile: str = "default"
+    cache_policy: SynthesisCachePolicy = SynthesisCachePolicy.USE
 
 
 @dataclass(frozen=True)
@@ -63,12 +78,40 @@ class MossTTSPreparedSpeech:
     voice_key: str
     prompt_audio_codes: Any
     text: str
-    cache_key: tuple[str, str]
+    cache_key: tuple[Any, ...]
     persistent_cache_key: str
+    max_tokens: int
+    max_audio_seconds: float
     cached_audio: np.ndarray | None = None
+    cache_source: str = "fresh-generation"
+    seed: int | None = None
+    generation_profile: str = "stable"
+    generation_options: tuple[tuple[str, Any], ...] = ()
+    cache_policy: SynthesisCachePolicy = SynthesisCachePolicy.USE
 
 
 default_moss_tts_model = "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"
+
+moss_tts_generation_profiles = {
+    "stable": {
+        "audio_temperature": 0.8,
+        "audio_top_p": 0.8,
+        "audio_top_k": 25,
+        "audio_repetition_penalty": 1.0,
+    },
+    "natural": {
+        "audio_temperature": 1.2,
+        "audio_top_p": 0.8,
+        "audio_top_k": 25,
+        "audio_repetition_penalty": 1.0,
+    },
+    "expressive": {
+        "audio_temperature": 1.7,
+        "audio_top_p": 0.8,
+        "audio_top_k": 25,
+        "audio_repetition_penalty": 1.0,
+    },
+}
 
 moss_language_names = {
     "ar": "Arabic",
@@ -108,6 +151,26 @@ moss_language_names = {
 def normalize_moss_language(language):
     value = str(language or "English").strip()
     return moss_language_names.get(value.casefold().replace("_", "-"), value)
+
+
+def get_moss_tts_generation_profile(name):
+    profile_name = str(name or "stable").strip().casefold()
+    try:
+        return profile_name, dict(moss_tts_generation_profiles[profile_name])
+    except KeyError as error:
+        available = ", ".join(sorted(moss_tts_generation_profiles))
+        raise TTSConfigurationError(
+            f"Unknown MOSS-TTS voice profile {name!r}; available profiles: {available}"
+        ) from error
+
+
+def moss_generation_limits(text):
+    """Bound missed-EOS output while leaving room for normal speech cadence."""
+    words = re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)
+    word_count = max(1, len(words))
+    max_audio_seconds = min(20.0, max(3.0, 1.5 + word_count / 1.8))
+    max_tokens = min(2048, max(256, round(max_audio_seconds * 100)))
+    return max_tokens, max_audio_seconds
 
 
 class XTTSVoiceRouterBackend:
@@ -545,12 +608,16 @@ class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
     name = "pocket-tts"
+    generation_profile = "default"
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
         streaming=True,
         # Voice-state preparation and streaming use the same model instance.
         concurrent_prepare_and_play=False,
-        interrupt_on_dialog_replacement=True,
+        # OCR may briefly replace a stable dialogue while the game is still
+        # drawing it. Finish audio that already started; Skip/Pause/Emergency
+        # Stop remain explicit interruption paths.
+        interrupt_on_dialog_replacement=False,
     )
 
     def __init__(
@@ -569,6 +636,7 @@ class PocketTTSVoiceRouterBackend:
         voice_state_cache_directory=None,
         persistent_audio_cache_directory=None,
         cached_stream_chunk_seconds=0.2,
+        stream_prefill_seconds=0.25,
     ):
         if model_factory is None:
             runtime_site_packages = activate_pocket_tts_runtime(runtime_directory)
@@ -582,11 +650,6 @@ class PocketTTSVoiceRouterBackend:
                 ) from error
             model_factory = TTSModel.load_model
             state_exporter = export_model_state
-        if audio_output is None:
-            import sounddevice
-
-            audio_output = sounddevice
-
         self.model = model_factory()
         self.registry = registry
         self.narrator_speaker = "Pocket TTS default"
@@ -633,23 +696,67 @@ class PocketTTSVoiceRouterBackend:
             1,
             round(self.sample_rate * float(cached_stream_chunk_seconds)),
         )
+        self.stream_prefill_samples = max(
+            1,
+            round(self.sample_rate * float(stream_prefill_seconds)),
+        )
         self.set_volume(volume)
         self.set_speed(1.0)
 
     def prepare(self, character, text):
-        spoken_text = " ".join((text or "").split())
-        voice_key, source = self._resolve_voice_source(character)
+        return self._prepare_request(
+            SynthesisRequest(
+                voice=character,
+                text=text,
+                generation_profile=self.generation_profile,
+            )
+        )
+
+    def render(self, request):
+        """Render Pocket TTS PCM without opening an audio device."""
+        if not isinstance(request, SynthesisRequest):
+            raise TTSConfigurationError("Pocket TTS received an invalid render request")
+        prepared = self._prepare_request(request)
+        self.playback_stop.clear()
+        return self._render_prepared(prepared, request)
+
+    def _prepare_request(self, request):
+        spoken_text = " ".join((request.text or "").split())
+        if not spoken_text:
+            raise TTSSynthesisError("Pocket TTS received empty text")
+        profile = str(request.generation_profile or "default").strip().casefold()
+        if profile != self.generation_profile:
+            raise TTSConfigurationError(
+                "Pocket TTS supports only the 'default' generation profile"
+            )
+        if request.seed is not None:
+            raise TTSConfigurationError(
+                "Pocket TTS does not expose deterministic seeded generation"
+            )
+        try:
+            cache_policy = SynthesisCachePolicy(request.cache_policy)
+        except ValueError as error:
+            raise TTSConfigurationError(
+                f"Unknown synthesis cache policy {request.cache_policy!r}"
+            ) from error
+        voice_key, source = self._resolve_voice_source(request.voice)
         cache_key = voice_key, spoken_text
         persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
-        cached_audio = self.audio_cache.get(cache_key)
-        if cached_audio is None:
+        may_read_cache = cache_policy is SynthesisCachePolicy.USE
+        cached_audio = self.audio_cache.get(cache_key) if may_read_cache else None
+        cache_source = "memory-cache" if cached_audio is not None else None
+        if cached_audio is None and may_read_cache:
             cached_audio = self.persistent_audio_cache.get(persistent_key)
             if cached_audio is not None:
+                cache_source = "persistent-cache"
                 self.audio_cache.put(cache_key, cached_audio)
         voice_state = None
         if cached_audio is None:
+            cache_source = "fresh-generation"
             with self.model_lock:
-                resolved_voice_key, voice_state = self._resolve_voice_state(character)
+                resolved_voice_key, voice_state = self._resolve_voice_state(
+                    request.voice
+                )
             if resolved_voice_key != voice_key:
                 raise TTSConfigurationError(
                     "Pocket TTS resolved inconsistent voice state"
@@ -661,7 +768,128 @@ class PocketTTSVoiceRouterBackend:
             cache_key,
             persistent_key,
             cached_audio,
+            cache_source,
+            profile,
+            cache_policy,
         )
+
+    def _render_prepared(self, prepared, request):
+        return SynthesisChunkStream(self._render_chunks(prepared, request))
+
+    def _render_chunks(self, prepared, request):
+        started = self.clock()
+        first_chunk_ms = None
+        chunks = []
+        completion = SynthesisCompletion.COMPLETE
+        render_finished = False
+        generation_cancel = (
+            request.cancellation
+            if callable(getattr(request.cancellation, "set", None))
+            and callable(getattr(request.cancellation, "is_set", None))
+            else Event()
+        )
+        self.active_generation_cancel = generation_cancel
+        self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
+        self.last_first_audio_ms = self.last_synthesis_ms
+
+        def cancelled():
+            return self.playback_stop.is_set() or request.cancellation_requested()
+
+        def finish(final_completion):
+            pcm = (
+                np.concatenate(chunks, axis=0)
+                if chunks
+                else np.empty((0, 1), dtype=np.float32)
+            )
+            if (
+                final_completion is SynthesisCompletion.COMPLETE
+                and prepared.cached_audio is None
+                and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+            ):
+                cached_audio = pcm.reshape(-1)
+                self.audio_cache.put(prepared.cache_key, cached_audio)
+                self.persistent_audio_cache.put(
+                    prepared.persistent_cache_key,
+                    cached_audio,
+                )
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=self.sample_rate,
+                completion=final_completion,
+                limits=SynthesisLimits(
+                    max_tokens=None,
+                    max_audio_seconds=None,
+                ),
+                timing=SynthesisTiming(
+                    first_chunk_ms=first_chunk_ms,
+                    total_ms=(self.clock() - started) * 1000,
+                ),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source=prepared.cache_source,
+                    generation_profile=prepared.generation_profile,
+                    seed=None,
+                    chunk_count=len(chunks),
+                    sample_count=len(pcm),
+                ),
+            )
+
+        try:
+            if prepared.cached_audio is not None:
+                source_chunks = self._cached_chunks(prepared.cached_audio)
+                first_chunk_ms = 0.0
+            else:
+
+                def generated_chunks():
+                    with self.model_lock:
+                        yield from self.model.generate_audio_stream(
+                            prepared.voice_state,
+                            prepared.text,
+                        )
+
+                source_chunks = generated_chunks()
+
+            for raw in source_chunks:
+                if cancelled():
+                    generation_cancel.set()
+                    completion = SynthesisCompletion.CANCELLED
+                    break
+                audio = self._to_numpy(raw).reshape(-1, 1)
+                if not audio.size:
+                    continue
+                if first_chunk_ms is None:
+                    first_chunk_ms = (self.clock() - started) * 1000
+                    self.last_synthesis_ms = first_chunk_ms
+                    self.last_first_audio_ms = first_chunk_ms
+                chunks.append(audio)
+                yield SynthesisChunk(
+                    pcm=audio,
+                    sample_rate=self.sample_rate,
+                    index=len(chunks) - 1,
+                    elapsed_ms=(self.clock() - started) * 1000,
+                )
+            if cancelled() and completion is SynthesisCompletion.COMPLETE:
+                generation_cancel.set()
+                completion = SynthesisCompletion.CANCELLED
+            if not chunks and completion is SynthesisCompletion.COMPLETE:
+                raise TTSSynthesisError("Pocket TTS generated no audio")
+            result = finish(completion)
+            render_finished = True
+            return result
+        except (TTSConfigurationError, TTSSynthesisError):
+            raise
+        except Exception as error:
+            if cancelled():
+                generation_cancel.set()
+                result = finish(SynthesisCompletion.CANCELLED)
+                render_finished = True
+                return result
+            raise TTSSynthesisError(str(error)) from error
+        finally:
+            if not render_finished:
+                generation_cancel.set()
+            if self.active_generation_cancel is generation_cancel:
+                self.active_generation_cancel = None
 
     def prime(self, character):
         voice_key, _source = self._resolve_voice_source(character)
@@ -687,17 +915,35 @@ class PocketTTSVoiceRouterBackend:
             if playback_guard is not None and not playback_guard():
                 return False
             self.playback_stop.clear()
-            generation_cancel = Event()
-            self.active_generation_cancel = generation_cancel
             self.last_playback_underrun = False
             self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
             self.last_first_audio_ms = self.last_synthesis_ms
             started = self.clock()
-            raw_chunks = []
-            completed = False
+            rendered = None
             try:
                 self.playback_active = True
-                with self.audio_output.OutputStream(
+                request = SynthesisRequest(
+                    voice=prepared.voice_key,
+                    text=prepared.text,
+                    generation_profile=prepared.generation_profile,
+                    cancellation=(
+                        None
+                        if playback_guard is None
+                        else lambda: not playback_guard()
+                    ),
+                    cache_policy=prepared.cache_policy,
+                )
+                playback_prepared = prepared
+                if (
+                    prepared.cached_audio is None
+                    and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+                ):
+                    playback_prepared = replace(
+                        prepared,
+                        cache_policy=SynthesisCachePolicy.BYPASS,
+                    )
+                rendered = self._render_prepared(playback_prepared, request)
+                with self._resolve_audio_output().OutputStream(
                     samplerate=self.sample_rate,
                     channels=1,
                     dtype="float32",
@@ -705,32 +951,29 @@ class PocketTTSVoiceRouterBackend:
                 ) as stream:
                     with self.active_stream_lock:
                         self.active_stream = stream
-                    if prepared.cached_audio is not None:
-                        chunks = self._cached_chunks(prepared.cached_audio)
-                        completed = self._write_chunks(
-                            stream,
-                            chunks,
-                            playback_guard,
-                        )
-                    else:
-                        with self.model_lock:
-                            chunks = self.model.generate_audio_stream(
-                                prepared.voice_state,
-                                prepared.text,
-                            )
-                            completed = self._write_chunks(
-                                stream,
-                                chunks,
-                                playback_guard,
-                                started=started,
-                                raw_chunks=raw_chunks,
-                            )
-                if completed and raw_chunks:
-                    complete_audio = np.concatenate(raw_chunks)
-                    self.audio_cache.put(prepared.cache_key, complete_audio)
+                    chunks = rendered
+                    if prepared.cached_audio is None:
+                        chunks = self._prefill_rendered_chunks(rendered)
+                    completed = self._write_chunks(
+                        stream,
+                        (chunk.pcm for chunk in chunks),
+                        playback_guard,
+                    )
+                result = rendered.result
+                completed = completed and result.completion is not (
+                    SynthesisCompletion.CANCELLED
+                )
+                if (
+                    completed
+                    and result.completion is SynthesisCompletion.COMPLETE
+                    and prepared.cached_audio is None
+                    and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+                ):
+                    cached_audio = result.pcm.reshape(-1)
+                    self.audio_cache.put(prepared.cache_key, cached_audio)
                     self.persistent_audio_cache.put(
                         prepared.persistent_cache_key,
-                        complete_audio,
+                        cached_audio,
                     )
                 return completed
             except Exception as error:
@@ -738,12 +981,46 @@ class PocketTTSVoiceRouterBackend:
                     return False
                 raise AudioPlaybackError(str(error)) from error
             finally:
-                if self.active_generation_cancel is generation_cancel:
-                    self.active_generation_cancel = None
+                if rendered is not None:
+                    rendered.close()
                 with self.active_stream_lock:
                     self.active_stream = None
                 self.playback_active = False
                 self.last_playback_ms = (self.clock() - started) * 1000
+
+    def _prefill_rendered_chunks(self, chunks):
+        buffered = []
+        buffered_samples = 0
+        for chunk in chunks:
+            buffered.append(chunk)
+            buffered_samples += len(chunk.pcm)
+            if buffered_samples >= self.stream_prefill_samples:
+                first = buffered[0]
+                yield SynthesisChunk(
+                    pcm=np.concatenate([item.pcm for item in buffered], axis=0),
+                    sample_rate=self.sample_rate,
+                    index=first.index,
+                    elapsed_ms=chunk.elapsed_ms,
+                )
+                buffered.clear()
+                break
+        if buffered:
+            first = buffered[0]
+            yield SynthesisChunk(
+                pcm=np.concatenate([item.pcm for item in buffered], axis=0),
+                sample_rate=self.sample_rate,
+                index=first.index,
+                elapsed_ms=buffered[-1].elapsed_ms,
+            )
+        for chunk in chunks:
+            yield chunk
+
+    def _resolve_audio_output(self):
+        if self.audio_output is None:
+            import sounddevice
+
+            self.audio_output = sounddevice
+        return self.audio_output
 
     def warm_up(self, *, progress=None, text=None):
         del text
@@ -954,8 +1231,9 @@ class MossTTSVoiceRouterBackend:
         prompt_code_saver=None,
         array_evaluator=None,
         cached_stream_chunk_seconds=0.2,
-        streaming_first_chunk_frames=16,
-        streaming_interval=1.0,
+        streaming_first_chunk_frames=4,
+        streaming_interval=0.25,
+        generation_profile="stable",
     ):
         self.model_name = str(
             model_name
@@ -979,13 +1257,14 @@ class MossTTSVoiceRouterBackend:
             install_moss_quantized_codec_compat()
             self._mlx = mx
             model_factory = load
-        if audio_output is None:
-            import sounddevice
-
-            audio_output = sounddevice
-
         try:
-            self.model = model_factory(self.model_name, lazy=True)
+            # VNTTS constructs the backend on its startup worker and performs
+            # live generation on a playback worker. MLX lazy parameters retain
+            # the thread-local stream that created their graph, then fail on
+            # first use in the other worker with "There is no Stream(...) in
+            # current thread". Materialize the model before it crosses that
+            # boundary; streamed audio generation remains lazy and incremental.
+            self.model = model_factory(self.model_name, lazy=False)
         except Exception as error:
             raise TTSConfigurationError(
                 f"MOSS-TTS could not load {self.model_name!r}: {error}"
@@ -994,6 +1273,10 @@ class MossTTSVoiceRouterBackend:
         self.narrator_speaker = "MOSS reference voice"
         self.narrator_reference = narrator_reference
         self.language = normalize_moss_language(language)
+        (
+            self.generation_profile,
+            self.generation_options,
+        ) = get_moss_tts_generation_profile(generation_profile)
         self.audio_output = audio_output
         self.clock = clock
         self.playback_latency = playback_latency
@@ -1017,6 +1300,9 @@ class MossTTSVoiceRouterBackend:
         self.last_synthesis_ms = None
         self.last_first_audio_ms = None
         self.last_playback_ms = None
+        self.last_audio_source = None
+        self.last_generation_limited = False
+        self.last_generated_audio = None
         self.audio_cache = BoundedCache(audio_cache_size)
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
@@ -1040,35 +1326,225 @@ class MossTTSVoiceRouterBackend:
         self.set_speed(1.0)
 
     def prepare(self, character, text):
-        spoken_text = " ".join((text or "").split())
+        return self._prepare_request(
+            SynthesisRequest(
+                voice=character,
+                text=text,
+                generation_profile=self.generation_profile,
+            )
+        )
+
+    def render(self, request):
+        """Render PCM without opening an audio device."""
+        if not isinstance(request, SynthesisRequest):
+            raise TTSConfigurationError("MOSS-TTS received an invalid render request")
+        prepared = self._prepare_request(request)
+        self.playback_stop.clear()
+        return self._render_prepared(prepared, request)
+
+    def _prepare_request(self, request):
+        spoken_text = " ".join((request.text or "").split())
         if not spoken_text:
             raise TTSSynthesisError("MOSS-TTS received empty text")
-        voice_key, source = self._resolve_voice_source(character)
-        cache_key = voice_key, spoken_text
-        persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
-        cached_audio = self.audio_cache.get(cache_key)
-        if cached_audio is None:
+        profile, generation_options = get_moss_tts_generation_profile(
+            request.generation_profile
+        )
+        try:
+            cache_policy = SynthesisCachePolicy(request.cache_policy)
+        except ValueError as error:
+            raise TTSConfigurationError(
+                f"Unknown synthesis cache policy {request.cache_policy!r}"
+            ) from error
+        voice_key, source = self._resolve_voice_source(request.voice)
+        max_tokens, max_audio_seconds = moss_generation_limits(spoken_text)
+        cache_key = voice_key, spoken_text, profile, request.seed
+        persistent_key = self._persistent_cache_key(
+            voice_key,
+            spoken_text,
+            source,
+            seed=request.seed,
+            generation_profile=profile,
+            generation_options=generation_options,
+        )
+        may_read_cache = cache_policy is SynthesisCachePolicy.USE
+        cached_audio = self.audio_cache.get(cache_key) if may_read_cache else None
+        cache_source = "memory-cache" if cached_audio is not None else None
+        if cached_audio is None and may_read_cache:
             cached_audio = self.persistent_audio_cache.get(persistent_key)
             if cached_audio is not None:
+                cache_source = "persistent-cache"
                 self.audio_cache.put(cache_key, cached_audio)
         prompt_audio_codes = None
         if cached_audio is None:
+            cache_source = "fresh-generation"
             with self.model_lock:
                 resolved_voice_key, prompt_audio_codes = self._resolve_prompt_codes(
-                    character
+                    request.voice
                 )
             if resolved_voice_key != voice_key:
                 raise TTSConfigurationError(
                     "MOSS-TTS resolved inconsistent voice conditioning"
                 )
+        self.last_audio_source = f"moss-tts:{cache_source}"
         return MossTTSPreparedSpeech(
             voice_key,
             prompt_audio_codes,
             spoken_text,
             cache_key,
             persistent_key,
+            max_tokens,
+            max_audio_seconds,
             cached_audio,
+            cache_source,
+            request.seed,
+            profile,
+            tuple(sorted(generation_options.items())),
+            cache_policy,
         )
+
+    def _render_prepared(self, prepared, request):
+        return SynthesisChunkStream(self._render_chunks(prepared, request))
+
+    def _render_chunks(self, prepared, request):
+        started = self.clock()
+        first_chunk_ms = None
+        chunks = []
+        completion = SynthesisCompletion.COMPLETE
+        emitted_samples = 0
+        max_samples = max(1, round(self.sample_rate * prepared.max_audio_seconds))
+        generation = None
+        cache_source = prepared.cache_source
+        self.last_generation_limited = False
+        self.last_generated_audio = prepared.cached_audio
+        self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
+        self.last_first_audio_ms = self.last_synthesis_ms
+
+        def cancelled():
+            return self.playback_stop.is_set() or request.cancellation_requested()
+
+        def bounded(audio):
+            nonlocal emitted_samples, completion
+            remaining = max_samples - emitted_samples
+            if remaining <= 0:
+                completion = SynthesisCompletion.LIMITED
+                return None
+            if len(audio) > remaining:
+                audio = audio[:remaining]
+                completion = SynthesisCompletion.LIMITED
+            emitted_samples += len(audio)
+            return audio
+
+        def finish(final_completion):
+            channels = chunks[0].shape[1] if chunks else 1
+            pcm = (
+                np.concatenate(chunks, axis=0)
+                if chunks
+                else np.empty((0, channels), dtype=np.float32)
+            )
+            self.last_generation_limited = (
+                final_completion is SynthesisCompletion.LIMITED
+            )
+            self.last_generated_audio = pcm if chunks else None
+            if (
+                final_completion is SynthesisCompletion.COMPLETE
+                and prepared.cached_audio is None
+                and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+            ):
+                self.audio_cache.put(prepared.cache_key, pcm)
+                self.persistent_audio_cache.put(prepared.persistent_cache_key, pcm)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=self.sample_rate,
+                completion=final_completion,
+                limits=SynthesisLimits(
+                    max_tokens=prepared.max_tokens,
+                    max_audio_seconds=prepared.max_audio_seconds,
+                ),
+                timing=SynthesisTiming(
+                    first_chunk_ms=first_chunk_ms,
+                    total_ms=(self.clock() - started) * 1000,
+                ),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source=cache_source,
+                    generation_profile=prepared.generation_profile,
+                    seed=prepared.seed,
+                    chunk_count=len(chunks),
+                    sample_count=len(pcm),
+                ),
+            )
+
+        try:
+            if prepared.cached_audio is not None:
+                source_chunks = self._cached_chunks(prepared.cached_audio)
+                first_chunk_ms = 0.0
+            else:
+                cache_source = "fresh-generation"
+
+                def generated_chunks():
+                    nonlocal generation
+                    with self.model_lock:
+                        if prepared.seed is not None and self._mlx is not None:
+                            self._mlx.random.seed(prepared.seed)
+                        generation = self.model.generate(
+                            text=prepared.text,
+                            prompt_audio_codes=prepared.prompt_audio_codes,
+                            language=self.language,
+                            mode="generation",
+                            max_tokens=prepared.max_tokens,
+                            stream=True,
+                            do_sample=True,
+                            streaming_first_chunk_frames=(
+                                self.streaming_first_chunk_frames
+                            ),
+                            streaming_interval=self.streaming_interval,
+                            **dict(prepared.generation_options),
+                        )
+                        self.active_generation = generation
+                        for generated in generation:
+                            yield self._to_numpy_audio(generated.audio)
+
+                source_chunks = generated_chunks()
+
+            for audio in source_chunks:
+                if cancelled():
+                    completion = SynthesisCompletion.CANCELLED
+                    break
+                audio = self._to_numpy_audio(audio)
+                if not audio.size:
+                    continue
+                if prepared.cached_audio is None:
+                    audio = bounded(audio)
+                    if audio is None:
+                        break
+                if first_chunk_ms is None:
+                    first_chunk_ms = (self.clock() - started) * 1000
+                    self.last_synthesis_ms = first_chunk_ms
+                    self.last_first_audio_ms = first_chunk_ms
+                chunks.append(audio)
+                yield SynthesisChunk(
+                    pcm=audio,
+                    sample_rate=self.sample_rate,
+                    index=len(chunks) - 1,
+                    elapsed_ms=(self.clock() - started) * 1000,
+                )
+                if completion is SynthesisCompletion.LIMITED:
+                    break
+
+            if cancelled() and completion is SynthesisCompletion.COMPLETE:
+                completion = SynthesisCompletion.CANCELLED
+            if not chunks and completion is SynthesisCompletion.COMPLETE:
+                raise TTSSynthesisError("MOSS-TTS generated no audio")
+            return finish(completion)
+        except (TTSConfigurationError, TTSSynthesisError):
+            raise
+        except Exception as error:
+            if cancelled():
+                return finish(SynthesisCompletion.CANCELLED)
+            raise TTSSynthesisError(str(error)) from error
+        finally:
+            if generation is not None:
+                self._close_active_generation()
 
     def prime(self, character):
         voice_key, _source = self._resolve_voice_source(character)
@@ -1095,44 +1571,50 @@ class MossTTSVoiceRouterBackend:
                 return False
             self.playback_stop.clear()
             self.last_playback_underrun = False
+            self.last_generation_limited = False
+            self.last_generated_audio = prepared.cached_audio
             self.last_synthesis_ms = 0.0 if prepared.cached_audio is not None else None
             self.last_first_audio_ms = self.last_synthesis_ms
             started = self.clock()
-            raw_chunks = []
-            completed = False
             try:
                 self.playback_active = True
-                if prepared.cached_audio is not None:
-                    completed = self._play_cached(
-                        prepared.cached_audio,
-                        playback_guard,
+                request = SynthesisRequest(
+                    voice=prepared.voice_key,
+                    text=prepared.text,
+                    seed=prepared.seed,
+                    generation_profile=prepared.generation_profile,
+                    cancellation=(
+                        None
+                        if playback_guard is None
+                        else lambda: not playback_guard()
+                    ),
+                    cache_policy=prepared.cache_policy,
+                )
+                playback_prepared = prepared
+                if (
+                    prepared.cached_audio is None
+                    and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+                ):
+                    playback_prepared = replace(
+                        prepared,
+                        cache_policy=SynthesisCachePolicy.BYPASS,
                     )
-                else:
-                    with self.model_lock:
-                        results = self.model.generate(
-                            text=prepared.text,
-                            prompt_audio_codes=prepared.prompt_audio_codes,
-                            language=self.language,
-                            max_tokens=4096,
-                            stream=True,
-                            streaming_first_chunk_frames=(
-                                self.streaming_first_chunk_frames
-                            ),
-                            streaming_interval=self.streaming_interval,
-                        )
-                        self.active_generation = results
-                        completed = self._play_generated(
-                            results,
-                            playback_guard,
-                            started,
-                            raw_chunks,
-                        )
-                if completed and raw_chunks:
-                    complete_audio = np.concatenate(raw_chunks, axis=0)
-                    self.audio_cache.put(prepared.cache_key, complete_audio)
+                rendered = self._render_prepared(playback_prepared, request)
+                played = self._play_rendered_stream(rendered, playback_guard)
+                if not played:
+                    return False
+                result = rendered.result
+                completed = result.completion is not SynthesisCompletion.CANCELLED
+                if (
+                    completed
+                    and result.completion is SynthesisCompletion.COMPLETE
+                    and prepared.cached_audio is None
+                    and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
+                ):
+                    self.audio_cache.put(prepared.cache_key, result.pcm)
                     self.persistent_audio_cache.put(
                         prepared.persistent_cache_key,
-                        complete_audio,
+                        result.pcm,
                     )
                 return completed
             except (TTSConfigurationError, TTSSynthesisError):
@@ -1147,6 +1629,84 @@ class MossTTSVoiceRouterBackend:
                     self.active_stream = None
                 self.playback_active = False
                 self.last_playback_ms = (self.clock() - started) * 1000
+
+    def _play_rendered_stream(self, rendered, playback_guard):
+        try:
+            first_chunk = next(rendered)
+        except StopIteration:
+            return False
+
+        chunk_queue = Queue(maxsize=4)
+        playback_finished = object()
+        playback_result = {"completed": False, "error": None}
+        audio_output = self._resolve_audio_output()
+
+        def enqueue(value):
+            while not self.playback_stop.is_set():
+                try:
+                    chunk_queue.put(value, timeout=0.1)
+                    return True
+                except Full:
+                    continue
+            return False
+
+        def consume():
+            try:
+                with audio_output.OutputStream(
+                    samplerate=self.sample_rate,
+                    channels=first_chunk.pcm.shape[1],
+                    dtype="float32",
+                    latency=self.playback_latency,
+                ) as stream:
+                    with self.active_stream_lock:
+                        self.active_stream = stream
+                    wrote_audio = False
+                    while not self._cancelled(playback_guard):
+                        try:
+                            item = chunk_queue.get(timeout=0.1)
+                        except Empty:
+                            continue
+                        if item is playback_finished:
+                            playback_result["completed"] = wrote_audio
+                            return
+                        self._write_stream_chunk(stream, item.pcm)
+                        wrote_audio = True
+            except Exception as error:
+                playback_result["error"] = error
+                self.playback_stop.set()
+            finally:
+                with self.active_stream_lock:
+                    self.active_stream = None
+
+        enqueue(first_chunk)
+        consumer = Thread(target=consume, name="vntts-moss-playback", daemon=True)
+        consumer.start()
+        render_exhausted = False
+        try:
+            for chunk in rendered:
+                if not enqueue(chunk):
+                    break
+            else:
+                render_exhausted = True
+        finally:
+            if not render_exhausted:
+                rendered.close()
+            if not self.playback_stop.is_set():
+                enqueue(playback_finished)
+            consumer.join(timeout=5.0)
+            if consumer.is_alive():
+                self.playback_stop.set()
+                consumer.join(timeout=1.0)
+        if playback_result["error"] is not None:
+            raise playback_result["error"]
+        return bool(playback_result["completed"])
+
+    def _resolve_audio_output(self):
+        if self.audio_output is None:
+            import sounddevice
+
+            self.audio_output = sounddevice
+        return self.audio_output
 
     def warm_up(self, *, progress=None, text="Voice ready."):
         progress = progress or (lambda _current, _total, _character: None)
@@ -1163,24 +1723,16 @@ class MossTTSVoiceRouterBackend:
         # generated warm-up is cached and never sent to the output device.
         prepared = self.prepare("Narrator", text)
         if prepared.cached_audio is None:
-            chunks = []
-            with self.model_lock:
-                for result in self.model.generate(
-                    text=prepared.text,
-                    prompt_audio_codes=prepared.prompt_audio_codes,
-                    language=self.language,
-                    max_tokens=128,
-                    stream=True,
-                    streaming_first_chunk_frames=self.streaming_first_chunk_frames,
-                    streaming_interval=self.streaming_interval,
-                ):
-                    audio = self._to_numpy_audio(result.audio)
-                    if audio.size:
-                        chunks.append(audio)
-            if chunks:
-                audio = np.concatenate(chunks, axis=0)
-                self.audio_cache.put(prepared.cache_key, audio)
-                self.persistent_audio_cache.put(prepared.persistent_cache_key, audio)
+            warmup_request = SynthesisRequest(
+                voice="Narrator",
+                text=text,
+                generation_profile=prepared.generation_profile,
+            )
+            self.playback_stop.clear()
+            self._render_prepared(
+                replace(prepared, max_tokens=128),
+                warmup_request,
+            ).collect()
         return len(characters)
 
     def set_volume(self, volume):
@@ -1189,6 +1741,18 @@ class MossTTSVoiceRouterBackend:
     def set_speed(self, speed):
         # MOSS-TTS does not expose pitch-preserving speed control.
         self.speed = validate_speed(speed)
+
+    def set_generation_profile(self, profile):
+        profile_name, options = get_moss_tts_generation_profile(profile)
+        if (
+            profile_name == self.generation_profile
+            and options == self.generation_options
+        ):
+            return False
+        self.generation_profile = profile_name
+        self.generation_options = options
+        self.audio_cache.clear()
+        return True
 
     def set_live_mode_active(self, active):
         return bool(active)
@@ -1205,102 +1769,6 @@ class MossTTSVoiceRouterBackend:
             except Exception:
                 pass
         return was_playing
-
-    def _play_cached(self, audio, playback_guard):
-        channels = self._to_numpy_audio(audio).shape[1]
-        with self.audio_output.OutputStream(
-            samplerate=self.sample_rate,
-            channels=channels,
-            dtype="float32",
-            latency=self.playback_latency,
-        ) as stream:
-            with self.active_stream_lock:
-                self.active_stream = stream
-            wrote_audio = False
-            for chunk in self._cached_chunks(audio):
-                if self._cancelled(playback_guard):
-                    return False
-                self._write_stream_chunk(stream, chunk)
-                wrote_audio = True
-        if not wrote_audio:
-            raise TTSSynthesisError("MOSS-TTS cached audio is empty")
-        return True
-
-    def _play_generated(self, results, playback_guard, started, raw_chunks):
-        first_audio = None
-        for result in results:
-            if self._cancelled(playback_guard):
-                return False
-            audio = self._to_numpy_audio(result.audio)
-            if audio.size:
-                first_audio = audio
-                break
-        if first_audio is None:
-            raise TTSSynthesisError("MOSS-TTS generated no audio")
-
-        first_audio_ms = (self.clock() - started) * 1000
-        self.last_synthesis_ms = first_audio_ms
-        self.last_first_audio_ms = first_audio_ms
-        chunk_queue = Queue(maxsize=4)
-        playback_finished = object()
-        playback_result = {"completed": False, "error": None}
-
-        def enqueue(value):
-            while not self.playback_stop.is_set():
-                try:
-                    chunk_queue.put(value, timeout=0.1)
-                    return True
-                except Full:
-                    continue
-            return False
-
-        def consume():
-            try:
-                with self.audio_output.OutputStream(
-                    samplerate=self.sample_rate,
-                    channels=first_audio.shape[1],
-                    dtype="float32",
-                    latency=self.playback_latency,
-                ) as stream:
-                    with self.active_stream_lock:
-                        self.active_stream = stream
-                    while not self._cancelled(playback_guard):
-                        try:
-                            audio = chunk_queue.get(timeout=0.1)
-                        except Empty:
-                            continue
-                        if audio is playback_finished:
-                            playback_result["completed"] = bool(raw_chunks)
-                            return
-                        raw_chunks.append(audio)
-                        self._write_stream_chunk(stream, audio)
-            except Exception as error:
-                playback_result["error"] = error
-                self.playback_stop.set()
-            finally:
-                with self.active_stream_lock:
-                    self.active_stream = None
-
-        enqueue(first_audio)
-        consumer = Thread(target=consume, name="vntts-moss-playback", daemon=True)
-        consumer.start()
-        try:
-            for result in results:
-                if self._cancelled(playback_guard):
-                    break
-                audio = self._to_numpy_audio(result.audio)
-                if audio.size and not enqueue(audio):
-                    break
-        finally:
-            if not self.playback_stop.is_set():
-                enqueue(playback_finished)
-            consumer.join(timeout=5.0)
-            if consumer.is_alive():
-                self.playback_stop.set()
-                consumer.join(timeout=1.0)
-        if playback_result["error"] is not None:
-            raise playback_result["error"]
-        return bool(playback_result["completed"])
 
     def _cancelled(self, playback_guard):
         if self.playback_stop.is_set():
@@ -1374,13 +1842,30 @@ class MossTTSVoiceRouterBackend:
             suffix=".safetensors",
         )
 
-    def _persistent_cache_key(self, voice_key, text, source):
+    def _persistent_cache_key(
+        self,
+        voice_key,
+        text,
+        source,
+        *,
+        seed=None,
+        generation_profile=None,
+        generation_options=None,
+    ):
+        profile = generation_profile or self.generation_profile
+        options = generation_options or self.generation_options
+        seed_identity = {} if seed is None else {"seed": seed}
         return self.persistent_cache_keys.key(
             voice_key=voice_key,
             source=source,
             text=text,
             speed=self.speed,
             language=self.language,
+            generation_profile=profile,
+            **options,
+            **seed_identity,
+            max_tokens=moss_generation_limits(text)[0],
+            max_audio_seconds=moss_generation_limits(text)[1],
             streaming_first_chunk_frames=self.streaming_first_chunk_frames,
             streaming_interval=self.streaming_interval,
         )

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -19,7 +19,14 @@ from vntts.speech_backend import (
     configure_cpu_synthesis_threads,
     select_torch_device,
 )
+from vntts.synthesis import (
+    SynthesisCachePolicy,
+    SynthesisCompletion,
+    SynthesisRequest,
+)
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+_default_audio_output = object()
 
 
 class FakeTensor:
@@ -418,11 +425,12 @@ class PocketTTSBackendTest(unittest.TestCase):
         registry=None,
         *,
         model=None,
-        audio_output=None,
+        audio_output=_default_audio_output,
         cache_directory=None,
     ):
         model = model or FakePocketModel()
-        audio_output = audio_output or FakeStreamingAudioOutput()
+        if audio_output is _default_audio_output:
+            audio_output = FakeStreamingAudioOutput()
 
         def export_state(state, path):
             Path(path).write_text(state, encoding="utf-8")
@@ -471,9 +479,157 @@ class PocketTTSBackendTest(unittest.TestCase):
 
         self.assertEqual(model.stream_calls, [("state:alba", "Hello world.")])
         self.assertEqual(len(audio_output.streams), 1)
-        self.assertEqual(len(audio_output.streams[0].writes), 2)
+        self.assertEqual(len(audio_output.streams[0].writes), 1)
+        self.assertEqual(audio_output.streams[0].writes[0].shape, (6, 1))
         self.assertEqual(audio_output.streams[0].options["samplerate"], 24_000)
         self.assertIsNotNone(backend.last_first_audio_ms)
+
+    def test_render_returns_typed_pcm_without_opening_output_stream(self):
+        backend, model, audio_output = self.create_backend()
+
+        stream = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="  Render   this. ",
+                generation_profile="default",
+            )
+        )
+        chunks = list(stream)
+        result = stream.result
+
+        self.assertEqual(audio_output.streams, [])
+        self.assertEqual(model.stream_calls, [("state:alba", "Render this.")])
+        self.assertEqual([chunk.pcm.shape for chunk in chunks], [(3, 1), (3, 1)])
+        self.assertEqual(result.pcm.shape, (6, 1))
+        self.assertEqual(result.sample_rate, 24_000)
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertIsNone(result.limits.max_tokens)
+        self.assertIsNone(result.limits.max_audio_seconds)
+        self.assertEqual(result.diagnostics.generation_profile, "default")
+        self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
+
+    def test_render_only_backend_does_not_import_sounddevice(self):
+        original_import = __import__
+
+        def reject_sounddevice(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise AssertionError("render-only construction imported sounddevice")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=reject_sounddevice):
+            backend, _model, audio_output = self.create_backend(audio_output=None)
+            result = backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Offline Pocket render.",
+                    generation_profile="default",
+                )
+            ).collect()
+
+        self.assertIsNone(audio_output)
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+
+    def test_render_cancellation_returns_partial_pcm_without_caching(self):
+        backend, model, audio_output = self.create_backend()
+        cancellation = Event()
+        stream = backend.render(
+            SynthesisRequest(
+                voice="Narrator",
+                text="Cancel this.",
+                generation_profile="default",
+                cancellation=cancellation,
+            )
+        )
+
+        first = next(stream)
+        cancellation.set()
+        list(stream)
+
+        self.assertEqual(audio_output.streams, [])
+        self.assertEqual(stream.result.completion, SynthesisCompletion.CANCELLED)
+        np.testing.assert_array_equal(stream.result.pcm, first.pcm)
+        self.assertEqual(len(model.stream_calls), 1)
+        self.assertEqual(
+            backend.prepare("Narrator", "Cancel this.").cache_source,
+            "fresh-generation",
+        )
+
+    def test_render_cache_policies_refresh_and_bypass_generation(self):
+        backend, model, _audio_output = self.create_backend()
+        base = {
+            "voice": "Narrator",
+            "text": "Cache this.",
+            "generation_profile": "default",
+        }
+
+        fresh = backend.render(SynthesisRequest(**base)).collect()
+        memory = backend.render(SynthesisRequest(**base)).collect()
+        refreshed = backend.render(
+            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.REFRESH)
+        ).collect()
+        bypassed = backend.render(
+            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
+        ).collect()
+
+        self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
+        self.assertEqual(refreshed.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(bypassed.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(len(model.stream_calls), 3)
+
+    def test_seeded_pocket_render_is_rejected_instead_of_silently_ignored(self):
+        backend, _model, _audio_output = self.create_backend()
+
+        with self.assertRaisesRegex(
+            TTSConfigurationError,
+            "does not expose deterministic seeded generation",
+        ):
+            backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Seeded.",
+                    seed=3,
+                    generation_profile="default",
+                )
+            )
+
+    def test_stream_prefill_collects_enough_audio_before_first_write(self):
+        model = FakePocketModel()
+        model.generate_audio_stream = Mock(
+            return_value=iter(
+                (
+                    FakeTensor(np.zeros(1_200)),
+                    FakeTensor(np.zeros(1_200)),
+                    FakeTensor(np.zeros(1_200)),
+                    FakeTensor(np.zeros(600)),
+                )
+            )
+        )
+        backend, _model, audio_output = self.create_backend(model=model)
+
+        self.assertTrue(backend.speak("Narrator", "Buffered line."))
+
+        writes = audio_output.streams[0].writes
+        self.assertEqual(writes[0].shape, (4_200, 1))
+
+    def test_playback_prefill_starts_at_250ms_then_keeps_natural_chunks(self):
+        model = FakePocketModel()
+        model.generate_audio_stream = Mock(
+            return_value=iter(FakeTensor(np.zeros(1_200)) for _index in range(7))
+        )
+        backend, _model, audio_output = self.create_backend(model=model)
+
+        self.assertTrue(backend.speak("Narrator", "Long buffered line."))
+
+        self.assertEqual(
+            [write.shape for write in audio_output.streams[0].writes],
+            [(6_000, 1), (1_200, 1), (1_200, 1)],
+        )
+
+    def test_pocket_finishes_audio_when_ocr_replaces_dialogue(self):
+        backend, _model, _audio_output = self.create_backend()
+
+        self.assertFalse(backend.capabilities.interrupt_on_dialog_replacement)
 
     def test_repeated_line_reuses_complete_audio_cache(self):
         backend, model, audio_output = self.create_backend()
@@ -530,6 +686,24 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertFalse(backend.play(prepared, playback_guard=lambda: False))
 
         self.assertEqual(audio_output.streams, [])
+
+    def test_cancelled_playback_does_not_cache_completed_prefill(self):
+        backend, model, _audio_output = self.create_backend()
+        guard_values = iter([True, True, True, True, True, False, False])
+
+        self.assertFalse(
+            backend.speak(
+                "Narrator",
+                "Do not cache stale audio.",
+                playback_guard=lambda: next(guard_values, False),
+            )
+        )
+
+        self.assertEqual(len(model.stream_calls), 1)
+        self.assertEqual(
+            backend.prepare("Narrator", "Do not cache stale audio.").cache_source,
+            "fresh-generation",
+        )
 
     def test_locked_voice_cloning_reports_actionable_setup(self):
         model = FakePocketModel()
