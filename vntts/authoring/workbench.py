@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -33,15 +34,21 @@ from vntts.authoring import legacy_import
 from vntts.authoring.bulk_generation import (
     LEASE_SCHEMA,
     LEASE_VERSION,
+    NO_PROMPT_SHA256,
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
+    _canonical_sha256,
+    _snapshot_control_files,
     is_spoken_queue_item,
     load_generation_state,
     load_review_audio_bytes,
+    normalize_short_trailing_ellipsis,
     process_is_alive,
     process_started_at,
+    publish_generated_manifest,
     review_generation_item,
+    sha256_control_path,
 )
 from vntts.authoring.game_pack import (
     FinalGamePackError,
@@ -269,6 +276,8 @@ def create_resume_workspace(
     backend=None,
     model=None,
     generation_profile=None,
+    carry_forward_from=None,
+    carry_forward_characters=None,
 ):
     """Copy one immutable import into a separate mutable resume workspace."""
     source = Path(import_directory).expanduser().resolve()
@@ -359,8 +368,23 @@ def create_resume_workspace(
             "model": _optional_text(model),
             "generation_profile": _optional_text(generation_profile),
         }
+        seed_state = _preserve_seed_generation_state(staging, state_artifact)
+        carry_forward = _carry_forward_review_outcomes(
+            carry_forward_from,
+            staging,
+            queue_snapshot,
+            import_id=import_id,
+            voice_config=voice_config,
+            run_config=run_config,
+            characters=carry_forward_characters,
+        )
         config_fingerprint = _workspace_config_fingerprint(
-            import_id, story_config, voice_config, narrator, run_config
+            import_id,
+            story_config,
+            voice_config,
+            narrator,
+            run_config,
+            carry_forward,
         )
         workspace_id = (
             f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
@@ -394,6 +418,8 @@ def create_resume_workspace(
             "legacy_external_inputs": manifest.get("external_inputs", []),
             "narrator_character": narrator,
             "run_config": run_config,
+            "seed_generation_state": seed_state,
+            "carry_forward": carry_forward,
             "config_fingerprint": config_fingerprint,
             "seed_inventory": [
                 {"path": "provenance/import.json", "sha256": import_sha256},
@@ -1170,6 +1196,395 @@ def generation_output_identity(workspace_directory):
     }
 
 
+def _preserve_seed_generation_state(staging, state_artifact):
+    source = staging / "generated-audio" / "generation-state.json"
+    expected = _require_sha256(
+        state_artifact.get("sha256"), "Imported generation state SHA-256"
+    )
+    payload = _read_bound_bytes(source, expected, "Imported generation state")
+    relative = Path("provenance/seed-generation-state.json")
+    target = staging / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    if sha256_file(target) != expected:
+        raise AuthoringWorkbenchError("Unable to preserve seed generation state")
+    return {"path": relative.as_posix(), "sha256": expected}
+
+
+def _carry_forward_review_outcomes(
+    source_workspace,
+    staging,
+    target_queue,
+    *,
+    import_id,
+    voice_config,
+    run_config,
+    characters,
+):
+    if source_workspace is None:
+        if characters is not None:
+            raise AuthoringWorkbenchError(
+                "Carry-forward characters require a source workspace"
+            )
+        return None
+    if characters is None:
+        raise AuthoringWorkbenchError(
+            "Carry-forward requires explicit non-Narrator characters"
+        )
+    selected = tuple(sorted({_required_text(value, "Carry-forward character") for value in characters}))
+    if not selected or "Narrator" in selected:
+        raise AuthoringWorkbenchError(
+            "Carry-forward characters must be explicit and exclude Narrator"
+        )
+    source_directory, source_document = _load_workspace(source_workspace)
+    source_source = source_document["source"]
+    if source_source.get("import_id") != import_id:
+        raise AuthoringWorkbenchError(
+            "Carry-forward source and target must share one immutable import"
+        )
+    source_queue = _load_bound_workspace_queue(source_directory, source_document)
+    target_queue_path = staging / "queue.jsonl"
+    source_queue_path = source_directory / "queue.jsonl"
+    source_queue_sha256 = sha256_file(source_queue_path)
+    if (
+        source_queue_sha256 != sha256_file(target_queue_path)
+        or source_queue.metadata != target_queue.metadata
+        or [item.document for item in source_queue.items]
+        != [item.document for item in target_queue.items]
+    ):
+        raise AuthoringWorkbenchError(
+            "Carry-forward source and target queues are not byte-identical"
+        )
+    if source_document.get("run_config") != run_config:
+        raise AuthoringWorkbenchError(
+            "Carry-forward source and target model configuration differs"
+        )
+    source_output = source_directory / "generated-audio"
+    source_state_path = source_output / "generation-state.json"
+    source_state_payload = _read_file_bytes(source_state_path, "source generation state")
+    source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
+    try:
+        parsed_source_state = json.loads(source_state_payload.decode("utf-8"))
+        validated_source_state = load_generation_state(
+            source_state_path, source_queue_path
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
+        raise AuthoringWorkbenchError(
+            f"Carry-forward source state is invalid: {error}"
+        ) from error
+    if (
+        parsed_source_state != validated_source_state
+        or sha256_file(source_state_path) != source_state_sha256
+    ):
+        raise AuthoringWorkbenchError(
+            "Carry-forward source state changed while it was loaded"
+        )
+    if parsed_source_state.get("active") is not None:
+        raise AuthoringWorkbenchError(
+            "Carry-forward source has an active generation attempt"
+        )
+
+    target_state_path = staging / "generated-audio" / "generation-state.json"
+    try:
+        target_state = load_generation_state(target_state_path, target_queue_path)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if target_state.get("active") is not None:
+        raise AuthoringWorkbenchError(
+            "Carry-forward target seed has an active generation attempt"
+        )
+    target_seed = copy.deepcopy(target_state)
+    target_registry = _registry_from_staged_voice(staging, voice_config)
+    source_registry = _workspace_voice_registry(source_directory, source_document)
+    source_provenance = None
+    source_audio_snapshots = []
+    carried = []
+    for queue_item in target_queue.items:
+        result = parsed_source_state["items"].get(queue_item.queue_id)
+        if not isinstance(result, dict) or not _terminal_review_outcome(result):
+            continue
+        character = synthesis_character_for_line(
+            queue_item.speaker, queue_item.voice_character
+        )
+        if character == "Narrator" or character not in selected:
+            continue
+        seed_result = target_seed["items"].get(queue_item.queue_id)
+        mode = "review-only"
+        if not _same_seed_generation(seed_result, result):
+            mode = "full-outcome"
+            if source_provenance is None:
+                source_provenance = _workspace_generation_provenance(
+                    source_directory, source_document
+                )
+            _validate_full_carry_forward_item(
+                queue_item,
+                result,
+                character,
+                source_document,
+                run_config,
+                source_provenance,
+                source_registry,
+                target_registry,
+            )
+        relative = _safe_relative(
+            result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
+        )
+        for other_queue_id, other_result in target_seed["items"].items():
+            if (
+                other_queue_id != queue_item.queue_id
+                and isinstance(other_result, dict)
+                and other_result.get("path") == relative.as_posix()
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Carry-forward WAV path collides with {other_queue_id!r}"
+                )
+        source_audio = _within(source_output, relative, "Carry-forward source WAV")
+        audio_payload = _read_file_bytes(source_audio, "carry-forward source WAV")
+        audio_sha256 = hashlib.sha256(audio_payload).hexdigest()
+        if audio_sha256 != _require_sha256(
+            result.get("file_sha256"),
+            f"Carry-forward item {queue_item.queue_id!r} WAV SHA-256",
+        ):
+            raise AuthoringWorkbenchError(
+                f"Carry-forward source WAV changed for {queue_item.queue_id!r}"
+            )
+        target_audio = _within(
+            staging / "generated-audio", relative, "Carry-forward target WAV"
+        )
+        if mode == "full-outcome":
+            target_audio.parent.mkdir(parents=True, exist_ok=True)
+            target_audio.write_bytes(audio_payload)
+        elif not target_audio.is_file() or sha256_file(target_audio) != audio_sha256:
+            raise AuthoringWorkbenchError(
+                f"Carry-forward seed WAV differs for {queue_item.queue_id!r}"
+            )
+        source_item_sha256 = _canonical_sha256(result)
+        carry_record = {
+            "mode": mode,
+            "source_workspace_id": source_document["workspace_id"],
+            "source_state_sha256": source_state_sha256,
+            "source_item_sha256": source_item_sha256,
+            "audio_sha256": audio_sha256,
+            "character": character,
+        }
+        copied_result = copy.deepcopy(result)
+        copied_result["carry_forward"] = carry_record
+        target_state["items"][queue_item.queue_id] = copied_result
+        carried.append({"queue_id": queue_item.queue_id, **carry_record})
+        source_audio_snapshots.append((source_audio, audio_sha256))
+    if not carried:
+        raise AuthoringWorkbenchError(
+            "Carry-forward source has no terminal review outcomes for the selected characters"
+        )
+    unknown = set(selected) - {value["character"] for value in carried}
+    if unknown:
+        raise AuthoringWorkbenchError(
+            "Carry-forward has no terminal review outcomes for: "
+            + ", ".join(sorted(unknown))
+        )
+    atomic_write_json(target_state_path, target_state, sort_keys=True)
+    try:
+        publish_generated_manifest(target_state_path)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if sha256_file(source_state_path) != source_state_sha256:
+        raise AuthoringWorkbenchError(
+            "Carry-forward source state changed before workspace publication"
+        )
+    for path, digest in source_audio_snapshots:
+        if not path.is_file() or sha256_file(path) != digest:
+            raise AuthoringWorkbenchError(
+                "Carry-forward source WAV changed before workspace publication"
+            )
+    return {
+        "schema": "vntts.authoring-carry-forward",
+        "schema_version": 1,
+        "source_workspace_id": source_document["workspace_id"],
+        "source_state_sha256": source_state_sha256,
+        "characters": list(selected),
+        "items": carried,
+    }
+
+
+def _terminal_review_outcome(result):
+    return (result.get("status"), result.get("review_status")) in {
+        ("approved", "approved"),
+        ("generated", "rejected"),
+    }
+
+
+def _same_seed_generation(seed_result, reviewed_result):
+    if not isinstance(seed_result, dict):
+        return False
+    seed = copy.deepcopy(seed_result)
+    reviewed = copy.deepcopy(reviewed_result)
+    for value in (seed, reviewed):
+        value.pop("carry_forward", None)
+        value.pop("updated_at", None)
+        value["status"] = "generated"
+        value["review_status"] = "pending_review"
+    return seed == reviewed
+
+
+def _validate_full_carry_forward_item(
+    queue_item,
+    result,
+    character,
+    source_document,
+    run_config,
+    source_provenance,
+    source_registry,
+    target_registry,
+):
+    expected = {
+        "provider": run_config.get("backend"),
+        "model": run_config.get("model"),
+        "generation_profile": run_config.get("generation_profile"),
+        "voice_character": character,
+        "prompt_sha256": NO_PROMPT_SHA256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": _canonical_sha256(
+            queue_item.document.get("prompt_adapters") or {}
+        ),
+        "synthesis_provenance_sha256": source_provenance,
+    }
+    synthesis_text = queue_item.text
+    text_transform = None
+    if run_config.get("backend") == "moss-tts":
+        synthesis_text = normalize_short_trailing_ellipsis(synthesis_text)
+        text_transform = "short-trailing-ellipsis-v1"
+    expected["synthesis_text_sha256"] = hashlib.sha256(
+        synthesis_text.encode("utf-8")
+    ).hexdigest()
+    expected["text_transform"] = text_transform
+    mismatched = [field for field, value in expected.items() if result.get(field) != value]
+    if mismatched:
+        raise AuthoringWorkbenchError(
+            f"Carry-forward controls differ for {queue_item.queue_id!r}: "
+            + ", ".join(mismatched)
+        )
+    source_voice = _voice_reference_identity(source_registry, character)
+    target_voice = _voice_reference_identity(target_registry, character)
+    if source_voice != target_voice:
+        raise AuthoringWorkbenchError(
+            f"Carry-forward voice references differ for {character!r}"
+        )
+    if source_document.get("run_config") != run_config:
+        raise AuthoringWorkbenchError("Carry-forward run configuration changed")
+
+
+def _workspace_generation_provenance(directory, workspace):
+    run_config = workspace["run_config"]
+    backend = _required_text(run_config.get("backend"), "Generation backend")
+    model = _required_text(run_config.get("model"), "Generation model")
+    profile = _required_text(
+        run_config.get("generation_profile"), "Generation profile"
+    )
+    manifest = _selected_voice_manifest(directory, workspace)
+    if manifest is None:
+        raise AuthoringWorkbenchError("Carry-forward source has no voice manifest")
+    registry = CharacterVoiceRegistry.from_file(manifest)
+    controls = {"voice_manifest": (manifest, sha256_control_path(manifest))}
+    references = sorted(
+        {
+            path.resolve()
+            for voice in registry.unique_voices()
+            for path in voice.references
+        },
+        key=str,
+    )
+    for index, path in enumerate(references, start=1):
+        controls[f"voice_reference:{index:04d}"] = (
+            path,
+            sha256_control_path(path),
+        )
+    model_path = Path(model).expanduser()
+    if model_path.exists():
+        model_path = model_path.resolve()
+        controls["model_artifact"] = (
+            model_path,
+            sha256_control_path(model_path),
+        )
+    narrator = _required_text(
+        workspace.get("narrator_character"), "Narrator character"
+    )
+    narrator_voice = registry.resolve(narrator)
+    if narrator_voice is not None and narrator_voice.references:
+        reference = narrator_voice.references[0]
+        controls[f"narrator_selection:{narrator}"] = (
+            reference,
+            sha256_control_path(reference),
+        )
+    try:
+        snapshots = _snapshot_control_files(controls)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return _canonical_sha256(
+        {
+            "provider": backend,
+            "model": model,
+            "generation_profile": profile,
+            "text_transform": (
+                "short-trailing-ellipsis-v1" if backend == "moss-tts" else None
+            ),
+            "controls": [
+                {"role": value["role"], "sha256": value["sha256"]}
+                for value in snapshots
+            ],
+        }
+    )
+
+
+def _workspace_voice_registry(directory, workspace):
+    manifest = _selected_voice_manifest(directory, workspace)
+    if manifest is None:
+        raise AuthoringWorkbenchError("Workspace has no voice manifest snapshot")
+    try:
+        return CharacterVoiceRegistry.from_file(manifest)
+    except VoiceManifestError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+
+
+def _registry_from_staged_voice(staging, voice_config):
+    if not isinstance(voice_config, dict):
+        raise AuthoringWorkbenchError(
+            "Carry-forward target requires a voice manifest snapshot"
+        )
+    manifest = _within(
+        staging,
+        _safe_relative(voice_config.get("path"), "Voice manifest snapshot"),
+        "Voice manifest snapshot",
+    )
+    try:
+        return CharacterVoiceRegistry.from_file(manifest)
+    except VoiceManifestError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+
+
+def _voice_reference_identity(registry, character):
+    voice = registry.resolve(character)
+    if voice is None or not voice.references:
+        raise AuthoringWorkbenchError(
+            f"Carry-forward voice references are missing for {character!r}"
+        )
+    return {
+        "character": voice.character,
+        "speaker": voice.speaker,
+        "aliases": list(voice.aliases),
+        "references": [sha256_control_path(path) for path in voice.references],
+    }
+
+
+def _read_file_bytes(path, label):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise AuthoringWorkbenchError(f"{label.capitalize()} is missing or unsafe")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise AuthoringWorkbenchError(f"Unable to read {label}: {error}") from error
+
+
 def _validated_import_inventory(source, manifest):
     values = manifest.get("artifacts")
     if not isinstance(values, list) or not values:
@@ -1283,6 +1698,7 @@ def _load_workspace(workspace_directory):
     ]
     if workspace.get("seed_inventory") != expected_seed:
         raise AuthoringWorkbenchError("Workspace seed inventory was modified")
+    _validate_workspace_carry_forward(directory, workspace)
     queue_digest = next(
         (value["sha256"] for value in expected_seed if value["path"] == "queue.jsonl"),
         None,
@@ -1325,6 +1741,7 @@ def _load_workspace(workspace_directory):
         workspace.get("voice_manifest"),
         narrator,
         run_config,
+        workspace.get("carry_forward"),
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -1519,6 +1936,92 @@ def _verify_selected_sources(selected_sources):
             )
 
 
+def _validate_workspace_carry_forward(directory, workspace):
+    seed = workspace.get("seed_generation_state")
+    carry = workspace.get("carry_forward")
+    if seed is None:
+        if carry is not None:
+            raise AuthoringWorkbenchError(
+                "Carry-forward workspace has no immutable seed state"
+            )
+        return
+    if not isinstance(seed, dict) or set(seed) != {"path", "sha256"}:
+        raise AuthoringWorkbenchError("Workspace seed state binding is malformed")
+    if seed.get("path") != "provenance/seed-generation-state.json":
+        raise AuthoringWorkbenchError("Workspace seed state path was modified")
+    seed_path = _within(
+        directory,
+        _safe_relative(seed["path"], "Workspace seed state"),
+        "Workspace seed state",
+    )
+    expected_seed = _require_sha256(seed.get("sha256"), "Workspace seed state SHA-256")
+    _read_bound_bytes(seed_path, expected_seed, "Workspace seed state")
+    if carry is None:
+        return
+    if not isinstance(carry, dict) or set(carry) != {
+        "schema",
+        "schema_version",
+        "source_workspace_id",
+        "source_state_sha256",
+        "characters",
+        "items",
+    }:
+        raise AuthoringWorkbenchError("Workspace carry-forward provenance is malformed")
+    if (
+        carry.get("schema") != "vntts.authoring-carry-forward"
+        or carry.get("schema_version") != 1
+        or not isinstance(carry.get("source_workspace_id"), str)
+        or not re.fullmatch(
+            r"resume-[0-9a-f]{24}-[0-9a-f]{16}", carry["source_workspace_id"]
+        )
+    ):
+        raise AuthoringWorkbenchError("Workspace carry-forward identity is invalid")
+    source_state_sha256 = _require_sha256(
+        carry.get("source_state_sha256"), "Carry-forward source state SHA-256"
+    )
+    characters = carry.get("characters")
+    if (
+        not isinstance(characters, list)
+        or not characters
+        or characters != sorted(set(characters))
+        or "Narrator" in characters
+        or any(not isinstance(value, str) or not value.strip() for value in characters)
+    ):
+        raise AuthoringWorkbenchError("Workspace carry-forward characters are invalid")
+    items = carry.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError("Workspace carry-forward item ledger is missing")
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {
+            "queue_id",
+            "mode",
+            "source_workspace_id",
+            "source_state_sha256",
+            "source_item_sha256",
+            "audio_sha256",
+            "character",
+        }:
+            raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
+        queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
+        if queue_id in seen:
+            raise AuthoringWorkbenchError("Workspace carry-forward queue ID is duplicated")
+        seen.add(queue_id)
+        if (
+            item.get("mode") not in {"review-only", "full-outcome"}
+            or item.get("source_workspace_id") != carry["source_workspace_id"]
+            or item.get("source_state_sha256") != source_state_sha256
+            or item.get("character") not in characters
+        ):
+            raise AuthoringWorkbenchError(
+                "Workspace carry-forward item provenance is inconsistent"
+            )
+        _require_sha256(
+            item.get("source_item_sha256"), "Carry-forward source item SHA-256"
+        )
+        _require_sha256(item.get("audio_sha256"), "Carry-forward WAV SHA-256")
+
+
 def _validate_workspace_input_config(directory, workspace, import_snapshot):
     story = workspace.get("story_index")
     if story is not None:
@@ -1611,16 +2114,24 @@ def _validate_workspace_input_config(directory, workspace, import_snapshot):
 
 
 def _workspace_config_fingerprint(
-    import_id, story_config, voice_config, narrator_character, run_config
+    import_id,
+    story_config,
+    voice_config,
+    narrator_character,
+    run_config,
+    carry_forward=None,
 ):
+    fingerprint = {
+        "import_id": import_id,
+        "story_index": story_config,
+        "voice_manifest": voice_config,
+        "narrator_character": narrator_character,
+        "run_config": run_config,
+    }
+    if carry_forward is not None:
+        fingerprint["carry_forward"] = carry_forward
     payload = json.dumps(
-        {
-            "import_id": import_id,
-            "story_index": story_config,
-            "voice_manifest": voice_config,
-            "narrator_character": narrator_character,
-            "run_config": run_config,
-        },
+        fingerprint,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

@@ -5,12 +5,16 @@ import shutil
 import subprocess
 import time
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import (
@@ -138,6 +142,127 @@ def create_test_workspace(root):
     return fixture, imported, workspace
 
 
+def create_carry_source_workspace(root):
+    fixture = write_legacy_fixture(root / "legacy")
+    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-16T15:00:00+00:00",
+            "collections": [
+                {
+                    "collection_id": "main",
+                    "title": "Carry-forward fixture",
+                    "kind": "character-story",
+                    "order": 1,
+                }
+            ],
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "collection_id": "main",
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+        ],
+    )
+    for name, payload in (
+        ("rhiannon.wav", b"rhiannon-reference-one"),
+        ("rhiannon-2.wav", b"rhiannon-reference-two"),
+    ):
+        (root / "legacy" / name).write_bytes(payload)
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    voice_manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+    state["active"] = None
+    state["items"][fixture["queue_id"]]["status"] = "generated"
+    state["items"][fixture["queue_id"]]["review_status"] = "pending_review"
+    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_generated_audio_manifest(
+        fixture["manifest"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "source_queue_sha256": sha256_file(fixture["queue"]),
+            "generated_at": "2026-08-16T17:06:00+00:00",
+        },
+        [],
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    source = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="stable",
+        narrator_character="Rhiannon",
+    )
+    return fixture, imported, source
+
+
+def write_carry_target_manifest(root, *, rhiannon_payloads=None):
+    target = root / "target-voices"
+    target.mkdir()
+    payloads = rhiannon_payloads or (
+        b"rhiannon-reference-one",
+        b"rhiannon-reference-two",
+    )
+    (target / "rhiannon.wav").write_bytes(payloads[0])
+    (target / "rhiannon-2.wav").write_bytes(payloads[1])
+    (target / "paper-heron.wav").write_bytes(b"paper-heron-reference")
+    manifest = target / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
+                    },
+                    {
+                        "character": "Paper Heron",
+                        "speaker": "Paper Heron",
+                        "reference": "paper-heron.wav",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 class AuthoringWorkbenchTest(unittest.TestCase):
     def create_workspace(self, root):
         return create_test_workspace(root)
@@ -218,6 +343,250 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(workspace["source"]["import_id"], imported.name)
         self.assertEqual(imported_hashes, imported_hashes_after)
         self.assertEqual(workspace_queue_hash, fixture_queue_hash)
+
+    def test_carry_forward_preserves_exact_seed_review_and_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            source_state = source.directory / "generated-audio/generation-state.json"
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            source_state_sha256 = sha256_file(source_state)
+            target_manifest = write_carry_target_manifest(root)
+
+            carried = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=target_manifest,
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Paper Heron",
+                carry_forward_from=source.directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            repeated = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=target_manifest,
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Paper Heron",
+                carry_forward_from=source.directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            state = json.loads(
+                (carried.directory / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            workspace = json.loads(
+                (carried.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            manifest = json.loads(
+                (carried.directory / "generated-audio/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            source_state_sha256_after = sha256_file(source_state)
+
+        result = state["items"][fixture["queue_id"]]
+        self.assertTrue(carried.created)
+        self.assertFalse(repeated.created)
+        self.assertEqual(carried.directory, repeated.directory)
+        self.assertNotEqual(carried.directory, source.directory)
+        self.assertEqual(
+            (result["status"], result["review_status"]), ("approved", "approved")
+        )
+        self.assertEqual(result["carry_forward"]["mode"], "review-only")
+        self.assertEqual(workspace["carry_forward"]["characters"], ["Rhiannon"])
+        self.assertEqual(workspace["narrator_character"], "Paper Heron")
+        self.assertEqual(
+            manifest["entries"][0]["carry_forward"]["mode"], "review-only"
+        )
+        self.assertEqual(source_state_sha256_after, source_state_sha256)
+
+    def test_carry_forward_copies_new_full_outcome_with_exact_controls(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            source_state_path = source.directory / "generated-audio/generation-state.json"
+            source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+            queue_item = VoiceGenerationQueue.load(
+                source.directory / "queue.jsonl"
+            ).items[0]
+            item = source_state["items"][fixture["queue_id"]]
+            audio = source.directory / "generated-audio" / item["path"]
+            write_pcm16_wav(
+                audio,
+                np.sin(np.linspace(0, 6 * np.pi, 6_000, dtype=np.float32)) * 0.2,
+                16_000,
+            )
+            item.update(
+                self._current_carry_fields(source.directory, queue_item, audio)
+            )
+            source_state["active"] = None
+            source_state_path.write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+            source_audio = audio.read_bytes()
+            target_manifest = write_carry_target_manifest(root)
+
+            carried = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=target_manifest,
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Paper Heron",
+                carry_forward_from=source.directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            target_state = json.loads(
+                (carried.directory / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            target_item = target_state["items"][fixture["queue_id"]]
+            target_audio = carried.directory / "generated-audio" / target_item["path"]
+            target_audio_sha256 = sha256_file(target_audio)
+            target_audio_payload = target_audio.read_bytes()
+
+        self.assertEqual(target_item["carry_forward"]["mode"], "full-outcome")
+        self.assertEqual(target_item["file_sha256"], target_audio_sha256)
+        self.assertEqual(target_audio_payload, source_audio)
+
+    def test_full_carry_forward_rejects_changed_character_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            state_path = source.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_item = VoiceGenerationQueue.load(
+                source.directory / "queue.jsonl"
+            ).items[0]
+            item = state["items"][fixture["queue_id"]]
+            audio = source.directory / "generated-audio" / item["path"]
+            item.update(self._current_carry_fields(source.directory, queue_item, audio))
+            state["active"] = None
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            target_manifest = write_carry_target_manifest(
+                root,
+                rhiannon_payloads=(b"different-rhiannon", b"rhiannon-reference-two"),
+            )
+
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "references differ"):
+                create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=target_manifest,
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source.directory,
+                    carry_forward_characters=("Rhiannon",),
+                )
+            remaining = [
+                path
+                for path in (root / "workspaces").iterdir()
+                if not path.name.startswith(".")
+            ]
+
+        self.assertEqual([path.resolve() for path in remaining], [source.directory.resolve()])
+
+    def test_carry_forward_rejects_narrator_and_moving_source_state(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            target_manifest = write_carry_target_manifest(root)
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "exclude Narrator"):
+                create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=target_manifest,
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source.directory,
+                    carry_forward_characters=("Narrator",),
+                )
+
+            state_path = source.directory / "generated-audio/generation-state.json"
+            real_publish = workbench_module.publish_generated_manifest
+
+            def mutate_source_after_staging(*args, **kwargs):
+                result = real_publish(*args, **kwargs)
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["external_change"] = True
+                state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+                return result
+
+            with (
+                patch.object(
+                    workbench_module,
+                    "publish_generated_manifest",
+                    side_effect=mutate_source_after_staging,
+                ),
+                self.assertRaisesRegex(AuthoringWorkbenchError, "source state changed"),
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=target_manifest,
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source.directory,
+                    carry_forward_characters=("Rhiannon",),
+                )
+            remaining = [
+                path.resolve()
+                for path in (root / "workspaces").iterdir()
+                if not path.name.startswith(".")
+            ]
+
+        self.assertEqual(remaining, [source.directory.resolve()])
+
+    def _current_carry_fields(self, workspace_directory, queue_item, audio):
+        workspace = json.loads(
+            (workspace_directory / "workspace.json").read_text(encoding="utf-8")
+        )
+        return {
+            "status": "approved",
+            "review_status": "approved",
+            "file_sha256": sha256_file(audio),
+            "provider": "moss-tts",
+            "model": "model with spaces",
+            "prompt_sha256": bulk_generation_module.NO_PROMPT_SHA256,
+            "prompt_applied": False,
+            "queue_annotations_sha256": bulk_generation_module._canonical_sha256(
+                queue_item.document.get("prompt_adapters") or {}
+            ),
+            "synthesis_text_sha256": hashlib.sha256(
+                queue_item.text.encode("utf-8")
+            ).hexdigest(),
+            "text_transform": "short-trailing-ellipsis-v1",
+            "synthesis_provenance_sha256": workbench_module._workspace_generation_provenance(
+                workspace_directory, workspace
+            ),
+            "generation_profile": "stable",
+            "voice_character": "Rhiannon",
+            "quality": asdict(bulk_generation_module.inspect_generated_wav(audio)),
+            "speech_quality": asdict(
+                bulk_generation_module.inspect_generated_speech(audio)
+            ),
+        }
 
     def test_idempotent_reopen_rejects_changed_voice_snapshot_bytes(self):
         with TemporaryDirectory() as directory:

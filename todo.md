@@ -41,14 +41,6 @@ sections after their implementation has been verified and committed.
       compare Centurion with Paper Heron after extractor-owned, game-derived
       Paper Heron references are available; the current Matilda-like result was
       rejected as insufficiently confident and presentational.
-  - [ ] Preserve the completed Rhiannon review when the chosen Narrator creates
-        a new config-addressed workspace. Add an explicit, non-destructive
-        carry-forward operation that accepts only terminal non-Narrator
-        outcomes whose queue item, exact character references, model, profile,
-        synthesis text and WAV hashes still match. Never carry Narrator audio,
-        silently reinterpret a changed manifest, or discard the existing
-        Rhiannon decisions; fail closed to explicit regeneration when the
-        per-item controls cannot be proven equivalent.
   - [ ] After the narrator comparison is decided, regenerate only Narrator
         queue IDs in the chosen workspace while retaining the proven Rhiannon
         outcomes, then expose the resulting approved-only manifest for the

@@ -884,6 +884,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "text_transform",
             "voice_character",
             "speech_quality",
+            "carry_forward",
         ):
             if field in result:
                 entry[field] = result[field]

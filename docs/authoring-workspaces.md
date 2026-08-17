@@ -30,6 +30,73 @@ selected digest are retained, and the workspace never claims they are the same.
 Selected files are copied into application data, so resume does not depend on
 mutable extractor paths.
 
+## Carrying reviewed character outcomes into a new narrator workspace
+
+`create_resume_workspace()` accepts the explicit pair
+`carry_forward_from=SOURCE_WORKSPACE` and
+`carry_forward_characters=("Rhiannon",)`. Carry-forward is part of creation,
+not a mutation of either workspace: the target is assembled and validated in a
+staging directory, then published with the same atomic no-replace rename as an
+ordinary workspace. The exact imported seed generation state is retained under
+`provenance/seed-generation-state.json`.
+
+The source and target must share one byte-identical queue and immutable import,
+and must use the same backend, model identity and generation profile. Narrator
+is forbidden in the selected character set. Only terminal approved or rejected
+review outcomes are eligible; pending review, failed generation and active
+attempts remain untouched.
+
+Two evidence paths are supported:
+
+- `review-only` applies an approval or rejection when the target seed contains
+  the same immutable generated item and WAV, and the source differs only in its
+  review fields. This preserves review of legacy items without inventing
+  synthesis metadata that their old schema never recorded.
+- `full-outcome` copies a newly generated WAV and its outcome only after the
+  queue annotations, synthesis text and transform, provider, model, profile,
+  prompt policy, synthesis-control provenance, character identity and ordered
+  character-reference hashes all match. An unrelated manifest addition may
+  differ, but the selected character references may not.
+
+Every carried item records the source workspace, source state/item/WAV hashes,
+character and evidence mode. Approved-only manifests retain this additive
+provenance. The source state and every source WAV are rehashed immediately
+before target publication; any concurrent mutation aborts and removes staging.
+Recreating the exact carry-forward snapshot is idempotent, while a changed
+source state produces a distinct config-addressed workspace.
+
+Example:
+
+```python
+from vntts.authoring.workbench import create_resume_workspace
+
+result = create_resume_workspace(
+    immutable_import,
+    story_index=story_index,
+    voice_manifest=chosen_voice_manifest,
+    narrator_character="Paper Heron",
+    backend="moss-tts",
+    model=model,
+    generation_profile="stable",
+    carry_forward_from=reviewed_workspace,
+    carry_forward_characters=("Rhiannon",),
+)
+```
+
+This operation preserves review authority; it does not approve Narrator audio,
+run generation or publish a final game pack.
+
+The completed Rhiannon workspace was exercised read-only against a temporary
+Paper Heron target on 2026-08-17. The operation carried exactly 15 terminal
+Rhiannon decisions: 10 approved and 5 rejected. Fourteen matched the immutable
+imported generation seed (`review-only`); the one later successful retry matched
+all current synthesis controls and was copied as `full-outcome`. No Narrator
+item was carried, the derived manifest contained exactly the 10 approved entries,
+and the source workspace tree digest remained
+`738258bd3e9f1733e8d9115f916b5c119ba41a78f6bb817696fb2e985240418c` before
+and after the operation. This was an integrity acceptance only; Paper Heron was
+not selected as Narrator and the temporary target was not used for generation.
+
 ## Truthful inspection and focused retry
 
 `inspect_workspace()` projects the exact queue and authoritative state into
