@@ -7,11 +7,12 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Preserve existing generation work
 
-- [ ] Complete successful synthesis resume for both incomplete imported
-      generation histories. A controlled real selected retry already proved
-      exact queue scoping, immutable unrelated state, cumulative attempt/seed
-      continuation, and LIMITED non-publication, but that line remained failed;
-      successful generated output plus preserved review state is still required.
+- [ ] Complete one successful synthesis resume in the newer generated/failed
+      import `legacy-395a5e5eec0327a3a793b66d`. Patch 3.7 now has a verified
+      exact selected resume with preserved pending-review state. The selected
+      newer-history line still missed EOS at the expanded bounded 8.5-second
+      cap on attempt 5/seed 4; choose another preflight-ready natural line
+      without extending the 20-second absolute safety limit.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       `moss-tts-local-transformer-v1.5-mlx` model after their voice references
       are available. Preserve source-audio candidates instead of replacing them

@@ -150,3 +150,53 @@ This proves safe selected resume, cumulative attempt/seed continuation and
 limited-result non-publication on the real imported history. It is not evidence
 of successful synthesis: the selected line remains failed and no review or
 final-pack decision was made.
+
+## Verified Patch resume and bounded missed-EOS follow-up
+
+Commit `81073bf` corrected two issues exposed by controlled real resumes. MOSS
+keeps the strict three-second hesitation guard, gives longer natural sentences
+a bounded 90-wpm cadence reserve, and retains the existing 20-second absolute
+ceiling. Typed LIMITED failures now retain sample/chunk/token/audio-limit
+diagnostics. Authoring also downmixes typed frames-by-one/two-channel PCM before
+the mono writer instead of flattening channels into time. The focused 54-test
+set and the full 790-test suite passed; an independent review found no P1/P2
+issues and repeated the focused, formatting and adversarial shape checks.
+
+The first selected Patch attempt exposed the channel bug: queue ID
+`reverse1999:101335:98:07f14a785de5037a` produced a mono-declared 384,000-frame
+WAV whose even/odd lanes were near-identical stereo channels. That invalid
+8.0-second workspace is preserved as
+`resume-14d28505d16f4729c363c2de-e8a8270d7eef0826-invalid-stereo-fdf67d29ac81`
+under `authoring/interrupted-workspaces`; it was never approved.
+
+While the clean workspace was being recreated, a parallel source-mapping task
+changed the external story index from SHA-256
+`8af6bce1422b4cced8519f6d5a10e446981106717b3b8c81f362909522b81665` to
+`93cc48052f4e022b1271d0932f5f16af614dcdbc1bc638f178281bea860f7376`.
+The resulting unstarted workspace is separately preserved with suffix
+`unstarted-source-change-93cc48052f4e`; no generation child used it. The real
+retry instead copied the prior immutable story snapshot (`8af6...`) and voice
+snapshot (`ce06030de942ab043f5bc88197c3890aaa05536fc9e0b490e74d116ce9d56eda`),
+restoring the original `e8a8270d7eef0826` config identity.
+
+The corrected Patch retry generated exactly one pending-review WAV on attempt
+1/seed 0: 192,000 finite mono frames at 48 kHz (4.0 seconds), SHA-256
+`ae357b956a8cadafa29af19e320e5e0a49529a84eaa3f438d4660ede846fc3ff`,
+with no measured leading, trailing or internal silence. Its text-derived cap
+was 8.5 seconds/850 tokens. The other 680 state records retained aggregate
+SHA-256 `3a12107a9ab870e06e51a0a0f8c32f15b67df574764c36bbc0284e11433adbac`;
+approved count remained zero and the WAV count changed only from 680 to 681.
+
+The one permitted post-fix retry for the newer history used exact queue ID
+`reverse1999:314606:68:fe4e011250eda914`. It advanced cumulative state from
+attempt 4/seed 3 to attempt 5/seed 4, then reached the expanded bound exactly:
+408,000 samples, 36 chunks, 8.5 seconds and 850 tokens. It therefore remains a
+typed LIMITED failure with no WAV. The other 337 records retained aggregate
+SHA-256 `198f8d504e402acad1431d63edd43e44e6c68d83167fc3283de23a40cc1a4db2`,
+the WAV count stayed 197, approved count stayed zero, and the lease/active
+attempt were cleared.
+
+Both imported directories and both source job directories retained their
+pre-run tree digests. Queue, contained story and voice snapshots remained
+`1831f95d...`/`49f8b0fa...`, `8af6bce1...`, and `ce06030d...` respectively.
+No review decision or final game pack was published.

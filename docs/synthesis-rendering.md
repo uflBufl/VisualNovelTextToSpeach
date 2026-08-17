@@ -49,6 +49,12 @@ optional deterministic seed. Pocket and Chatterbox currently expose only their
 Their model-native token and duration limits are represented as `None`; MOSS
 reports its explicit text-derived safety limits.
 
+One/two-word MOSS hesitation text retains a strict three-second limit. Longer
+text receives a 90-word-per-minute allowance plus 2.5 seconds for lead/tail
+cadence, still capped at 20 seconds. Both limits remain in persistent cache
+identity. Authoring normalizes typed frames-by-one/two-channel PCM to finite
+mono before writing; it never flattens channels into the time axis.
+
 XTTS accepts `configured` to retain the application-level profile and speed, or
 an explicit `stable`, `natural`, or `expressive` profile for an isolated render.
 It rejects a non-null seed because the wrapped Coqui API does not provide a
