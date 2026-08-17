@@ -12,6 +12,20 @@ sections after their implementation has been verified and committed.
       are available. Preserve source-audio candidates instead of replacing them
       with generated speech.
 
+### P1 - Make generated-audio review comfortable at scale
+
+- [ ] Add review-table filtering and navigation by character, review status and
+      collection, including an easy Rhiannon-only view that does not intermix
+      Narrator rows. Preserve the exact selected queue identity across refreshes
+      and show filtered/total counts without turning an empty filter into all
+      items.
+- [ ] Make Approve/Reject non-blocking in the Qt workbench. The current action
+      freezes the window for several seconds while authoritative state, the
+      approved-only manifest and the complete review projection are rebuilt on
+      the main thread. Keep exact click-time WAV/state validation, lease safety
+      and fail-closed error handling, but publish the decision and refresh the
+      affected row without blocking interaction.
+
 ## Live mode
 
 ### P0 - Repair failures observed in the latest Character Story run
