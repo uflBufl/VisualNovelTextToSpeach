@@ -682,6 +682,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
+        self.review_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.review_table.currentCellChanged.connect(self._update_review_actions)
         self.review_table.setSortingEnabled(False)
         self.review_table.verticalHeader().setVisible(False)
@@ -2411,6 +2412,12 @@ class AuthoringWorkbenchDialog(QDialog):
             ),
             (
                 "Ctrl+Return",
+                lambda: self._trigger_if_enabled(
+                    self.approve, lambda: self.review_selected("approved")
+                ),
+            ),
+            (
+                "Ctrl+Enter",
                 lambda: self._trigger_if_enabled(
                     self.approve, lambda: self.review_selected("approved")
                 ),

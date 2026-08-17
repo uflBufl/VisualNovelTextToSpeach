@@ -33,7 +33,12 @@ try:
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+    from PySide6.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
+        QMessageBox,
+        QPushButton,
+    )
 
     from vntts.authoring.workbench_ui import (
         AuthoringWorkbenchDialog,
@@ -55,6 +60,7 @@ except ModuleNotFoundError as error:
     QMediaPlayer = None
     QMessageBox = None
     QPushButton = None
+    QAbstractItemView = None
     AuthoringWorkbenchDialog = None
     VoiceReferenceController = None
     _load_workbench_projection = None
@@ -665,6 +671,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.activateWindow()
             dialog.review_table.setFocus()
             self.application.processEvents()
+            self.assertEqual(
+                dialog.review_table.editTriggers(),
+                QAbstractItemView.EditTrigger.NoEditTriggers,
+            )
             modifiers = (
                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
             )
@@ -684,7 +694,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.approve.setEnabled(True)
             dialog.reject.setEnabled(True)
             QTest.keyClick(
-                dialog,
+                dialog.review_table,
+                Qt.Key.Key_Enter,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            QTest.keyClick(
+                dialog.review_table,
                 Qt.Key.Key_Return,
                 Qt.KeyboardModifier.ControlModifier,
             )
@@ -695,7 +710,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertEqual(
                 dialog.review_selected.call_args_list,
-                [call("approved"), call("rejected")],
+                [call("approved"), call("approved"), call("rejected")],
             )
 
     def test_recent_reference_choices_are_contained_validated_and_searchable(self):

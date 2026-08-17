@@ -268,8 +268,10 @@ Offscreen Qt regressions cover the default layout, a 1,440 by 900 resize and a
 persisted all-expanded layout, proving every expanded control remains visible
 or vertically scroll-reachable. The first pending row is selected
 automatically. Previous/Next pending wrap inside the
-active filter; `Ctrl+Shift+Left`, `Ctrl+Shift+Right`, `Ctrl+R`, `Ctrl+Return`
-and `Ctrl+Backspace` provide navigation, replay, approval and rejection. A
+active filter; `Ctrl+Shift+Left`, `Ctrl+Shift+Right`, `Ctrl+R`, both
+`Ctrl+Return` and keypad `Ctrl+Enter`, and `Ctrl+Backspace` provide navigation,
+replay, approval and rejection. Review cells are read-only so a decision
+shortcut cannot open a cell editor. A
 successful decision advances only after the existing state/lease transaction
 has durably returned; failed validation leaves the current queue identity in
 place.
