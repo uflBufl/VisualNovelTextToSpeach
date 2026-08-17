@@ -10,11 +10,23 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceManifestError,
     find_default_voice_manifest,
+    is_narrator,
     normalize_character_name,
+    synthesis_character,
 )
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
+    def test_exact_unknown_label_uses_narrator_identity_only(self):
+        narrator = CharacterVoice("Narrator", "narrator-speaker")
+        registry = CharacterVoiceRegistry([narrator])
+
+        self.assertEqual(synthesis_character("???"), "Narrator")
+        self.assertTrue(is_narrator("???"))
+        self.assertIs(registry.resolve("???"), narrator)
+        self.assertEqual(synthesis_character("Unknown NPC"), "Unknown NPC")
+        self.assertFalse(is_narrator("Unknown NPC"))
+
     def test_manifest_must_be_an_object(self):
         with TemporaryDirectory() as temporary_directory:
             manifest_path = Path(temporary_directory) / "manifest.json"

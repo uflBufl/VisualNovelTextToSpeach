@@ -47,7 +47,7 @@ class VoiceChoice:
 
 
 def find_voice_assignment(assignments, character):
-    target = normalize_character_name(character)
+    target = normalize_character_name(synthesis_character(character))
     return next(
         (
             source_id
@@ -106,7 +106,7 @@ class CharacterVoiceRegistry:
         return cls(voices)
 
     def resolve(self, character):
-        normalized_name = normalize_character_name(character)
+        normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
             return self.assignments[normalized_name]
         return self.voices.get(normalized_name)
@@ -171,7 +171,7 @@ class CharacterVoiceRegistry:
         )
 
     def resolve_closest(self, character, *, minimum_similarity=0.78):
-        normalized_name = normalize_character_name(character)
+        normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
             return self.assignments[normalized_name]
         exact_voice = self.voices.get(normalized_name)
@@ -328,5 +328,18 @@ class CharacterVoiceRouter:
         }
 
 
+def synthesis_character(character):
+    """Return the voice identity used for live and authoring synthesis."""
+    original = str(character or "Narrator").strip() or "Narrator"
+    return "Narrator" if original == "???" else original
+
+
+def synthesis_character_for_line(speaker, voice_character=None):
+    """Resolve a line voice while giving the exact `???` speaker priority."""
+    if str(speaker or "").strip() == "???":
+        return "Narrator"
+    return synthesis_character(voice_character or speaker)
+
+
 def is_narrator(character):
-    return normalize_character_name(character) in {"", "narrator"}
+    return normalize_character_name(synthesis_character(character)) == "narrator"

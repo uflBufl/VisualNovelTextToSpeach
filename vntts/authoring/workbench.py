@@ -44,7 +44,7 @@ from vntts.authoring.game_pack import (
     FinalGamePackError,
     _rename_directory_no_replace,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
 WORKSPACE_VERSION = 1
@@ -1654,8 +1654,11 @@ def _voice_readiness(workspace, spoken, completed_ids, manifest_path):
     for item in spoken:
         if item.queue_id in completed_ids:
             continue
+        requested_character = synthesis_character_for_line(
+            item.speaker, item.voice_character
+        )
         character = (
-            narrator if item.voice_character == "Narrator" else item.voice_character
+            narrator if requested_character == "Narrator" else requested_character
         )
         voice = registry.resolve(character or item.speaker or "")
         if (

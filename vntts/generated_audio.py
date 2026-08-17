@@ -20,6 +20,7 @@ from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
+from vntts.voices import synthesis_character
 
 
 @dataclass(frozen=True)
@@ -369,7 +370,9 @@ class GeneratedAudioFallbackBackend:
             elif self.speed != 1.0:
                 artifact_preflight_state = "generated-audio-skipped-nondefault-speed"
             fallback_reasons.append(artifact_preflight_state)
-        prepared = self.live_backend.prepare_playback(character, text)
+        prepared = self.live_backend.prepare_playback(
+            synthesis_character(character), text
+        )
         effective_source = prepared.audio_source
         line_id = line.line_id if line is not None else None
         trace = AudioRouteTrace(

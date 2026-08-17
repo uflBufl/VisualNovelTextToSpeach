@@ -47,7 +47,11 @@ from vntts.authoring.queue_builder import (
     publish_generation_queue,
 )
 from vntts.tts_benchmark import create_backend
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+from vntts.voices import (
+    CharacterVoice,
+    CharacterVoiceRegistry,
+    synthesis_character_for_line,
+)
 
 
 def _load_stable_voice_registry(manifest_path):
@@ -390,9 +394,12 @@ def main(argv=None):
             def ready_spoken_item(item):
                 if not is_spoken_queue_item(item):
                     return False
-                if item.voice_character == "Narrator":
+                character = synthesis_character_for_line(
+                    item.speaker, item.voice_character
+                )
+                if character == "Narrator":
                     return narrator_reference is not None
-                voice = registry.resolve(item.voice_character or item.speaker or "")
+                voice = registry.resolve(character)
                 return voice is not None and bool(voice.references)
 
             with TemporaryDirectory() as cache_directory:

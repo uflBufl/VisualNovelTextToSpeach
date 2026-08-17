@@ -180,6 +180,10 @@ class DiagnosticsTest(unittest.TestCase):
             resolve_voice_label(router, "Narrator"),
             "Claribel Dervla",
         )
+        self.assertEqual(
+            resolve_voice_label(router, "???"),
+            "Claribel Dervla",
+        )
 
 
 if __name__ == "__main__":

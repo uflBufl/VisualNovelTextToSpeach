@@ -5,6 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -145,6 +146,35 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             authoring_package.CollectionSelection,
             CollectionSelection,
         )
+
+    def test_exact_unknown_label_uses_configured_narrator_reference(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            workspace = json.loads(
+                (created.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            manifest = created.directory / "inputs/voice/manifest.json"
+            unknown_label = SimpleNamespace(
+                queue_id="unknown-label",
+                speaker="???",
+                voice_character="Rhiannon",
+            )
+            named_unknown = SimpleNamespace(
+                queue_id="named-unknown",
+                speaker="Selone",
+                voice_character="Selone",
+            )
+
+            missing, reasons = workbench_module._voice_readiness(
+                workspace,
+                (unknown_label, named_unknown),
+                set(),
+                manifest,
+            )
+
+        self.assertEqual(missing, {"named-unknown"})
+        self.assertTrue(any("1 queued line" in reason for reason in reasons))
 
     def test_resume_workspace_is_separate_hash_bound_and_idempotent(self):
         with TemporaryDirectory() as directory:

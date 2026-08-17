@@ -40,6 +40,7 @@ from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisRequest,
 )
+from vntts.voices import synthesis_character_for_line
 
 STATE_SCHEMA = "vntts.authoring-generation-state"
 STATE_VERSION = 1
@@ -388,7 +389,10 @@ def run_bulk_generation(
         skipped_characters = 0
         if character_filter is not None:
             filtered = [
-                item for item in candidates if item.voice_character in character_filter
+                item
+                for item in candidates
+                if synthesis_character_for_line(item.speaker, item.voice_character)
+                in character_filter
             ]
             skipped_characters = len(candidates) - len(filtered)
             candidates = filtered
@@ -424,7 +428,7 @@ def run_bulk_generation(
                 continue
 
             voice = _required_text(
-                item.voice_character or item.speaker,
+                synthesis_character_for_line(item.speaker, item.voice_character),
                 f"Queue item {queue_id!r} voice",
             )
             queue_annotations_sha256 = _canonical_sha256(

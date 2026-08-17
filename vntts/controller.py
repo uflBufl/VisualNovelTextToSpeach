@@ -65,8 +65,10 @@ from vntts.voices import (
     VoiceChoice,
     default_voice_choice_id,
     find_voice_assignment,
+    is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    synthesis_character,
 )
 from vntts.window_capture import WindowCaptureTarget
 
@@ -1144,7 +1146,7 @@ class AppController:
 
     def _offer_unknown_speaker_mapping(self, character, text=None):
         key = normalize_character_name(character)
-        if not key or key == "narrator" or self.voice_router is None:
+        if not key or is_narrator(character) or self.voice_router is None:
             return False
         assignments = getattr(self.voice_router.registry, "assignments", {})
         if isinstance(assignments, dict) and key in assignments:
@@ -1181,6 +1183,7 @@ class AppController:
         prime = getattr(self.speech_backend, "prime", None)
         if not callable(prime) or self.speech_executor is None:
             return False
+        character = synthesis_character(character)
         key = normalize_character_name(character) or "narrator"
         registry = getattr(self.voice_router, "registry", None)
         if (

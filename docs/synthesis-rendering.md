@@ -85,6 +85,20 @@ renders, identity/diagnostic mismatches, and an unexpected cache source before
 publishing any WAV. It does not open an audio device, so its underrun fields are
 deliberately unknown rather than scraped from mutable playback state.
 
+## Unattributed speaker policy
+
+The exact speaker label `???` keeps its source identity while VNTTS checks for
+verified original or generated audio. If neither artifact route is available
+and synthesis is required, VNTTS assigns the Narrator voice automatically. It
+does not open the unknown-speaker prompt for this exact label. Other unknown,
+named speakers still require the normal voice-assignment decision.
+
+Authoring queue planning and legacy queue execution apply the same rule: a
+source `speaker: "???"` is rendered with the workspace's configured Narrator
+reference, even when an older queue carries a different `voice_character`
+fallback. The queue's source speaker remains `???` so provenance and story
+matching are not rewritten.
+
 Voice previews and OCR speech tests select the live backend rather than an
 artifact-routing wrapper, so XTTS preview generation also crosses this render
 boundary before playback.

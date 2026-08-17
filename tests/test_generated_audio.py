@@ -83,6 +83,7 @@ class GeneratedAudioTest(unittest.TestCase):
     def create_resolver(
         self,
         *,
+        speaker="Ada",
         text="Hello.",
         source_audio_status="unknown",
         source_audio_id=None,
@@ -94,7 +95,7 @@ class GeneratedAudioTest(unittest.TestCase):
                     "game:1",
                     "1",
                     1,
-                    "Ada",
+                    speaker,
                     text,
                     text_sha256(text),
                     source_audio_status,
@@ -358,6 +359,59 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.prepared.source_audio_id, "voice-7")
         self.assertIsNone(route.prepared.completion_seconds)
         self.assertEqual(route.trace.effective_source, "game")
+        live.prepare_playback.assert_not_called()
+
+    def test_unknown_label_preserves_available_game_audio_before_narrator(self):
+        live = self.create_live_backend()
+        backend = GeneratedAudioFallbackBackend(
+            live,
+            None,
+            self.create_resolver(
+                speaker="???",
+                source_audio_status="available",
+                source_audio_id="voice-unknown",
+            ),
+            audio_source_policy="prefer-game-audio",
+            audio_output=FakeAudioOutput(),
+        )
+        backend.set_live_mode_active(True)
+
+        route = backend.prepare_route("???", "Hello.")
+
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertEqual(route.prepared.source_audio_id, "voice-unknown")
+        live.prepare_playback.assert_not_called()
+
+    def test_unknown_label_uses_narrator_only_for_live_tts(self):
+        live = self.create_live_backend()
+        backend = GeneratedAudioFallbackBackend(
+            live,
+            None,
+            self.create_resolver(speaker="???"),
+            audio_source_policy="live-tts-only",
+            audio_output=FakeAudioOutput(),
+        )
+
+        route = backend.prepare_route("???", "Hello.")
+
+        self.assertIsInstance(route, LiveTTSRoute)
+        live.prepare_playback.assert_called_once_with("Narrator", "Hello.")
+
+    def test_unknown_label_preserves_verified_generated_audio(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            live = self.create_live_backend()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(speaker="???"),
+                audio_source_policy="prefer-generated",
+                audio_output=FakeAudioOutput(),
+            )
+
+            route = backend.prepare_route("???", "Hello.")
+
+        self.assertIsInstance(route, GeneratedAudioRoute)
         live.prepare_playback.assert_not_called()
 
     def test_auto_advance_falls_back_when_game_audio_has_no_completion(self):

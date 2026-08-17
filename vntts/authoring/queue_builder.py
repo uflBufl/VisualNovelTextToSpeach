@@ -32,6 +32,7 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.voices import synthesis_character_for_line
 
 
 class GenerationQueueBuildError(RuntimeError):
@@ -179,9 +180,12 @@ def plan_generation_queue(
         if action is None:
             skipped_available += 1
             continue
-        entry = voice_index.get(normalize_character_name(record.voice_character))
+        requested_character = synthesis_character_for_line(
+            record.speaker, record.voice_character
+        )
+        entry = voice_index.get(normalize_character_name(requested_character))
         voice_character = (
-            entry.character if entry is not None else record.voice_character
+            entry.character if entry is not None else requested_character
         )
         if action == "generate":
             if entry is not None and reference_availability[entry]:

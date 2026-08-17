@@ -1236,6 +1236,22 @@ class MainTest(unittest.TestCase):
         self.assertEqual(offered, ["Selone"])
         self.assertIn("waiting for a voice choice", statuses[-1])
 
+    def test_exact_unknown_label_uses_narrator_without_hiding_named_unknowns(self):
+        offered = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            dialog_handler=lambda _character, _text: None,
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.resolve_closest.return_value = None
+
+        self.assertTrue(controller._dialog_observed("???", "Unattributed line"))
+        self.assertFalse(controller._dialog_observed("Selone", "Named line"))
+
+        self.assertEqual(offered, ["Selone"])
+
     def test_controller_defers_unknown_voice_until_narrator_is_allowed(self):
         offered = []
         controller = AppController(
@@ -1772,6 +1788,18 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._prime_observed_voice("Unknown NPC"))
 
         controller.speech_executor.submit.assert_not_called()
+
+    def test_controller_primes_exact_unknown_label_as_narrator(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+
+        self.assertTrue(controller._prime_observed_voice("???"))
+
+        controller.speech_executor.submit.assert_called_once_with(
+            controller.speech_backend.prime, "Narrator"
+        )
 
     def test_controller_reports_uncertain_ocr_confidence(self):
         dialogs = []

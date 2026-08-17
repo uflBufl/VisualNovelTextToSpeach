@@ -175,6 +175,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
 
+    def test_exact_unknown_voice_character_renders_as_narrator(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(character="Hero")
+            item["speaker"] = "???"
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer()
+
+            result = self.run_generation(queue, root / "output", renderer)
+            state = load_generation_state(result.state, queue)
+
+        self.assertEqual(renderer.requests[0].voice, "Narrator")
+        self.assertEqual(
+            state["items"][item["queue_id"]]["voice_character"], "Narrator"
+        )
+
     def test_exact_queue_id_selection_validates_before_writes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

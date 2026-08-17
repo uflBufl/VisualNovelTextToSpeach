@@ -103,6 +103,11 @@ def write_inputs(root, records):
                     "speaker": "provider-missing",
                     "references": ["references/missing.wav"],
                 },
+                {
+                    "character": "Narrator",
+                    "speaker": "provider-narrator",
+                    "references": ["references/ada.wav"],
+                },
             ],
         },
     )
@@ -110,6 +115,28 @@ def write_inputs(root, records):
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_exact_unknown_voice_character_is_planned_as_narrator(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root,
+                [
+                    story_record(
+                        "line-1",
+                        "absent",
+                        speaker="???",
+                        voice_character="Ada Alias",
+                    )
+                ],
+            )
+
+            plan = inspect_generation_queue(story_path, manifest_path)
+
+        self.assertEqual(plan.items[0]["speaker"], "???")
+        self.assertEqual(plan.items[0]["voice_character"], "Narrator")
+        self.assertEqual(plan.summary.ready, 1)
+        self.assertEqual(plan.summary.missing_reference, 0)
+
     def test_collection_preflight_applies_canonical_policy_and_preserves_extensions(self):
         records = [
             story_record("line-1", "absent"),
