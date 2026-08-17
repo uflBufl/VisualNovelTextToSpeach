@@ -14,17 +14,42 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Make generated-audio review comfortable at scale
 
-- [ ] Add review-table filtering and navigation by character, review status and
-      collection, including an easy Rhiannon-only view that does not intermix
-      Narrator rows. Preserve the exact selected queue identity across refreshes
-      and show filtered/total counts without turning an empty filter into all
-      items.
+- [ ] Separate review scope from generation scope. Opening a workspace with no
+      generation collection selected must still present a useful pending-review
+      queue instead of making `NO COLLECTION SELECTED` the primary state. Keep
+      collection selection authoritative only for Generate/Retry, and label the
+      independent review scope explicitly.
+- [ ] Add review-table filtering and search by character, review status,
+      collection and line text, including one-click `Rhiannon only` and
+      `Exclude Narrator` views. Default to generated items awaiting review,
+      preserve the exact selected queue identity across refreshes, and show
+      filtered/total counts without turning an empty filter into all items.
+- [ ] Redesign the window around the generated-audio review task. Give the
+      review table and current-line text most of the vertical space; move the
+      model path, readiness details, voice-reference chooser and process log
+      into secondary collapsible panels. Start an empty technical log collapsed,
+      enforce usable splitter minimums, and provide a reset for invalid or
+      overly narrow saved layouts.
+- [ ] Add an efficient sequential review loop: automatically select the first
+      pending row in the active filter, expose Previous/Next pending, Replay,
+      Approve and Reject keyboard actions, keep the current line/speaker/status
+      visible, and advance only after the exact decision is durably saved.
+- [ ] Make disabled actions explainable in-place. Show whether Play/Approve is
+      waiting for row selection, exact WAV validation, an active save, another
+      lease owner or an integrity error; do not rely on grey buttons and
+      tooltips alone.
 - [ ] Make Approve/Reject non-blocking in the Qt workbench. The current action
       freezes the window for several seconds while authoritative state, the
       approved-only manifest and the complete review projection are rebuilt on
-      the main thread. Keep exact click-time WAV/state validation, lease safety
-      and fail-closed error handling, but publish the decision and refresh the
-      affected row without blocking interaction.
+      the main thread. Keep exact click-time WAV/state validation, lease safety,
+      ordered decisions and fail-closed error handling, but show a `Saving`
+      state, perform expensive work away from the GUI thread, and refresh only
+      the affected row and counts before scheduling any full projection check.
+- [ ] Add a representative 592-item UI acceptance fixture for the review-first
+      layout and responsiveness. Cover character/Narrator filtering, empty
+      filters, selection retention, keyboard progression, failed saves, another
+      lease owner, stale WAV/state rejection, and multiple consecutive review
+      decisions while Qt continues processing input and repaint events.
 
 ## Live mode
 
