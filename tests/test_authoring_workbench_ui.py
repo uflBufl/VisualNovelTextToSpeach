@@ -31,6 +31,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QProcess, QSettings, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
+    from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
@@ -50,6 +51,7 @@ except ModuleNotFoundError as error:
     QTimer = None
     QCloseEvent = None
     QTest = None
+    QMediaPlayer = None
     QMessageBox = None
     QPushButton = None
     AuthoringWorkbenchDialog = None
@@ -1272,6 +1274,87 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog.reject.isEnabled())
             self.assertFalse(dialog.review_play.isEnabled())
+
+    def test_review_playback_restores_actions_and_keeps_navigation_fixed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            first = dialog._selected_review_item()
+            second = replace(
+                first,
+                queue_id="second-pending-review",
+                line_id="second-line",
+                text="A second pending line.",
+            )
+            dialog._all_reviews = (first, second)
+            dialog._apply_review_filters()
+            dialog.resize(1_600, 1_000)
+            dialog.show()
+            self.application.processEvents()
+            dialog.player = Mock()
+            controls = (
+                dialog.previous_pending,
+                dialog.next_pending,
+                dialog.review_play,
+                dialog.review_stop,
+                dialog.approve,
+                dialog.reject,
+                dialog.reload_authority,
+            )
+            self.assertEqual(
+                [dialog.review_actions_layout.indexOf(control) for control in controls],
+                list(range(len(controls))),
+            )
+            initial_positions = tuple(control.geometry().x() for control in controls)
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            self.application.processEvents()
+
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.review_stop.isEnabled())
+            self.assertEqual(
+                tuple(control.geometry().x() for control in controls), initial_positions
+            )
+
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertFalse(dialog.review_stop.isEnabled())
+            self.assertIsNone(dialog._review_playback_buffer)
+            self.assertEqual(
+                tuple(control.geometry().x() for control in controls), initial_positions
+            )
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog.stop_preview()
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog._media_error(None, "simulated playback failure")
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertIsNone(dialog._review_playback_buffer)
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog.review_table.setCurrentCell(1, 0)
+            self.application.processEvents()
+            self.assertEqual(
+                dialog._selected_review_item().queue_id, "second-pending-review"
+            )
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertIsNone(dialog._review_playback_buffer)
+            self.assertEqual(
+                tuple(control.geometry().x() for control in controls), initial_positions
+            )
 
     def test_review_playback_uses_captured_bytes_after_source_replacement(self):
         with TemporaryDirectory() as directory:

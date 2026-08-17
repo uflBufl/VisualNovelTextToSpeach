@@ -522,6 +522,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio_output)
         self.player.errorOccurred.connect(self._media_error)
+        self.player.mediaStatusChanged.connect(self._media_status_changed)
 
         voice_header = QHBoxLayout()
         voice_header.addWidget(self.voice_search)
@@ -692,6 +693,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._accessible_button(button, name, description)
 
         review_actions = QHBoxLayout()
+        self.review_actions_layout = review_actions
         for widget in (
             self.previous_pending,
             self.next_pending,
@@ -700,8 +702,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.approve,
             self.reject,
             self.reload_authority,
-            self.previous_pending,
-            self.next_pending,
         ):
             review_actions.addWidget(widget)
         generation_actions = QHBoxLayout()
@@ -1499,20 +1499,32 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
 
     def _media_error(self, _error, message=""):
+        self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW ERROR: " + (
             message or self.player.errorString()
         )
         if self.summary is not None:
             self.status.setText(self._status_text())
+        self._update_review_actions(preserve_queue_id=True)
+
+    def _media_status_changed(self, status):
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        self._discard_review_playback_copy()
+        self._preview_active = False
+        self.media_outcome = "AUDIO PREVIEW FINISHED"
+        if self.summary is not None:
+            self.status.setText(self._status_text())
+        self._update_review_actions(preserve_queue_id=True)
 
     def stop_preview(self):
         self._discard_review_playback_copy()
         self._preview_active = False
-        self.review_stop.setEnabled(False)
         self.media_outcome = "AUDIO PREVIEW STOPPED"
         if self.summary is not None:
             self.status.setText(self._status_text())
+        self._update_review_actions(preserve_queue_id=True)
 
     def _populate_reviews(self, reviews):
         reviews = tuple(reviews)
@@ -1882,9 +1894,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
         self.player.play()
         self._preview_active = True
-        self.review_stop.setEnabled(True)
         self.media_outcome = f"PLAYING GENERATED REVIEW AUDIO: {current.line_id}"
         self.status.setText(self._status_text())
+        self._update_review_actions(preserve_queue_id=True)
 
     def review_selected(self, decision):
         if self._playback_prepare_active:

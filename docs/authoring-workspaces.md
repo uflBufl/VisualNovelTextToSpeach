@@ -161,7 +161,12 @@ a recent preview never changes the workspace narrator or synthesis config.
 Review playback preparation runs on a background worker. It separately
 revalidates the exact state-bound generated WAV, reads it through one file
 handle and verifies the displayed digest again. The Qt callback gives the media
-player a held read-only in-memory buffer, never a mutable pathname. Approval and
+player a held read-only in-memory buffer, never a mutable pathname. Completing,
+stopping or failing playback releases that buffer and immediately recomputes
+the selected row actions; Approve and Reject do not require a workspace reload.
+`Previous pending` and `Next pending` occupy one fixed pair of layout slots and
+retain their left-to-right positions while replay is prepared, played and
+stopped. Approval and
 rejection use the same selected-row authority and participate in the generation
 lease. On the real 592-line workspace, selected playback preparation took
 1.3-2.0 ms and an approval against an isolated copy of the real state took
@@ -288,5 +293,18 @@ Workspace controls and inputs, the immutable import and source job, and the
 external story and voice-manifest controls retained their pre-run hashes. The
 approved count and approved-only manifest entry count remained zero; active
 attempt, lease, job-process record and partial-file inventory were empty. The
-generated line remains pending review: this acceptance performed no review,
-approval, rejection or final-pack publication.
+generated line remained pending review at that controlled-generation boundary:
+the acceptance itself performed no review, approval, rejection or final-pack
+publication.
+
+Manual Rhiannon review was completed on 2026-08-17. The current workspace has
+no Rhiannon outcome awaiting review: ten are approved, five rejected and sixteen
+retain their explicit failed state. The controlled line above is now approved.
+The authoritative state is idle and has SHA-256
+`763f6a632f90b9776d9a26e9a9005730b26e09e343de0b15d68e43ddc75b01a7`;
+the derived approved-only manifest contains ten entries and has SHA-256
+`58cb1c9f97fe723025305d686b385ebeee58bb1623b3a764000f584f49f6ab6e`.
+These decisions remain workspace authority, not a final game-pack publication.
+Changing Narrator configuration must preserve them only through an explicit
+per-item control-equivalence check; a new workspace may not silently discard or
+reinterpret the completed Rhiannon review.
