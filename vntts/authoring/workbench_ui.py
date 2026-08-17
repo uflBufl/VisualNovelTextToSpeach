@@ -5,11 +5,22 @@ from __future__ import annotations
 import codecs
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QObject,
+    QProcess,
+    QProcessEnvironment,
+    QRunnable,
+    QSettings,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QDesktopServices,
@@ -150,6 +161,29 @@ class VoiceReferenceController:
         return self.current(character)
 
 
+class _ReviewTaskSignals(QObject):
+    finished = Signal(int, object, object)
+
+
+class _ReviewTask(QRunnable):
+    def __init__(self, serial, reviewer, workspace, queue_id, decision, signals):
+        super().__init__()
+        self.serial = serial
+        self.reviewer = reviewer
+        self.workspace = workspace
+        self.queue_id = queue_id
+        self.decision = decision
+        self.signals = signals
+
+    def run(self):
+        try:
+            result = self.reviewer(self.workspace, self.queue_id, self.decision)
+        except Exception as error:
+            self.signals.finished.emit(self.serial, None, error)
+        else:
+            self.signals.finished.emit(self.serial, result, None)
+
+
 class AuthoringWorkbenchDialog(QDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
@@ -164,6 +198,8 @@ class AuthoringWorkbenchDialog(QDialog):
         process=None,
         stop_timeout_ms=5_000,
         clock=None,
+        reviewer=None,
+        review_thread_pool=None,
     ):
         super().__init__(parent)
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
@@ -200,6 +236,16 @@ class AuthoringWorkbenchDialog(QDialog):
         self._filtered_reviews = ()
         self._selected_review_queue_id = None
         self._integrity_error = None
+        self._review_save_active = False
+        self._review_save_serial = 0
+        self._review_save_queue_id = None
+        self._review_save_decision = None
+        self._review_advance_queue_id = None
+        self._reviewer = reviewer or review_workspace_item
+        self._review_signals = _ReviewTaskSignals(self)
+        self._review_signals.finished.connect(self._review_save_finished)
+        self._review_thread_pool = review_thread_pool or QThreadPool(self)
+        self._review_thread_pool.setMaxThreadCount(1)
         self._review_shortcuts = []
 
         self.setWindowTitle("VNTTS authoring workbench")
@@ -631,10 +677,17 @@ class AuthoringWorkbenchDialog(QDialog):
         return tuple(values)
 
     def _poll_authoritative(self):
+        if self._review_save_active:
+            return
         if self._poll_signature != self._workspace_poll_signature():
             self.refresh()
 
     def _fail_closed(self, error):
+        self._review_save_serial += 1
+        self._review_save_active = False
+        self._review_save_queue_id = None
+        self._review_save_decision = None
+        self._review_advance_queue_id = None
         self.player.stop()
         self._preview_active = False
         self.summary = None
@@ -708,27 +761,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.status.setText(self._status_text())
         self.status.setToolTip("; ".join(self.summary.blocked_reasons))
-        self.counts.setText(
-            " | ".join(
-                (
-                    f"Lines ready to generate: {self.summary.pending}",
-                    f"Generated awaiting review: {self.summary.generated}",
-                    f"Approved: {self.summary.approved}",
-                    f"Rejected: {self.summary.rejected}",
-                    f"Failed: {self.summary.failed}",
-                    f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
-                    f"Recoverable source audio: {self.summary.recoverable_source_audio}",
-                    f"Manual review: {self.summary.manual_review}",
-                    f"Resolve source audio: {self.summary.resolve_audio}",
-                    f"Skipped sound effects: {self.summary.skipped_sound_effects}",
-                    f"Other skipped actions: {self.summary.skipped_actions}",
-                    f"Selected collections: {self.collection_selection.collection_count}",
-                    f"Selected story lines: {self.collection_selection.story_records}",
-                    f"Selected queue lines: {self.collection_selection.queue_items}",
-                    f"Selected ready lines: {self.collection_selection.readiness.ready}",
-                )
-            )
-        )
+        self._show_counts()
         self._show_readiness_details(workspace)
         self._show_active()
         self._all_reviews = tuple(reviews)
@@ -777,6 +810,31 @@ class AuthoringWorkbenchDialog(QDialog):
         self.stop_generation.setEnabled(running)
         self.open_output.setEnabled(True)
         self._update_review_actions(preserve_queue_id=True)
+
+    def _show_counts(self):
+        if self.summary is None or self.collection_selection is None:
+            return
+        self.counts.setText(
+            " | ".join(
+                (
+                    f"Lines ready to generate: {self.summary.pending}",
+                    f"Generated awaiting review: {self.summary.generated}",
+                    f"Approved: {self.summary.approved}",
+                    f"Rejected: {self.summary.rejected}",
+                    f"Failed: {self.summary.failed}",
+                    f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
+                    f"Recoverable source audio: {self.summary.recoverable_source_audio}",
+                    f"Manual review: {self.summary.manual_review}",
+                    f"Resolve source audio: {self.summary.resolve_audio}",
+                    f"Skipped sound effects: {self.summary.skipped_sound_effects}",
+                    f"Other skipped actions: {self.summary.skipped_actions}",
+                    f"Selected collections: {self.collection_selection.collection_count}",
+                    f"Selected story lines: {self.collection_selection.story_records}",
+                    f"Selected queue lines: {self.collection_selection.queue_items}",
+                    f"Selected ready lines: {self.collection_selection.readiness.ready}",
+                )
+            )
+        )
 
     def _status_text(self):
         labels = {
@@ -1444,6 +1502,7 @@ class AuthoringWorkbenchDialog(QDialog):
         running = self.summary is not None and self.summary.runtime_status in {
             AuthoringRuntimeStatus.RUNNING_HERE,
             AuthoringRuntimeStatus.RUNNING_EXTERNAL,
+            AuthoringRuntimeStatus.BLOCKED,
         }
         enabled = (
             selected is not None
@@ -1453,15 +1512,24 @@ class AuthoringWorkbenchDialog(QDialog):
                 "approved",
             }
             and not running
+            and not self._review_save_active
         )
         self.approve.setEnabled(enabled)
         self.reject.setEnabled(enabled)
         self.review_play.setEnabled(enabled and selected.audio is not None)
         self.review_stop.setEnabled(self._preview_active)
-        self.previous_pending.setEnabled(self._first_pending_row() >= 0)
-        self.next_pending.setEnabled(self._first_pending_row() >= 0)
+        navigation_enabled = (
+            self._first_pending_row() >= 0 and not self._review_save_active
+        )
+        self.previous_pending.setEnabled(navigation_enabled)
+        self.next_pending.setEnabled(navigation_enabled)
         if self._integrity_error is not None:
             reason = f"Review disabled: integrity error: {self._integrity_error}"
+        elif self._review_save_active:
+            reason = (
+                "Saving review: revalidating the exact WAV, authoritative state, "
+                "and generation lease"
+            )
         elif selected is None:
             reason = "Review disabled: select a generated or approved outcome"
         elif running:
@@ -1520,6 +1588,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
 
     def review_selected(self, decision):
+        if self._review_save_active:
+            self.review_action_reason.setText(
+                "Saving review: wait for the current authoritative decision"
+            )
+            return
+        if decision not in {"approved", "rejected"}:
+            self._fail_closed(f"Unsupported review decision: {decision!r}")
+            return
         selected = self._selected_review_item()
         if selected is None:
             self.status.setText("Select one generated outcome to review")
@@ -1527,14 +1603,73 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.stop()
         self._preview_active = False
         self.media_outcome = None
-        advance_queue_id = self._next_pending_queue_id()
-        try:
-            review_workspace_item(self.workspace_directory, selected.queue_id, decision)
-        except AuthoringWorkbenchError as error:
-            self.status.setText(f"Unable to save review: {error}")
+        self._review_save_active = True
+        self._review_save_serial += 1
+        serial = self._review_save_serial
+        self._review_save_queue_id = selected.queue_id
+        self._review_save_decision = decision
+        self._review_advance_queue_id = self._next_pending_queue_id()
+        self._update_review_actions(preserve_queue_id=True)
+        self._review_thread_pool.start(
+            _ReviewTask(
+                serial,
+                self._reviewer,
+                self.workspace_directory,
+                selected.queue_id,
+                decision,
+                self._review_signals,
+            )
+        )
+
+    def _review_save_finished(self, serial, summary, error):
+        if serial != self._review_save_serial or not self._review_save_active:
             return
+        queue_id = self._review_save_queue_id
+        decision = self._review_save_decision
+        advance_queue_id = self._review_advance_queue_id
+        self._review_save_active = False
+        self._review_save_queue_id = None
+        self._review_save_decision = None
+        self._review_advance_queue_id = None
+        if error is not None:
+            self._fail_closed(f"Unable to save review: {error}")
+            return
+        if summary is None or queue_id is None or decision is None:
+            self._fail_closed("Review worker returned no authoritative result")
+            return
+        self.summary = summary
+        updated = []
+        found = False
+        for item in self._all_reviews:
+            if item.queue_id != queue_id:
+                updated.append(item)
+                continue
+            found = True
+            updated.append(
+                replace(
+                    item,
+                    status="approved" if decision == "approved" else "generated",
+                    review_status=decision,
+                )
+            )
+        if not found:
+            self._fail_closed(
+                "Reviewed queue identity disappeared before the durable save returned"
+            )
+            return
+        self._all_reviews = tuple(updated)
         self._selected_review_queue_id = advance_queue_id
-        self.refresh()
+        self._apply_review_filters()
+        self._show_counts()
+        self.status.setText(self._status_text())
+        self.review_action_reason.setText(
+            f"Saved {decision} for {queue_id}; refreshing authoritative projection"
+        )
+        QTimer.singleShot(0, self._refresh_after_review_save)
+
+    def _refresh_after_review_save(self):
+        if not self._review_save_active:
+            self.refresh()
 
     def start_generation(self):
         if (

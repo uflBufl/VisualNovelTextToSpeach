@@ -116,6 +116,15 @@ successful decision advances only after the existing state/lease transaction
 has durably returned; failed validation leaves the current queue identity in
 place.
 
+Approve and Reject run on one ordered background worker, so state validation,
+lease acquisition, approved-manifest derivation and file checks never block Qt
+painting or input delivery. While a decision is active the review controls say
+`Saving review`, expose that exact WAV/state/lease validation is in progress,
+and reject a second decision. Only a successful worker result updates the
+affected row and counts; a full authoritative projection follows on the next
+event-loop turn. A changed WAV, state, queue or lease fails closed, clears stale
+review authority and leaves the generation state as the sole source of truth.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

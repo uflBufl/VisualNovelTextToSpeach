@@ -17,12 +17,16 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import process_started_at
-from vntts.authoring.workbench import ReviewItem, list_review_items
+from vntts.authoring.workbench import (
+    ReviewItem,
+    list_review_items,
+    review_workspace_item,
+)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QProcess, QSettings, Qt
+    from PySide6.QtCore import QProcess, QSettings, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
@@ -38,6 +42,7 @@ except ModuleNotFoundError as error:
     QProcess = None
     QSettings = None
     Qt = None
+    QTimer = None
     QCloseEvent = None
     QTest = None
     QMessageBox = None
@@ -131,6 +136,15 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
     def settings(self, root):
         return QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            time.sleep(0.005)
+        self.fail("Timed out waiting for Qt background work")
 
     def clear_authoring_state(self, workspace):
         state_path = workspace / "generated-audio" / "generation-state.json"
@@ -650,6 +664,118 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             requested = Path(open_url.call_args.args[0].toLocalFile()).resolve()
             self.assertTrue(requested.is_relative_to(workspace))
             self.assertEqual(requested, workspace / "generated-audio")
+
+    def test_review_save_is_nonblocking_and_updates_only_after_durable_return(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            worker_started = False
+            release = False
+
+            def reviewer(path, selected_queue_id, decision):
+                nonlocal worker_started
+                worker_started = True
+                while not release:
+                    time.sleep(0.005)
+                return review_workspace_item(path, selected_queue_id, decision)
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                reviewer=reviewer,
+            )
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+            started = time.monotonic()
+            dialog.approve.click()
+            call_elapsed = time.monotonic() - started
+            self.wait_for(lambda: worker_started and bool(heartbeat))
+
+            self.assertLess(call_elapsed, 0.1)
+            self.assertTrue(dialog._review_save_active)
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
+            self.assertIn("Saving review", dialog.review_action_reason.text())
+            dialog.review_selected("rejected")
+            self.assertIn("wait for the current", dialog.review_action_reason.text())
+            state = json.loads(
+                (workspace / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                state["items"][queue_id]["review_status"], "pending_review"
+            )
+
+            release = True
+            self.wait_for(lambda: not dialog._review_save_active)
+            self.wait_for(
+                lambda: (
+                    json.loads(
+                        (workspace / "generated-audio/generation-state.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )["items"][queue_id]["review_status"]
+                    == "approved"
+                )
+            )
+            self.application.processEvents()
+
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertIn("Approved: 1", dialog.counts.text())
+
+    def test_consecutive_review_decisions_remain_ordered_and_manifest_is_derived(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.review_status.setCurrentText("All statuses")
+            dialog.review_table.setCurrentCell(0, 0)
+
+            dialog.approve.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+            self.application.processEvents()
+            self.assertEqual(dialog._selected_review_item().review_status, "approved")
+            dialog.reject.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+            self.application.processEvents()
+
+            state = json.loads(
+                (workspace / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            manifest = json.loads(
+                (workspace / "generated-audio/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(state["items"][queue_id]["status"], "generated")
+            self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
+            self.assertEqual(manifest["entries"], [])
+
+    def test_async_review_failure_is_fail_closed_without_stale_actions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            selected = dialog._selected_review_item()
+            selected.audio.write_bytes(selected.audio.read_bytes() + b"tampered")
+
+            dialog.approve.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+            self.application.processEvents()
+
+            self.assertIsNone(dialog.summary)
+            self.assertIn("BLOCKED", dialog.status.text())
+            self.assertIn("Unable to save review", dialog.status.text())
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.review_play.isEnabled())
 
     def test_review_actions_follow_selection_and_fail_closed_on_integrity_error(self):
         with TemporaryDirectory() as directory:
