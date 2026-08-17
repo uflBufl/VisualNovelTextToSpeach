@@ -118,12 +118,28 @@ place.
 
 Approve and Reject run on one ordered background worker, so state validation,
 lease acquisition, approved-manifest derivation and file checks never block Qt
-painting or input delivery. While a decision is active the review controls say
-`Saving review`, expose that exact WAV/state/lease validation is in progress,
-and reject a second decision. Only a successful worker result updates the
-affected row and counts; a full authoritative projection follows on the next
-event-loop turn. A changed WAV, state, queue or lease fails closed, clears stale
-review authority and leaves the generation state as the sole source of truth.
+painting or input delivery. Every visible review row carries a compare-and-swap
+snapshot of the exact queue digest, state digest, state-item digest and WAV
+digest that was displayed. The worker acquires the generation lease and
+revalidates that snapshot before the first state or manifest write. A changed
+WAV, state, queue or lease therefore rejects the stale click instead of applying
+it to newer audio.
+
+While a decision is active the review controls say `Saving review`, reject a
+second decision and defer window close until the worker has returned. Only a
+successful worker result updates the affected row and counts. Large authority
+projections run on a separate serialized worker; the Qt callback only applies
+the already validated immutable projection. Small projections below the bounded
+64 KiB authority footprint remain inline. A transient worker or projection
+failure clears stale controls but leaves `Retry workspace load` available for
+an explicit in-dialog recovery without requiring a file timestamp change.
+
+Read-only acceptance against the real 592-line workspace on 2026-08-17 returned
+the dialog constructor in 0.118 seconds while the 15.678-second full integrity
+projection ran in the background. Qt delivered 413 25-ms heartbeat callbacks;
+a repeated run observed a maximum 0.294-second heartbeat gap and a 0.003-second
+main-thread projection apply. The resulting default view contained the same
+196 awaiting-review rows from 338 review outcomes.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated

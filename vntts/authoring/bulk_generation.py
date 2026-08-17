@@ -109,6 +109,37 @@ class BulkGenerationResult:
         return payload
 
 
+@dataclass(frozen=True)
+class ReviewAuthority:
+    """Exact immutable inputs that one human review decision applies to."""
+
+    queue_sha256: str
+    state_sha256: str
+    item_sha256: str
+    audio_sha256: str
+
+
+def generation_review_authority(state_path, queue_id):
+    """Snapshot one reviewable state item and its exact validated WAV."""
+    state_path = Path(state_path).expanduser().resolve()
+    state = load_generation_state(state_path)
+    item = state.get("items", {}).get(queue_id)
+    if not isinstance(item, dict) or item.get("status") not in {
+        "generated",
+        "approved",
+    }:
+        raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
+    relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+    audio = _within(state_path.parent, relative, "Generated WAV")
+    _validate_success_file(queue_id, item, audio)
+    return ReviewAuthority(
+        queue_sha256=state["queue_sha256"],
+        state_sha256=sha256_file(state_path),
+        item_sha256=_canonical_sha256(item),
+        audio_sha256=sha256_file(audio),
+    )
+
+
 def inspect_generated_wav(path):
     """Validate the normalized generated-audio WAV contract."""
     try:
@@ -702,7 +733,14 @@ def _approved_manifest_entries(state, output_directory):
     return entries
 
 
-def review_generation_item(state_path, queue_id, decision):
+def review_generation_item(
+    state_path,
+    queue_id,
+    decision,
+    *,
+    expected_authority=None,
+    queue_path=None,
+):
     """Persist approval/rejection, then rebuild the derived manifest."""
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
@@ -712,11 +750,26 @@ def review_generation_item(state_path, queue_id, decision):
         state_path.parent,
         initial["queue_sha256"],
         process_checker=process_is_alive,
-    ):
-        return _review_generation_item_locked(state_path, queue_id, decision)
+    ) as lease:
+        return _review_generation_item_locked(
+            state_path,
+            queue_id,
+            decision,
+            expected_authority=expected_authority,
+            queue_path=queue_path,
+            lease=lease,
+        )
 
 
-def _review_generation_item_locked(state_path, queue_id, decision):
+def _review_generation_item_locked(
+    state_path,
+    queue_id,
+    decision,
+    *,
+    expected_authority=None,
+    queue_path=None,
+    lease=None,
+):
     state = load_generation_state(state_path)
     item = state.get("items", {}).get(queue_id)
     if not isinstance(item, dict) or item.get("status") not in {
@@ -725,9 +778,27 @@ def _review_generation_item_locked(state_path, queue_id, decision):
     }:
         raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
     relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
-    _validate_success_file(
-        queue_id, item, _within(state_path.parent, relative, "Generated WAV")
-    )
+    audio = _within(state_path.parent, relative, "Generated WAV")
+    _validate_success_file(queue_id, item, audio)
+    if expected_authority is not None:
+        if not isinstance(expected_authority, ReviewAuthority):
+            raise BulkGenerationError("Review authority snapshot is invalid")
+        actual = ReviewAuthority(
+            queue_sha256=state["queue_sha256"],
+            state_sha256=sha256_file(state_path),
+            item_sha256=_canonical_sha256(item),
+            audio_sha256=sha256_file(audio),
+        )
+        if actual != expected_authority:
+            raise BulkGenerationError(
+                "Review authority changed after the item was displayed; refresh before deciding"
+            )
+        if queue_path is None or sha256_file(queue_path) != actual.queue_sha256:
+            raise BulkGenerationError(
+                "Review queue changed after the item was displayed; refresh before deciding"
+            )
+    if lease is not None:
+        lease.assert_owned()
     item["review_status"] = decision
     item["status"] = "approved" if decision == "approved" else "generated"
     item["updated_at"] = _now()
@@ -784,6 +855,7 @@ class _GenerationLease:
         self.process_checker = process_checker
         self.lease_id = secrets.token_hex(16)
         self.committed = False
+        self.document = None
 
     def __enter__(self):
         if self.path.exists():
@@ -818,6 +890,7 @@ class _GenerationLease:
             "lease_id": self.lease_id,
             "started_at": _now(),
         }
+        self.document = lease
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         try:
             descriptor = os.open(self.path, flags, 0o600)
@@ -839,7 +912,7 @@ class _GenerationLease:
         except BulkGenerationError as error:
             ownership_error = error
         else:
-            if current.get("lease_id") == self.lease_id:
+            if current == self.document:
                 self.path.unlink()
             else:
                 ownership_error = BulkGenerationError(
@@ -850,7 +923,7 @@ class _GenerationLease:
 
     def assert_owned(self):
         current = _load_json(self.path, "generation lease")
-        if current.get("lease_id") != self.lease_id:
+        if current != self.document:
             raise BulkGenerationError(
                 "Generation lease ownership changed during the run"
             )

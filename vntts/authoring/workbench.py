@@ -34,6 +34,7 @@ from vntts.authoring.bulk_generation import (
     LEASE_SCHEMA,
     LEASE_VERSION,
     BulkGenerationError,
+    ReviewAuthority,
     is_spoken_queue_item,
     load_generation_state,
     process_is_alive,
@@ -140,6 +141,7 @@ class ReviewItem:
     last_error: str | None
     audio: Path | None
     collection_id: str | None = None
+    authority: ReviewAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -576,7 +578,12 @@ def list_review_items(workspace_directory):
         for collection in story.collections
         for record in story.records_for_collection(collection.collection_id)
     }
+    state_sha256 = sha256_file(summary.state)
     state = load_generation_state(summary.state, queue_path)
+    if sha256_file(summary.state) != state_sha256:
+        raise AuthoringWorkbenchError(
+            "Generation state changed while review rows were being projected"
+        )
     records = []
     for item in queue.items:
         result = state["items"].get(item.queue_id)
@@ -610,17 +617,45 @@ def list_review_items(workspace_directory):
                 collection_id=collection_by_record.get(
                     (item.line_id, item.text_sha256)
                 ),
+                authority=(
+                    ReviewAuthority(
+                        queue_sha256=state["queue_sha256"],
+                        state_sha256=state_sha256,
+                        item_sha256=hashlib.sha256(
+                            json.dumps(
+                                result,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                        audio_sha256=str(result["file_sha256"]),
+                    )
+                    if status in {"generated", "approved"}
+                    else None
+                ),
             )
         )
     return tuple(records)
 
 
-def review_workspace_item(workspace_directory, queue_id, decision):
+def review_workspace_item(
+    workspace_directory,
+    queue_id,
+    decision,
+    expected_authority=None,
+):
     summary = inspect_workspace(workspace_directory)
     if summary.state is None:
         raise AuthoringWorkbenchError("Workspace has no generation state to review")
     try:
-        review_generation_item(summary.state, queue_id, decision)
+        review_generation_item(
+            summary.state,
+            queue_id,
+            decision,
+            expected_authority=expected_authority,
+            queue_path=summary.queue,
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return inspect_workspace(workspace_directory)

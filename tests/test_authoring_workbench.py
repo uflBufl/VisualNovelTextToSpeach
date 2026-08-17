@@ -487,6 +487,62 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(items[0].voice_character, "Rhiannon")
         self.assertEqual(source_hash_after, source_hash)
 
+    def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            state["items"][queue_id]["status"] = "generated"
+            state["items"][queue_id]["review_status"] = "pending_review"
+            state["active"] = None
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            displayed = list_review_items(created.directory)[0]
+
+            review_workspace_item(created.directory, queue_id, "approved")
+            before = state_path.read_bytes()
+            manifest = created.directory / "generated-audio/manifest.json"
+            manifest_before = manifest.read_bytes()
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "authority changed"):
+                review_workspace_item(
+                    created.directory,
+                    queue_id,
+                    "rejected",
+                    displayed.authority,
+                )
+
+            self.assertEqual(state_path.read_bytes(), before)
+            self.assertEqual(manifest.read_bytes(), manifest_before)
+
+    def test_review_decision_rejects_queue_change_before_state_or_manifest_write(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            state["items"][queue_id]["status"] = "generated"
+            state["items"][queue_id]["review_status"] = "pending_review"
+            state["active"] = None
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            displayed = list_review_items(created.directory)[0]
+            state_before = state_path.read_bytes()
+            manifest = created.directory / "generated-audio/manifest.json"
+            manifest_before = manifest.read_bytes()
+            (created.directory / "queue.jsonl").write_bytes(b"changed queue")
+
+            with self.assertRaises(AuthoringWorkbenchError):
+                review_workspace_item(
+                    created.directory,
+                    queue_id,
+                    "approved",
+                    displayed.authority,
+                )
+
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertEqual(manifest.read_bytes(), manifest_before)
+
     def test_runtime_distinguishes_local_external_pid_reuse_and_interruption(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

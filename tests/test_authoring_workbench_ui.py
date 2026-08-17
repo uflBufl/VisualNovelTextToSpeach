@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -34,6 +34,7 @@ try:
     from vntts.authoring.workbench_ui import (
         AuthoringWorkbenchDialog,
         VoiceReferenceController,
+        _load_workbench_projection,
     )
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
@@ -49,6 +50,7 @@ except ModuleNotFoundError as error:
     QPushButton = None
     AuthoringWorkbenchDialog = None
     VoiceReferenceController = None
+    _load_workbench_projection = None
 
 
 class FakeSignal:
@@ -507,6 +509,67 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 {f"queue-{index:03d}" for index in range(590)},
             )
 
+    def test_review_keyboard_shortcuts_invoke_navigation_replay_and_decisions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            first = dialog._selected_review_item()
+            second = ReviewItem(
+                "second-queue",
+                "second-line",
+                first.speaker,
+                first.voice_character,
+                "Second pending line",
+                "generated",
+                "pending_review",
+                first.attempts,
+                first.seed,
+                None,
+                first.audio,
+                first.collection_id,
+                first.authority,
+            )
+            dialog._all_reviews = (first, second)
+            dialog._apply_review_filters()
+            dialog.show()
+            dialog.activateWindow()
+            dialog.review_table.setFocus()
+            self.application.processEvents()
+            modifiers = (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+            )
+
+            QTest.keyClick(dialog, Qt.Key.Key_Right, modifiers)
+            self.application.processEvents()
+            self.assertEqual(dialog._selected_review_item().queue_id, "second-queue")
+            dialog.play_selected_outcome = Mock()
+            dialog.review_play.setEnabled(True)
+            QTest.keyClick(
+                dialog,
+                Qt.Key.Key_R,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            dialog.play_selected_outcome.assert_called_once_with()
+            dialog.review_selected = Mock()
+            dialog.approve.setEnabled(True)
+            dialog.reject.setEnabled(True)
+            QTest.keyClick(
+                dialog,
+                Qt.Key.Key_Return,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            QTest.keyClick(
+                dialog,
+                Qt.Key.Key_Backspace,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            self.assertEqual(
+                dialog.review_selected.call_args_list,
+                [call("approved"), call("rejected")],
+            )
+
     def test_recent_reference_choices_are_contained_validated_and_searchable(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -673,12 +736,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             worker_started = False
             release = False
 
-            def reviewer(path, selected_queue_id, decision):
+            def reviewer(path, selected_queue_id, decision, authority):
                 nonlocal worker_started
                 worker_started = True
                 while not release:
                     time.sleep(0.005)
-                return review_workspace_item(path, selected_queue_id, decision)
+                return review_workspace_item(
+                    path, selected_queue_id, decision, authority
+                )
 
             dialog = AuthoringWorkbenchDialog(
                 workspace,
@@ -697,6 +762,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog.reject.isEnabled())
             self.assertIn("Saving review", dialog.review_action_reason.text())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close deferred", dialog.review_action_reason.text())
             dialog.review_selected("rejected")
             self.assertIn("wait for the current", dialog.review_action_reason.text())
             state = json.loads(
@@ -723,6 +792,112 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertIn("Approved: 1", dialog.counts.text())
+
+    def test_large_authority_projection_keeps_qt_heartbeat_responsive(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            started = False
+            release = False
+
+            def slow_loader(*arguments):
+                nonlocal started
+                started = True
+                while not release:
+                    time.sleep(0.005)
+                return _load_workbench_projection(*arguments)
+
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+            before = time.monotonic()
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                projection_loader=slow_loader,
+                background_projection_threshold_bytes=0,
+            )
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started and bool(heartbeat))
+
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._projection_active)
+            self.assertIsNone(dialog.summary)
+            release = True
+            self.wait_for(lambda: not dialog._projection_active)
+            self.assertIsNotNone(dialog.summary)
+
+    def test_transient_review_failure_can_retry_in_dialog_without_file_change(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            attempts = 0
+
+            def flaky_reviewer(path, selected_queue_id, decision, authority):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("transient review worker failure")
+                return review_workspace_item(
+                    path, selected_queue_id, decision, authority
+                )
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                reviewer=flaky_reviewer,
+            )
+            dialog.approve.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+
+            self.assertIsNone(dialog.summary)
+            self.assertTrue(dialog.reload_authority.isEnabled())
+            self.assertIn("transient review worker failure", dialog.status.text())
+            dialog.reload_authority.click()
+
+            self.assertIsNotNone(dialog.summary)
+            self.assertEqual(dialog._selected_review_item().queue_id, queue_id)
+            self.assertTrue(dialog.approve.isEnabled())
+
+    def test_post_save_authority_projection_does_not_freeze_qt(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            load_count = 0
+            second_started = False
+            release_second = False
+
+            def loader(*arguments):
+                nonlocal load_count, second_started
+                load_count += 1
+                if load_count > 1:
+                    second_started = True
+                    while not release_second:
+                        time.sleep(0.005)
+                return _load_workbench_projection(*arguments)
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                projection_loader=loader,
+                background_projection_threshold_bytes=0,
+            )
+            self.wait_for(lambda: not dialog._projection_active)
+            heartbeat = []
+            timer = QTimer()
+            timer.setInterval(5)
+            timer.timeout.connect(lambda: heartbeat.append(time.monotonic()))
+            timer.start()
+            dialog.approve.click()
+            self.wait_for(lambda: second_started and len(heartbeat) >= 2)
+
+            self.assertTrue(dialog._projection_active)
+            self.assertGreaterEqual(len(heartbeat), 2)
+            release_second = True
+            self.wait_for(lambda: not dialog._projection_active)
+            timer.stop()
             self.assertIn("Approved: 1", dialog.counts.text())
 
     def test_consecutive_review_decisions_remain_ordered_and_manifest_is_derived(self):
@@ -755,6 +930,28 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(state["items"][queue_id]["status"], "generated")
             self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
             self.assertEqual(manifest["entries"], [])
+
+    def test_stale_visible_row_cannot_overwrite_newer_review_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            displayed_authority = dialog._selected_review_item().authority
+            review_workspace_item(workspace, queue_id, "approved")
+
+            dialog.reject.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+            state = json.loads(
+                (workspace / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertIsNotNone(displayed_authority)
+            self.assertEqual(state["items"][queue_id]["review_status"], "approved")
+            self.assertIsNone(dialog.summary)
+            self.assertIn("authority changed", dialog.status.text())
 
     def test_async_review_failure_is_fail_closed_without_stale_actions(self):
         with TemporaryDirectory() as directory:

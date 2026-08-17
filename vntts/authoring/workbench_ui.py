@@ -57,6 +57,8 @@ from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
     ReviewItem,
+    WorkspaceCollection,
+    WorkspaceSummary,
     generation_command,
     immutable_history_timestamps,
     inspect_collection_selection,
@@ -161,23 +163,146 @@ class VoiceReferenceController:
         return self.current(character)
 
 
+@dataclass(frozen=True)
+class _WorkbenchProjection:
+    summary: WorkspaceSummary
+    reviews: tuple[ReviewItem, ...]
+    workspace: dict
+    collections: tuple[WorkspaceCollection, ...]
+    collection_selection: object
+    history: tuple
+    voice_controller: VoiceReferenceController | None
+    poll_signature: tuple
+
+
+def _poll_signature(paths):
+    values = []
+    for path in paths:
+        try:
+            status = path.lstat()
+        except FileNotFoundError:
+            values.append((str(path), None))
+        except OSError as error:
+            values.append((str(path), type(error).__name__, error.errno))
+        else:
+            values.append(
+                (
+                    str(path),
+                    status.st_mode,
+                    status.st_size,
+                    status.st_mtime_ns,
+                    status.st_ino,
+                )
+            )
+    return tuple(values)
+
+
+def _load_workbench_projection(
+    workspace_directory,
+    selected_collection_ids,
+    local_process_id,
+    local_process_started_at,
+    poll_paths,
+):
+    before = _poll_signature(poll_paths)
+    summary = inspect_workspace(
+        workspace_directory,
+        local_process_id=local_process_id,
+        local_process_started_at=local_process_started_at,
+    )
+    reviews = tuple(list_review_items(workspace_directory))
+    from vntts.authoring.workbench import _load_workspace
+
+    _directory, workspace = _load_workspace(workspace_directory)
+    collections = tuple(list_workspace_collections(workspace_directory))
+    declared = tuple(value.collection_id for value in collections)
+    if selected_collection_ids is None:
+        selected = declared
+    else:
+        requested = set(selected_collection_ids)
+        selected = tuple(value for value in declared if value in requested)
+    collection_selection = inspect_collection_selection(
+        workspace_directory,
+        collection_ids=selected,
+    )
+    history = tuple(immutable_history_timestamps(workspace_directory))
+    voice_controller = (
+        None
+        if summary.voice_manifest is None
+        else VoiceReferenceController.from_workspace(
+            workspace_directory, summary.voice_manifest
+        )
+    )
+    after = _poll_signature(poll_paths)
+    if before != after:
+        raise AuthoringWorkbenchError(
+            "Workspace authority changed while the workbench projection was loading"
+        )
+    return _WorkbenchProjection(
+        summary=summary,
+        reviews=reviews,
+        workspace=workspace,
+        collections=collections,
+        collection_selection=collection_selection,
+        history=history,
+        voice_controller=voice_controller,
+        poll_signature=after,
+    )
+
+
+class _ProjectionTaskSignals(QObject):
+    finished = Signal(int, object, object)
+
+
+class _ProjectionTask(QRunnable):
+    def __init__(self, serial, loader, arguments, signals):
+        super().__init__()
+        self.serial = serial
+        self.loader = loader
+        self.arguments = arguments
+        self.signals = signals
+
+    def run(self):
+        try:
+            result = self.loader(*self.arguments)
+        except Exception as error:
+            self.signals.finished.emit(self.serial, None, error)
+        else:
+            self.signals.finished.emit(self.serial, result, None)
+
+
 class _ReviewTaskSignals(QObject):
     finished = Signal(int, object, object)
 
 
 class _ReviewTask(QRunnable):
-    def __init__(self, serial, reviewer, workspace, queue_id, decision, signals):
+    def __init__(
+        self,
+        serial,
+        reviewer,
+        workspace,
+        queue_id,
+        decision,
+        authority,
+        signals,
+    ):
         super().__init__()
         self.serial = serial
         self.reviewer = reviewer
         self.workspace = workspace
         self.queue_id = queue_id
         self.decision = decision
+        self.authority = authority
         self.signals = signals
 
     def run(self):
         try:
-            result = self.reviewer(self.workspace, self.queue_id, self.decision)
+            result = self.reviewer(
+                self.workspace,
+                self.queue_id,
+                self.decision,
+                self.authority,
+            )
         except Exception as error:
             self.signals.finished.emit(self.serial, None, error)
         else:
@@ -200,6 +325,9 @@ class AuthoringWorkbenchDialog(QDialog):
         clock=None,
         reviewer=None,
         review_thread_pool=None,
+        projection_loader=None,
+        projection_thread_pool=None,
+        background_projection_threshold_bytes=65_536,
     ):
         super().__init__(parent)
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
@@ -236,6 +364,20 @@ class AuthoringWorkbenchDialog(QDialog):
         self._filtered_reviews = ()
         self._selected_review_queue_id = None
         self._integrity_error = None
+        self._workspace = None
+        self._history = ()
+        self._projection_active = False
+        self._projection_pending = False
+        self._projection_serial = 0
+        self._projection_loader = projection_loader or _load_workbench_projection
+        self._background_projection_threshold_bytes = int(
+            background_projection_threshold_bytes
+        )
+        self._projection_signals = _ProjectionTaskSignals()
+        self._projection_signals.finished.connect(self._projection_finished)
+        self._projection_thread_pool = (
+            projection_thread_pool or QThreadPool.globalInstance()
+        )
         self._review_save_active = False
         self._review_save_serial = 0
         self._review_save_queue_id = None
@@ -434,6 +576,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reject = QPushButton("Reject (Ctrl+Backspace)")
         self.review_play = QPushButton("Replay (Ctrl+R)")
         self.review_stop = QPushButton("Stop selected audio")
+        self.reload_authority = QPushButton("Retry workspace load")
         self.retry_failed = QPushButton("Retry failed")
         self.generate = QPushButton("Generate ready lines")
         self.stop_generation = QPushButton("Stop generation")
@@ -471,6 +614,11 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Stop generated-audio or voice-reference preview playback",
             ),
             (
+                self.reload_authority,
+                "Retry authoritative workspace load",
+                "Revalidate workspace authority after a transient load or save failure",
+            ),
+            (
                 self.retry_failed,
                 "Retry failed lines",
                 "Start a child process for exact failed queue IDs",
@@ -506,6 +654,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_stop,
             self.approve,
             self.reject,
+            self.reload_authority,
             self.previous_pending,
             self.next_pending,
         ):
@@ -596,6 +745,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reference_stop.clicked.connect(self.stop_preview)
         self.review_play.clicked.connect(self.play_selected_outcome)
         self.review_stop.clicked.connect(self.stop_preview)
+        self.reload_authority.clicked.connect(self.refresh)
         self.approve.clicked.connect(lambda: self.review_selected("approved"))
         self.reject.clicked.connect(lambda: self.review_selected("rejected"))
         self.previous_pending.clicked.connect(lambda: self._move_pending(-1))
@@ -622,6 +772,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status_timer.setInterval(1_000)
         self.status_timer.timeout.connect(self._poll_authoritative)
         self._restore_settings()
+        self._restore_collection_selection()
         self._install_review_shortcuts()
         self.refresh()
         self.status_timer.start()
@@ -633,14 +784,85 @@ class AuthoringWorkbenchDialog(QDialog):
         button.setAccessibleName(name)
         button.setAccessibleDescription(description)
 
+    def _restore_collection_selection(self):
+        stored = self.settings.value(self._workspace_settings_key("collections"))
+        if stored is None:
+            return
+        if isinstance(stored, str):
+            stored = [stored]
+        self._selected_collection_ids = tuple(str(value) for value in stored)
+
+    def _projection_arguments(self):
+        return (
+            self.workspace_directory,
+            self._selected_collection_ids,
+            (
+                int(self.process.processId())
+                if self.process.state() != QProcess.ProcessState.NotRunning
+                else None
+            ),
+            self.local_process_started_at,
+            self._poll_paths,
+        )
+
+    def _authority_weight(self):
+        total = 0
+        for path in self._poll_paths:
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
     def refresh(self):
-        before = self._workspace_poll_signature()
+        selected = self._selected_review_item()
+        if selected is not None:
+            self._selected_review_queue_id = selected.queue_id
+        if self._projection_active:
+            self._projection_pending = True
+            return
+        if self._review_save_active:
+            self._projection_pending = True
+            return
+        self._projection_pending = False
+        arguments = self._projection_arguments()
+        if self._authority_weight() >= self._background_projection_threshold_bytes:
+            self._projection_active = True
+            self._projection_serial += 1
+            serial = self._projection_serial
+            self.reload_authority.setEnabled(False)
+            if self.summary is None:
+                self.status.setText("LOADING: validating authoritative workspace")
+            self._update_review_actions(preserve_queue_id=True)
+            self._projection_thread_pool.start(
+                _ProjectionTask(
+                    serial,
+                    self._projection_loader,
+                    arguments,
+                    self._projection_signals,
+                )
+            )
+            return
         try:
-            self._refresh_authoritative()
+            projection = self._projection_loader(*arguments)
         except Exception as error:
             self._fail_closed(error)
-        after = self._workspace_poll_signature()
-        self._poll_signature = before if before != after else after
+            return
+        self._apply_projection(projection)
+
+    def _projection_finished(self, serial, projection, error):
+        if serial != self._projection_serial or not self._projection_active:
+            return
+        self._projection_active = False
+        if error is not None:
+            self._fail_closed(error)
+        elif not isinstance(projection, _WorkbenchProjection):
+            self._fail_closed("Authority worker returned no validated projection")
+        else:
+            self._apply_projection(projection)
+        if self._projection_pending:
+            self._projection_pending = False
+            QTimer.singleShot(0, self.refresh)
 
     def _default_poll_paths(self):
         output = self.workspace_directory / "generated-audio"
@@ -656,33 +878,16 @@ class AuthoringWorkbenchDialog(QDialog):
         )
 
     def _workspace_poll_signature(self):
-        values = []
-        for path in self._poll_paths:
-            try:
-                status = path.lstat()
-            except FileNotFoundError:
-                values.append((str(path), None))
-            except OSError as error:
-                values.append((str(path), type(error).__name__, error.errno))
-            else:
-                values.append(
-                    (
-                        str(path),
-                        status.st_mode,
-                        status.st_size,
-                        status.st_mtime_ns,
-                        status.st_ino,
-                    )
-                )
-        return tuple(values)
+        return _poll_signature(self._poll_paths)
 
     def _poll_authoritative(self):
-        if self._review_save_active:
+        if self._review_save_active or self._projection_active:
             return
         if self._poll_signature != self._workspace_poll_signature():
             self.refresh()
 
     def _fail_closed(self, error):
+        self._projection_pending = False
         self._review_save_serial += 1
         self._review_save_active = False
         self._review_save_queue_id = None
@@ -691,6 +896,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.stop()
         self._preview_active = False
         self.summary = None
+        self.collection_selection = None
+        self._workspace = None
+        self._history = ()
         self._integrity_error = str(error)
         self._all_reviews = ()
         self._filtered_reviews = ()
@@ -724,50 +932,38 @@ class AuthoringWorkbenchDialog(QDialog):
         ):
             action.setEnabled(False)
             action.setToolTip(str(error))
+        self.reload_authority.setEnabled(not self._projection_active)
+        self.reload_authority.setToolTip("Retry authoritative workspace validation")
         self.stop_generation.setEnabled(
             self.process.state() != QProcess.ProcessState.NotRunning
         )
 
-    def _refresh_authoritative(self):
-        selected = self._selected_review_item()
-        if selected is not None:
-            self._selected_review_queue_id = selected.queue_id
-        try:
-            self.summary = inspect_workspace(
-                self.workspace_directory,
-                local_process_id=(
-                    int(self.process.processId())
-                    if self.process.state() != QProcess.ProcessState.NotRunning
-                    else None
-                ),
-                local_process_started_at=self.local_process_started_at,
-            )
-            reviews = list_review_items(self.workspace_directory)
-        except AuthoringWorkbenchError as error:
-            self._fail_closed(error)
-            return
+    def _apply_projection(self, projection):
+        self.summary = projection.summary
+        reviews = projection.reviews
+        self._workspace = projection.workspace
+        self._history = projection.history
+        self._poll_signature = projection.poll_signature
+        self._selected_collection_ids = projection.collection_selection.collection_ids
         self.title.setText(self.summary.title)
         self._integrity_error = None
-        _directory, workspace = self._workspace_document()
+        workspace = projection.workspace
         run_config = workspace["run_config"]
         self.narrator.setText(
             f"Narrator: {workspace['narrator_character']} | Backend: {run_config['backend']} | "
             f"Model: {run_config['model']} | Profile: {run_config['generation_profile']}"
         )
-        self._populate_collections()
-        self.collection_selection = inspect_collection_selection(
-            self.workspace_directory,
-            collection_ids=self._selected_collection_ids,
-        )
+        self._populate_collections(projection.collections)
+        self.collection_selection = projection.collection_selection
         self.status.setText(self._status_text())
         self.status.setToolTip("; ".join(self.summary.blocked_reasons))
         self._show_counts()
-        self._show_readiness_details(workspace)
+        self._show_readiness_details(workspace, projection.history)
         self._show_active()
         self._all_reviews = tuple(reviews)
         self._populate_review_filter_choices()
         self._apply_review_filters()
-        self._load_voice_controller()
+        self._load_voice_controller(projection.voice_controller)
         self._populate_recent_choices(workspace["narrator_character"])
         self.recent_choice.setEnabled(self.recent_choice.count() > 0)
         running = self.process.state() != QProcess.ProcessState.NotRunning
@@ -809,6 +1005,8 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.stop_generation.setEnabled(running)
         self.open_output.setEnabled(True)
+        self.reload_authority.setEnabled(True)
+        self.reload_authority.setToolTip("Reload authoritative workspace state")
         self._update_review_actions(preserve_queue_id=True)
 
     def _show_counts(self):
@@ -901,10 +1099,10 @@ class AuthoringWorkbenchDialog(QDialog):
             return "Generation is already running"
         return "No ready pending lines are available"
 
-    def _show_readiness_details(self, workspace):
+    def _show_readiness_details(self, workspace, history=None):
         story = workspace.get("story_index")
         voice = workspace.get("voice_manifest")
-        history = immutable_history_timestamps(self.workspace_directory)
+        history = self._history if history is None else tuple(history)
         readiness = self.collection_selection.readiness
         lines = [
             "Collections: "
@@ -961,26 +1159,14 @@ class AuthoringWorkbenchDialog(QDialog):
             return None
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    def _populate_collections(self):
+    def _populate_collections(self, collections):
         self._loading_collections = True
         self.collection_tree.blockSignals(True)
         self.collection_tree.clear()
         try:
-            collections = list_workspace_collections(self.workspace_directory)
             declared = tuple(collection.collection_id for collection in collections)
             if self._selected_collection_ids is None:
-                stored = self.settings.value(
-                    self._workspace_settings_key("collections")
-                )
-                if stored is None:
-                    self._selected_collection_ids = declared
-                else:
-                    if isinstance(stored, str):
-                        stored = [stored]
-                    requested = {str(value) for value in stored}
-                    self._selected_collection_ids = tuple(
-                        value for value in declared if value in requested
-                    )
+                self._selected_collection_ids = declared
             selected = set(self._selected_collection_ids)
             for collection in collections:
                 item = QTreeWidgetItem(
@@ -1031,12 +1217,14 @@ class AuthoringWorkbenchDialog(QDialog):
         )
 
     def _workspace_document(self):
+        if self._workspace is not None:
+            return self.workspace_directory, self._workspace
         from vntts.authoring.workbench import _load_workspace
 
         return _load_workspace(self.workspace_directory)
 
-    def _load_voice_controller(self):
-        if self.summary.voice_manifest is None:
+    def _load_voice_controller(self, controller):
+        if controller is None:
             self.voice_controller = None
             self.voice_character.clear()
             self._show_reference()
@@ -1044,9 +1232,6 @@ class AuthoringWorkbenchDialog(QDialog):
         current = None
         if self.voice_controller is not None and self.voice_character.currentText():
             current = self.voice_controller.current(self.voice_character.currentText())
-        controller = VoiceReferenceController.from_workspace(
-            self.workspace_directory, self.summary.voice_manifest
-        )
         if current is not None:
             try:
                 controller.select(current.character, current.index)
@@ -1492,6 +1677,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 selected.status,
                 selected.review_status,
                 selected.audio,
+                selected.authority,
             )
         )
         if selected_identity != self._selected_review_identity:
@@ -1513,13 +1699,17 @@ class AuthoringWorkbenchDialog(QDialog):
             }
             and not running
             and not self._review_save_active
+            and not self._projection_active
+            and selected.authority is not None
         )
         self.approve.setEnabled(enabled)
         self.reject.setEnabled(enabled)
         self.review_play.setEnabled(enabled and selected.audio is not None)
         self.review_stop.setEnabled(self._preview_active)
         navigation_enabled = (
-            self._first_pending_row() >= 0 and not self._review_save_active
+            self._first_pending_row() >= 0
+            and not self._review_save_active
+            and not self._projection_active
         )
         self.previous_pending.setEnabled(navigation_enabled)
         self.next_pending.setEnabled(navigation_enabled)
@@ -1530,12 +1720,16 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Saving review: revalidating the exact WAV, authoritative state, "
                 "and generation lease"
             )
+        elif self._projection_active:
+            reason = "Review disabled: authoritative workspace refresh is active"
         elif selected is None:
             reason = "Review disabled: select a generated or approved outcome"
         elif running:
             reason = "Review disabled: another generation process owns the state lease"
         elif selected.status not in {"generated", "approved"}:
             reason = f"Review disabled: {selected.status} has no reviewable WAV"
+        elif selected.authority is None:
+            reason = "Review disabled: exact state and WAV authority is unavailable"
         elif selected.audio is None:
             reason = "Playback disabled: no state-validated generated WAV is available"
         else:
@@ -1547,6 +1741,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_play.setToolTip("" if self.review_play.isEnabled() else reason)
         self.review_stop.setToolTip(
             "" if self._preview_active else "No audio preview is currently playing"
+        )
+        self.reload_authority.setEnabled(
+            not self._review_save_active and not self._projection_active
         )
         self.review_action_reason.setText(reason)
         if selected is None:
@@ -1562,6 +1759,9 @@ class AuthoringWorkbenchDialog(QDialog):
         selected = self._selected_review_item()
         if selected is None:
             self.status.setText("Select one generated outcome to play")
+            return
+        if selected.authority is None:
+            self._fail_closed("Selected review row has no exact authority snapshot")
             return
         try:
             current = next(
@@ -1579,6 +1779,11 @@ class AuthoringWorkbenchDialog(QDialog):
         if current is None or current.audio is None:
             self.media_outcome = "GENERATED AUDIO UNAVAILABLE: refresh the review list"
             self.status.setText(self._status_text())
+            return
+        if current.authority != selected.authority:
+            self._fail_closed(
+                "Generated review authority changed; retry workspace load before playback"
+            )
             return
         self.player.setSource(QUrl.fromLocalFile(str(current.audio)))
         self.player.play()
@@ -1617,6 +1822,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 self.workspace_directory,
                 selected.queue_id,
                 decision,
+                selected.authority,
                 self._review_signals,
             )
         )
@@ -1969,6 +2175,12 @@ class AuthoringWorkbenchDialog(QDialog):
             QWidget.setTabOrder(first, second)
 
     def closeEvent(self, event: QCloseEvent):
+        if self._review_save_active:
+            self.review_action_reason.setText(
+                "Close deferred: wait for the authoritative review save to finish"
+            )
+            event.ignore()
+            return
         self._save_settings()
         self.player.stop()
         if self.process.state() == QProcess.ProcessState.NotRunning:

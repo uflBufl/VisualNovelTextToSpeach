@@ -21,6 +21,7 @@ from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
+    generation_review_authority,
     load_generation_state,
     publish_generated_manifest,
     review_generation_item,
@@ -441,6 +442,35 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             recovered["entries"][0]["audio_sha256"],
             state["items"][item["queue_id"]]["file_sha256"],
         )
+
+    def test_review_lease_loss_is_detected_before_state_or_manifest_write(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authority = generation_review_authority(result.state, item["queue_id"])
+            state_before = result.state.read_bytes()
+            manifest_before = result.manifest.read_bytes()
+
+            with (
+                patch.object(
+                    bulk_module._GenerationLease,
+                    "assert_owned",
+                    side_effect=BulkGenerationError("lease lost"),
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "lease lost"),
+            ):
+                review_generation_item(
+                    result.state,
+                    item["queue_id"],
+                    "approved",
+                    expected_authority=authority,
+                    queue_path=queue,
+                )
+
+            self.assertEqual(result.state.read_bytes(), state_before)
+            self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
