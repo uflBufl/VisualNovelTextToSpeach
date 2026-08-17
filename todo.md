@@ -26,11 +26,12 @@ sections after their implementation has been verified and committed.
       "Use pregenerated narrator tracks when available" must remove that
       override and restore artifact routing. The manual presentation decision
       selected Centurion; retain Paper Heron as an ordinary character voice.
-  - [ ] Regenerate only Narrator queue IDs in a Centurion-configured workspace
-        with the explicit
-        `--character Narrator --regenerate-existing` scope while retaining the
-        proven Rhiannon outcomes, then review those new Narrator results and
-        expose the resulting approved-only manifest for the Character Story
+  - [ ] Continue the Centurion rollout for the remaining 313 spoken Narrator
+        queue items in bounded explicit-ID batches, retaining all proven
+        Rhiannon outcomes. The first eight-item pilot produced four manually
+        approved results and four fail-closed results; do not raise the bounded
+        audio cap blindly. Regenerate and review every remaining item, then
+        expose the complete approved-only manifest for the Character Story
         generated-audio routing acceptance run.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s

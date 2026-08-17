@@ -118,6 +118,29 @@ review or game-pack publication. The earlier Paper Heron workspace remains
 historical integrity evidence and must not be reused as the final narrator
 workspace.
 
+The first bounded Centurion rollout on 2026-08-18 selected eight exact Narrator
+queue IDs with `retries=0`, base seed 0 and `--regenerate-existing`. Four typed
+renders completed and passed manual listening review across 4, 7, 10 and 43-word
+lines. Their approved WAV SHA-256 values are, in ascending line order:
+
+- `129fdb220b072d0399f6ec7070bc9f830ea8fdae4e346673eddff801368a17b9`;
+- `4416a880a758cd364f9e913fad5e39fd960a4906fda40a796b410afc5e77a835`;
+- `9020984cda82bd49bfa45d990806e2bb196286418f01662b7942293bf0f69b21`;
+- `2a55cccc32dbb8679339ca3962ed46cb909ff06e0e14f0ecd5d9b554be00c399`.
+
+The other four selected renders failed closed: three reached their bounded audio
+limit before EOS and one failed the internal-silence quality gate. None
+published a new WAV. After the four compare-and-swap approvals, exactly those
+four authoritative items changed, all other 334 state items were unchanged,
+all 15 existing Rhiannon decisions remained unchanged, and the approved-only
+manifest increased from 10 to 14 exact entries. The idle state and manifest
+SHA-256 values are respectively
+`af758d292e411d6222804a5669076537463c52e157510b332f666a1b2c0797fd`
+and
+`2acd86bec929de2bb5e6dcad1282bb9cca8c07969b861e83d503dbfb4a05fe8b`.
+This pilot proves scoped Centurion regeneration and review, not completion of
+the remaining Narrator queue or final-pack publication.
+
 ## Truthful inspection and focused retry
 
 `inspect_workspace()` projects the exact queue and authoritative state into
