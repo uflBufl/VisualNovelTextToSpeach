@@ -176,6 +176,96 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
 
+    def test_explicit_regeneration_replaces_only_pending_review_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            first_renderer = SyntheticRenderer()
+            self.run_generation(queue, output, first_renderer, seed=0)
+            first_state = load_generation_state(
+                output / "generation-state.json", queue
+            )
+            first_item = first_state["items"][item["queue_id"]]
+            first_sha256 = first_item["file_sha256"]
+
+            replacement_pcm = audio_samples() * 0.5
+            replacement_renderer = SyntheticRenderer(pcm=replacement_pcm)
+            result = self.run_generation(
+                queue,
+                output,
+                replacement_renderer,
+                seed=0,
+                include_characters=("Hero",),
+                regenerate_existing=True,
+            )
+            state = load_generation_state(result.state, queue)
+            replaced = state["items"][item["queue_id"]]
+
+            self.assertEqual(result.generated, 1)
+            self.assertEqual(result.skipped_existing, 0)
+            self.assertEqual(len(replacement_renderer.requests), 1)
+            self.assertEqual(replacement_renderer.requests[0].seed, 1)
+            self.assertEqual(replaced["attempts"], 2)
+            self.assertNotEqual(replaced["file_sha256"], first_sha256)
+            self.assertEqual(replaced["review_status"], "pending_review")
+
+            review_generation_item(result.state, item["queue_id"], "approved")
+            approved_payload = result.state.read_bytes()
+            with self.assertRaisesRegex(
+                BulkGenerationError, "cannot overwrite an approved or rejected"
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    include_queue_ids=(item["queue_id"],),
+                    regenerate_existing=True,
+                )
+            self.assertEqual(result.state.read_bytes(), approved_payload)
+
+    def test_regeneration_requires_an_explicit_scope(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            with self.assertRaisesRegex(
+                BulkGenerationError, "requires explicit queue IDs or characters"
+            ):
+                self.run_generation(
+                    queue,
+                    root / "output",
+                    SyntheticRenderer(),
+                    regenerate_existing=True,
+                )
+
+    def test_regeneration_rejects_protected_decisions_before_rendering(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            output = root / "output"
+            self.run_generation(queue, output, SyntheticRenderer())
+            state_path = output / "generation-state.json"
+            review_generation_item(state_path, second["queue_id"], "approved")
+            before = state_path.read_bytes()
+            renderer = SyntheticRenderer()
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "cannot overwrite an approved or rejected"
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    renderer,
+                    include_characters=("Hero",),
+                    regenerate_existing=True,
+                )
+
+            self.assertEqual(renderer.requests, [])
+            self.assertEqual(state_path.read_bytes(), before)
+
     def test_exact_unknown_voice_character_renders_as_narrator(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

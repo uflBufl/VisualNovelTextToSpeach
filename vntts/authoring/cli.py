@@ -195,6 +195,14 @@ def create_parser():
     generate.add_argument("--include-prefer-source", action="store_true")
     generate.add_argument("--character", action="append", dest="characters")
     generate.add_argument(
+        "--regenerate-existing",
+        action="store_true",
+        help=(
+            "Re-render existing pending-review outcomes only within an explicit "
+            "--character or --queue-id scope; approved/rejected items remain protected"
+        ),
+    )
+    generate.add_argument(
         "--queue-id",
         action="append",
         dest="queue_ids",
@@ -429,6 +437,7 @@ def main(argv=None):
                         include_prefer_source=arguments.include_prefer_source,
                         include_characters=arguments.characters,
                         include_queue_ids=arguments.queue_ids,
+                        regenerate_existing=arguments.regenerate_existing,
                         item_filter=ready_spoken_item,
                         seed=arguments.seed,
                         control_files=control_files,

@@ -1292,6 +1292,21 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 retries=4,
                 seed=9,
             )
+            queue_id = VoiceGenerationQueue.load(
+                created.directory / "queue.jsonl"
+            ).items[0].queue_id
+            regeneration = generation_command(
+                created.directory,
+                queue_ids=(queue_id,),
+                regenerate_existing=True,
+            )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "requires explicit queue IDs"
+            ):
+                generation_command(
+                    created.directory,
+                    regenerate_existing=True,
+                )
 
         self.assertEqual(summary.runtime_status, AuthoringRuntimeStatus.INTERRUPTED)
         self.assertEqual(summary.active.phase, "retrying")
@@ -1302,6 +1317,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         narrator_index = command.index("--narrator-character")
         self.assertEqual(command[narrator_index + 1], "Rhiannon")
         self.assertNotIn(" ".join(command), command)
+        self.assertIn("--regenerate-existing", regeneration)
+        self.assertEqual(regeneration[regeneration.index("--queue-id") + 1], queue_id)
 
     def test_collection_selection_maps_exact_queue_ids_and_empty_is_explicit(self):
         with TemporaryDirectory() as directory:

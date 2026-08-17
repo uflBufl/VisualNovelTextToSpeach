@@ -86,6 +86,20 @@ result = create_resume_workspace(
 This operation preserves review authority; it does not approve Narrator audio,
 run generation or publish a final game pack.
 
+After the manual narrator decision, existing seed narration must be regenerated
+explicitly; an ordinary resume correctly skips valid existing WAVs. The bulk
+CLI therefore accepts `--regenerate-existing` only together with at least one
+explicit `--character` or `--queue-id` scope. For the narrator transition, use
+`--character Narrator --regenerate-existing` against the newly created
+config-addressed workspace. Before the first render, the executor scans the
+whole selected scope and refuses to overwrite any approved or rejected item.
+An existing pending-review WAV is replaced only after a complete typed render;
+a limited render becomes an authoritative failure without publishing a new WAV,
+and failed or absent selected narration follows the normal retry path. The original
+import and the preserved seed state remain available as immutable evidence.
+Programmatic callers of `generation_command()` must supply exact queue IDs when
+requesting the same mode, preventing an empty-selection/all-items ambiguity.
+
 The completed Rhiannon workspace was exercised read-only against a temporary
 Paper Heron target on 2026-08-17. The operation carried exactly 15 terminal
 Rhiannon decisions: 10 approved and 5 rejected. Fourteen matched the immutable

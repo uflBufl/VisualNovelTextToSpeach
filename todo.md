@@ -33,9 +33,11 @@ sections after their implementation has been verified and committed.
         Record the integrity-checked report before revealing and applying the
         Centurion or Paper Heron identity; current progress is 0/1.
   - [ ] After the narrator comparison is decided, regenerate only Narrator
-        queue IDs in the chosen workspace while retaining the proven Rhiannon
-        outcomes, then expose the resulting approved-only manifest for the
-        Character Story generated-audio routing acceptance run.
+        queue IDs in the chosen workspace with the explicit
+        `--character Narrator --regenerate-existing` scope while retaining the
+        proven Rhiannon outcomes, then review those new Narrator results and
+        expose the resulting approved-only manifest for the Character Story
+        generated-audio routing acceptance run.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the

@@ -1059,10 +1059,15 @@ def generation_command(
     seed=0,
     include_prefer_source=False,
     queue_ids=None,
+    regenerate_existing=False,
 ):
     if include_prefer_source:
         raise AuthoringWorkbenchError(
             "Recoverable source-audio generation requires an explicit preflight policy"
+        )
+    if regenerate_existing and queue_ids is None:
+        raise AuthoringWorkbenchError(
+            "Workspace regeneration requires explicit queue IDs"
         )
     directory, workspace = _load_workspace(workspace_directory)
     run_config = workspace["run_config"]
@@ -1132,6 +1137,8 @@ def generation_command(
     if queue_ids is not None:
         for queue_id in queue_ids:
             command.extend(("--queue-id", _required_text(queue_id, "Queue ID")))
+    if regenerate_existing:
+        command.append("--regenerate-existing")
     return tuple(command)
 
 

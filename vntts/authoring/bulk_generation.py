@@ -412,6 +412,7 @@ def run_bulk_generation(
     include_prefer_source=False,
     include_characters=None,
     include_queue_ids=None,
+    regenerate_existing=False,
     item_filter=None,
     seed=0,
     cancellation=None,
@@ -474,6 +475,10 @@ def run_bulk_generation(
                 "Selected queue IDs are absent from the bound queue: "
                 + ", ".join(sorted(unknown_queue_ids))
             )
+    if regenerate_existing and selected_queue_ids is None and include_characters is None:
+        raise BulkGenerationError(
+            "Regenerating existing outcomes requires explicit queue IDs or characters"
+        )
     controls = _snapshot_control_files(control_files or {})
     control_records = [_stored_control(value) for value in controls]
     provenance_sha256 = _canonical_sha256(
@@ -559,6 +564,21 @@ def run_bulk_generation(
         if limit is not None:
             candidates = candidates[:limit]
 
+        if regenerate_existing:
+            protected = [
+                item.queue_id
+                for item in candidates
+                if state["items"].get(item.queue_id, {}).get("status")
+                in {"generated", "approved"}
+                and state["items"][item.queue_id].get("review_status")
+                != "pending_review"
+            ]
+            if protected:
+                raise BulkGenerationError(
+                    "Regeneration cannot overwrite an approved or rejected decision: "
+                    + ", ".join(protected)
+                )
+
         generated = 0
         skipped_existing = 0
         cancelled = False
@@ -573,8 +593,14 @@ def run_bulk_generation(
                     item,
                     state_schema=state["schema"],
                 )
-                skipped_existing += 1
-                continue
+                if not regenerate_existing:
+                    skipped_existing += 1
+                    continue
+                if existing.get("review_status") != "pending_review":
+                    raise BulkGenerationError(
+                        "Regeneration cannot overwrite an approved or rejected "
+                        f"decision for {queue_id!r}"
+                    )
 
             voice = _required_text(
                 synthesis_character_for_line(item.speaker, item.voice_character),
