@@ -69,9 +69,9 @@ sections after their implementation has been verified and committed.
 - [ ] Validate the selected 4-frame/0.25-second MOSS stream on real audio output
       during the hardware soak. The local discard-sink grid reduced first PCM
       from about 1264 ms to 640 ms at RTF 0.88, but cannot expose driver jitter.
-- [ ] Pre-resolve or explicitly approve unknown speakers before live playback so
-      a mid-story voice prompt and narrator fallback cannot masquerade as MOSS
-      latency or Rhiannon voice quality.
+- [ ] Add an explicit speaker corpus for live sessions without a story index;
+      story-index-backed sessions now preflight the inferred chapter lookahead,
+      while corpus-free sessions can only stop on unexpected speakers at runtime.
 
 ### P1 - Simplify the live speech boundary after the P0 replay passes
 

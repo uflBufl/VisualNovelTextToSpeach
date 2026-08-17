@@ -316,6 +316,17 @@ class ChapterVoicePreloader:
         ranked.extend(speaker for speaker, _count in frequency.most_common())
         return tuple(ranked[:limit])
 
+    def live_voice_preflight_rows(self):
+        """Return the current chapter lookahead, or ``None`` before it is known."""
+        if not self.dialogue:
+            return ()
+        if self.current_match is None:
+            return None
+        rows = self.by_chapter.get(self.current_match.chapter, ())
+        return tuple(
+            row for row in rows if row.sequence >= self.current_match.sequence
+        )[: self.lookahead_rows]
+
     def _match(self, character, text):
         speaker = _normalize(character)
         normalized_text = _normalize(text)

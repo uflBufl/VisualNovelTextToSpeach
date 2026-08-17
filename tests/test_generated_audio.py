@@ -442,15 +442,18 @@ class GeneratedAudioTest(unittest.TestCase):
 
     def test_available_game_audio_is_known_before_unknown_voice_prompting(self):
         live = self.create_live_backend()
+        resolver = self.create_resolver(source_audio_status="available")
         backend = GeneratedAudioFallbackBackend(
             live,
             None,
-            self.create_resolver(source_audio_status="available"),
+            resolver,
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
         )
 
         self.assertFalse(backend.will_use_source_audio("Ada", "Hello."))
+        self.assertTrue(backend.will_use_source_audio_in_live_mode("Ada", "Hello."))
+        self.assertIsNone(resolver.current_match)
         backend.set_live_mode_active(True)
 
         self.assertTrue(backend.will_use_source_audio("Ada", "Hello."))

@@ -265,6 +265,7 @@ class AppController:
         self.pending_unknown_speakers = set()
         self.narrator_fallback_speakers = set()
         self.narrator_fallback_names = {}
+        self.next_live_narrator_fallback_names = {}
         self.voice_prime_futures = set()
         self.shutdown_requested = Event()
 
@@ -507,9 +508,17 @@ class AppController:
             self.pending_unknown_speakers.clear()
             self.narrator_fallback_speakers.clear()
             self.narrator_fallback_names.clear()
+            self.narrator_fallback_speakers.update(
+                self.next_live_narrator_fallback_names
+            )
+            self.narrator_fallback_names.update(self.next_live_narrator_fallback_names)
         running = self.live_reader.toggle()
         if running:
+            self.next_live_narrator_fallback_names.clear()
             self.live_reader.max_speech_jobs = self.live_speech_backpressure.reset()
+        elif not starting:
+            self.narrator_fallback_speakers.clear()
+            self.narrator_fallback_names.clear()
         self._set_backend_live_mode(running)
         self.status_handler(
             "Live reading started" if running else "Live reading stopping"
@@ -726,6 +735,40 @@ class AppController:
         self.narrator_fallback_names[key] = character
         self.status_handler(f"Using narrator voice for {character}")
         return True
+
+    def unresolved_live_speakers(self):
+        """Return scoped named speakers, or ``None`` until the chapter is known."""
+        scope = self.chapter_voice_preloader.live_voice_preflight_rows()
+        if scope is None:
+            return None
+        unresolved = []
+        seen = set()
+        for line in scope:
+            character = str(line.speaker or "").strip()
+            key = normalize_character_name(character)
+            if key in seen or not self._speaker_requires_voice_decision(
+                character,
+                line.text,
+                live_preflight=True,
+            ):
+                continue
+            seen.add(key)
+            unresolved.append(character)
+        return tuple(unresolved)
+
+    def approve_live_narrator_fallbacks(self, characters):
+        """Stage explicit narrator choices for the next live session only."""
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before approving narrator fallbacks")
+        approved = {}
+        for character in characters:
+            name = str(character or "").strip()
+            key = normalize_character_name(name)
+            if not key or is_narrator(name):
+                continue
+            approved[key] = name
+        self.next_live_narrator_fallback_names = approved
+        return tuple(approved.values())
 
     def preview_voice(self, character, text):
         if not self.is_ready:
@@ -1148,27 +1191,9 @@ class AppController:
         return original
 
     def _offer_unknown_speaker_mapping(self, character, text=None):
+        if not self._speaker_requires_voice_decision(character, text):
+            return False
         key = normalize_character_name(character)
-        if not key or is_narrator(character) or self.voice_router is None:
-            return False
-        assignments = getattr(self.voice_router.registry, "assignments", {})
-        if isinstance(assignments, dict) and key in assignments:
-            return False
-        if self.voice_router.registry.resolve_closest(character) is not None:
-            return False
-        if key in self.narrator_fallback_speakers:
-            return False
-        source_audio_check = getattr(
-            self.speech_backend,
-            "will_use_source_audio",
-            None,
-        )
-        if (
-            text
-            and callable(source_audio_check)
-            and source_audio_check(character, text) is True
-        ):
-            return False
         if key in self.pending_unknown_speakers:
             return True
         if key in self.reported_unknown_speakers:
@@ -1181,6 +1206,38 @@ class AppController:
         )
         self.unknown_speaker_handler(character.strip())
         return True
+
+    def _speaker_requires_voice_decision(
+        self,
+        character,
+        text=None,
+        *,
+        live_preflight=False,
+    ):
+        key = normalize_character_name(character)
+        if not key or is_narrator(character) or self.voice_router is None:
+            return False
+        assignments = getattr(self.voice_router.registry, "assignments", {})
+        if isinstance(assignments, dict) and key in assignments:
+            return False
+        if self.voice_router.registry.resolve_closest(character) is not None:
+            return False
+        if key in self.narrator_fallback_speakers:
+            return False
+        source_audio_check = getattr(
+            self.speech_backend,
+            (
+                "will_use_source_audio_in_live_mode"
+                if live_preflight
+                else "will_use_source_audio"
+            ),
+            None,
+        )
+        return not (
+            text
+            and callable(source_audio_check)
+            and source_audio_check(character, text) is True
+        )
 
     def _prime_observed_voice(self, character):
         prime = getattr(self.speech_backend, "prime", None)

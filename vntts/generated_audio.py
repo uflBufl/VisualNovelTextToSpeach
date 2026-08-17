@@ -243,6 +243,18 @@ class GeneratedAudioFallbackBackend:
         """Return whether live playback for this exact line stays in the game."""
         if not self.live_mode_active:
             return False
+        return self._will_use_source_audio(character, text)
+
+    def will_use_source_audio_in_live_mode(self, character, text):
+        """Read the future live route without advancing story-match authority."""
+        current_match = getattr(self.line_resolver, "current_match", None)
+        try:
+            return self._will_use_source_audio(character, text)
+        finally:
+            if hasattr(self.line_resolver, "current_match"):
+                self.line_resolver.current_match = current_match
+
+    def _will_use_source_audio(self, character, text):
         if self.audio_source_policy != "prefer-game-audio":
             return False
         if self.voice_override is not None and self.voice_override(character):

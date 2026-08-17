@@ -702,6 +702,12 @@ class TrayApplication(QObject):
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
         self.pending_unknown_speaker = None
+        self.live_voice_preflight_prompt = None
+        self.live_voice_preflight_assign_button = None
+        self.live_voice_preflight_narrator_button = None
+        self.live_voice_preflight_read_button = None
+        self.live_voice_preflight_cancel_button = None
+        self.pending_live_voice_preflight_speakers = ()
         self.restore_compact_after_calibration = False
         self.dashboard = ControlDashboard(self.settings)
         self.compact_controller = CompactController()
@@ -925,7 +931,157 @@ class TrayApplication(QObject):
         self.controller.read_once()
 
     def toggle_live(self):
-        self.signals.live_changed.emit(self.controller.toggle_live())
+        if not self.controller.is_live_running and self._offer_live_voice_preflight():
+            self.signals.live_changed.emit(False)
+            return False
+        running = self.controller.toggle_live()
+        self.signals.live_changed.emit(running)
+        return running
+
+    def _offer_live_voice_preflight(self):
+        unresolved = getattr(self.controller, "unresolved_live_speakers", None)
+        result = unresolved() if callable(unresolved) else ()
+        if result is None:
+            self.pending_live_voice_preflight_speakers = ()
+            self._show_live_voice_scope_required()
+            return True
+        speakers = tuple(result)
+        if not speakers:
+            return False
+        self.pending_live_voice_preflight_speakers = speakers
+        self._show_live_voice_preflight(speakers)
+        return True
+
+    def _show_live_voice_preflight(self, speakers):
+        if self.live_voice_preflight_prompt is not None:
+            self.live_voice_preflight_prompt.setProperty(
+                "vntts_live_voice_preflight_handled",
+                True,
+            )
+            self.live_voice_preflight_prompt.close()
+        prompt = QMessageBox()
+        prompt.setWindowModality(Qt.WindowModality.NonModal)
+        prompt.setWindowFlag(Qt.WindowType.Tool, True)
+        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        if sys.platform == "darwin":
+            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        prompt.setIcon(QMessageBox.Icon.Warning)
+        prompt.setWindowTitle("Choose voices before live reading")
+        prompt.setText(f"{len(speakers)} named story speaker(s) need a voice decision.")
+        preview = ", ".join(speakers[:8])
+        if len(speakers) > 8:
+            preview = f"{preview}, and {len(speakers) - 8} more"
+        prompt.setInformativeText(
+            f"{preview}\n\nAssign distinct voices, explicitly approve the narrator "
+            "for this live session, or cancel. Live reading will not start "
+            "until you decide."
+        )
+        assign = prompt.addButton(
+            "Assign voices...",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        narrator = prompt.addButton(
+            "Use narrator for all",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel = prompt.addButton(
+            "Cancel live reading",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        prompt.setEscapeButton(cancel)
+        self.live_voice_preflight_prompt = prompt
+        self.live_voice_preflight_assign_button = assign
+        self.live_voice_preflight_narrator_button = narrator
+        self.live_voice_preflight_cancel_button = cancel
+        prompt.buttonClicked.connect(self._live_voice_preflight_clicked)
+        prompt.finished.connect(self._live_voice_preflight_finished)
+        prompt.open()
+        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
+
+    def _show_live_voice_scope_required(self):
+        if self.live_voice_preflight_prompt is not None:
+            self.live_voice_preflight_prompt.setProperty(
+                "vntts_live_voice_preflight_handled",
+                True,
+            )
+            self.live_voice_preflight_prompt.close()
+        prompt = QMessageBox()
+        prompt.setWindowModality(Qt.WindowModality.NonModal)
+        prompt.setWindowFlag(Qt.WindowType.Tool, True)
+        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        if sys.platform == "darwin":
+            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        prompt.setIcon(QMessageBox.Icon.Information)
+        prompt.setWindowTitle("Identify the current story chapter")
+        prompt.setText("VNTTS cannot preflight upcoming character voices yet.")
+        prompt.setInformativeText(
+            "Read the current dialog once to identify the story chapter, then "
+            "start live reading again. VNTTS will check the current chapter "
+            "lookahead instead of claiming that the entire story was checked."
+        )
+        read = prompt.addButton(
+            "Read current dialog",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        cancel = prompt.addButton(
+            "Cancel live reading",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        prompt.setEscapeButton(cancel)
+        self.live_voice_preflight_prompt = prompt
+        self.live_voice_preflight_read_button = read
+        self.live_voice_preflight_cancel_button = cancel
+        prompt.buttonClicked.connect(self._live_voice_preflight_clicked)
+        prompt.finished.connect(self._live_voice_preflight_finished)
+        prompt.open()
+        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
+
+    def _live_voice_preflight_clicked(self, button):
+        prompt = self.sender()
+        if not isinstance(prompt, QMessageBox):
+            return
+        prompt.setProperty("vntts_live_voice_preflight_handled", True)
+        speakers = self.pending_live_voice_preflight_speakers
+        if button is self.live_voice_preflight_read_button:
+            prompt.close()
+            self.controller.read_once()
+            self.set_status(
+                "Current dialog requested; start live reading again after it is read"
+            )
+        elif button is self.live_voice_preflight_assign_button:
+            prompt.close()
+            QTimer.singleShot(0, self._review_live_voice_preflight)
+        elif button is self.live_voice_preflight_narrator_button:
+            self.controller.approve_live_narrator_fallbacks(speakers)
+            prompt.close()
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+        else:
+            prompt.close()
+            self.set_status("Live reading cancelled: character voices need a decision")
+
+    def _review_live_voice_preflight(self):
+        speakers = self.pending_live_voice_preflight_speakers
+        if not speakers:
+            return
+        self.pending_unknown_speaker = speakers[0]
+        self.open_speaker_mapping()
+        if not self._offer_live_voice_preflight():
+            running = self.controller.toggle_live()
+            self.signals.live_changed.emit(running)
+
+    def _live_voice_preflight_finished(self, _result):
+        prompt = self.sender()
+        if isinstance(prompt, QMessageBox) and not prompt.property(
+            "vntts_live_voice_preflight_handled"
+        ):
+            self.set_status("Live reading cancelled: character voices need a decision")
+        if prompt is self.live_voice_preflight_prompt:
+            self.live_voice_preflight_prompt = None
+            self.live_voice_preflight_assign_button = None
+            self.live_voice_preflight_narrator_button = None
+            self.live_voice_preflight_read_button = None
+            self.live_voice_preflight_cancel_button = None
 
     def toggle_auto_advance(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
@@ -1587,6 +1743,17 @@ class TrayApplication(QObject):
 
     def shutdown(self):
         self.resume_live_after_unknown_mapping = False
+        if self.live_voice_preflight_prompt is not None:
+            self.live_voice_preflight_prompt.setProperty(
+                "vntts_live_voice_preflight_handled",
+                True,
+            )
+            self.live_voice_preflight_prompt.close()
+            self.live_voice_preflight_prompt = None
+            self.live_voice_preflight_assign_button = None
+            self.live_voice_preflight_narrator_button = None
+            self.live_voice_preflight_read_button = None
+            self.live_voice_preflight_cancel_button = None
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
             self.unknown_speaker_prompt = None

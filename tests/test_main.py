@@ -1323,6 +1323,117 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(offered, ["Hotelier", "Hotelier"])
 
+    def test_live_voice_preflight_lists_only_named_speakers_needing_tts(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "???",
+                        "text": "Unattributed",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 2,
+                        "speaker_name": "Narrator",
+                        "text": "Scene",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 3,
+                        "speaker_name": "Marcus",
+                        "text": "Mapped",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 4,
+                        "speaker_name": "Fledgling",
+                        "text": "Original only",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 5,
+                        "speaker_name": "Selone",
+                        "text": "Original first",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 6,
+                        "speaker_name": "???",
+                        "text": "Unattributed in scope",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 7,
+                        "speaker_name": "Selone",
+                        "text": "Needs TTS",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 8,
+                        "speaker_name": "Hotelier",
+                        "text": "Needs TTS too",
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 9,
+                        "speaker_name": "Distant speaker",
+                        "text": "Outside lookahead",
+                    },
+                ]
+            },
+            lookahead_rows=4,
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.resolve_closest.side_effect = (
+            lambda character: Mock() if character == "Marcus" else None
+        )
+        controller.speech_backend = Mock()
+        controller.speech_backend.will_use_source_audio_in_live_mode.side_effect = (
+            lambda _character, text: text in {"Original only", "Original first"}
+        )
+
+        self.assertIsNone(controller.unresolved_live_speakers())
+        preloader.recommend("Selone", "Original first")
+        self.assertEqual(
+            controller.unresolved_live_speakers(),
+            ("Selone", "Hotelier"),
+        )
+
+    def test_live_voice_preflight_narrator_approval_is_one_session_only(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve_closest.return_value = None
+        controller.speech_backend = Mock()
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.return_value = True
+
+        self.assertEqual(
+            controller.approve_live_narrator_fallbacks(["Selone", "???"]),
+            ("Selone",),
+        )
+        self.assertTrue(controller.toggle_live())
+        self.assertFalse(controller._offer_unknown_speaker_mapping("Selone", "Line"))
+
+        controller.live_reader.is_running = True
+        controller.live_reader.toggle.return_value = False
+        self.assertFalse(controller.toggle_live())
+        self.assertTrue(controller._offer_unknown_speaker_mapping("Selone", "Line"))
+
+        controller.reported_unknown_speakers.clear()
+        controller.pending_unknown_speakers.clear()
+        controller.live_reader.is_running = False
+        controller.live_reader.toggle.return_value = True
+        self.assertTrue(controller.toggle_live())
+        self.assertTrue(controller._offer_unknown_speaker_mapping("Selone", "Line"))
+
     def test_live_mode_uses_playback_safe_backend_threads(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
