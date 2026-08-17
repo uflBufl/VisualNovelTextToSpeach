@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -35,6 +36,7 @@ try:
         AuthoringWorkbenchDialog,
         VoiceReferenceController,
         _load_workbench_projection,
+        _prepare_review_playback,
     )
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
@@ -51,6 +53,7 @@ except ModuleNotFoundError as error:
     AuthoringWorkbenchDialog = None
     VoiceReferenceController = None
     _load_workbench_projection = None
+    _prepare_review_playback = None
 
 
 if AuthoringWorkbenchDialog is not None:
@@ -1191,10 +1194,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.player = Mock()
 
             dialog.play_selected_outcome()
-            source = Path(dialog.player.setSource.call_args.args[0].toLocalFile())
-            self.assertNotEqual(source, selected.audio)
-            self.assertEqual(sha256_file(source), selected.authority.audio_sha256)
-            self.assertFalse(source.is_relative_to(workspace))
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            played = bytes(dialog._review_playback_buffer.data())
+            self.assertEqual(
+                hashlib.sha256(played).hexdigest(), selected.authority.audio_sha256
+            )
+            dialog.player.setSourceDevice.assert_called_once()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
             dialog.refresh()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
@@ -1202,6 +1207,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             selected.audio.write_bytes(selected.audio.read_bytes() + b"tampered")
             dialog.player.reset_mock()
             dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
 
             self.assertTrue(
                 all(
@@ -1237,10 +1243,45 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 side_effect=replace_after_validation,
             ):
                 dialog.play_selected_outcome()
+                self.wait_for(lambda: not dialog._playback_prepare_active)
 
             self.assertIsNone(dialog.summary)
-            self.assertIsNone(dialog._review_playback_file)
+            self.assertIsNone(dialog._review_playback_buffer)
             self.assertIn("changed before immutable playback", dialog.status.text())
+
+    def test_review_playback_preparation_keeps_qt_heartbeat_responsive(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            started = False
+            release = False
+
+            def slow_preparer(path, selected):
+                nonlocal started
+                started = True
+                while not release:
+                    time.sleep(0.005)
+                return _prepare_review_playback(path, selected)
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                playback_preparer=slow_preparer,
+            )
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+            before = time.monotonic()
+            dialog.play_selected_outcome()
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started and bool(heartbeat))
+
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._playback_prepare_active)
+            self.assertFalse(dialog.review_play.isEnabled())
+            release = True
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            self.assertIsNotNone(dialog._review_playback_buffer)
 
     def test_empty_focused_retry_never_becomes_unfiltered_generation(self):
         with TemporaryDirectory() as directory:

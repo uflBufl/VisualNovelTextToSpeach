@@ -481,6 +481,82 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(result.state.read_bytes(), state_before)
             self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
+    def test_review_wav_change_during_staging_prevents_canonical_commit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authority = generation_review_authority(result.state, item["queue_id"])
+            state = load_generation_state(result.state, queue)
+            audio = result.state.parent / state["items"][item["queue_id"]]["path"]
+            state_before = result.state.read_bytes()
+            manifest_before = result.manifest.read_bytes()
+            original_writer = bulk_module._write_generated_manifest_from_state
+
+            def change_wav_during_staging(*arguments, **options):
+                written = original_writer(*arguments, **options)
+                write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
+                return written
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "_write_generated_manifest_from_state",
+                    side_effect=change_wav_during_staging,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"),
+            ):
+                review_generation_item(
+                    result.state,
+                    item["queue_id"],
+                    "approved",
+                    expected_authority=authority,
+                    queue_path=queue,
+                )
+
+            self.assertEqual(result.state.read_bytes(), state_before)
+            self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
+    def test_lease_change_after_state_commit_reports_manifest_recovery(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authority = generation_review_authority(result.state, item["queue_id"])
+            manifest_before = result.manifest.read_bytes()
+            original_replace = os.replace
+
+            def steal_after_state_replace(source, destination):
+                replaced = original_replace(source, destination)
+                if Path(destination).resolve() == result.state.resolve():
+                    lease_path = result.state.parent / ".generation-lease.json"
+                    lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                    lease["lease_id"] = "stolen-after-state-commit"
+                    atomic_write_json(lease_path, lease, sort_keys=True)
+                return replaced
+
+            with (
+                patch.object(
+                    bulk_module.os,
+                    "replace",
+                    side_effect=steal_after_state_replace,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
+            ):
+                review_generation_item(
+                    result.state,
+                    item["queue_id"],
+                    "approved",
+                    expected_authority=authority,
+                    queue_path=queue,
+                )
+
+            saved = json.loads(result.state.read_text(encoding="utf-8"))
+            self.assertEqual(saved["items"][item["queue_id"]]["status"], "approved")
+            self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

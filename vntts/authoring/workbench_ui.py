@@ -6,19 +6,20 @@ import codecs
 import hashlib
 import json
 import sys
-import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
+    QIODevice,
     QObject,
     QProcess,
     QProcessEnvironment,
     QRunnable,
     QSettings,
     Qt,
-    QTemporaryFile,
     QThreadPool,
     QTimer,
     QUrl,
@@ -274,6 +275,59 @@ class _ProjectionTask(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
+def _prepare_review_playback(workspace_directory, selected):
+    current = next(
+        (
+            item
+            for item in list_review_items(workspace_directory)
+            if item.queue_id == selected.queue_id
+        ),
+        None,
+    )
+    if current is None or current.audio is None:
+        raise AuthoringWorkbenchError(
+            "Generated review audio is unavailable; reload the workspace"
+        )
+    if current.authority != selected.authority:
+        raise AuthoringWorkbenchError(
+            "Generated review authority changed; reload before playback"
+        )
+    try:
+        with current.audio.open("rb") as stream:
+            audio_bytes = stream.read()
+    except OSError as error:
+        raise AuthoringWorkbenchError(
+            f"Generated review WAV became unreadable: {error}"
+        ) from error
+    if hashlib.sha256(audio_bytes).hexdigest() != selected.authority.audio_sha256:
+        raise AuthoringWorkbenchError(
+            "Generated review WAV changed before immutable playback was prepared"
+        )
+    return current, audio_bytes
+
+
+class _PlaybackTaskSignals(QObject):
+    finished = Signal(int, object, object)
+
+
+class _PlaybackTask(QRunnable):
+    def __init__(self, serial, preparer, workspace, selected, signals):
+        super().__init__()
+        self.serial = serial
+        self.preparer = preparer
+        self.workspace = workspace
+        self.selected = selected
+        self.signals = signals
+
+    def run(self):
+        try:
+            result = self.preparer(self.workspace, self.selected)
+        except Exception as error:
+            self.signals.finished.emit(self.serial, None, error)
+        else:
+            self.signals.finished.emit(self.serial, result, None)
+
+
 class _ReviewTaskSignals(QObject):
     finished = Signal(int, object, object)
 
@@ -330,6 +384,7 @@ class AuthoringWorkbenchDialog(QDialog):
         review_thread_pool=None,
         projection_loader=None,
         projection_thread_pool=None,
+        playback_preparer=None,
         synchronous_projection=False,
     ):
         super().__init__(parent)
@@ -353,7 +408,13 @@ class AuthoringWorkbenchDialog(QDialog):
         self._current_reference_key = None
         self._selected_review_identity = None
         self._preview_active = False
-        self._review_playback_file = None
+        self._review_playback_buffer = None
+        self._playback_prepare_active = False
+        self._playback_prepare_serial = 0
+        self._playback_preparer = playback_preparer or _prepare_review_playback
+        self._playback_signals = _PlaybackTaskSignals()
+        self._playback_signals.finished.connect(self._playback_preparation_finished)
+        self._playback_thread_pool = QThreadPool.globalInstance()
         self._selected_collection_ids = None
         self._collection_selection_version = 0
         self._loading_collections = False
@@ -888,6 +949,8 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _fail_closed(self, error):
         self._projection_pending = False
+        self._playback_prepare_serial += 1
+        self._playback_prepare_active = False
         self._review_save_serial += 1
         self._review_save_active = False
         self._review_save_queue_id = None
@@ -1591,11 +1654,11 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _discard_review_playback_copy(self):
         self.player.stop()
-        playback = self._review_playback_file
-        self._review_playback_file = None
+        playback = self._review_playback_buffer
+        self._review_playback_buffer = None
         if playback is not None:
             self.player.setSource(QUrl())
-            playback.remove()
+            playback.close()
             playback.deleteLater()
 
     def _show_rhiannon_reviews(self):
@@ -1691,6 +1754,9 @@ class AuthoringWorkbenchDialog(QDialog):
             )
         )
         if selected_identity != self._selected_review_identity:
+            if self._playback_prepare_active:
+                self._playback_prepare_serial += 1
+                self._playback_prepare_active = False
             self._discard_review_playback_copy()
             self._preview_active = False
             self.media_outcome = None
@@ -1710,6 +1776,7 @@ class AuthoringWorkbenchDialog(QDialog):
             and not running
             and not self._review_save_active
             and not self._projection_active
+            and not self._playback_prepare_active
             and selected.authority is not None
         )
         self.approve.setEnabled(enabled)
@@ -1720,6 +1787,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._first_pending_row() >= 0
             and not self._review_save_active
             and not self._projection_active
+            and not self._playback_prepare_active
         )
         self.previous_pending.setEnabled(navigation_enabled)
         self.next_pending.setEnabled(navigation_enabled)
@@ -1732,6 +1800,8 @@ class AuthoringWorkbenchDialog(QDialog):
             )
         elif self._projection_active:
             reason = "Review disabled: authoritative workspace refresh is active"
+        elif self._playback_prepare_active:
+            reason = "Preparing replay: validating and copying exact WAV bytes"
         elif selected is None:
             reason = "Review disabled: select a generated or approved outcome"
         elif running:
@@ -1753,7 +1823,9 @@ class AuthoringWorkbenchDialog(QDialog):
             "" if self._preview_active else "No audio preview is currently playing"
         )
         self.reload_authority.setEnabled(
-            not self._review_save_active and not self._projection_active
+            not self._review_save_active
+            and not self._projection_active
+            and not self._playback_prepare_active
         )
         self.review_action_reason.setText(reason)
         if selected is None:
@@ -1766,6 +1838,11 @@ class AuthoringWorkbenchDialog(QDialog):
             )
 
     def play_selected_outcome(self):
+        if self._playback_prepare_active:
+            self.review_action_reason.setText(
+                "Preparing replay: wait for exact WAV validation"
+            )
+            return
         selected = self._selected_review_item()
         if selected is None:
             self.status.setText("Select one generated outcome to play")
@@ -1773,55 +1850,56 @@ class AuthoringWorkbenchDialog(QDialog):
         if selected.authority is None:
             self._fail_closed("Selected review row has no exact authority snapshot")
             return
-        try:
-            current = next(
-                (
-                    item
-                    for item in list_review_items(self.workspace_directory)
-                    if item.queue_id == selected.queue_id
-                ),
-                None,
+        self._playback_prepare_active = True
+        self._playback_prepare_serial += 1
+        serial = self._playback_prepare_serial
+        self._update_review_actions(preserve_queue_id=True)
+        self._playback_thread_pool.start(
+            _PlaybackTask(
+                serial,
+                self._playback_preparer,
+                self.workspace_directory,
+                selected,
+                self._playback_signals,
             )
-        except AuthoringWorkbenchError as error:
-            self.media_outcome = f"GENERATED AUDIO BLOCKED: {error}"
-            self.refresh()
+        )
+
+    def _playback_preparation_finished(self, serial, result, error):
+        if serial != self._playback_prepare_serial or not self._playback_prepare_active:
             return
-        if current is None or current.audio is None:
-            self.media_outcome = "GENERATED AUDIO UNAVAILABLE: refresh the review list"
-            self.status.setText(self._status_text())
+        self._playback_prepare_active = False
+        if error is not None:
+            self._fail_closed(f"Generated audio replay blocked: {error}")
             return
-        if current.authority != selected.authority:
+        if not isinstance(result, tuple) or len(result) != 2:
+            self._fail_closed("Replay worker returned no validated audio")
+            return
+        current, audio_bytes = result
+        selected = self._selected_review_item()
+        if (
+            selected is None
+            or selected.authority is None
+            or current.queue_id != selected.queue_id
+            or current.authority != selected.authority
+        ):
             self._fail_closed(
-                "Generated review authority changed; retry workspace load before playback"
+                "Review selection changed while replay was being prepared"
             )
-            return
-        try:
-            with current.audio.open("rb") as stream:
-                audio_bytes = stream.read()
-        except OSError as error:
-            self._fail_closed(f"Generated review WAV became unreadable: {error}")
             return
         if hashlib.sha256(audio_bytes).hexdigest() != selected.authority.audio_sha256:
-            self._fail_closed(
-                "Generated review WAV changed before immutable playback was prepared"
-            )
+            self._fail_closed("Replay worker returned bytes with the wrong digest")
             return
         self._discard_review_playback_copy()
-        playback = QTemporaryFile(self)
-        playback.setFileTemplate(
-            str(Path(tempfile.gettempdir()) / "vntts-review-XXXXXX.wav")
-        )
-        if not playback.open() or playback.write(audio_bytes) != len(audio_bytes):
-            playback.remove()
+        playback = QBuffer(self)
+        playback.setData(QByteArray(audio_bytes))
+        if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
             playback.deleteLater()
             self._fail_closed(
-                "Unable to create immutable generated-audio playback copy"
+                "Unable to open immutable generated-audio playback buffer"
             )
             return
-        playback.flush()
-        playback.close()
-        self._review_playback_file = playback
-        self.player.setSource(QUrl.fromLocalFile(playback.fileName()))
+        self._review_playback_buffer = playback
+        self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
         self.player.play()
         self._preview_active = True
         self.review_stop.setEnabled(True)
@@ -1829,6 +1907,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
 
     def review_selected(self, decision):
+        if self._playback_prepare_active:
+            self.review_action_reason.setText(
+                "Preparing replay: wait before saving a review decision"
+            )
+            return
         if self._review_save_active:
             self.review_action_reason.setText(
                 "Saving review: wait for the current authoritative decision"
@@ -2220,6 +2303,12 @@ class AuthoringWorkbenchDialog(QDialog):
         if self._projection_active:
             self.status.setText(
                 "Close deferred: wait for authoritative workspace loading to finish"
+            )
+            event.ignore()
+            return
+        if self._playback_prepare_active:
+            self.status.setText(
+                "Close deferred: wait for exact replay preparation to finish"
             )
             event.ignore()
             return

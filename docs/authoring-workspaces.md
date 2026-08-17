@@ -122,10 +122,13 @@ painting or input delivery. Every visible review row carries a compare-and-swap
 snapshot of the exact queue digest, state digest, state-item digest and WAV
 digest that was displayed. The worker acquires the generation lease and
 revalidates that snapshot, prepares both replacement documents under unique
-temporary names, then checks the complete lease document again immediately
-before either canonical state or manifest path is replaced. A changed WAV,
-state, queue or lease during preparation therefore rejects the stale click
-without changing either authority file.
+temporary names, then revalidates the full snapshot and complete lease document
+again immediately before the canonical state is replaced. Lease ownership is
+checked once more before the manifest replace. A changed WAV, state, queue or
+lease during preparation therefore rejects the stale click without changing
+either authority file. If ownership changes after the state replace, the error
+states that the decision was saved while the older fail-closed manifest still
+needs recovery.
 
 While a decision is active the review controls say `Saving review`, reject a
 second decision and defer window close until the worker has returned. Window
@@ -149,10 +152,11 @@ contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,
 out-of-range indexes and malformed settings are discarded. Choosing
 a recent preview never changes the workspace narrator or synthesis config.
-Review playback separately revalidates the exact state-bound generated WAV
-before playback, reads it through one file handle, verifies the displayed
-digest again and gives Qt an immutable temporary copy rather than the mutable
-workspace pathname. Approval and rejection independently reload state and
+Review playback preparation runs on a background worker. It separately
+revalidates the exact state-bound generated WAV, reads it through one file
+handle and verifies the displayed digest again. The Qt callback gives the media
+player a held read-only in-memory buffer, never a mutable pathname. Approval and
+rejection independently reload state and
 participate in the generation lease. A state, control or path integrity failure
 stops playback, clears stale rows and disables every generation-start/retry,
 review, open-folder and preview action. Stop Generation remains available for a

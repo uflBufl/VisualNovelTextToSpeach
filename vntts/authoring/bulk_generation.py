@@ -141,6 +141,25 @@ def generation_review_authority(state_path, queue_id):
     )
 
 
+def _assert_review_authority(
+    state_path,
+    queue_id,
+    expected_authority,
+    queue_path,
+):
+    if not isinstance(expected_authority, ReviewAuthority):
+        raise BulkGenerationError("Review authority snapshot is invalid")
+    actual = generation_review_authority(state_path, queue_id)
+    if actual != expected_authority:
+        raise BulkGenerationError(
+            "Review authority changed after the item was displayed; refresh before deciding"
+        )
+    if queue_path is None or sha256_file(queue_path) != actual.queue_sha256:
+        raise BulkGenerationError(
+            "Review queue changed after the item was displayed; refresh before deciding"
+        )
+
+
 def inspect_generated_wav(path):
     """Validate the normalized generated-audio WAV contract."""
     try:
@@ -796,22 +815,12 @@ def _review_generation_item_locked(
     audio = _within(state_path.parent, relative, "Generated WAV")
     _validate_success_file(queue_id, item, audio)
     if expected_authority is not None:
-        if not isinstance(expected_authority, ReviewAuthority):
-            raise BulkGenerationError("Review authority snapshot is invalid")
-        actual = ReviewAuthority(
-            queue_sha256=state["queue_sha256"],
-            state_sha256=sha256_file(state_path),
-            item_sha256=_canonical_sha256(item),
-            audio_sha256=sha256_file(audio),
+        _assert_review_authority(
+            state_path,
+            queue_id,
+            expected_authority,
+            queue_path,
         )
-        if actual != expected_authority:
-            raise BulkGenerationError(
-                "Review authority changed after the item was displayed; refresh before deciding"
-            )
-        if queue_path is None or sha256_file(queue_path) != actual.queue_sha256:
-            raise BulkGenerationError(
-                "Review queue changed after the item was displayed; refresh before deciding"
-            )
     if lease is not None:
         lease.assert_owned()
     proposed = copy.deepcopy(state)
@@ -834,6 +843,13 @@ def _review_generation_item_locked(
             staged_manifest,
             entries=entries,
         )
+        if expected_authority is not None:
+            _assert_review_authority(
+                state_path,
+                queue_id,
+                expected_authority,
+                queue_path,
+            )
         if lease is not None:
             lease.assert_owned()
         try:
@@ -843,6 +859,14 @@ def _review_generation_item_locked(
                 f"Unable to save review decision: {error}"
             ) from error
         try:
+            if lease is not None:
+                try:
+                    lease.assert_owned()
+                except BulkGenerationError as error:
+                    raise BulkGenerationError(
+                        "Review decision was saved, but manifest rebuild was blocked: "
+                        f"{error}"
+                    ) from error
             os.replace(staged_manifest, manifest_path)
         except OSError as error:
             raise BulkGenerationError(
