@@ -599,6 +599,26 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog.reject.isEnabled())
 
+    def test_idle_poll_skips_full_refresh_until_authority_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+            )
+            real_refresh = dialog.refresh
+            dialog.refresh = Mock()
+
+            dialog.status_timer.timeout.emit()
+            dialog.refresh.assert_not_called()
+
+            state = workspace / "generated-audio/generation-state.json"
+            state.write_bytes(state.read_bytes() + b"\n")
+            dialog.status_timer.timeout.emit()
+            dialog.refresh.assert_called_once_with()
+            dialog.refresh = real_refresh
+
     def test_polling_error_banner_and_stale_stop_token(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -607,11 +627,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog = AuthoringWorkbenchDialog(
                 workspace, settings=self.settings(root), process=process
             )
-            real_refresh = dialog.refresh
-            dialog.refresh = Mock()
-            dialog.status_timer.timeout.emit()
-            dialog.refresh.assert_called_once_with()
-            dialog.refresh = real_refresh
 
             process.state_value = QProcess.ProcessState.NotRunning
             dialog._process_error(QProcess.ProcessError.FailedToStart)

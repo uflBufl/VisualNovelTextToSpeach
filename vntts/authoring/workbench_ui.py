@@ -188,6 +188,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self._stop_requested = False
         self._forced_kill = False
         self._log_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._poll_paths = self._default_poll_paths()
+        self._poll_signature = None
 
         self.setWindowTitle("VNTTS authoring workbench")
         self.resize(1_080, 720)
@@ -444,10 +446,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.elapsed_timer.start()
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(1_000)
-        self.status_timer.timeout.connect(lambda: self.refresh())
-        self.status_timer.start()
+        self.status_timer.timeout.connect(self._poll_authoritative)
         self._restore_settings()
         self.refresh()
+        self.status_timer.start()
         self._set_focus_chain()
         self.collection_tree.setFocus()
 
@@ -457,10 +459,51 @@ class AuthoringWorkbenchDialog(QDialog):
         button.setAccessibleDescription(description)
 
     def refresh(self):
+        before = self._workspace_poll_signature()
         try:
             self._refresh_authoritative()
         except Exception as error:
             self._fail_closed(error)
+        after = self._workspace_poll_signature()
+        self._poll_signature = before if before != after else after
+
+    def _default_poll_paths(self):
+        output = self.workspace_directory / "generated-audio"
+        return (
+            self.workspace_directory / "workspace.json",
+            self.workspace_directory / "queue.jsonl",
+            self.workspace_directory / "inputs/story-index.jsonl",
+            self.workspace_directory / "inputs/voice/manifest.json",
+            output / "generation-state.json",
+            output / "manifest.json",
+            output / ".generation-lease.json",
+            output / ".job-process.json",
+        )
+
+    def _workspace_poll_signature(self):
+        values = []
+        for path in self._poll_paths:
+            try:
+                status = path.lstat()
+            except FileNotFoundError:
+                values.append((str(path), None))
+            except OSError as error:
+                values.append((str(path), type(error).__name__, error.errno))
+            else:
+                values.append(
+                    (
+                        str(path),
+                        status.st_mode,
+                        status.st_size,
+                        status.st_mtime_ns,
+                        status.st_ino,
+                    )
+                )
+        return tuple(values)
+
+    def _poll_authoritative(self):
+        if self._poll_signature != self._workspace_poll_signature():
+            self.refresh()
 
     def _fail_closed(self, error):
         self.player.stop()
