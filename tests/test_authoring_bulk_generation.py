@@ -290,6 +290,33 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     self.assertEqual(
                         json.loads(failed.manifest.read_text())["entry_count"], 0
                     )
+                    if completion is SynthesisCompletion.LIMITED:
+                        failure = failed_state["items"][item["queue_id"]]["last_error"]
+                        self.assertIn("sample_count=4000", failure)
+                        self.assertIn("chunk_count=1", failure)
+                        self.assertIn("max_audio_seconds=180.0", failure)
+                        self.assertIn("max_tokens=256", failure)
+
+    def test_stereo_renderer_is_downmixed_without_doubling_wav_duration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            mono = audio_samples()
+            stereo = np.column_stack((mono, mono * 0.5))
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(pcm=stereo),
+                retries=0,
+            )
+            state = load_generation_state(result.state, queue)
+            generated = state["items"][item["queue_id"]]
+
+        self.assertEqual(generated["quality"]["channels"], 1)
+        self.assertEqual(generated["quality"]["sample_count"], len(mono))
+        self.assertEqual(generated["quality"]["duration_seconds"], 0.25)
 
     def test_crash_leaves_active_and_resume_does_not_repeat_seed(self):
         with TemporaryDirectory() as directory:

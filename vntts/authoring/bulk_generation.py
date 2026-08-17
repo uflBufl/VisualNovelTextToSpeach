@@ -499,7 +499,11 @@ def run_bulk_generation(
                         )
                     lease.assert_owned()
                     _write_active_phase(state_path, state, "validating")
-                    write_pcm16_wav(partial, rendered.pcm, rendered.sample_rate)
+                    write_pcm16_wav(
+                        partial,
+                        _generated_mono_pcm(rendered.pcm),
+                        rendered.sample_rate,
+                    )
                     quality = inspect_generated_wav(partial)
                     speech_quality = inspect_generated_speech(partial)
                     file_sha256 = sha256_file(partial)
@@ -1253,7 +1257,12 @@ def _write_active_phase(state_path, state, phase, *, last_error=None):
 def _validate_render_result(result, request, provider):
     if result.completion is not SynthesisCompletion.COMPLETE:
         raise BulkGenerationError(
-            f"Typed render completed as {result.completion.value}; WAV was not published"
+            "Typed render completed as "
+            f"{result.completion.value} "
+            f"(sample_count={result.diagnostics.sample_count}, "
+            f"chunk_count={result.diagnostics.chunk_count}, "
+            f"max_audio_seconds={result.limits.max_audio_seconds}, "
+            f"max_tokens={result.limits.max_tokens}); WAV was not published"
         )
     if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
         raise BulkGenerationError("Typed render returned an invalid sample rate")
@@ -1268,6 +1277,22 @@ def _validate_render_result(result, request, provider):
         raise BulkGenerationProvenanceError(
             "Typed render backend diagnostics do not match the configured provider"
         )
+
+
+def _generated_mono_pcm(pcm):
+    """Normalize typed renderer PCM without flattening channels into time."""
+    samples = np.asarray(pcm, dtype=np.float32)
+    if samples.ndim == 1:
+        mono = samples
+    elif samples.ndim == 2 and samples.shape[1] in {1, 2}:
+        mono = samples[:, 0] if samples.shape[1] == 1 else samples.mean(axis=1)
+    else:
+        raise BulkGenerationError(
+            "Typed render PCM must be frames or frames-by-one/two channels"
+        )
+    if not np.isfinite(mono).all():
+        raise BulkGenerationError("Typed render PCM contains non-finite samples")
+    return mono
 
 
 def _guard_job_process(output_directory, process_checker):

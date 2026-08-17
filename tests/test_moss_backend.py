@@ -429,6 +429,18 @@ class MossTTSBackendTest(unittest.TestCase):
             prepared.max_audio_seconds,
         )
 
+    def test_natural_sentences_have_bounded_slow_cadence_reserve(self):
+        self.assertEqual(
+            moss_generation_limits("Wait for me now.")[1], 5.166666666666666
+        )
+        self.assertEqual(
+            moss_generation_limits(
+                "The poachers shove her forward, and they set off."
+            ),
+            (850, 8.5),
+        )
+        self.assertEqual(moss_generation_limits("word " * 100), (2000, 20.0))
+
     def test_missed_eos_is_cut_at_the_text_length_audio_budget(self):
         model = EndlessMossModel()
         backend, _model, output = self.create_backend(model=model)

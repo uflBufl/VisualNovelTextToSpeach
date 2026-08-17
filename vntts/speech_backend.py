@@ -184,7 +184,17 @@ def moss_generation_limits(text):
     """Bound missed-EOS output while leaving room for normal speech cadence."""
     words = re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)
     word_count = max(1, len(words))
-    max_audio_seconds = min(20.0, max(3.0, 1.5 + word_count / 1.8))
+    # Keep the strict three-second guard for one/two-word hesitation lines, the
+    # case that originally exposed missed EOS. Longer natural sentences need a
+    # slower 90-wpm allowance plus a bounded lead/tail reserve: real authoring
+    # evidence includes a four-word completion at 3.68s and a nine-word line
+    # that exhausted the former 6.5s ceiling. The absolute 20-second guard is
+    # unchanged.
+    max_audio_seconds = (
+        3.0
+        if word_count <= 2
+        else min(20.0, max(4.0, 2.5 + word_count / 1.5))
+    )
     max_tokens = min(2048, max(256, round(max_audio_seconds * 100)))
     return max_tokens, max_audio_seconds
 
