@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import sys
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +18,7 @@ from PySide6.QtCore import (
     QRunnable,
     QSettings,
     Qt,
+    QTemporaryFile,
     QThreadPool,
     QTimer,
     QUrl,
@@ -327,7 +330,7 @@ class AuthoringWorkbenchDialog(QDialog):
         review_thread_pool=None,
         projection_loader=None,
         projection_thread_pool=None,
-        background_projection_threshold_bytes=65_536,
+        synchronous_projection=False,
     ):
         super().__init__(parent)
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
@@ -350,7 +353,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self._current_reference_key = None
         self._selected_review_identity = None
         self._preview_active = False
+        self._review_playback_file = None
         self._selected_collection_ids = None
+        self._collection_selection_version = 0
         self._loading_collections = False
         self._selection_refresh_pending = False
         self._loading_recent_choices = False
@@ -369,10 +374,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self._projection_active = False
         self._projection_pending = False
         self._projection_serial = 0
+        self._projection_selection_version = 0
         self._projection_loader = projection_loader or _load_workbench_projection
-        self._background_projection_threshold_bytes = int(
-            background_projection_threshold_bytes
-        )
+        self._synchronous_projection = bool(synchronous_projection)
         self._projection_signals = _ProjectionTaskSignals()
         self._projection_signals.finished.connect(self._projection_finished)
         self._projection_thread_pool = (
@@ -805,15 +809,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self._poll_paths,
         )
 
-    def _authority_weight(self):
-        total = 0
-        for path in self._poll_paths:
-            try:
-                total += path.stat().st_size
-            except OSError:
-                continue
-        return total
-
     def refresh(self):
         selected = self._selected_review_item()
         if selected is not None:
@@ -826,10 +821,11 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self._projection_pending = False
         arguments = self._projection_arguments()
-        if self._authority_weight() >= self._background_projection_threshold_bytes:
+        if not self._synchronous_projection:
             self._projection_active = True
             self._projection_serial += 1
             serial = self._projection_serial
+            self._projection_selection_version = self._collection_selection_version
             self.reload_authority.setEnabled(False)
             if self.summary is None:
                 self.status.setText("LOADING: validating authoritative workspace")
@@ -858,6 +854,10 @@ class AuthoringWorkbenchDialog(QDialog):
             self._fail_closed(error)
         elif not isinstance(projection, _WorkbenchProjection):
             self._fail_closed("Authority worker returned no validated projection")
+        elif self._projection_selection_version != self._collection_selection_version:
+            self._projection_pending = False
+            QTimer.singleShot(0, self.refresh)
+            return
         else:
             self._apply_projection(projection)
         if self._projection_pending:
@@ -893,7 +893,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_save_queue_id = None
         self._review_save_decision = None
         self._review_advance_queue_id = None
-        self.player.stop()
+        self._discard_review_playback_copy()
         self._preview_active = False
         self.summary = None
         self.collection_selection = None
@@ -1198,6 +1198,7 @@ class AuthoringWorkbenchDialog(QDialog):
             if item.checkState(0) == Qt.CheckState.Checked:
                 selected.append(str(item.data(0, Qt.ItemDataRole.UserRole)))
         self._selected_collection_ids = tuple(selected)
+        self._collection_selection_version += 1
         self.settings.setValue(
             self._workspace_settings_key("collections"), list(selected)
         )
@@ -1397,7 +1398,7 @@ class AuthoringWorkbenchDialog(QDialog):
             else (reference.character, reference.index, reference.path)
         )
         if reference_key != self._current_reference_key:
-            self.player.stop()
+            self._discard_review_playback_copy()
             self._preview_active = False
             self.media_outcome = None
             self._current_reference_key = reference_key
@@ -1463,7 +1464,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.status.setText(self._status_text())
 
     def stop_preview(self):
-        self.player.stop()
+        self._discard_review_playback_copy()
         self._preview_active = False
         self.review_stop.setEnabled(False)
         self.media_outcome = "AUDIO PREVIEW STOPPED"
@@ -1588,6 +1589,15 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._update_review_actions(preserve_queue_id=True)
 
+    def _discard_review_playback_copy(self):
+        self.player.stop()
+        playback = self._review_playback_file
+        self._review_playback_file = None
+        if playback is not None:
+            self.player.setSource(QUrl())
+            playback.remove()
+            playback.deleteLater()
+
     def _show_rhiannon_reviews(self):
         index = self.review_character.findText("Rhiannon")
         if index < 0:
@@ -1681,7 +1691,7 @@ class AuthoringWorkbenchDialog(QDialog):
             )
         )
         if selected_identity != self._selected_review_identity:
-            self.player.stop()
+            self._discard_review_playback_copy()
             self._preview_active = False
             self.media_outcome = None
             self._selected_review_identity = selected_identity
@@ -1785,7 +1795,33 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Generated review authority changed; retry workspace load before playback"
             )
             return
-        self.player.setSource(QUrl.fromLocalFile(str(current.audio)))
+        try:
+            with current.audio.open("rb") as stream:
+                audio_bytes = stream.read()
+        except OSError as error:
+            self._fail_closed(f"Generated review WAV became unreadable: {error}")
+            return
+        if hashlib.sha256(audio_bytes).hexdigest() != selected.authority.audio_sha256:
+            self._fail_closed(
+                "Generated review WAV changed before immutable playback was prepared"
+            )
+            return
+        self._discard_review_playback_copy()
+        playback = QTemporaryFile(self)
+        playback.setFileTemplate(
+            str(Path(tempfile.gettempdir()) / "vntts-review-XXXXXX.wav")
+        )
+        if not playback.open() or playback.write(audio_bytes) != len(audio_bytes):
+            playback.remove()
+            playback.deleteLater()
+            self._fail_closed(
+                "Unable to create immutable generated-audio playback copy"
+            )
+            return
+        playback.flush()
+        playback.close()
+        self._review_playback_file = playback
+        self.player.setSource(QUrl.fromLocalFile(playback.fileName()))
         self.player.play()
         self._preview_active = True
         self.review_stop.setEnabled(True)
@@ -1805,7 +1841,7 @@ class AuthoringWorkbenchDialog(QDialog):
         if selected is None:
             self.status.setText("Select one generated outcome to review")
             return
-        self.player.stop()
+        self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = None
         self._review_save_active = True
@@ -2181,8 +2217,14 @@ class AuthoringWorkbenchDialog(QDialog):
             )
             event.ignore()
             return
+        if self._projection_active:
+            self.status.setText(
+                "Close deferred: wait for authoritative workspace loading to finish"
+            )
+            event.ignore()
+            return
         self._save_settings()
-        self.player.stop()
+        self._discard_review_playback_copy()
         if self.process.state() == QProcess.ProcessState.NotRunning:
             event.accept()
             return

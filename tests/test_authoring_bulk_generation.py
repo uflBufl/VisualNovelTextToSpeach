@@ -452,14 +452,23 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             authority = generation_review_authority(result.state, item["queue_id"])
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
+            original_writer = bulk_module._write_generated_manifest_from_state
+
+            def steal_lease_during_staging(*arguments, **options):
+                written = original_writer(*arguments, **options)
+                lease_path = result.state.parent / ".generation-lease.json"
+                lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                lease["lease_id"] = "stolen-during-manifest-staging"
+                atomic_write_json(lease_path, lease, sort_keys=True)
+                return written
 
             with (
                 patch.object(
-                    bulk_module._GenerationLease,
-                    "assert_owned",
-                    side_effect=BulkGenerationError("lease lost"),
+                    bulk_module,
+                    "_write_generated_manifest_from_state",
+                    side_effect=steal_lease_during_staging,
                 ),
-                self.assertRaisesRegex(BulkGenerationError, "lease lost"),
+                self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
             ):
                 review_generation_item(
                     result.state,

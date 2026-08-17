@@ -121,25 +121,28 @@ lease acquisition, approved-manifest derivation and file checks never block Qt
 painting or input delivery. Every visible review row carries a compare-and-swap
 snapshot of the exact queue digest, state digest, state-item digest and WAV
 digest that was displayed. The worker acquires the generation lease and
-revalidates that snapshot before the first state or manifest write. A changed
-WAV, state, queue or lease therefore rejects the stale click instead of applying
-it to newer audio.
+revalidates that snapshot, prepares both replacement documents under unique
+temporary names, then checks the complete lease document again immediately
+before either canonical state or manifest path is replaced. A changed WAV,
+state, queue or lease during preparation therefore rejects the stale click
+without changing either authority file.
 
 While a decision is active the review controls say `Saving review`, reject a
-second decision and defer window close until the worker has returned. Only a
-successful worker result updates the affected row and counts. Large authority
-projections run on a separate serialized worker; the Qt callback only applies
-the already validated immutable projection. Small projections below the bounded
-64 KiB authority footprint remain inline. A transient worker or projection
-failure clears stale controls but leaves `Retry workspace load` available for
-an explicit in-dialog recovery without requiring a file timestamp change.
+second decision and defer window close until the worker has returned. Window
+close is likewise deferred during an authority projection. Only a successful
+worker result updates the affected row and counts. Every authority projection
+runs off the Qt thread; the Qt callback only applies the already validated
+immutable projection. A user collection change increments a scope version, so
+an older worker result is discarded and reloaded instead of reverting the new
+selection. A transient worker or projection failure clears stale controls but
+leaves `Retry workspace load` available for an explicit in-dialog recovery
+without requiring a file timestamp change.
 
 Read-only acceptance against the real 592-line workspace on 2026-08-17 returned
-the dialog constructor in 0.118 seconds while the 15.678-second full integrity
-projection ran in the background. Qt delivered 413 25-ms heartbeat callbacks;
-a repeated run observed a maximum 0.294-second heartbeat gap and a 0.003-second
-main-thread projection apply. The resulting default view contained the same
-196 awaiting-review rows from 338 review outcomes.
+the dialog constructor in 0.139 seconds while the 16.331-second full integrity
+projection ran in the background. Qt delivered 469 25-ms heartbeat callbacks
+with a maximum observed 0.300-second gap. The resulting default view contained
+the same 196 awaiting-review rows from 338 review outcomes.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
@@ -147,7 +150,9 @@ contained snapshot at click time. Recent preview choices store only validated
 out-of-range indexes and malformed settings are discarded. Choosing
 a recent preview never changes the workspace narrator or synthesis config.
 Review playback separately revalidates the exact state-bound generated WAV
-before playback; approval and rejection independently reload state and
+before playback, reads it through one file handle, verifies the displayed
+digest again and gives Qt an immutable temporary copy rather than the mutable
+workspace pathname. Approval and rejection independently reload state and
 participate in the generation lease. A state, control or path integrity failure
 stops playback, clears stale rows and disables every generation-start/retry,
 review, open-folder and preview action. Stop Generation remains available for a

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -668,12 +669,27 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
             return publish_generated_manifest(
                 state_path, manifest_path=manifest_path, _lease_held=True
             )
-    entries = _approved_manifest_entries(state, output_directory)
     manifest_path = Path(manifest_path or output_directory / "manifest.json").resolve()
     if manifest_path.parent != output_directory:
         raise BulkGenerationError(
             "Generated-audio manifest must stay in the state directory"
         )
+    _write_generated_manifest_from_state(state, output_directory, manifest_path)
+    return manifest_path
+
+
+def _write_generated_manifest_from_state(
+    state,
+    output_directory,
+    manifest_path,
+    *,
+    entries=None,
+):
+    entries = (
+        _approved_manifest_entries(state, output_directory)
+        if entries is None
+        else entries
+    )
     try:
         write_generated_audio_manifest(
             manifest_path,
@@ -687,7 +703,6 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
         )
     except GeneratedAudioManifestError as error:
         raise BulkGenerationError(str(error)) from error
-    return manifest_path
 
 
 def _approved_manifest_entries(state, output_directory):
@@ -799,17 +814,51 @@ def _review_generation_item_locked(
             )
     if lease is not None:
         lease.assert_owned()
-    item["review_status"] = decision
-    item["status"] = "approved" if decision == "approved" else "generated"
-    item["updated_at"] = _now()
-    atomic_write_json(state_path, state, sort_keys=True)
+    proposed = copy.deepcopy(state)
+    proposed_item = proposed["items"][queue_id]
+    proposed_item["review_status"] = decision
+    proposed_item["status"] = "approved" if decision == "approved" else "generated"
+    proposed_item["updated_at"] = _now()
+    manifest_path = state_path.parent / "manifest.json"
+    entries = _approved_manifest_entries(proposed, state_path.parent)
+    transaction_id = secrets.token_hex(16)
+    staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
+    staged_manifest = manifest_path.with_name(
+        f".{manifest_path.name}.{transaction_id}.tmp"
+    )
     try:
-        publish_generated_manifest(state_path, _lease_held=True)
-    except BulkGenerationError as error:
-        raise BulkGenerationError(
-            f"Review decision was saved, but manifest rebuild failed: {error}"
-        ) from error
-    return state
+        atomic_write_json(staged_state, proposed, sort_keys=True)
+        _write_generated_manifest_from_state(
+            proposed,
+            state_path.parent,
+            staged_manifest,
+            entries=entries,
+        )
+        if lease is not None:
+            lease.assert_owned()
+        try:
+            os.replace(staged_state, state_path)
+        except OSError as error:
+            raise BulkGenerationError(
+                f"Unable to save review decision: {error}"
+            ) from error
+        try:
+            os.replace(staged_manifest, manifest_path)
+        except OSError as error:
+            raise BulkGenerationError(
+                f"Review decision was saved, but manifest rebuild failed: {error}"
+            ) from error
+    finally:
+        for staged in (staged_state, staged_manifest):
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+    if lease is not None:
+        lease.mark_committed()
+    return proposed
 
 
 def process_is_alive(pid):

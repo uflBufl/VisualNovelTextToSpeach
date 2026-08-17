@@ -71,9 +71,11 @@ Missing or stale manifests do not override review state. Approval/rejection
 writes state first and then rebuilds the manifest; a rebuild error reports that
 the review decision was already saved and can be recovered with `publish`.
 Workbench decisions additionally carry the displayed queue, state-item, state
-and WAV SHA-256 snapshot into this transaction. Under the exclusive lease, all
-four identities and current lease ownership are checked before the state write,
-so an old row cannot approve or reject a newer render.
+and WAV SHA-256 snapshot into this transaction. The replacement state and
+derived manifest are fully validated and staged under unique temporary names.
+Under the exclusive lease, all four identities and the complete lease document
+are checked again immediately before either canonical path is replaced, so an
+old row cannot approve or reject a newer render.
 Additive raw entry fields retain generation profile, synthesis/control hashes,
 voice, text transform and silence measurements. The vntts-artifacts 0.6.1 typed
 generated-audio index does not expose those extensions, so generation state

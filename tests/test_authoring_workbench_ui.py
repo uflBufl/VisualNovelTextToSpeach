@@ -53,6 +53,17 @@ except ModuleNotFoundError as error:
     _load_workbench_projection = None
 
 
+if AuthoringWorkbenchDialog is not None:
+    _ProductionAuthoringWorkbenchDialog = AuthoringWorkbenchDialog
+
+    class AuthoringWorkbenchDialog(_ProductionAuthoringWorkbenchDialog):
+        """Keep small unit fixtures synchronous; async behavior has explicit tests."""
+
+        def __init__(self, *arguments, **options):
+            options.setdefault("synchronous_projection", True)
+            super().__init__(*arguments, **options)
+
+
 class FakeSignal:
     def __init__(self):
         self.callbacks = []
@@ -798,6 +809,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
+            (workspace / "generated-audio/audio/transitive-large.bin").write_bytes(
+                b"x" * 70_000
+            )
             started = False
             release = False
 
@@ -815,7 +829,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace,
                 settings=self.settings(root),
                 projection_loader=slow_loader,
-                background_projection_threshold_bytes=0,
+                synchronous_projection=False,
             )
             elapsed = time.monotonic() - before
             self.wait_for(lambda: started and bool(heartbeat))
@@ -823,6 +837,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertLess(elapsed, 0.1)
             self.assertTrue(dialog._projection_active)
             self.assertIsNone(dialog.summary)
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close deferred", dialog.status.text())
             release = True
             self.wait_for(lambda: not dialog._projection_active)
             self.assertIsNotNone(dialog.summary)
@@ -882,7 +900,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace,
                 settings=self.settings(root),
                 projection_loader=loader,
-                background_projection_threshold_bytes=0,
+                synchronous_projection=False,
             )
             self.wait_for(lambda: not dialog._projection_active)
             heartbeat = []
@@ -899,6 +917,46 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._projection_active)
             timer.stop()
             self.assertIn("Approved: 1", dialog.counts.text())
+
+    def test_new_collection_choice_wins_over_stale_background_projection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            calls = 0
+            first_started = False
+            release_first = False
+
+            def loader(*arguments):
+                nonlocal calls, first_started
+                calls += 1
+                if calls == 1:
+                    first_started = True
+                    while not release_first:
+                        time.sleep(0.005)
+                return _load_workbench_projection(*arguments)
+
+            dialog._projection_loader = loader
+            dialog._synchronous_projection = False
+            dialog.refresh()
+            self.wait_for(lambda: first_started)
+            main = next(
+                dialog.collection_tree.topLevelItem(index)
+                for index in range(dialog.collection_tree.topLevelItemCount())
+                if dialog.collection_tree.topLevelItem(index).data(
+                    0, Qt.ItemDataRole.UserRole
+                )
+                == "main"
+            )
+            main.setCheckState(0, Qt.CheckState.Unchecked)
+            self.application.processEvents()
+            expected = ("source-only",)
+            self.assertEqual(dialog._selected_collection_ids, expected)
+            release_first = True
+            self.wait_for(lambda: calls >= 2 and not dialog._projection_active)
+
+            self.assertEqual(dialog._selected_collection_ids, expected)
+            self.assertEqual(dialog.collection_selection.collection_ids, expected)
 
     def test_consecutive_review_decisions_remain_ordered_and_manifest_is_derived(self):
         with TemporaryDirectory() as directory:
@@ -1134,8 +1192,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.play_selected_outcome()
             source = Path(dialog.player.setSource.call_args.args[0].toLocalFile())
-            self.assertEqual(source, selected.audio)
-            self.assertTrue(source.is_relative_to(workspace / "generated-audio"))
+            self.assertNotEqual(source, selected.audio)
+            self.assertEqual(sha256_file(source), selected.authority.audio_sha256)
+            self.assertFalse(source.is_relative_to(workspace))
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
             dialog.refresh()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
@@ -1144,11 +1203,44 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.player.reset_mock()
             dialog.play_selected_outcome()
 
-            dialog.player.setSource.assert_not_called()
+            self.assertTrue(
+                all(
+                    invocation.args[0].isEmpty()
+                    for invocation in dialog.player.setSource.call_args_list
+                )
+            )
             self.assertIsNone(dialog.summary)
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog.reject.isEnabled())
             self.assertFalse(dialog.review_play.isEnabled())
+
+    def test_review_playback_rejects_wav_replacement_after_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            selected = dialog._selected_review_item()
+            real_list = list_review_items
+
+            def replace_after_validation(path):
+                rows = real_list(path)
+                write_pcm16_wav(
+                    selected.audio,
+                    np.full(1_600, 0.2, dtype=np.float32),
+                    16_000,
+                )
+                return rows
+
+            with patch(
+                "vntts.authoring.workbench_ui.list_review_items",
+                side_effect=replace_after_validation,
+            ):
+                dialog.play_selected_outcome()
+
+            self.assertIsNone(dialog.summary)
+            self.assertIsNone(dialog._review_playback_file)
+            self.assertIn("changed before immutable playback", dialog.status.text())
 
     def test_empty_focused_retry_never_becomes_unfiltered_generation(self):
         with TemporaryDirectory() as directory:
