@@ -544,6 +544,21 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     workspace / "generated-audio/audio/approved.wav",
                     "main",
                 ),
+                ReviewItem(
+                    "narrator-failed",
+                    "line-4",
+                    "???",
+                    "Narrator",
+                    "A failed narrator bridge.",
+                    "failed",
+                    None,
+                    3,
+                    2,
+                    "Typed render completed as limited",
+                    None,
+                    "side",
+                    failure_category="audio limit / missed EOS",
+                ),
             )
             dialog._all_reviews = reviews
             dialog._populate_review_filter_choices()
@@ -570,7 +585,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             dialog.review_search.setText("not present")
             self.assertEqual(dialog.review_table.rowCount(), 0)
-            self.assertIn("showing 0 of 3", dialog.review_scope.text())
+            self.assertIn("showing 0 of 4", dialog.review_scope.text())
+            dialog.review_search.clear()
+            dialog.exclude_narrator.setChecked(False)
+            dialog.review_status.setCurrentText("Failed: audio limit")
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(dialog._selected_review_item().queue_id, "narrator-failed")
+            self.assertIn("missed EOS", dialog.review_table.item(0, 5).text())
 
     def test_sequential_pending_navigation_and_592_item_projection(self):
         with TemporaryDirectory() as directory:

@@ -891,6 +891,24 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             workbench_module._review_technical_metrics({}, "No WAV"),
             (None, None, None, ()),
         )
+        self.assertEqual(
+            workbench_module.generation_failure_category(
+                "Typed render completed as limited; WAV was not published"
+            ),
+            "audio limit / missed EOS",
+        )
+        self.assertEqual(
+            workbench_module.generation_failure_category(
+                "Generated WAV failed speech-silence validation"
+            ),
+            "speech silence",
+        )
+        self.assertEqual(
+            workbench_module._review_voice_character(
+                SimpleNamespace(speaker="???", voice_character="Hero"), {}
+            ),
+            "Narrator",
+        )
 
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
         with TemporaryDirectory() as directory:

@@ -157,11 +157,24 @@ class ReviewItem:
     words_per_minute: float | None = None
     peak: float | None = None
     technical_flags: tuple[str, ...] = ()
+    failure_category: str | None = None
+
+
+def generation_failure_category(error):
+    """Collapse volatile backend diagnostics into actionable failure cohorts."""
+    value = str(error or "").casefold()
+    if "limited" in value or " limit" in value:
+        return "audio limit / missed EOS"
+    if "silence" in value:
+        return "speech silence"
+    return "other generation failure"
 
 
 def review_technical_summary(item):
     """Describe objective review metrics without making a listening decision."""
     if item.duration_seconds is None:
+        if item.failure_category is not None:
+            return "Failure: " + item.failure_category
         return "No generated WAV"
     metrics = [f"{item.duration_seconds:.2f}s"]
     if item.words_per_minute is not None:
@@ -645,6 +658,13 @@ def _review_technical_metrics(result, text):
     return duration, words_per_minute, peak, tuple(flags)
 
 
+def _review_voice_character(item, result):
+    return str(
+        result.get("voice_character")
+        or synthesis_character_for_line(item.speaker, item.voice_character)
+    )
+
+
 def list_review_items(workspace_directory):
     summary = inspect_workspace(workspace_directory)
     if summary.state is None:
@@ -689,9 +709,7 @@ def list_review_items(workspace_directory):
                 queue_id=item.queue_id,
                 line_id=item.line_id,
                 speaker=item.speaker,
-                voice_character=str(
-                    result.get("voice_character") or item.voice_character
-                ),
+                voice_character=_review_voice_character(item, result),
                 text=item.text,
                 status=status,
                 review_status=result.get("review_status"),
@@ -725,6 +743,11 @@ def list_review_items(workspace_directory):
                 words_per_minute=words_per_minute,
                 peak=peak,
                 technical_flags=technical_flags,
+                failure_category=(
+                    generation_failure_category(result.get("last_error"))
+                    if status == "failed"
+                    else None
+                ),
             )
         )
     return tuple(records)

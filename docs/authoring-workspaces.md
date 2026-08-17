@@ -247,10 +247,12 @@ collection and case-insensitive line text. `Rhiannon only` and `Exclude
 Narrator` are explicit shortcuts. `Technical attention` shows only awaiting
 review items with conservative pace, peak or silence flags. Every generated
 row displays duration, words per minute, peak and its attention flags; the
-metrics never substitute for listening. Filtered and total counts remain
-visible, and a zero-row filter is never interpreted as an unfiltered request.
-The exact selected queue ID is retained across authoritative refreshes whenever
-it still appears in the active filter.
+metrics never substitute for listening. Failed rows display a normalized
+`audio limit / missed EOS`, `speech silence` or other cohort and can be filtered
+by the first two actionable classes without parsing volatile backend messages.
+Filtered and total counts remain visible, and a zero-row filter is never
+interpreted as an unfiltered request. The exact selected queue ID is retained
+across authoritative refreshes whenever it still appears in the active filter.
 
 The review table and current line occupy the primary vertical pane with a
 320-pixel usable minimum. Generation scope, readiness, voice-reference preview

@@ -622,6 +622,8 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Approved",
                 "Rejected",
                 "Failed",
+                "Failed: audio limit",
+                "Failed: silence",
             ]
         )
         self.review_status.setAccessibleName("Filter review by status")
@@ -1715,6 +1717,16 @@ class AuthoringWorkbenchDialog(QDialog):
                 return item.status == "generated" and item.review_status == "rejected"
             if status == "Failed":
                 return item.status == "failed"
+            if status == "Failed: audio limit":
+                return (
+                    item.status == "failed"
+                    and item.failure_category == "audio limit / missed EOS"
+                )
+            if status == "Failed: silence":
+                return (
+                    item.status == "failed"
+                    and item.failure_category == "speech silence"
+                )
             return True
 
         self._filtered_reviews = tuple(
