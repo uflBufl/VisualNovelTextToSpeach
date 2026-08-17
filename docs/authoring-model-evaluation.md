@@ -106,6 +106,25 @@ one-trial blind session. Its session SHA-256 is
 Choosing the narrator remains a manual confidence and presentation gate; the
 comparison does not authorize batch regeneration.
 
+Review the prepared trial from the repository root with:
+
+```sh
+uv run --no-sync vntts-listen ui \
+  --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json
+```
+
+The current status is deliberately `0/1`: select the more confident,
+presentational reading without opening `.blind-key.json`. After saving the one
+rating, produce the integrity-checked report with:
+
+```sh
+uv run --no-sync vntts-listen report \
+  --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json
+```
+
+That report reveals the chosen model. Do not create the final narrator workspace
+until it exists.
+
 ## Blind listening and report semantics
 
 Start a session directly from the aggregate benchmark:

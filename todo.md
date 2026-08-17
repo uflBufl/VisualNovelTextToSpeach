@@ -28,6 +28,10 @@ sections after their implementation has been verified and committed.
       compare Centurion with Paper Heron after extractor-owned, game-derived
       Paper Heron references are available; the current Matilda-like result was
       rejected as insufficiently confident and presentational.
+  - [ ] Complete the prepared one-trial blind narrator decision with
+        `uv run --no-sync vntts-listen ui --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json`.
+        Record the integrity-checked report before revealing and applying the
+        Centurion or Paper Heron identity; current progress is 0/1.
   - [ ] After the narrator comparison is decided, regenerate only Narrator
         queue IDs in the chosen workspace while retaining the proven Rhiannon
         outcomes, then expose the resulting approved-only manifest for the
