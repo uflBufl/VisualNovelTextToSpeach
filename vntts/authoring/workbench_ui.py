@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
-from vntts.authoring.bulk_generation import process_started_at
+from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -69,7 +69,8 @@ from vntts.authoring.workbench import (
     inspect_workspace,
     list_review_items,
     list_workspace_collections,
-    review_workspace_item,
+    prepare_review_audio,
+    review_selected_item,
     workspace_voice_snapshot,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -276,34 +277,8 @@ class _ProjectionTask(QRunnable):
 
 
 def _prepare_review_playback(workspace_directory, selected):
-    current = next(
-        (
-            item
-            for item in list_review_items(workspace_directory)
-            if item.queue_id == selected.queue_id
-        ),
-        None,
-    )
-    if current is None or current.audio is None:
-        raise AuthoringWorkbenchError(
-            "Generated review audio is unavailable; reload the workspace"
-        )
-    if current.authority != selected.authority:
-        raise AuthoringWorkbenchError(
-            "Generated review authority changed; reload before playback"
-        )
-    try:
-        with current.audio.open("rb") as stream:
-            audio_bytes = stream.read()
-    except OSError as error:
-        raise AuthoringWorkbenchError(
-            f"Generated review WAV became unreadable: {error}"
-        ) from error
-    if hashlib.sha256(audio_bytes).hexdigest() != selected.authority.audio_sha256:
-        raise AuthoringWorkbenchError(
-            "Generated review WAV changed before immutable playback was prepared"
-        )
-    return current, audio_bytes
+    del workspace_directory
+    return selected, prepare_review_audio(selected)
 
 
 class _PlaybackTaskSignals(QObject):
@@ -341,6 +316,7 @@ class _ReviewTask(QRunnable):
         queue_id,
         decision,
         authority,
+        selected,
         signals,
     ):
         super().__init__()
@@ -350,16 +326,20 @@ class _ReviewTask(QRunnable):
         self.queue_id = queue_id
         self.decision = decision
         self.authority = authority
+        self.selected = selected
         self.signals = signals
 
     def run(self):
         try:
-            result = self.reviewer(
-                self.workspace,
-                self.queue_id,
-                self.decision,
-                self.authority,
-            )
+            if self.reviewer is None:
+                result = review_selected_item(self.selected, self.decision)
+            else:
+                result = self.reviewer(
+                    self.workspace,
+                    self.queue_id,
+                    self.decision,
+                    self.authority,
+                )
         except Exception as error:
             self.signals.finished.emit(self.serial, None, error)
         else:
@@ -448,7 +428,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_save_queue_id = None
         self._review_save_decision = None
         self._review_advance_queue_id = None
-        self._reviewer = reviewer or review_workspace_item
+        self._reviewer = reviewer
         self._review_signals = _ReviewTaskSignals(self)
         self._review_signals.finished.connect(self._review_save_finished)
         self._review_thread_pool = review_thread_pool or QThreadPool(self)
@@ -1942,11 +1922,12 @@ class AuthoringWorkbenchDialog(QDialog):
                 selected.queue_id,
                 decision,
                 selected.authority,
+                selected,
                 self._review_signals,
             )
         )
 
-    def _review_save_finished(self, serial, summary, error):
+    def _review_save_finished(self, serial, result, error):
         if serial != self._review_save_serial or not self._review_save_active:
             return
         queue_id = self._review_save_queue_id
@@ -1959,42 +1940,91 @@ class AuthoringWorkbenchDialog(QDialog):
         if error is not None:
             self._fail_closed(f"Unable to save review: {error}")
             return
-        if summary is None or queue_id is None or decision is None:
+        if result is None or queue_id is None or decision is None:
             self._fail_closed("Review worker returned no authoritative result")
             return
-        self.summary = summary
+        if isinstance(result, WorkspaceSummary):
+            self.summary = result
+            committed = None
+        elif isinstance(result, ReviewCommit):
+            committed = result
+            if committed.queue_id != queue_id or committed.review_status != decision:
+                self._fail_closed(
+                    "Review worker returned a different queue identity or decision"
+                )
+                return
+        else:
+            self._fail_closed("Review worker returned an unsupported result")
+            return
         updated = []
         found = False
         for item in self._all_reviews:
-            if item.queue_id != queue_id:
-                updated.append(item)
-                continue
-            found = True
-            updated.append(
-                replace(
-                    item,
-                    status="approved" if decision == "approved" else "generated",
-                    review_status=decision,
+            authority = item.authority
+            if committed is not None and authority is not None:
+                authority = replace(
+                    authority,
+                    state_sha256=committed.authority.state_sha256,
                 )
-            )
+            if item.queue_id == queue_id:
+                found = True
+                authority = committed.authority if committed is not None else authority
+                item = replace(
+                    item,
+                    status=(
+                        committed.status
+                        if committed is not None
+                        else "approved"
+                        if decision == "approved"
+                        else "generated"
+                    ),
+                    review_status=decision,
+                    authority=authority,
+                )
+            elif authority is not item.authority:
+                item = replace(item, authority=authority)
+            updated.append(item)
         if not found:
             self._fail_closed(
                 "Reviewed queue identity disappeared before the durable save returned"
             )
             return
         self._all_reviews = tuple(updated)
+        refresh_terminal_projection = False
+        if committed is not None and self.summary is not None:
+            generated = sum(
+                item.status == "generated" and item.review_status == "pending_review"
+                for item in self._all_reviews
+            )
+            approved = sum(
+                item.status == "approved" and item.review_status == "approved"
+                for item in self._all_reviews
+            )
+            rejected = sum(
+                item.status == "generated" and item.review_status == "rejected"
+                for item in self._all_reviews
+            )
+            selected_item = next(
+                item for item in self._all_reviews if item.queue_id == queue_id
+            )
+            self.summary = replace(
+                self.summary,
+                generated=generated,
+                approved=approved,
+                rejected=rejected,
+                latest_line=selected_item.line_id,
+                latest_text=selected_item.text,
+                latest_status=selected_item.status,
+                latest_updated_at=committed.updated_at,
+            )
+            refresh_terminal_projection = generated == 0
         self._selected_review_queue_id = advance_queue_id
         self._apply_review_filters()
         self._show_counts()
+        self._poll_signature = self._workspace_poll_signature()
         self.status.setText(self._status_text())
-        self.review_action_reason.setText(
-            f"Saved {decision} for {queue_id}; refreshing authoritative projection"
-        )
-        QTimer.singleShot(0, self._refresh_after_review_save)
-
-    def _refresh_after_review_save(self):
-        if not self._review_save_active:
-            self.refresh()
+        self.review_action_reason.setText(f"Saved {decision} for {queue_id}")
+        if refresh_terminal_projection:
+            QTimer.singleShot(0, self.refresh)
 
     def start_generation(self):
         if (

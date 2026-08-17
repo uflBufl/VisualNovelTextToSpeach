@@ -120,8 +120,10 @@ Approve and Reject run on one ordered background worker, so state validation,
 lease acquisition, approved-manifest derivation and file checks never block Qt
 painting or input delivery. Every visible review row carries a compare-and-swap
 snapshot of the exact queue digest, state digest, state-item digest and WAV
-digest that was displayed. The worker acquires the generation lease and
-revalidates that snapshot, prepares both replacement documents under unique
+digest that was displayed. A decision revalidates only that exact snapshot;
+the previously validated state document supplies unchanged manifest entries,
+so unrelated generated WAVs are not reopened for every click. The worker
+acquires the generation lease, prepares both replacement documents under unique
 temporary names, then revalidates the full snapshot and complete lease document
 again immediately before the canonical state is replaced. Lease ownership is
 checked once more before the manifest replace. A changed WAV, state, queue or
@@ -133,7 +135,11 @@ needs recovery.
 While a decision is active the review controls say `Saving review`, reject a
 second decision and defer window close until the worker has returned. Window
 close is likewise deferred during an authority projection. Only a successful
-worker result updates the affected row and counts. Every authority projection
+worker result updates the affected row, counts and the shared state digest of
+the remaining in-memory rows. Nonterminal decisions advance directly to the
+next pending row without launching another full projection. A terminal decision
+still requests a projection to recompute overall workspace state. Every
+authority projection
 runs off the Qt thread; the Qt callback only applies the already validated
 immutable projection. A user collection change increments a scope version, so
 an older worker result is discarded and reloaded instead of reverting the new
@@ -156,8 +162,11 @@ Review playback preparation runs on a background worker. It separately
 revalidates the exact state-bound generated WAV, reads it through one file
 handle and verifies the displayed digest again. The Qt callback gives the media
 player a held read-only in-memory buffer, never a mutable pathname. Approval and
-rejection independently reload state and
-participate in the generation lease. A state, control or path integrity failure
+rejection use the same selected-row authority and participate in the generation
+lease. On the real 592-line workspace, selected playback preparation took
+1.3-2.0 ms and an approval against an isolated copy of the real state took
+24.0 ms; the prior full review projection took 5.406 seconds. A state, control
+or path integrity failure
 stops playback, clears stale rows and disables every generation-start/retry,
 review, open-folder and preview action. Stop Generation remains available for a
 child already owned by this window.

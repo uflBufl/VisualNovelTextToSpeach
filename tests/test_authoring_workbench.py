@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +20,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring as authoring_package
+import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring.cli import main as authoring_main
@@ -36,6 +39,8 @@ from vntts.authoring.workbench import (
     inspect_generation_readiness,
     inspect_workspace,
     list_review_items,
+    prepare_review_audio,
+    review_selected_item,
     review_workspace_item,
 )
 
@@ -514,6 +519,48 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             self.assertEqual(state_path.read_bytes(), before)
             self.assertEqual(manifest.read_bytes(), manifest_before)
+
+    def test_selected_review_and_replay_do_not_rescan_unrelated_outcomes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            state["items"][queue_id]["status"] = "generated"
+            state["items"][queue_id]["review_status"] = "pending_review"
+            state["active"] = None
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            displayed = list_review_items(created.directory)[0]
+
+            started = time.monotonic()
+            with (
+                patch.object(
+                    bulk_generation_module,
+                    "load_generation_state",
+                    side_effect=AssertionError("full state scan is forbidden"),
+                ),
+                patch.object(
+                    bulk_generation_module,
+                    "_validate_success_file",
+                    side_effect=AssertionError("unrelated WAV scan is forbidden"),
+                ),
+                patch.object(
+                    workbench_module,
+                    "inspect_workspace",
+                    side_effect=AssertionError("full workspace scan is forbidden"),
+                ),
+            ):
+                audio = prepare_review_audio(displayed)
+                committed = review_selected_item(displayed, "approved")
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(
+                hashlib.sha256(audio).hexdigest(), displayed.authority.audio_sha256
+            )
+            self.assertEqual(committed.queue_id, queue_id)
+            self.assertEqual(committed.review_status, "approved")
+            self.assertLess(elapsed, 0.25)
 
     def test_review_decision_rejects_queue_change_before_state_or_manifest_write(self):
         with TemporaryDirectory() as directory:

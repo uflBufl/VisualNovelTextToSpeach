@@ -4,6 +4,7 @@ import os
 import socket
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,10 +18,11 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_workbench import create_test_workspace
-from vntts.authoring.bulk_generation import process_started_at
+from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.workbench import (
     ReviewItem,
     list_review_items,
+    prepare_review_audio,
     review_workspace_item,
 )
 
@@ -808,6 +810,57 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertIn("Approved: 1", dialog.counts.text())
 
+    def test_nonterminal_review_updates_next_row_without_full_projection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            result = None
+
+            def reviewer(_path, queue_id, decision, authority):
+                nonlocal result
+                result = ReviewCommit(
+                    queue_id=queue_id,
+                    status="approved",
+                    review_status=decision,
+                    updated_at="2026-08-17T20:00:00+00:00",
+                    authority=replace(
+                        authority,
+                        state_sha256="a" * 64,
+                        item_sha256="b" * 64,
+                    ),
+                )
+                return result
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                reviewer=reviewer,
+            )
+            first = dialog._selected_review_item()
+            second = replace(
+                first,
+                queue_id="synthetic-second-pending",
+                line_id="synthetic:second",
+                text="A second pending outcome.",
+            )
+            dialog._all_reviews = (first, second)
+            dialog._selected_review_queue_id = first.queue_id
+            dialog._apply_review_filters()
+            projection = Mock(side_effect=AssertionError("unexpected full projection"))
+            dialog._projection_loader = projection
+
+            dialog.approve.click()
+            self.wait_for(lambda: not dialog._review_save_active)
+
+            self.assertIsNotNone(result)
+            projection.assert_not_called()
+            selected = dialog._selected_review_item()
+            self.assertEqual(selected.queue_id, second.queue_id)
+            self.assertEqual(selected.authority.state_sha256, "a" * 64)
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertFalse(dialog._projection_active)
+
     def test_large_authority_projection_keeps_qt_heartbeat_responsive(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1220,34 +1273,34 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.reject.isEnabled())
             self.assertFalse(dialog.review_play.isEnabled())
 
-    def test_review_playback_rejects_wav_replacement_after_validation(self):
+    def test_review_playback_uses_captured_bytes_after_source_replacement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
             self.mark_fixture_pending_review(workspace)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
             selected = dialog._selected_review_item()
-            real_list = list_review_items
+            expected = selected.audio.read_bytes()
 
-            def replace_after_validation(path):
-                rows = real_list(path)
+            def replace_after_validation(item):
+                captured = prepare_review_audio(item)
                 write_pcm16_wav(
                     selected.audio,
                     np.full(1_600, 0.2, dtype=np.float32),
                     16_000,
                 )
-                return rows
+                return captured
 
             with patch(
-                "vntts.authoring.workbench_ui.list_review_items",
+                "vntts.authoring.workbench_ui.prepare_review_audio",
                 side_effect=replace_after_validation,
             ):
                 dialog.play_selected_outcome()
                 self.wait_for(lambda: not dialog._playback_prepare_active)
 
-            self.assertIsNone(dialog.summary)
-            self.assertIsNone(dialog._review_playback_buffer)
-            self.assertIn("changed before immutable playback", dialog.status.text())
+            self.assertIsNotNone(dialog.summary)
+            self.assertEqual(dialog._review_playback_buffer.data().data(), expected)
+            self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
 
     def test_review_playback_preparation_keeps_qt_heartbeat_responsive(self):
         with TemporaryDirectory() as directory:

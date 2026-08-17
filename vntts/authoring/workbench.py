@@ -35,8 +35,10 @@ from vntts.authoring.bulk_generation import (
     LEASE_VERSION,
     BulkGenerationError,
     ReviewAuthority,
+    ReviewCommit,
     is_spoken_queue_item,
     load_generation_state,
+    load_review_audio_bytes,
     process_is_alive,
     process_started_at,
     review_generation_item,
@@ -142,6 +144,8 @@ class ReviewItem:
     audio: Path | None
     collection_id: str | None = None
     authority: ReviewAuthority | None = None
+    state: Path | None = None
+    queue: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -634,6 +638,8 @@ def list_review_items(workspace_directory):
                     if status in {"generated", "approved"}
                     else None
                 ),
+                state=summary.state,
+                queue=queue_path,
             )
         )
     return tuple(records)
@@ -645,20 +651,88 @@ def review_workspace_item(
     decision,
     expected_authority=None,
 ):
-    summary = inspect_workspace(workspace_directory)
-    if summary.state is None:
-        raise AuthoringWorkbenchError("Workspace has no generation state to review")
+    if expected_authority is None:
+        summary = inspect_workspace(workspace_directory)
+        if summary.state is None:
+            raise AuthoringWorkbenchError("Workspace has no generation state to review")
+        state_path = summary.state
+        queue_path = summary.queue
+    else:
+        directory, workspace = _load_workspace(workspace_directory)
+        queue_path = _within(
+            directory,
+            _safe_relative(workspace["queue"], "Queue"),
+            "Queue",
+        )
+        output = _within(
+            directory,
+            _safe_relative(workspace["output"], "Output"),
+            "Output",
+        )
+        state_path = output / "generation-state.json"
+        if not state_path.is_file():
+            raise AuthoringWorkbenchError("Workspace has no generation state to review")
     try:
-        review_generation_item(
-            summary.state,
+        result = review_generation_item(
+            state_path,
             queue_id,
             decision,
             expected_authority=expected_authority,
-            queue_path=summary.queue,
+            queue_path=queue_path,
         )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
+    if isinstance(result, ReviewCommit):
+        return result
     return inspect_workspace(workspace_directory)
+
+
+def prepare_review_audio(item):
+    """Return exact selected WAV bytes without projecting unrelated review rows."""
+    if (
+        not isinstance(item, ReviewItem)
+        or item.authority is None
+        or item.state is None
+        or item.queue is None
+    ):
+        raise AuthoringWorkbenchError(
+            "Generated review row has no exact state, queue, and WAV authority"
+        )
+    try:
+        return load_review_audio_bytes(
+            item.state,
+            item.queue,
+            item.queue_id,
+            item.authority,
+        )
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+
+
+def review_selected_item(item, decision):
+    """Save one displayed review item without rescanning unrelated outcomes."""
+    if (
+        not isinstance(item, ReviewItem)
+        or item.authority is None
+        or item.state is None
+        or item.queue is None
+    ):
+        raise AuthoringWorkbenchError(
+            "Generated review row has no exact state, queue, and WAV authority"
+        )
+    try:
+        result = review_generation_item(
+            item.state,
+            item.queue_id,
+            decision,
+            expected_authority=item.authority,
+            queue_path=item.queue,
+        )
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if not isinstance(result, ReviewCommit):
+        raise AuthoringWorkbenchError("Review transaction returned no commit identity")
+    return result
 
 
 def inspect_generation_readiness(workspace_directory, *, queue_ids=None):
@@ -1868,6 +1942,8 @@ __all__ = [
     "immutable_history_timestamps",
     "list_workspace_collections",
     "list_review_items",
+    "prepare_review_audio",
+    "review_selected_item",
     "review_workspace_item",
     "workspace_voice_snapshot",
 ]

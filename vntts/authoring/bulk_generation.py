@@ -27,6 +27,8 @@ from vntts_artifacts.audio import (
 )
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
+    GENERATED_AUDIO_SCHEMA,
+    GENERATED_AUDIO_SCHEMA_VERSION,
     GeneratedAudioManifestError,
     write_generated_audio_manifest,
 )
@@ -120,6 +122,17 @@ class ReviewAuthority:
     audio_sha256: str
 
 
+@dataclass(frozen=True)
+class ReviewCommit:
+    """Durable result of one compare-and-swap review decision."""
+
+    queue_id: str
+    status: str
+    review_status: str
+    updated_at: str
+    authority: ReviewAuthority
+
+
 def generation_review_authority(state_path, queue_id):
     """Snapshot one reviewable state item and its exact validated WAV."""
     state_path = Path(state_path).expanduser().resolve()
@@ -149,15 +162,100 @@ def _assert_review_authority(
 ):
     if not isinstance(expected_authority, ReviewAuthority):
         raise BulkGenerationError("Review authority snapshot is invalid")
-    actual = generation_review_authority(state_path, queue_id)
+    state, item, audio_bytes = _load_review_snapshot(
+        state_path,
+        queue_id,
+        expected_authority,
+        queue_path,
+        capture_audio=True,
+    )
+    actual = ReviewAuthority(
+        queue_sha256=state["queue_sha256"],
+        state_sha256=expected_authority.state_sha256,
+        item_sha256=_canonical_sha256(item),
+        audio_sha256=hashlib.sha256(audio_bytes).hexdigest(),
+    )
     if actual != expected_authority:
         raise BulkGenerationError(
             "Review authority changed after the item was displayed; refresh before deciding"
         )
-    if queue_path is None or sha256_file(queue_path) != actual.queue_sha256:
+    return state, item, audio_bytes
+
+
+def _load_review_snapshot(
+    state_path,
+    queue_id,
+    expected_authority,
+    queue_path,
+    *,
+    capture_audio,
+):
+    """Revalidate only the exact state/item/WAV snapshot displayed by the UI."""
+    if not isinstance(expected_authority, ReviewAuthority):
+        raise BulkGenerationError("Review authority snapshot is invalid")
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = None if queue_path is None else Path(queue_path).expanduser().resolve()
+    try:
+        state_payload = state_path.read_bytes()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {state_path}: {error}"
+        ) from error
+    if hashlib.sha256(state_payload).hexdigest() != expected_authority.state_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the item was displayed; refresh before deciding"
+        )
+    try:
+        state = json.loads(state_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {state_path}: {error}"
+        ) from error
+    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+        raise BulkGenerationError("Generation state items must be an object")
+    if state.get("queue_sha256") != expected_authority.queue_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the item was displayed; refresh before deciding"
+        )
+    if queue_path is None or sha256_file(queue_path) != expected_authority.queue_sha256:
         raise BulkGenerationError(
             "Review queue changed after the item was displayed; refresh before deciding"
         )
+    item = state["items"].get(queue_id)
+    if not isinstance(item, dict) or item.get("status") not in {
+        "generated",
+        "approved",
+    }:
+        raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
+    if _canonical_sha256(item) != expected_authority.item_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the item was displayed; refresh before deciding"
+        )
+    relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+    audio = _within(state_path.parent, relative, "Generated WAV")
+    try:
+        audio_bytes = audio.read_bytes()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Generated WAV is unreadable for {queue_id!r}: {error}"
+        ) from error
+    if hashlib.sha256(audio_bytes).hexdigest() != expected_authority.audio_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the item was displayed; refresh before deciding"
+        )
+    return state, item, audio_bytes if capture_audio else b""
+
+
+def load_review_audio_bytes(state_path, queue_path, queue_id, expected_authority):
+    """Read the exact selected WAV bytes without rescanning unrelated outcomes."""
+    _state, _item, audio_bytes = _load_review_snapshot(
+        state_path,
+        queue_id,
+        expected_authority,
+        queue_path,
+        capture_audio=True,
+    )
+    return audio_bytes
 
 
 def inspect_generated_wav(path):
@@ -703,28 +801,38 @@ def _write_generated_manifest_from_state(
     manifest_path,
     *,
     entries=None,
+    validate_files=True,
 ):
     entries = (
         _approved_manifest_entries(state, output_directory)
         if entries is None
         else entries
     )
+    metadata = {
+        "game": state.get("game"),
+        "language": state.get("language"),
+        "source_queue_sha256": state["queue_sha256"],
+        "generated_at": _now(),
+    }
     try:
-        write_generated_audio_manifest(
-            manifest_path,
-            {
-                "game": state.get("game"),
-                "language": state.get("language"),
-                "source_queue_sha256": state["queue_sha256"],
-                "generated_at": _now(),
-            },
-            entries,
-        )
+        if validate_files:
+            write_generated_audio_manifest(manifest_path, metadata, entries)
+        else:
+            atomic_write_json(
+                manifest_path,
+                {
+                    **metadata,
+                    "schema": GENERATED_AUDIO_SCHEMA,
+                    "schema_version": GENERATED_AUDIO_SCHEMA_VERSION,
+                    "entry_count": len(entries),
+                    "entries": entries,
+                },
+            )
     except GeneratedAudioManifestError as error:
         raise BulkGenerationError(str(error)) from error
 
 
-def _approved_manifest_entries(state, output_directory):
+def _approved_manifest_entries(state, output_directory, *, validate_files=True):
     entries = []
     for queue_id, result in state["items"].items():
         if (
@@ -733,8 +841,25 @@ def _approved_manifest_entries(state, output_directory):
         ):
             continue
         relative = _safe_relative(result.get("path"), f"State item {queue_id!r} path")
-        audio = _within(output_directory, relative, "Generated WAV")
-        quality = _validate_success_file(queue_id, result, audio)
+        if validate_files:
+            audio = _within(output_directory, relative, "Generated WAV")
+            quality = _validate_success_file(queue_id, result, audio)
+            sample_rate = quality.sample_rate
+            sample_count = quality.sample_count
+        else:
+            quality = result.get("quality")
+            if not isinstance(quality, dict):
+                raise BulkGenerationError(
+                    f"Generated WAV quality is missing for {queue_id!r}"
+                )
+            sample_rate = _nonnegative_int(
+                quality.get("sample_rate"),
+                f"State item {queue_id!r} sample_rate",
+            )
+            sample_count = _nonnegative_int(
+                quality.get("sample_count"),
+                f"State item {queue_id!r} sample_count",
+            )
         entry = {
             "queue_id": queue_id,
             "line_id": result["line_id"],
@@ -742,8 +867,8 @@ def _approved_manifest_entries(state, output_directory):
             "audio": relative.as_posix(),
             "audio_format": PCM16_MONO_WAV_FORMAT,
             "audio_sha256": result["file_sha256"],
-            "sample_rate": quality.sample_rate,
-            "sample_count": quality.sample_count,
+            "sample_rate": sample_rate,
+            "sample_count": sample_count,
             "provider": result["provider"],
             "model": result["model"],
             "prompt_sha256": result["prompt_sha256"],
@@ -779,7 +904,16 @@ def review_generation_item(
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
     state_path = Path(state_path).expanduser().resolve()
-    initial = load_generation_state(state_path)
+    if expected_authority is None:
+        initial = load_generation_state(state_path)
+    else:
+        initial, _item, _audio_bytes = _load_review_snapshot(
+            state_path,
+            queue_id,
+            expected_authority,
+            queue_path,
+            capture_audio=False,
+        )
     with _GenerationLease(
         state_path.parent,
         initial["queue_sha256"],
@@ -804,7 +938,16 @@ def _review_generation_item_locked(
     queue_path=None,
     lease=None,
 ):
-    state = load_generation_state(state_path)
+    if expected_authority is None:
+        state = load_generation_state(state_path)
+    else:
+        state, _displayed_item, _audio_bytes = _load_review_snapshot(
+            state_path,
+            queue_id,
+            expected_authority,
+            queue_path,
+            capture_audio=False,
+        )
     item = state.get("items", {}).get(queue_id)
     if not isinstance(item, dict) or item.get("status") not in {
         "generated",
@@ -813,7 +956,8 @@ def _review_generation_item_locked(
         raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
     relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
     audio = _within(state_path.parent, relative, "Generated WAV")
-    _validate_success_file(queue_id, item, audio)
+    if expected_authority is None:
+        _validate_success_file(queue_id, item, audio)
     if expected_authority is not None:
         _assert_review_authority(
             state_path,
@@ -829,7 +973,11 @@ def _review_generation_item_locked(
     proposed_item["status"] = "approved" if decision == "approved" else "generated"
     proposed_item["updated_at"] = _now()
     manifest_path = state_path.parent / "manifest.json"
-    entries = _approved_manifest_entries(proposed, state_path.parent)
+    entries = _approved_manifest_entries(
+        proposed,
+        state_path.parent,
+        validate_files=expected_authority is None,
+    )
     transaction_id = secrets.token_hex(16)
     staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
     staged_manifest = manifest_path.with_name(
@@ -842,6 +990,7 @@ def _review_generation_item_locked(
             state_path.parent,
             staged_manifest,
             entries=entries,
+            validate_files=expected_authority is None,
         )
         if expected_authority is not None:
             _assert_review_authority(
@@ -882,7 +1031,21 @@ def _review_generation_item_locked(
                 pass
     if lease is not None:
         lease.mark_committed()
-    return proposed
+    committed_item = proposed["items"][queue_id]
+    if expected_authority is None:
+        return proposed
+    return ReviewCommit(
+        queue_id=queue_id,
+        status=committed_item["status"],
+        review_status=committed_item["review_status"],
+        updated_at=committed_item["updated_at"],
+        authority=ReviewAuthority(
+            queue_sha256=proposed["queue_sha256"],
+            state_sha256=sha256_file(state_path),
+            item_sha256=_canonical_sha256(committed_item),
+            audio_sha256=expected_authority.audio_sha256,
+        ),
+    )
 
 
 def process_is_alive(pid):

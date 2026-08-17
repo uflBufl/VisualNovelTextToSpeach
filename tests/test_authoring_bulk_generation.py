@@ -505,7 +505,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "_write_generated_manifest_from_state",
                     side_effect=change_wav_during_staging,
                 ),
-                self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"),
+                self.assertRaisesRegex(BulkGenerationError, "authority changed"),
             ):
                 review_generation_item(
                     result.state,
