@@ -66,6 +66,7 @@ from vntts.voices import (
     default_voice_choice_id,
     find_voice_assignment,
     is_narrator,
+    is_unattributed_speaker,
     normalize_character_name,
     pocket_tts_preset_voices,
     synthesis_character,
@@ -912,10 +913,7 @@ class AppController:
         backend = self.speech_backend
         if not isinstance(backend, GeneratedAudioFallbackBackend):
             return None
-        if (
-            find_voice_assignment(self.settings.voice_assignments, character)
-            is not None
-        ):
+        if self._has_manual_voice_override(character):
             return None
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
@@ -923,6 +921,14 @@ class AppController:
             candidate_filter=backend.has_generated_line,
         )
         return line.text if line is not None else None
+
+    def _has_manual_voice_override(self, character):
+        if is_unattributed_speaker(character):
+            return False
+        return (
+            find_voice_assignment(self.settings.voice_assignments, character)
+            is not None
+        )
 
     def _set_backend_live_mode(self, active):
         configure = getattr(self.speech_backend, "set_live_mode_active", None)
@@ -973,10 +979,7 @@ class AppController:
             self.chapter_voice_preloader,
             **backend_options,
         )
-        self.speech_backend.voice_override = lambda character: (
-            find_voice_assignment(self.settings.voice_assignments, character)
-            is not None
-        )
+        self.speech_backend.voice_override = self._has_manual_voice_override
         if policy == "prefer-game-audio":
             suffix = (
                 ", then generated/live TTS"

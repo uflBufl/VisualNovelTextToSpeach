@@ -331,12 +331,16 @@ class CharacterVoiceRouter:
 def synthesis_character(character):
     """Return the voice identity used for live and authoring synthesis."""
     original = str(character or "Narrator").strip() or "Narrator"
-    return "Narrator" if original == "???" else original
+    return "Narrator" if is_unattributed_speaker(original) else original
+
+
+def is_unattributed_speaker(character):
+    return str(character or "").strip() == "???"
 
 
 def synthesis_character_for_line(speaker, voice_character=None):
     """Resolve a line voice while giving the exact `???` speaker priority."""
-    if str(speaker or "").strip() == "???":
+    if is_unattributed_speaker(speaker):
         return "Narrator"
     return synthesis_character(voice_character or speaker)
 

@@ -88,9 +88,19 @@ def queue_item(name):
     }
 
 
-def prepare_authoring_fixture(root, names=("one", "two"), *, bind_sources=True):
+def prepare_authoring_fixture(
+    root,
+    names=("one", "two"),
+    *,
+    bind_sources=True,
+    legacy_narrator=False,
+    narrator_selection_character=None,
+):
     root.mkdir(parents=True, exist_ok=True)
     items = [queue_item(name) for name in names]
+    if legacy_narrator:
+        for item in items:
+            item["speaker"] = "???"
     story = root / "inputs" / "story-index.jsonl"
     write_story_index_document(
         story,
@@ -144,6 +154,14 @@ def prepare_authoring_fixture(root, names=("one", "two"), *, bind_sources=True):
         )
     write_voice_generation_queue(queue, metadata, items)
     output = root / "authoring"
+    control_files = {
+        "voice_manifest": voices,
+        "voice_reference:0001": reference,
+    }
+    if narrator_selection_character is not None:
+        control_files[f"narrator_selection:{narrator_selection_character}"] = (
+            reference
+        )
     result = run_bulk_generation(
         queue,
         output,
@@ -151,10 +169,7 @@ def prepare_authoring_fixture(root, names=("one", "two"), *, bind_sources=True):
         provider="synthetic",
         model="synthetic-v1",
         generation_profile="stable",
-        control_files={
-            "voice_manifest": voices,
-            "voice_reference:0001": reference,
-        },
+        control_files=control_files,
     )
     return {
         "items": items,
@@ -184,6 +199,65 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_legacy_unknown_speaker_requires_role_bound_narrator_provenance(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(
+                root / "valid",
+                names=("one",),
+                legacy_narrator=True,
+                narrator_selection_character="Hero",
+            )
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+
+            result = publish(fixture, root / "valid-pack")
+            pack = load_game_pack(result.manifest)
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                state["items"][fixture["items"][0]["queue_id"]]["voice_character"],
+                "Narrator",
+            )
+            self.assertEqual(
+                pack.extensions["vntts.authoring"]["narrator_selection"],
+                {
+                    "character": "Hero",
+                    "reference_sha256": sha256_file(fixture["reference"]),
+                },
+            )
+
+            missing = prepare_authoring_fixture(
+                root / "missing",
+                names=("one",),
+                legacy_narrator=True,
+            )
+            review_generation_item(
+                missing["state"], missing["items"][0]["queue_id"], "approved"
+            )
+            with self.assertRaisesRegex(
+                FinalGamePackError, "role-bound narrator selection"
+            ):
+                publish(missing, root / "missing-pack")
+
+            misbound = prepare_authoring_fixture(
+                root / "misbound",
+                names=("one",),
+                legacy_narrator=True,
+                narrator_selection_character="Missing Character",
+            )
+            review_generation_item(
+                misbound["state"], misbound["items"][0]["queue_id"], "approved"
+            )
+            with self.assertRaisesRegex(
+                FinalGamePackError, "not role-bound"
+            ):
+                publish(misbound, root / "misbound-pack")
+
+            self.assertFalse((root / "missing-pack").exists())
+            self.assertFalse((root / "misbound-pack").exists())
+
     def test_deliberate_voice_override_requires_and_preserves_state_controls(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -23,7 +23,11 @@ from vntts_artifacts.generated_audio import (
     write_generated_audio_manifest,
 )
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    normalize_character_name,
+)
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -36,6 +40,7 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
 )
+from vntts.voices import synthesis_character_for_line
 
 
 class FinalGamePackError(RuntimeError):
@@ -589,14 +594,21 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
         )
     }
     source_root = voice_manifest_path.parent.resolve()
+    narrator_reference_bindings = {}
     for entry in voice_entries:
+        names = (entry.character, *entry.aliases)
         for configured in entry.references:
             relative = _safe_relative(configured, "Voice reference")
             source = _contained_source(source_root, relative, "voice reference")
+            digest = _source_sha256(source, "voice reference")
             required_paths[source] = (
-                _source_sha256(source, "voice reference"),
+                digest,
                 lambda role: role.startswith("voice_reference:"),
             )
+            for name in names:
+                narrator_reference_bindings.setdefault(
+                    normalize_character_name(name), set()
+                ).add((source, digest))
     queue_by_id = {item.queue_id: item for item in queue.items}
     narrator_selections = set()
     for queue_id, result in state["items"].items():
@@ -643,14 +655,33 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
             for control in controls
             if str(control.get("role", "")).startswith("narrator_selection:")
         ]
-        if item.voice_character == "Narrator" and len(narrator_controls) != 1:
+        effective_character = synthesis_character_for_line(
+            item.speaker, item.voice_character
+        )
+        if effective_character == "Narrator" and len(narrator_controls) != 1:
             raise FinalGamePackError(
                 f"Narrator item {queue_id!r} lacks one role-bound narrator selection"
             )
         for control in narrator_controls:
+            character = control["role"].removeprefix("narrator_selection:")
+            configured_bindings = narrator_reference_bindings.get(
+                normalize_character_name(character), set()
+            )
+            try:
+                control_path = Path(control["path"]).expanduser().resolve()
+            except (KeyError, TypeError, OSError):
+                control_path = None
+            if (
+                control.get("kind") != "file"
+                or (control_path, control.get("sha256")) not in configured_bindings
+            ):
+                raise FinalGamePackError(
+                    f"Narrator selection for {queue_id!r} is not role-bound to "
+                    f"the selected voice manifest character {character!r}"
+                )
             narrator_selections.add(
                 (
-                    control["role"].removeprefix("narrator_selection:"),
+                    character,
                     control["sha256"],
                 )
             )

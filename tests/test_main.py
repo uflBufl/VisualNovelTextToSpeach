@@ -10,7 +10,9 @@ from unittest.mock import ANY, Mock, patch
 
 import numpy as np
 from PIL import Image, ImageDraw
+from vntts_artifacts.hashing import text_sha256
 
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -1734,6 +1736,45 @@ class MainTest(unittest.TestCase):
             require_source_audio_completion=False,
         )
         self.assertIs(controller.speech_backend, wrapped_backend)
+
+    def test_persisted_narrator_assignment_does_not_override_unknown_source_audio(self):
+        text = "An unattributed source line."
+        preloader = ChapterVoicePreloader(
+            [
+                ChapterDialogue(
+                    "game:unknown:1",
+                    "unknown",
+                    1,
+                    "???",
+                    text,
+                    text_sha256(text),
+                    "available",
+                    "voice-unknown",
+                )
+            ]
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                audio_source_policy="prefer-game-audio",
+                voice_assignments={"Narrator": "preset:alba"},
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        live_backend = Mock()
+        live_backend.name = "pocket-tts"
+        live_backend.capabilities = SpeechBackendCapabilities(True, True, False)
+        controller.speech_backend = live_backend
+
+        self.assertTrue(controller._configure_generated_audio_backend())
+        controller.speech_backend.set_live_mode_active(True)
+        route = controller.speech_backend.prepare_route("???", text)
+
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertFalse(controller.speech_backend.voice_override("???"))
+        self.assertTrue(controller.speech_backend.voice_override("Narrator"))
+        live_backend.prepare_playback.assert_not_called()
 
     def test_controller_keeps_live_backend_without_story_identity(self):
         statuses = []
