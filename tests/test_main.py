@@ -1541,6 +1541,28 @@ class MainTest(unittest.TestCase):
         self.assertTrue(controller.toggle_live())
         controller.live_reader.toggle.assert_called_once_with()
 
+    def test_direct_live_toggle_rechecks_empty_scope_after_staged_approval(self):
+        statuses = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.return_value = True
+        controller.unresolved_live_speakers = Mock(side_effect=[("Selone",), (), ()])
+
+        self.assertFalse(controller.toggle_live())
+        controller.approve_live_narrator_fallbacks(["Selone"])
+
+        self.assertFalse(controller.toggle_live())
+        self.assertEqual(controller.next_live_narrator_fallback_names, {})
+        self.assertIn("scope changed", statuses[-1])
+        controller.live_reader.toggle.assert_not_called()
+
+        self.assertTrue(controller.toggle_live())
+        controller.live_reader.toggle.assert_called_once_with()
+
     def test_live_mode_uses_playback_safe_backend_threads(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()

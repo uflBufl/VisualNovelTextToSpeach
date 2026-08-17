@@ -536,10 +536,17 @@ class AppController:
             )
             return False
         unresolved = tuple(unresolved)
+        approved = tuple(self.next_live_narrator_fallback_names.values())
         if not unresolved:
+            if approved:
+                self.next_live_narrator_fallback_names.clear()
+                self.status_handler(
+                    "Live reading could not start: voice preflight scope changed; "
+                    "start live reading again"
+                )
+                return False
             self.next_live_narrator_fallback_names.clear()
             return True
-        approved = tuple(self.next_live_narrator_fallback_names.values())
         if approved == unresolved:
             return True
         self.next_live_narrator_fallback_names.clear()
