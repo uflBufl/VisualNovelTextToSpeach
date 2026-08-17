@@ -46,9 +46,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -74,6 +76,67 @@ from vntts.authoring.workbench import (
     workspace_voice_snapshot,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+
+class DisclosureSection(QWidget):
+    """Compact, keyboard-accessible inspector section with a real chevron."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.header = QToolButton(self)
+        self.header.setText(str(title))
+        self.header.setCheckable(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.header.setArrowType(Qt.ArrowType.RightArrow)
+        self.header.setAccessibleName(f"{title} disclosure")
+        self.header.setAccessibleDescription(
+            f"Expand or collapse the {str(title).lower()} section"
+        )
+        self.content = QWidget(self)
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(12, 0, 0, 4)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self.header)
+        layout.addWidget(self.content)
+        self.header.toggled.connect(self._set_expanded)
+        self.setFocusProxy(self.header)
+        self.setChecked(False)
+
+    def isChecked(self):
+        return self.header.isChecked()
+
+    def setChecked(self, checked):
+        checked = bool(checked)
+        if self.header.isChecked() == checked:
+            self._set_expanded(checked, emit=False)
+        else:
+            self.header.setChecked(checked)
+
+    def first_control(self):
+        for index in range(self.content_layout.count()):
+            item = self.content_layout.itemAt(index)
+            widget = item.widget()
+            if widget is not None:
+                return widget
+            child_layout = item.layout()
+            if child_layout is not None:
+                for child_index in range(child_layout.count()):
+                    child = child_layout.itemAt(child_index).widget()
+                    if child is not None:
+                        return child
+        return self.header
+
+    def _set_expanded(self, checked, *, emit=True):
+        self.header.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+        )
+        self.content.setVisible(checked)
+        if emit:
+            self.toggled.emit(checked)
 
 
 @dataclass(frozen=True)
@@ -452,15 +515,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.active = QLabel()
         self.active.setAccessibleName("Current generation attempt")
         self.active.setWordWrap(True)
-        self.readiness_details = QGroupBox("Readiness details")
-        self.readiness_details.setCheckable(True)
+        self.readiness_details = DisclosureSection("Readiness details")
         self.readiness_details.setAccessibleName("Authoring readiness details")
         self.readiness_text = QLabel()
         self.readiness_text.setWordWrap(True)
         self.readiness_text.setAccessibleName(
             "Selected collections, immutable history and input paths"
         )
-        readiness_layout = QVBoxLayout(self.readiness_details)
+        readiness_layout = self.readiness_details.content_layout
         readiness_layout.addWidget(self.readiness_text)
 
         self.collection_tree = QTreeWidget()
@@ -538,8 +600,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reference_next,
         ):
             voice_controls.addWidget(widget)
-        self.voice_box = QGroupBox("Voice references")
-        self.voice_box.setCheckable(True)
+        self.voice_box = DisclosureSection("Voice references")
         self.voice_box.setAccessibleName("Voice reference chooser")
         self.voice_content = QWidget()
         voice_layout = QVBoxLayout(self.voice_content)
@@ -547,7 +608,7 @@ class AuthoringWorkbenchDialog(QDialog):
         voice_layout.addLayout(voice_header)
         voice_layout.addWidget(self.reference_label)
         voice_layout.addLayout(voice_controls)
-        QVBoxLayout(self.voice_box).addWidget(self.voice_content)
+        self.voice_box.content_layout.addWidget(self.voice_content)
 
         self.review_character = QComboBox()
         self.review_character.setAccessibleName("Filter review by character")
@@ -710,12 +771,10 @@ class AuthoringWorkbenchDialog(QDialog):
             self.generate,
             self.stop_generation,
             self.open_output,
-            self.reset_layout,
         ):
             generation_actions.addWidget(widget)
 
-        self.technical = QGroupBox("Technical details")
-        self.technical.setCheckable(True)
+        self.technical = DisclosureSection("Technical details")
         self.technical.setAccessibleName("Technical process details")
         self.process_log = QPlainTextEdit()
         self.process_log.setReadOnly(True)
@@ -726,13 +785,13 @@ class AuthoringWorkbenchDialog(QDialog):
             "Copy generation diagnostics",
             "Copy the workspace status and raw child-process log",
         )
-        technical_layout = QVBoxLayout(self.technical)
+        technical_layout = self.technical.content_layout
         technical_layout.addWidget(self.process_log)
         technical_layout.addWidget(self.copy_diagnostics)
 
         review_panel = QGroupBox("Generated-audio review")
         review_panel.setAccessibleName("Independent generated-audio review scope")
-        review_panel.setMinimumHeight(280)
+        review_panel.setMinimumHeight(320)
         review_layout = QVBoxLayout(review_panel)
         review_layout.addLayout(review_filters)
         review_layout.addWidget(self.review_scope)
@@ -741,26 +800,37 @@ class AuthoringWorkbenchDialog(QDialog):
         review_layout.addWidget(self.review_action_reason)
         review_layout.addLayout(review_actions)
 
-        generation_box = QGroupBox("Generation scope and controls")
-        generation_box.setAccessibleName("Collection-scoped generation controls")
-        generation_layout = QVBoxLayout(generation_box)
+        self.generation_section = DisclosureSection(
+            "Generation scope and controls"
+        )
+        self.generation_section.setAccessibleName(
+            "Collection-scoped generation controls"
+        )
+        generation_layout = self.generation_section.content_layout
         generation_layout.addWidget(self.narrator)
         generation_layout.addWidget(self.active)
         generation_layout.addWidget(self.collection_tree)
         generation_layout.addLayout(generation_actions)
 
         secondary = QWidget()
-        secondary.setMinimumHeight(120)
         secondary_layout = QVBoxLayout(secondary)
-        secondary_layout.addWidget(generation_box)
+        secondary_layout.setContentsMargins(4, 4, 4, 4)
+        secondary_layout.addWidget(self.reset_layout)
+        secondary_layout.addWidget(self.generation_section)
         secondary_layout.addWidget(self.readiness_details)
         secondary_layout.addWidget(self.voice_box)
         secondary_layout.addWidget(self.technical)
+        secondary_layout.addStretch(1)
+        self.inspector_scroll = QScrollArea()
+        self.inspector_scroll.setAccessibleName("Scrollable authoring inspector")
+        self.inspector_scroll.setWidgetResizable(True)
+        self.inspector_scroll.setWidget(secondary)
+        self.inspector_scroll.setMinimumHeight(140)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(review_panel)
-        self.splitter.addWidget(secondary)
+        self.splitter.addWidget(self.inspector_scroll)
         self.splitter.setStretchFactor(0, 4)
         self.splitter.setStretchFactor(1, 1)
 
@@ -804,6 +874,17 @@ class AuthoringWorkbenchDialog(QDialog):
         self.technical.toggled.connect(self._technical_toggled)
         self.readiness_details.toggled.connect(self.readiness_text.setVisible)
         self.voice_box.toggled.connect(self.voice_content.setVisible)
+        for section in (
+            self.generation_section,
+            self.readiness_details,
+            self.voice_box,
+            self.technical,
+        ):
+            section.toggled.connect(
+                lambda checked, value=section: self._inspector_section_toggled(
+                    value, checked
+                )
+            )
         self.process.readyReadStandardOutput.connect(self._append_process_output)
         self.process.started.connect(self._process_started)
         self.process.finished.connect(self._process_finished)
@@ -2202,6 +2283,16 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process_log.setVisible(checked)
         self.copy_diagnostics.setVisible(checked)
 
+    def _inspector_section_toggled(self, section, checked):
+        if not checked:
+            return
+        QTimer.singleShot(
+            0,
+            lambda: self.inspector_scroll.ensureWidgetVisible(
+                section.first_control(), 0, 12
+            ),
+        )
+
     def _restore_settings(self):
         self.settings.beginGroup(self.settings_group)
         geometry = self.settings.value("geometry")
@@ -2215,6 +2306,10 @@ class AuthoringWorkbenchDialog(QDialog):
             self.splitter.setSizes(restored_sizes)
         else:
             self.splitter.setSizes([560, 180])
+        generation_expanded = self.settings.value(
+            "generation-expanded", True, type=bool
+        )
+        self.generation_section.setChecked(generation_expanded)
         expanded = self.settings.value("technical-expanded", False, type=bool)
         self.technical.setChecked(expanded)
         self._technical_toggled(expanded)
@@ -2243,6 +2338,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.beginGroup(self.settings_group)
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter", self.splitter.sizes())
+        self.settings.setValue(
+            "generation-expanded", self.generation_section.isChecked()
+        )
         self.settings.setValue("technical-expanded", self.technical.isChecked())
         self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
         self.settings.setValue("voice-expanded", self.voice_box.isChecked())
@@ -2260,11 +2358,17 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _reset_layout(self):
         self.splitter.setSizes([560, 180])
+        self.generation_section.setChecked(True)
         self.technical.setChecked(False)
         self.readiness_details.setChecked(False)
         self.voice_box.setChecked(False)
+        self.inspector_scroll.verticalScrollBar().setValue(0)
         self.settings.beginGroup(self.settings_group)
         self.settings.remove("splitter")
+        self.settings.remove("generation-expanded")
+        self.settings.remove("technical-expanded")
+        self.settings.remove("readiness-expanded")
+        self.settings.remove("voice-expanded")
         self.settings.endGroup()
         self.settings.sync()
 
@@ -2322,7 +2426,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.stop_generation,
             self.open_output,
             self.reset_layout,
-            self.readiness_details,
+            self.generation_section.header,
+            self.readiness_details.header,
             self.recent_choice,
             self.voice_search,
             self.voice_character,
@@ -2330,6 +2435,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reference_play,
             self.reference_stop,
             self.reference_next,
+            self.voice_box.header,
+            self.technical.header,
             self.copy_diagnostics,
         )
         for first, second in zip(widgets, widgets[1:]):

@@ -29,7 +29,7 @@ from vntts.authoring.workbench import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QProcess, QSettings, Qt, QTimer
+    from PySide6.QtCore import QPoint, QProcess, QSettings, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -46,6 +46,7 @@ except ModuleNotFoundError as error:
         raise
     QApplication = None
     QProcess = None
+    QPoint = None
     QSettings = None
     Qt = None
     QTimer = None
@@ -157,6 +158,15 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
     def settings(self, root):
         return QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
 
+    def assert_inspector_control_reachable(self, dialog, control):
+        content = dialog.inspector_scroll.widget()
+        top = control.mapTo(content, QPoint(0, 0)).y()
+        bottom = top + control.height()
+        viewport_height = dialog.inspector_scroll.viewport().height()
+        scrollbar = dialog.inspector_scroll.verticalScrollBar()
+        self.assertGreaterEqual(top, 0)
+        self.assertLessEqual(bottom - viewport_height, scrollbar.maximum() + 2)
+
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -264,6 +274,74 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(replacement.review_collection.currentText(), "main")
             self.assertEqual(replacement.review_search.text(), "dialogue")
             replacement.close()
+
+    def test_scrollable_inspector_keeps_every_expanded_section_reachable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            settings = self.settings(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=settings)
+            dialog.show()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.generation_section.isChecked())
+            self.assertFalse(dialog.readiness_details.isChecked())
+            self.assertFalse(dialog.voice_box.isChecked())
+            self.assertFalse(dialog.technical.isChecked())
+            self.assertGreaterEqual(dialog.splitter.widget(0).height(), 320)
+            for section in (
+                dialog.generation_section,
+                dialog.readiness_details,
+                dialog.voice_box,
+                dialog.technical,
+            ):
+                self.assertTrue(section.header.isCheckable())
+                self.assertTrue(section.header.accessibleName())
+                self.assert_inspector_control_reachable(dialog, section.header)
+
+            dialog.resize(1_440, 900)
+            for section in (
+                dialog.generation_section,
+                dialog.readiness_details,
+                dialog.voice_box,
+                dialog.technical,
+            ):
+                section.setChecked(True)
+            self.application.processEvents()
+            self.assertGreaterEqual(dialog.splitter.widget(0).height(), 320)
+            for control in (
+                dialog.narrator,
+                dialog.readiness_text,
+                dialog.recent_choice,
+                dialog.process_log,
+                dialog.copy_diagnostics,
+            ):
+                self.assertTrue(control.isVisibleTo(dialog.inspector_scroll))
+                self.assert_inspector_control_reachable(dialog, control)
+
+            dialog._save_settings()
+            dialog.close()
+            reopened = AuthoringWorkbenchDialog(workspace, settings=settings)
+            reopened.show()
+            self.application.processEvents()
+            self.assertTrue(reopened.generation_section.isChecked())
+            self.assertTrue(reopened.readiness_details.isChecked())
+            self.assertTrue(reopened.voice_box.isChecked())
+            self.assertTrue(reopened.technical.isChecked())
+            for control in (
+                reopened.narrator,
+                reopened.readiness_text,
+                reopened.recent_choice,
+                reopened.process_log,
+            ):
+                self.assert_inspector_control_reachable(reopened, control)
+
+            reopened._reset_layout()
+            self.assertTrue(reopened.generation_section.isChecked())
+            self.assertFalse(reopened.readiness_details.isChecked())
+            self.assertFalse(reopened.voice_box.isChecked())
+            self.assertFalse(reopened.technical.isChecked())
+            self.assertEqual(reopened.inspector_scroll.verticalScrollBar().value(), 0)
 
     def test_current_attempt_projects_exact_fields_and_live_elapsed_time(self):
         with TemporaryDirectory() as directory:

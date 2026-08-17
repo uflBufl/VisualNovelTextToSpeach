@@ -12,19 +12,6 @@ sections after their implementation has been verified and committed.
       are available. Preserve source-audio candidates instead of replacing them
       with generated speech.
 
-### P1 - Make authoring workbench controls visible and discoverable
-
-- [ ] Redesign the secondary workbench pane so expanding the window or a detail
-      section cannot leave Generation scope, Readiness details, Voice references,
-      or Technical details as empty header-sized frames while only the dialogue
-      review grid grows. Put the secondary content in a vertically scrollable
-      inspector, replace the status-like `QGroupBox` checkboxes with disclosure
-      chevrons, and ensure expanding a section makes its first controls visible
-      without shrinking the review pane below its usable minimum. Preserve each
-      section's workspace-local expanded state, keep Reset layout available, and
-      add Qt regressions for the default, resized, and persisted-all-expanded
-      layouts that prove every expanded control is visible or scroll-reachable.
-
 ## Live mode
 
 ### P0 - Repair failures observed in the latest Character Story run

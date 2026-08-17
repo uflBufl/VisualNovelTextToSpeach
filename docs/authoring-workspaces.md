@@ -171,12 +171,20 @@ and a zero-row filter is never interpreted as an unfiltered request. The exact
 selected queue ID is retained across authoritative refreshes whenever it still
 appears in the active filter.
 
-The review table and current line occupy the primary vertical pane. Generation
-scope, readiness, voice-reference preview and the initially collapsed empty
-technical log live in the secondary pane. Splitter sizes and review filters are
-workspace-local settings; invalid narrow splitter state falls back to a sane
-review-first layout, and Reset layout restores that arrangement. The first
-pending row is selected automatically. Previous/Next pending wrap inside the
+The review table and current line occupy the primary vertical pane with a
+320-pixel usable minimum. Generation scope, readiness, voice-reference preview
+and the initially collapsed technical log live in one vertically scrollable
+inspector, so expanding a section grows scrollable content rather than crushing
+the review table or leaving an empty group-box frame. Each section uses a
+keyboard-focusable disclosure button with a right/down chevron; opening it
+scrolls its first control into view. Section expansion, splitter sizes and
+review filters are workspace-local settings. Reset layout remains outside the
+collapsible sections, restores the review-first splitter, expands Generation
+scope, collapses the other details and returns the inspector to the top.
+Offscreen Qt regressions cover the default layout, a 1,440 by 900 resize and a
+persisted all-expanded layout, proving every expanded control remains visible
+or vertically scroll-reachable. The first pending row is selected
+automatically. Previous/Next pending wrap inside the
 active filter; `Ctrl+Shift+Left`, `Ctrl+Shift+Right`, `Ctrl+R`, `Ctrl+Return`
 and `Ctrl+Backspace` provide navigation, replay, approval and rejection. A
 successful decision advances only after the existing state/lease transaction
