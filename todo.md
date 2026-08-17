@@ -72,6 +72,7 @@ sections after their implementation has been verified and committed.
 - [ ] Validate the selected 4-frame/0.25-second MOSS stream on real audio output
       during the hardware soak. The local discard-sink grid reduced first PCM
       from about 1264 ms to 640 ms at RTF 0.88, but cannot expose driver jitter.
+
 ### P1 - Simplify the live speech boundary after the P0 replay passes
 
 - [ ] Remove the deprecated concrete-backend `prepare()`/`play()` and mutable
