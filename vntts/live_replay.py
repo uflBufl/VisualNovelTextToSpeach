@@ -187,11 +187,13 @@ class ReplayFrameSource:
 
     def advance(self):
         with self.condition:
-            self.advance_requests += 1
+            if self.completed.is_set():
+                return False
             while not self._current_dialogue_consumed() and not self.stopped:
                 self.condition.wait()
-            if self.stopped:
+            if self.stopped or self.completed.is_set():
                 return False
+            self.advance_requests += 1
             if self.dialogue_index + 1 >= len(self.dialogue):
                 self.completed.set()
                 return False
