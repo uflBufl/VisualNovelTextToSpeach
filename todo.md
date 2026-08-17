@@ -24,16 +24,10 @@ sections after their implementation has been verified and committed.
 - [ ] Validate the explicit Narrator voice dialog: selecting a candidate must
       bypass pregenerated narrator tracks with the chosen live voice, while
       "Use pregenerated narrator tracks when available" must remove that
-      override and restore artifact routing. On the same fixed narration line,
-      compare Centurion with Paper Heron after extractor-owned, game-derived
-      Paper Heron references are available; the current Matilda-like result was
-      rejected as insufficiently confident and presentational.
-  - [ ] Complete the prepared one-trial blind narrator decision with
-        `uv run --no-sync vntts-listen ui --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json`.
-        Record the integrity-checked report before revealing and applying the
-        Centurion or Paper Heron identity; current progress is 0/1.
-  - [ ] After the narrator comparison is decided, regenerate only Narrator
-        queue IDs in the chosen workspace with the explicit
+      override and restore artifact routing. The manual presentation decision
+      selected Centurion; retain Paper Heron as an ordinary character voice.
+  - [ ] Regenerate only Narrator queue IDs in a Centurion-configured workspace
+        with the explicit
         `--character Narrator --regenerate-existing` scope while retaining the
         proven Rhiannon outcomes, then review those new Narrator results and
         expose the resulting approved-only manifest for the Character Story

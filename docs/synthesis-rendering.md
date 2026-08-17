@@ -49,6 +49,45 @@ optional deterministic seed. Pocket and Chatterbox currently expose only their
 Their model-native token and duration limits are represented as `None`; MOSS
 reports its explicit text-derived safety limits.
 
+The upstream MOSS-TTS Local Transformer v1.5 model card describes the model as
+sensitive to decoding parameters and recommends `audio_temperature=1.7`,
+`audio_top_p=0.8`, `audio_top_k=25`, and
+`audio_repetition_penalty=1.0`. VNTTS deliberately exposes a conservative grid:
+
+- `stable`: temperature 0.8;
+- `natural`: temperature 1.2;
+- `expressive`: temperature 1.7, matching the upstream Local v1.5 default;
+- every profile retains upstream top-p 0.8, top-k 25, and repetition penalty
+  1.0.
+
+VNTTS also supplies the explicit language name, including `English`, as
+recommended for v1.5. A production default must be selected with a fixed-text,
+fixed-seed listening comparison rather than inferred from the profile name.
+Lower temperature narrows sampling but is not a general speech-rate control.
+See the upstream
+[MOSS-TTS model card](https://github.com/OpenMOSS/MOSS-TTS/blob/main/docs/moss_tts_model_card.md)
+and
+[Local v1.5 reference application](https://github.com/OpenMOSS/MOSS-TTS/blob/main/clis/moss_tts_local_v1.5_app.py).
+
+Token-level duration control is distinct from the missed-EOS safety limit.
+Normal VNTTS rendering leaves expected duration tokens unset and lets the model
+finish naturally; the text-derived `max_tokens` and `max_audio_seconds` only
+bound failure. Upstream estimates about 12.5 audio tokens per second, but a
+forced target can redistribute surplus duration into cadence or pauses. Use it
+only for an explicit duration requirement and compare it against an otherwise
+identical uncontrolled render. The first-chunk frame count and streaming
+interval affect delivery latency and chunking, not the intended speaking rate.
+
+Voice cloning conditions on one configured reference, currently the first
+reference for that character. Use a clean, single-speaker segment in the target
+language with natural cadence and no music, sound effects, reverb,
+code-switching, or long pauses. The objective PCM preflight detects format,
+silence, clipping, low signal and DC offset, but cannot certify language,
+speaker identity, background contamination, or suitability of the inherited
+style. Those remain manual acceptance gates. Although v1.5 improves
+long-reference/short-text cloning, it does not make a contaminated reference a
+safe production prompt.
+
 One/two-word MOSS hesitation text retains a strict three-second limit. Longer
 text receives a 90-word-per-minute allowance plus 2.5 seconds for lead/tail
 cadence, still capped at 20 seconds. Both limits remain in persistent cache

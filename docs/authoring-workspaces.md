@@ -74,7 +74,7 @@ result = create_resume_workspace(
     immutable_import,
     story_index=story_index,
     voice_manifest=chosen_voice_manifest,
-    narrator_character="Paper Heron",
+    narrator_character="Centurion",
     backend="moss-tts",
     model=model,
     generation_profile="stable",
@@ -110,6 +110,13 @@ and the source workspace tree digest remained
 `738258bd3e9f1733e8d9115f916b5c119ba41a78f6bb817696fb2e985240418c` before
 and after the operation. This was an integrity acceptance only; Paper Heron was
 not selected as Narrator and the temporary target was not used for generation.
+
+The final manual narrator decision on 2026-08-17 selected **Centurion**. A final
+Centurion-configured workspace must carry forward the same reviewed Rhiannon
+outcomes, then regenerate only the explicit Narrator scope before any new
+review or game-pack publication. The earlier Paper Heron workspace remains
+historical integrity evidence and must not be reused as the final narrator
+workspace.
 
 ## Truthful inspection and focused retry
 

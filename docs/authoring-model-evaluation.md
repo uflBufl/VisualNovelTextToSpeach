@@ -113,17 +113,67 @@ uv run --no-sync vntts-listen ui \
   --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json
 ```
 
-The current status is deliberately `0/1`: select the more confident,
-presentational reading without opening `.blind-key.json`. After saving the one
-rating, produce the integrity-checked report with:
+The trial was completed on 2026-08-17. After saving the one rating, the
+integrity-checked report was produced with:
 
 ```sh
 uv run --no-sync vntts-listen report \
   --session data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/listening/session.json
 ```
 
-That report reveals the chosen model. Do not create the final narrator workspace
-until it exists.
+The report SHA-256 is
+`21a8fce3fbc4ebf40e0ae36e98e669ce9821fb3fc59ed028b0d0e9486bce2168`.
+It ranked the old Paper Heron variant first in this single trial. Subsequent
+direct reference and synthesis review found that candidate too slow and its
+reference unsuitable. The final manual presentation decision therefore
+overrides that narrow result and selects **Centurion** as Narrator. Preserve the
+report as historical evidence; do not rewrite its rating to manufacture
+agreement with the later decision.
+
+### Paper Heron reference and duration-control follow-up
+
+A later controlled probe used another official Paper Heron playable line,
+Chitchat II from `hero3141_mainvoc.bnk`, media ID `856018807`. The decoded
+PCM16 mono reference is 20.552 seconds at 24 kHz with SHA-256
+`9fe2e799426feead3383d771e14189e2a643be48aca03df300b163266b0748b5`.
+Listening found Chinese speech in the reference, so it is rejected as a
+production English cloning prompt even though its PCM structure is valid.
+
+The probe rendered `Her eyes are wide as saucers.` with the int8 Local v1.5
+model, stable profile, seed 0, explicit English language, and otherwise equal
+inputs:
+
+- natural model duration, with token-level duration control disabled:
+  `complete`, 115,200 samples at 48 kHz / 2.4 seconds, SHA-256
+  `1db50986c7cf56f91149a5805e63f9d241f788605326d900423db3e0894be646`;
+- forced 35 audio tokens: `complete`, 134,400 samples at 48 kHz / 2.8 seconds,
+  SHA-256
+  `a933fbb96f4462d42c918749e1fea55eae460f698ab64fbbeea1fc3c007814b6`.
+
+The listening decision preferred the uncontrolled render because it did not
+insert the objectionable mid-phrase pause. This single pair does not prove that
+duration control always creates pauses; it establishes that it should remain
+off for ordinary Paper Heron narration and be evaluated only when an explicit
+duration target is required. It also does not approve the contaminated
+reference.
+
+The accepted replacement is the English-only official line from
+`hero3141_mainvoc.bnk`, media ID `357643769`. Its source WEM SHA-256 is
+`8352cc19f63bf4fa4f926a007081112051c144d080e32dea5fb64d0881614c2f`;
+the decoded PCM16 mono 24 kHz WAV is 8.088 seconds with SHA-256
+`2bec2a8484749976a45d49516aa98f0ad30159beacda72585f675a005ec7ab8b`.
+Objective analysis found no clipping, no leading silence, 0.06 seconds trailing
+silence, 30.39% silent frames and a longest internal pause of 0.96 seconds. The
+manual review accepted those natural pauses as good enough and found no
+language contamination.
+
+With otherwise identical stable-profile, seed-0 inputs and token-level duration
+control disabled, `Her eyes are wide as saucers.` completed at 119,040 samples /
+2.48 seconds with SHA-256
+`52abaa87c71913bf88dc2dd80da03d83726c8a89edc968ebda20ae95dc08c09e`.
+The generated result had no detected silent frames or internal pause. This is
+the production Paper Heron reference and ordinary rendering policy; Paper Heron
+remains a character voice, while Centurion is the selected Narrator.
 
 ## Blind listening and report semantics
 
