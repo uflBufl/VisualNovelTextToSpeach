@@ -94,6 +94,28 @@ explicit empty selection never becomes the unfiltered `None` sentinel. The
 selection is stored only in `QSettings` under the content-addressed workspace
 ID, not in immutable workspace provenance.
 
+Generated-audio review has a separate scope from generation. Collection
+checkboxes constrain only Generate and Retry; clearing them never hides audio
+that still needs a decision. Review opens on `Awaiting review` and can be
+filtered independently by synthesis character, review status, source
+collection and case-insensitive line text. `Rhiannon only` and `Exclude
+Narrator` are explicit shortcuts, filtered and total counts remain visible,
+and a zero-row filter is never interpreted as an unfiltered request. The exact
+selected queue ID is retained across authoritative refreshes whenever it still
+appears in the active filter.
+
+The review table and current line occupy the primary vertical pane. Generation
+scope, readiness, voice-reference preview and the initially collapsed empty
+technical log live in the secondary pane. Splitter sizes and review filters are
+workspace-local settings; invalid narrow splitter state falls back to a sane
+review-first layout, and Reset layout restores that arrangement. The first
+pending row is selected automatically. Previous/Next pending wrap inside the
+active filter; `Ctrl+Shift+Left`, `Ctrl+Shift+Right`, `Ctrl+R`, `Ctrl+Return`
+and `Ctrl+Backspace` provide navigation, replay, approval and rejection. A
+successful decision advances only after the existing state/lease transaction
+has durably returned; failed validation leaves the current queue identity in
+place.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QTextCursor
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QTextCursor,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,6 +25,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -167,7 +174,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.summary = None
         self.collection_selection = None
-        self.collection_selection = None
         self.voice_controller = None
         self.active_started_at = None
         self.close_after_stop = False
@@ -190,6 +196,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self._log_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._poll_paths = self._default_poll_paths()
         self._poll_signature = None
+        self._all_reviews = ()
+        self._filtered_reviews = ()
+        self._selected_review_queue_id = None
+        self._integrity_error = None
+        self._review_shortcuts = []
 
         self.setWindowTitle("VNTTS authoring workbench")
         self.resize(1_080, 720)
@@ -293,32 +304,106 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reference_next,
         ):
             voice_controls.addWidget(widget)
-        voice_box = QGroupBox("Voice references")
-        voice_box.setAccessibleName("Voice reference chooser")
-        voice_layout = QVBoxLayout(voice_box)
+        self.voice_box = QGroupBox("Voice references")
+        self.voice_box.setCheckable(True)
+        self.voice_box.setAccessibleName("Voice reference chooser")
+        self.voice_content = QWidget()
+        voice_layout = QVBoxLayout(self.voice_content)
         voice_layout.addLayout(recent_header)
         voice_layout.addLayout(voice_header)
         voice_layout.addWidget(self.reference_label)
         voice_layout.addLayout(voice_controls)
+        QVBoxLayout(self.voice_box).addWidget(self.voice_content)
 
-        self.review_table = QTableWidget(0, 6)
+        self.review_character = QComboBox()
+        self.review_character.setAccessibleName("Filter review by character")
+        self.review_status = QComboBox()
+        self.review_status.addItems(
+            ["Awaiting review", "All statuses", "Approved", "Rejected", "Failed"]
+        )
+        self.review_status.setAccessibleName("Filter review by status")
+        self.review_collection = QComboBox()
+        self.review_collection.setAccessibleName("Filter review by collection")
+        self.review_search = QLineEdit()
+        self.review_search.setPlaceholderText("Search line text")
+        self.review_search.setAccessibleName("Filter review by line text")
+        self.rhiannon_only = QPushButton("Rhiannon only")
+        self.exclude_narrator = QPushButton("Exclude Narrator")
+        self.exclude_narrator.setCheckable(True)
+        self._accessible_button(
+            self.rhiannon_only,
+            "Show only Rhiannon review items",
+            "Set the independent review character filter to Rhiannon",
+        )
+        self._accessible_button(
+            self.exclude_narrator,
+            "Exclude Narrator from review",
+            "Hide narrator outcomes without changing generation scope",
+        )
+        review_filters = QHBoxLayout()
+        for widget in (
+            self.review_character,
+            self.review_status,
+            self.review_collection,
+            self.review_search,
+            self.rhiannon_only,
+            self.exclude_narrator,
+        ):
+            review_filters.addWidget(widget)
+        self.review_scope = QLabel()
+        self.review_scope.setAccessibleName("Independent review scope and counts")
+        self.review_scope.setWordWrap(True)
+        self.current_review = QLabel("Current review: none")
+        self.current_review.setAccessibleName("Current review line speaker and status")
+        self.current_review.setWordWrap(True)
+        self.review_action_reason = QLabel("Select an awaiting-review line")
+        self.review_action_reason.setAccessibleName("Review action availability reason")
+        self.review_action_reason.setWordWrap(True)
+
+        self.review_table = QTableWidget(0, 7)
         self.review_table.setHorizontalHeaderLabels(
-            ["Line", "Speaker", "Status", "Attempts", "Text", "Queue ID"]
+            [
+                "Line",
+                "Speaker",
+                "Character",
+                "Status",
+                "Collection",
+                "Text",
+                "Queue ID",
+            ]
         )
         self.review_table.setAccessibleName("Generated and failed line outcomes")
         self.review_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
         self.review_table.currentCellChanged.connect(self._update_review_actions)
-        self.approve = QPushButton("Approve selected")
-        self.reject = QPushButton("Reject selected")
-        self.review_play = QPushButton("Play selected audio")
+        self.review_table.setSortingEnabled(False)
+        self.review_table.verticalHeader().setVisible(False)
+        self.review_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Stretch
+        )
+        self.previous_pending = QPushButton("Previous pending")
+        self.next_pending = QPushButton("Next pending")
+        self.approve = QPushButton("Approve (Ctrl+Enter)")
+        self.reject = QPushButton("Reject (Ctrl+Backspace)")
+        self.review_play = QPushButton("Replay (Ctrl+R)")
         self.review_stop = QPushButton("Stop selected audio")
         self.retry_failed = QPushButton("Retry failed")
         self.generate = QPushButton("Generate ready lines")
         self.stop_generation = QPushButton("Stop generation")
         self.open_output = QPushButton("Open output folder")
+        self.reset_layout = QPushButton("Reset layout")
         for button, name, description in (
+            (
+                self.previous_pending,
+                "Previous pending review item",
+                "Select the previous awaiting-review item in the active review filter",
+            ),
+            (
+                self.next_pending,
+                "Next pending review item",
+                "Select the next awaiting-review item in the active review filter",
+            ),
             (
                 self.approve,
                 "Approve selected audio",
@@ -359,21 +444,35 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Open output folder",
                 "Open the contained mutable generated-audio directory",
             ),
+            (
+                self.reset_layout,
+                "Reset authoring workbench layout",
+                "Restore review-first splitter sizes and collapse secondary details",
+            ),
         ):
             self._accessible_button(button, name, description)
 
-        actions = QHBoxLayout()
+        review_actions = QHBoxLayout()
         for widget in (
+            self.previous_pending,
+            self.next_pending,
             self.review_play,
             self.review_stop,
             self.approve,
             self.reject,
+            self.previous_pending,
+            self.next_pending,
+        ):
+            review_actions.addWidget(widget)
+        generation_actions = QHBoxLayout()
+        for widget in (
             self.retry_failed,
             self.generate,
             self.stop_generation,
             self.open_output,
+            self.reset_layout,
         ):
-            actions.addWidget(widget)
+            generation_actions.addWidget(widget)
 
         self.technical = QGroupBox("Technical details")
         self.technical.setCheckable(True)
@@ -391,25 +490,44 @@ class AuthoringWorkbenchDialog(QDialog):
         technical_layout.addWidget(self.process_log)
         technical_layout.addWidget(self.copy_diagnostics)
 
-        details = QWidget()
-        details_layout = QVBoxLayout(details)
-        details_layout.addWidget(voice_box)
-        details_layout.addWidget(self.review_table, 1)
-        details_layout.addLayout(actions)
-        details_layout.addWidget(self.technical)
+        review_panel = QGroupBox("Generated-audio review")
+        review_panel.setAccessibleName("Independent generated-audio review scope")
+        review_panel.setMinimumHeight(280)
+        review_layout = QVBoxLayout(review_panel)
+        review_layout.addLayout(review_filters)
+        review_layout.addWidget(self.review_scope)
+        review_layout.addWidget(self.current_review)
+        review_layout.addWidget(self.review_table, 1)
+        review_layout.addWidget(self.review_action_reason)
+        review_layout.addLayout(review_actions)
 
-        self.splitter = QSplitter()
-        self.splitter.addWidget(self.collection_tree)
-        self.splitter.addWidget(details)
-        self.splitter.setStretchFactor(1, 2)
+        generation_box = QGroupBox("Generation scope and controls")
+        generation_box.setAccessibleName("Collection-scoped generation controls")
+        generation_layout = QVBoxLayout(generation_box)
+        generation_layout.addWidget(self.narrator)
+        generation_layout.addWidget(self.active)
+        generation_layout.addWidget(self.collection_tree)
+        generation_layout.addLayout(generation_actions)
+
+        secondary = QWidget()
+        secondary.setMinimumHeight(120)
+        secondary_layout = QVBoxLayout(secondary)
+        secondary_layout.addWidget(generation_box)
+        secondary_layout.addWidget(self.readiness_details)
+        secondary_layout.addWidget(self.voice_box)
+        secondary_layout.addWidget(self.technical)
+
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(review_panel)
+        self.splitter.addWidget(secondary)
+        self.splitter.setStretchFactor(0, 4)
+        self.splitter.setStretchFactor(1, 1)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.title)
-        layout.addWidget(self.narrator)
         layout.addWidget(self.status)
         layout.addWidget(self.counts)
-        layout.addWidget(self.active)
-        layout.addWidget(self.readiness_details)
         layout.addWidget(self.splitter, 1)
 
         self.voice_search.textChanged.connect(self._populate_voice_choices)
@@ -420,6 +538,12 @@ class AuthoringWorkbenchDialog(QDialog):
             self._choose_typed_recent_reference
         )
         self.collection_tree.itemChanged.connect(self._collection_selection_changed)
+        self.review_character.currentTextChanged.connect(self._apply_review_filters)
+        self.review_status.currentTextChanged.connect(self._apply_review_filters)
+        self.review_collection.currentTextChanged.connect(self._apply_review_filters)
+        self.review_search.textChanged.connect(self._apply_review_filters)
+        self.rhiannon_only.clicked.connect(self._show_rhiannon_reviews)
+        self.exclude_narrator.toggled.connect(self._apply_review_filters)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
         self.reference_next.clicked.connect(lambda: self._move_reference(1))
         self.reference_play.clicked.connect(self.play_reference)
@@ -428,13 +552,17 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_stop.clicked.connect(self.stop_preview)
         self.approve.clicked.connect(lambda: self.review_selected("approved"))
         self.reject.clicked.connect(lambda: self.review_selected("rejected"))
+        self.previous_pending.clicked.connect(lambda: self._move_pending(-1))
+        self.next_pending.clicked.connect(lambda: self._move_pending(1))
         self.retry_failed.clicked.connect(self.start_failed_retry)
         self.generate.clicked.connect(self.start_generation)
         self.stop_generation.clicked.connect(self.stop_child)
         self.open_output.clicked.connect(self.open_output_folder)
+        self.reset_layout.clicked.connect(self._reset_layout)
         self.copy_diagnostics.clicked.connect(self.copy_diagnostic_text)
         self.technical.toggled.connect(self._technical_toggled)
         self.readiness_details.toggled.connect(self.readiness_text.setVisible)
+        self.voice_box.toggled.connect(self.voice_content.setVisible)
         self.process.readyReadStandardOutput.connect(self._append_process_output)
         self.process.started.connect(self._process_started)
         self.process.finished.connect(self._process_finished)
@@ -448,10 +576,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status_timer.setInterval(1_000)
         self.status_timer.timeout.connect(self._poll_authoritative)
         self._restore_settings()
+        self._install_review_shortcuts()
         self.refresh()
         self.status_timer.start()
         self._set_focus_chain()
-        self.collection_tree.setFocus()
+        self.review_table.setFocus()
 
     @staticmethod
     def _accessible_button(button, name, description):
@@ -509,12 +638,18 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.stop()
         self._preview_active = False
         self.summary = None
+        self._integrity_error = str(error)
+        self._all_reviews = ()
+        self._filtered_reviews = ()
         self.voice_controller = None
         self._current_reference_key = None
         self._selected_review_identity = None
         self.status.setText(f"BLOCKED: {error}")
         self.status.setToolTip(str(error))
         self.review_table.setRowCount(0)
+        self.review_scope.setText("Review unavailable: integrity validation failed")
+        self.current_review.setText("Current review: none")
+        self.review_action_reason.setText(f"Review disabled: {error}")
         self.collection_tree.clear()
         self.voice_character.clear()
         self.recent_choice.clear()
@@ -541,11 +676,9 @@ class AuthoringWorkbenchDialog(QDialog):
         )
 
     def _refresh_authoritative(self):
-        selected_queue_id = (
-            self._selected_review_item().queue_id
-            if self._selected_review_item() is not None
-            else None
-        )
+        selected = self._selected_review_item()
+        if selected is not None:
+            self._selected_review_queue_id = selected.queue_id
         try:
             self.summary = inspect_workspace(
                 self.workspace_directory,
@@ -561,6 +694,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._fail_closed(error)
             return
         self.title.setText(self.summary.title)
+        self._integrity_error = None
         _directory, workspace = self._workspace_document()
         run_config = workspace["run_config"]
         self.narrator.setText(
@@ -597,21 +731,9 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._show_readiness_details(workspace)
         self._show_active()
-        self.review_table.blockSignals(True)
-        try:
-            self._populate_reviews(reviews)
-            if selected_queue_id is not None:
-                for row in range(self.review_table.rowCount()):
-                    item = self.review_table.item(row, 0)
-                    review = item.data(256) if item is not None else None
-                    if (
-                        isinstance(review, ReviewItem)
-                        and review.queue_id == selected_queue_id
-                    ):
-                        self.review_table.setCurrentCell(row, 0)
-                        break
-        finally:
-            self.review_table.blockSignals(False)
+        self._all_reviews = tuple(reviews)
+        self._populate_review_filter_choices()
+        self._apply_review_filters()
         self._load_voice_controller()
         self._populate_recent_choices(workspace["narrator_character"])
         self.recent_choice.setEnabled(self.recent_choice.count() > 0)
@@ -654,7 +776,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.stop_generation.setEnabled(running)
         self.open_output.setEnabled(True)
-        self._update_review_actions()
+        self._update_review_actions(preserve_queue_id=True)
 
     def _status_text(self):
         labels = {
@@ -670,7 +792,6 @@ class AuthoringWorkbenchDialog(QDialog):
         lines = [
             outcome for outcome in (self.process_outcome, self.media_outcome) if outcome
         ]
-        selection = self.collection_selection
         if self.summary.runtime_status in {
             AuthoringRuntimeStatus.RUNNING_HERE,
             AuthoringRuntimeStatus.RUNNING_EXTERNAL,
@@ -678,19 +799,27 @@ class AuthoringWorkbenchDialog(QDialog):
             AuthoringRuntimeStatus.BLOCKED,
         }:
             primary = labels[self.summary.runtime_status]
-        elif selection is not None and not selection.collection_ids:
-            primary = "NO COLLECTION SELECTED: choose at least one collection"
-        elif selection is not None and selection.queue_items == 0:
-            primary = "NO QUEUED ITEMS IN SELECTION: choose another collection"
-        elif selection is not None and selection.readiness.blocked_reasons:
-            primary = "SELECTION NEEDS ATTENTION: " + "; ".join(
-                selection.readiness.blocked_reasons
-            )
-        elif selection is not None and selection.readiness.ready > 0:
-            primary = f"READY: {selection.readiness.ready} selected line(s) can start"
         else:
             primary = labels[self.summary.runtime_status]
         lines.append(primary)
+        selection = self.collection_selection
+        if selection is not None and not selection.collection_ids:
+            lines.append(
+                "NO COLLECTION SELECTED: generation is disabled; review remains independently available"
+            )
+        elif selection is not None and selection.queue_items == 0:
+            lines.append(
+                "NO QUEUED ITEMS IN SELECTION: review remains independently available"
+            )
+        elif selection is not None and selection.readiness.blocked_reasons:
+            lines.append(
+                "GENERATION SCOPE NEEDS ATTENTION: "
+                + "; ".join(selection.readiness.blocked_reasons)
+            )
+        elif selection is not None:
+            lines.append(
+                f"GENERATION SCOPE READY: {selection.readiness.ready} selected line(s)"
+            )
         return "\n".join(lines)
 
     def _disabled_generation_reason(self):
@@ -1099,23 +1228,191 @@ class AuthoringWorkbenchDialog(QDialog):
             self.status.setText(self._status_text())
 
     def _populate_reviews(self, reviews):
-        self.review_table.setRowCount(0)
-        for review in reviews:
-            row = self.review_table.rowCount()
-            self.review_table.insertRow(row)
+        reviews = tuple(reviews)
+        self.review_table.setRowCount(len(reviews))
+        for row, review in enumerate(reviews):
             for column, value in enumerate(
                 (
                     review.line_id,
                     review.speaker,
+                    review.voice_character,
                     review.review_status or review.status,
-                    str(review.attempts),
+                    review.collection_id or "Unassigned",
                     review.text,
                     review.queue_id,
                 )
             ):
                 self.review_table.setItem(row, column, QTableWidgetItem(value))
             self.review_table.item(row, 0).setData(256, review)
-        self.review_table.resizeColumnsToContents()
+        for column, width in enumerate((190, 120, 120, 110, 120)):
+            self.review_table.setColumnWidth(column, width)
+
+    def _populate_review_filter_choices(self):
+        self._replace_combo_values(
+            self.review_character,
+            "All characters",
+            sorted(
+                {item.voice_character for item in self._all_reviews},
+                key=str.casefold,
+            ),
+        )
+        self._replace_combo_values(
+            self.review_collection,
+            "All collections",
+            sorted(
+                {
+                    item.collection_id
+                    for item in self._all_reviews
+                    if item.collection_id is not None
+                },
+                key=str.casefold,
+            ),
+        )
+        if hasattr(self, "_stored_review_character"):
+            index = self.review_character.findText(self._stored_review_character)
+            self.review_character.setCurrentIndex(index if index >= 0 else 0)
+            del self._stored_review_character
+        if hasattr(self, "_stored_review_collection"):
+            index = self.review_collection.findText(self._stored_review_collection)
+            self.review_collection.setCurrentIndex(index if index >= 0 else 0)
+            del self._stored_review_collection
+
+    @staticmethod
+    def _replace_combo_values(combo, all_label, values):
+        current = combo.currentText() or all_label
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(all_label)
+        combo.addItems(values)
+        index = combo.findText(current)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _apply_review_filters(self, *_arguments):
+        if not hasattr(self, "review_character"):
+            return
+        character = self.review_character.currentText()
+        status = self.review_status.currentText()
+        collection = self.review_collection.currentText()
+        needle = self.review_search.text().strip().casefold()
+        exclude_narrator = self.exclude_narrator.isChecked()
+
+        def included(item):
+            if character not in {"", "All characters"} and (
+                item.voice_character != character
+            ):
+                return False
+            if exclude_narrator and item.voice_character.casefold() == "narrator":
+                return False
+            if collection not in {"", "All collections"} and (
+                item.collection_id != collection
+            ):
+                return False
+            if needle and needle not in item.text.casefold():
+                return False
+            if status == "Awaiting review":
+                return item.status == "generated" and item.review_status in {
+                    None,
+                    "pending_review",
+                }
+            if status == "Approved":
+                return item.status == "approved" and item.review_status == "approved"
+            if status == "Rejected":
+                return item.status == "generated" and item.review_status == "rejected"
+            if status == "Failed":
+                return item.status == "failed"
+            return True
+
+        self._filtered_reviews = tuple(
+            item for item in self._all_reviews if included(item)
+        )
+        self.review_table.blockSignals(True)
+        try:
+            self._populate_reviews(self._filtered_reviews)
+            target = self._selected_review_queue_id
+            row = self._row_for_queue_id(target)
+            if row < 0:
+                row = self._first_pending_row()
+            if row < 0 and self.review_table.rowCount() > 0:
+                row = 0
+            if row >= 0:
+                self.review_table.setCurrentCell(row, 0)
+        finally:
+            self.review_table.blockSignals(False)
+        self.review_scope.setText(
+            f"Independent review scope: showing {len(self._filtered_reviews)} of "
+            f"{len(self._all_reviews)} outcomes. Generation collection selection does not filter this list."
+        )
+        self._update_review_actions(preserve_queue_id=True)
+
+    def _show_rhiannon_reviews(self):
+        index = self.review_character.findText("Rhiannon")
+        if index < 0:
+            self.review_character.addItem("Rhiannon")
+            index = self.review_character.findText("Rhiannon")
+        self.review_character.setCurrentIndex(index)
+
+    def _row_for_queue_id(self, queue_id):
+        if queue_id is None:
+            return -1
+        for row in range(self.review_table.rowCount()):
+            item = self.review_table.item(row, 0)
+            review = item.data(256) if item is not None else None
+            if isinstance(review, ReviewItem) and review.queue_id == queue_id:
+                return row
+        return -1
+
+    def _first_pending_row(self):
+        for row in range(self.review_table.rowCount()):
+            item = self.review_table.item(row, 0)
+            review = item.data(256) if item is not None else None
+            if (
+                isinstance(review, ReviewItem)
+                and review.status == "generated"
+                and review.review_status in {None, "pending_review"}
+            ):
+                return row
+        return -1
+
+    def _move_pending(self, offset):
+        pending = [
+            row
+            for row in range(self.review_table.rowCount())
+            if (
+                (review := self.review_table.item(row, 0).data(256)).status
+                == "generated"
+                and review.review_status in {None, "pending_review"}
+            )
+        ]
+        if not pending:
+            self.review_action_reason.setText(
+                "Navigation unavailable: no awaiting-review item matches the active filter"
+            )
+            return
+        current = self.review_table.currentRow()
+        try:
+            position = pending.index(current)
+        except ValueError:
+            position = -1 if offset > 0 else 0
+        row = pending[(position + int(offset)) % len(pending)]
+        self.review_table.setCurrentCell(row, 0)
+        self.review_table.scrollToItem(self.review_table.item(row, 0))
+
+    def _next_pending_queue_id(self):
+        pending = [
+            item.queue_id
+            for item in self._filtered_reviews
+            if item.status == "generated"
+            and item.review_status in {None, "pending_review"}
+        ]
+        if not pending:
+            return None
+        selected = self._selected_review_item()
+        if selected is None or selected.queue_id not in pending:
+            return pending[0]
+        if len(pending) == 1:
+            return None
+        return pending[(pending.index(selected.queue_id) + 1) % len(pending)]
 
     def _selected_review_item(self):
         row = self.review_table.currentRow()
@@ -1125,8 +1422,10 @@ class AuthoringWorkbenchDialog(QDialog):
         value = item.data(256) if item is not None else None
         return value if isinstance(value, ReviewItem) else None
 
-    def _update_review_actions(self, *_arguments):
+    def _update_review_actions(self, *_arguments, preserve_queue_id=False):
         selected = self._selected_review_item()
+        if selected is not None and not preserve_queue_id:
+            self._selected_review_queue_id = selected.queue_id
         selected_identity = (
             None
             if selected is None
@@ -1159,19 +1458,37 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reject.setEnabled(enabled)
         self.review_play.setEnabled(enabled and selected.audio is not None)
         self.review_stop.setEnabled(self._preview_active)
-        reason = (
-            ""
-            if enabled
-            else "Select generated or approved audio while generation is idle"
-        )
+        self.previous_pending.setEnabled(self._first_pending_row() >= 0)
+        self.next_pending.setEnabled(self._first_pending_row() >= 0)
+        if self._integrity_error is not None:
+            reason = f"Review disabled: integrity error: {self._integrity_error}"
+        elif selected is None:
+            reason = "Review disabled: select a generated or approved outcome"
+        elif running:
+            reason = "Review disabled: another generation process owns the state lease"
+        elif selected.status not in {"generated", "approved"}:
+            reason = f"Review disabled: {selected.status} has no reviewable WAV"
+        elif selected.audio is None:
+            reason = "Playback disabled: no state-validated generated WAV is available"
+        else:
+            reason = (
+                "Ready: exact WAV and state will be revalidated when the action starts"
+            )
         self.approve.setToolTip(reason)
         self.reject.setToolTip(reason)
-        self.review_play.setToolTip(
-            "" if self.review_play.isEnabled() else reason or "No generated WAV exists"
-        )
+        self.review_play.setToolTip("" if self.review_play.isEnabled() else reason)
         self.review_stop.setToolTip(
             "" if self._preview_active else "No audio preview is currently playing"
         )
+        self.review_action_reason.setText(reason)
+        if selected is None:
+            self.current_review.setText("Current review: none")
+        else:
+            self.current_review.setText(
+                f"Current review: {selected.line_id} | speaker {selected.speaker} | "
+                f"character {selected.voice_character} | "
+                f"status {selected.review_status or selected.status}"
+            )
 
     def play_selected_outcome(self):
         selected = self._selected_review_item()
@@ -1210,11 +1527,13 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.stop()
         self._preview_active = False
         self.media_outcome = None
+        advance_queue_id = self._next_pending_queue_id()
         try:
             review_workspace_item(self.workspace_directory, selected.queue_id, decision)
         except AuthoringWorkbenchError as error:
             self.status.setText(f"Unable to save review: {error}")
             return
+        self._selected_review_queue_id = advance_queue_id
         self.refresh()
 
     def start_generation(self):
@@ -1387,14 +1706,35 @@ class AuthoringWorkbenchDialog(QDialog):
         if geometry is not None:
             self.restoreGeometry(geometry)
         sizes = self.settings.value("splitter")
-        if isinstance(sizes, list):
-            self.splitter.setSizes([int(value) for value in sizes])
+        restored_sizes = (
+            [int(value) for value in sizes] if isinstance(sizes, list) else []
+        )
+        if len(restored_sizes) == 2 and min(restored_sizes) >= 100:
+            self.splitter.setSizes(restored_sizes)
+        else:
+            self.splitter.setSizes([560, 180])
         expanded = self.settings.value("technical-expanded", False, type=bool)
         self.technical.setChecked(expanded)
         self._technical_toggled(expanded)
         readiness_expanded = self.settings.value("readiness-expanded", False, type=bool)
         self.readiness_details.setChecked(readiness_expanded)
         self.readiness_text.setVisible(readiness_expanded)
+        voice_expanded = self.settings.value("voice-expanded", False, type=bool)
+        self.voice_box.setChecked(voice_expanded)
+        self.voice_content.setVisible(voice_expanded)
+        self.review_status.setCurrentText(
+            str(self.settings.value("review-status", "Awaiting review"))
+        )
+        self.review_search.setText(str(self.settings.value("review-search", "")))
+        self.exclude_narrator.setChecked(
+            self.settings.value("review-exclude-narrator", False, type=bool)
+        )
+        self._stored_review_character = str(
+            self.settings.value("review-character", "All characters")
+        )
+        self._stored_review_collection = str(
+            self.settings.value("review-collection", "All collections")
+        )
         self.settings.endGroup()
 
     def _save_settings(self):
@@ -1403,12 +1743,83 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue("splitter", self.splitter.sizes())
         self.settings.setValue("technical-expanded", self.technical.isChecked())
         self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
+        self.settings.setValue("voice-expanded", self.voice_box.isChecked())
+        self.settings.setValue("review-status", self.review_status.currentText())
+        self.settings.setValue("review-search", self.review_search.text())
+        self.settings.setValue(
+            "review-exclude-narrator", self.exclude_narrator.isChecked()
+        )
+        self.settings.setValue("review-character", self.review_character.currentText())
+        self.settings.setValue(
+            "review-collection", self.review_collection.currentText()
+        )
         self.settings.endGroup()
         self.settings.sync()
 
+    def _reset_layout(self):
+        self.splitter.setSizes([560, 180])
+        self.technical.setChecked(False)
+        self.readiness_details.setChecked(False)
+        self.voice_box.setChecked(False)
+        self.settings.beginGroup(self.settings_group)
+        self.settings.remove("splitter")
+        self.settings.endGroup()
+        self.settings.sync()
+
+    def _install_review_shortcuts(self):
+        bindings = (
+            ("Ctrl+Shift+Left", lambda: self._move_pending(-1)),
+            ("Ctrl+Shift+Right", lambda: self._move_pending(1)),
+            (
+                "Ctrl+R",
+                lambda: self._trigger_if_enabled(
+                    self.review_play, self.play_selected_outcome
+                ),
+            ),
+            (
+                "Ctrl+Return",
+                lambda: self._trigger_if_enabled(
+                    self.approve, lambda: self.review_selected("approved")
+                ),
+            ),
+            (
+                "Ctrl+Backspace",
+                lambda: self._trigger_if_enabled(
+                    self.reject, lambda: self.review_selected("rejected")
+                ),
+            ),
+        )
+        for sequence, callback in bindings:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(callback)
+            self._review_shortcuts.append(shortcut)
+
+    @staticmethod
+    def _trigger_if_enabled(button, callback):
+        if button.isEnabled():
+            callback()
+
     def _set_focus_chain(self):
         widgets = (
+            self.review_character,
+            self.review_status,
+            self.review_collection,
+            self.review_search,
+            self.rhiannon_only,
+            self.exclude_narrator,
+            self.review_table,
+            self.previous_pending,
+            self.next_pending,
+            self.review_play,
+            self.review_stop,
+            self.approve,
+            self.reject,
             self.collection_tree,
+            self.retry_failed,
+            self.generate,
+            self.stop_generation,
+            self.open_output,
+            self.reset_layout,
             self.readiness_details,
             self.recent_choice,
             self.voice_search,
@@ -1417,15 +1828,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reference_play,
             self.reference_stop,
             self.reference_next,
-            self.review_table,
-            self.review_play,
-            self.review_stop,
-            self.approve,
-            self.reject,
-            self.retry_failed,
-            self.generate,
-            self.stop_generation,
-            self.open_output,
             self.copy_diagnostics,
         )
         for first, second in zip(widgets, widgets[1:]):

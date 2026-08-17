@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import process_started_at
-from vntts.authoring.workbench import list_review_items
+from vntts.authoring.workbench import ReviewItem, list_review_items
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -138,6 +139,16 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         state["items"] = {}
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
+    def mark_fixture_pending_review(self, workspace):
+        state_path = workspace / "generated-audio" / "generation-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        queue_id = next(iter(state["items"]))
+        state["active"] = None
+        state["items"][queue_id]["status"] = "generated"
+        state["items"][queue_id]["review_status"] = "pending_review"
+        atomic_write_json(state_path, state, sort_keys=True)
+        return queue_id
+
     def test_voice_reference_search_navigation_and_duration(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -196,17 +207,16 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn("Other skipped actions:", dialog.counts.text())
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
-            self.assertTrue(dialog.collection_tree.hasFocus())
-            QTest.keyClick(dialog.collection_tree, Qt.Key.Key_Tab)
-            self.application.processEvents()
-            self.assertTrue(dialog.readiness_details.hasFocus())
-            QTest.keyClick(dialog.readiness_details, Qt.Key.Key_Tab)
-            self.application.processEvents()
-            self.assertTrue(dialog.recent_choice.hasFocus())
+            self.assertTrue(dialog.review_table.hasFocus())
             for button in dialog.findChildren(QPushButton):
                 self.assertTrue(button.accessibleName(), button.text())
                 self.assertTrue(button.accessibleDescription(), button.text())
 
+            self.assertFalse(dialog.technical.isChecked())
+            dialog.review_status.setCurrentText("All statuses")
+            dialog.review_character.setCurrentText("Rhiannon")
+            dialog.review_collection.setCurrentText("main")
+            dialog.review_search.setText("dialogue")
             dialog.technical.setChecked(True)
             dialog.splitter.setSizes([321, 654])
             dialog._save_settings()
@@ -215,6 +225,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertTrue(replacement.technical.isChecked())
             self.assertGreater(replacement.splitter.sizes()[0], 0)
+            self.assertEqual(replacement.review_status.currentText(), "All statuses")
+            self.assertEqual(replacement.review_character.currentText(), "Rhiannon")
+            self.assertEqual(replacement.review_collection.currentText(), "main")
+            self.assertEqual(replacement.review_search.text(), "dialogue")
             replacement.close()
 
     def test_current_attempt_projects_exact_fields_and_live_elapsed_time(self):
@@ -341,6 +355,142 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     == Qt.CheckState.Unchecked
                     for index in range(reopened.collection_tree.topLevelItemCount())
                 )
+            )
+
+    def test_review_scope_is_independent_from_empty_generation_scope(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+
+            self.assertEqual(dialog.review_status.currentText(), "Awaiting review")
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(dialog._selected_review_item().queue_id, queue_id)
+            for index in range(dialog.collection_tree.topLevelItemCount()):
+                dialog.collection_tree.topLevelItem(index).setCheckState(
+                    0, Qt.CheckState.Unchecked
+                )
+            self.application.processEvents()
+
+            self.assertEqual(dialog.collection_selection.collection_ids, ())
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertIn(
+                "review remains independently available", dialog.status.text()
+            )
+            self.assertIn("showing 1 of 1", dialog.review_scope.text())
+
+    def test_review_filters_are_explicit_and_empty_result_never_means_all(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            reviews = (
+                ReviewItem(
+                    "rhiannon-pending",
+                    "line-1",
+                    "Rhiannon",
+                    "Rhiannon",
+                    "A very particular apple line.",
+                    "generated",
+                    "pending_review",
+                    1,
+                    0,
+                    None,
+                    workspace / "generated-audio/audio/rhiannon.wav",
+                    "main",
+                ),
+                ReviewItem(
+                    "narrator-pending",
+                    "line-2",
+                    "???",
+                    "Narrator",
+                    "A narrator bridge.",
+                    "generated",
+                    "pending_review",
+                    1,
+                    0,
+                    None,
+                    workspace / "generated-audio/audio/narrator.wav",
+                    "side",
+                ),
+                ReviewItem(
+                    "rhiannon-approved",
+                    "line-3",
+                    "Rhiannon",
+                    "Rhiannon",
+                    "Already accepted.",
+                    "approved",
+                    "approved",
+                    1,
+                    0,
+                    None,
+                    workspace / "generated-audio/audio/approved.wav",
+                    "main",
+                ),
+            )
+            dialog._all_reviews = reviews
+            dialog._populate_review_filter_choices()
+            dialog.review_status.setCurrentText("Awaiting review")
+            dialog._apply_review_filters()
+
+            self.assertEqual(dialog.review_table.rowCount(), 2)
+            dialog.rhiannon_only.click()
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(
+                dialog._selected_review_item().queue_id, "rhiannon-pending"
+            )
+            dialog.review_character.setCurrentText("All characters")
+            dialog.exclude_narrator.setChecked(True)
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            dialog.review_collection.setCurrentText("side")
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            dialog.review_search.setText("not present")
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertIn("showing 0 of 3", dialog.review_scope.text())
+
+    def test_sequential_pending_navigation_and_592_item_projection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            reviews = tuple(
+                ReviewItem(
+                    f"queue-{index:03d}",
+                    f"line-{index:03d}",
+                    "Rhiannon" if index % 2 == 0 else "???",
+                    "Rhiannon" if index % 2 == 0 else "Narrator",
+                    f"Representative review line {index:03d}",
+                    "generated" if index < 590 else "approved",
+                    "pending_review" if index < 590 else "approved",
+                    1,
+                    index,
+                    None,
+                    workspace / f"generated-audio/audio/{index:03d}.wav",
+                    "main" if index % 3 else "side",
+                )
+                for index in range(592)
+            )
+            started = time.monotonic()
+            dialog._all_reviews = reviews
+            dialog._populate_review_filter_choices()
+            dialog.review_status.setCurrentText("Awaiting review")
+            dialog._apply_review_filters()
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(dialog.review_table.rowCount(), 590)
+            self.assertEqual(dialog._selected_review_item().queue_id, "queue-000")
+            dialog.next_pending.click()
+            self.assertEqual(dialog._selected_review_item().queue_id, "queue-001")
+            dialog.previous_pending.click()
+            self.assertEqual(dialog._selected_review_item().queue_id, "queue-000")
+            self.assertLess(elapsed, 2.5)
+            self.assertEqual(
+                {
+                    dialog.review_table.item(row, 0).data(256).queue_id
+                    for row in range(dialog.review_table.rowCount())
+                },
+                {f"queue-{index:03d}" for index in range(590)},
             )
 
     def test_recent_reference_choices_are_contained_validated_and_searchable(self):
@@ -506,6 +656,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             root = Path(directory)
             workspace = self.create_workspace(root)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.review_status.setCurrentText("All statuses")
             dialog.review_table.setCurrentCell(0, 0)
             self.application.processEvents()
 
@@ -652,6 +803,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             root = Path(directory)
             workspace = self.create_workspace(root)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.review_status.setCurrentText("All statuses")
             dialog.review_table.setCurrentCell(0, 0)
             selected = dialog._selected_review_item()
             self.assertIsNotNone(selected.audio)

@@ -483,6 +483,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(before.pending, 0)
         self.assertEqual(reviewed.approved, 1)
         self.assertEqual(items[0].review_status, "approved")
+        self.assertEqual(items[0].collection_id, "main")
+        self.assertEqual(items[0].voice_character, "Rhiannon")
         self.assertEqual(source_hash_after, source_hash)
 
     def test_runtime_distinguishes_local_external_pid_reuse_and_interruption(self):

@@ -139,6 +139,7 @@ class ReviewItem:
     seed: int | None
     last_error: str | None
     audio: Path | None
+    collection_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -568,7 +569,13 @@ def list_review_items(workspace_directory):
     queue_path = _within(
         directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
     )
-    queue = VoiceGenerationQueue.load(queue_path)
+    queue = _load_bound_workspace_queue(directory, workspace)
+    story = _load_bound_story_document(directory, workspace)
+    collection_by_record = {
+        (record.line_id, record.text_sha256): collection.collection_id
+        for collection in story.collections
+        for record in story.records_for_collection(collection.collection_id)
+    }
     state = load_generation_state(summary.state, queue_path)
     records = []
     for item in queue.items:
@@ -590,7 +597,9 @@ def list_review_items(workspace_directory):
                 queue_id=item.queue_id,
                 line_id=item.line_id,
                 speaker=item.speaker,
-                voice_character=item.voice_character,
+                voice_character=str(
+                    result.get("voice_character") or item.voice_character
+                ),
                 text=item.text,
                 status=status,
                 review_status=result.get("review_status"),
@@ -598,6 +607,9 @@ def list_review_items(workspace_directory):
                 seed=result.get("seed"),
                 last_error=result.get("last_error"),
                 audio=audio,
+                collection_id=collection_by_record.get(
+                    (item.line_id, item.text_sha256)
+                ),
             )
         )
     return tuple(records)
