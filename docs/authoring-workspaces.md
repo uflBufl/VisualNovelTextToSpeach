@@ -200,3 +200,28 @@ Both imported directories and both source job directories retained their
 pre-run tree digests. Queue, contained story and voice snapshots remained
 `1831f95d...`/`49f8b0fa...`, `8af6bce1...`, and `ce06030d...` respectively.
 No review decision or final game pack was published.
+
+The remaining newer-history resume gate was completed on pushed commit
+`3c8764c` with a different exact queue item,
+`reverse1999:314605:68:7ee2d4821f58d242`: Rhiannon's seven-word complete line
+“Sorry, I can't tell you exactly where.” Preflight selected exactly one failed
+item and reported it ready with three available Rhiannon references and no
+missing voice; approved count was zero. The run used `retries=0` and base seed
+zero, advancing the existing cumulative state from attempt 3/seed 2 to attempt
+4/seed 3.
+
+The result is one pending-review PCM16 mono WAV at 48 kHz: 157,440 samples,
+3.28 seconds, SHA-256
+`d713178a4596f5e6805df3f3acbef09584567f2d271764dd578f8c451107ccb9`.
+Measured leading, trailing and internal silence and the silence ratio were all
+zero. All 197 seed WAVs retained their expected hashes and the only added WAV
+was `audio/rhiannon/f6f1e3ae6c1431e089b4204b.wav`. The other 337 state records
+retained aggregate SHA-256
+`efe09ad022e91d7b533e4a358a5ccacd6cdb30224b7df518ba946fb65882b197`.
+
+Workspace controls and inputs, the immutable import and source job, and the
+external story and voice-manifest controls retained their pre-run hashes. The
+approved count and approved-only manifest entry count remained zero; active
+attempt, lease, job-process record and partial-file inventory were empty. The
+generated line remains pending review: this acceptance performed no review,
+approval, rejection or final-pack publication.
