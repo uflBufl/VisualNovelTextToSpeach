@@ -24,7 +24,10 @@ sections after their implementation has been verified and committed.
 - [ ] Validate the explicit Narrator voice dialog: selecting a candidate must
       bypass pregenerated narrator tracks with the chosen live voice, while
       "Use pregenerated narrator tracks when available" must remove that
-      override and restore artifact routing.
+      override and restore artifact routing. On the same fixed narration line,
+      compare Centurion with Paper Heron after extractor-owned, game-derived
+      Paper Heron references are available; the current Matilda-like result was
+      rejected as insufficiently confident and presentational.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the
