@@ -165,6 +165,16 @@ The approved-only manifest still contains exactly 14 entries and has SHA-256
 `3370b864105d85c431227f5cc283e7b95890687d4fd30c70148367c254832af1`.
 No rollout result beyond the four pilot WAVs was approved automatically.
 
+A read-only technical audit of the 118 pending Centurion WAVs verifies complete
+stored duration, peak and speech-silence metrics for every item and finds no
+duplicate audio digest. Twenty-seven items are prioritized for listening by
+conservative attention heuristics: 14 fast-pace, 11 near-clipping, two
+slow-pace, two notable-pause and one notable-silence flags, with overlaps. These
+flags are review ordering aids, not approval or rejection decisions. The 195
+failed Narrator items separate into 161 bounded missed-EOS/audio-limit outcomes
+and 34 speech-silence failures; even the limit cohort contains short two- to
+five-word lines, so the evidence does not justify a global cap increase.
+
 ## Truthful inspection and focused retry
 
 `inspect_workspace()` projects the exact queue and authoritative state into
@@ -234,10 +244,13 @@ checkboxes constrain only Generate and Retry; clearing them never hides audio
 that still needs a decision. Review opens on `Awaiting review` and can be
 filtered independently by synthesis character, review status, source
 collection and case-insensitive line text. `Rhiannon only` and `Exclude
-Narrator` are explicit shortcuts, filtered and total counts remain visible,
-and a zero-row filter is never interpreted as an unfiltered request. The exact
-selected queue ID is retained across authoritative refreshes whenever it still
-appears in the active filter.
+Narrator` are explicit shortcuts. `Technical attention` shows only awaiting
+review items with conservative pace, peak or silence flags. Every generated
+row displays duration, words per minute, peak and its attention flags; the
+metrics never substitute for listening. Filtered and total counts remain
+visible, and a zero-row filter is never interpreted as an unfiltered request.
+The exact selected queue ID is retained across authoritative refreshes whenever
+it still appears in the active filter.
 
 The review table and current line occupy the primary vertical pane with a
 320-pixel usable minimum. Generation scope, readiness, voice-reference preview

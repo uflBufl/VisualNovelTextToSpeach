@@ -153,6 +153,26 @@ class ReviewItem:
     authority: ReviewAuthority | None = None
     state: Path | None = None
     queue: Path | None = None
+    duration_seconds: float | None = None
+    words_per_minute: float | None = None
+    peak: float | None = None
+    technical_flags: tuple[str, ...] = ()
+
+
+def review_technical_summary(item):
+    """Describe objective review metrics without making a listening decision."""
+    if item.duration_seconds is None:
+        return "No generated WAV"
+    metrics = [f"{item.duration_seconds:.2f}s"]
+    if item.words_per_minute is not None:
+        metrics.append(f"{item.words_per_minute:.0f} WPM")
+    if item.peak is not None:
+        metrics.append(f"peak {item.peak:.3f}")
+    if item.technical_flags:
+        metrics.append("attention: " + ", ".join(item.technical_flags))
+    else:
+        metrics.append("technical pass")
+    return " | ".join(metrics)
 
 
 @dataclass(frozen=True)
@@ -593,6 +613,38 @@ def inspect_workspace(
     )
 
 
+def _review_technical_metrics(result, text):
+    quality = result.get("quality")
+    if not isinstance(quality, dict):
+        return None, None, None, ()
+    duration = quality.get("duration_seconds")
+    peak = quality.get("peak")
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        duration = None
+    else:
+        duration = float(duration)
+    peak = float(peak) if isinstance(peak, (int, float)) else None
+    word_count = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
+    words_per_minute = None if duration is None else float(word_count * 60 / duration)
+    speech_quality = result.get("speech_quality")
+    speech_quality = speech_quality if isinstance(speech_quality, dict) else {}
+    silence_ratio = speech_quality.get("silence_ratio")
+    internal_silence = speech_quality.get("longest_internal_silence_seconds")
+    flags = []
+    if peak is not None and peak >= 0.98:
+        flags.append("near clipping")
+    if word_count >= 3 and words_per_minute is not None:
+        if words_per_minute < 110:
+            flags.append("slow pace")
+        elif words_per_minute > 200:
+            flags.append("fast pace")
+    if isinstance(silence_ratio, (int, float)) and silence_ratio >= 0.15:
+        flags.append("notable silence")
+    if isinstance(internal_silence, (int, float)) and internal_silence >= 0.5:
+        flags.append("notable pause")
+    return duration, words_per_minute, peak, tuple(flags)
+
+
 def list_review_items(workspace_directory):
     summary = inspect_workspace(workspace_directory)
     if summary.state is None:
@@ -629,6 +681,9 @@ def list_review_items(workspace_directory):
                 _safe_relative(result["path"], "Generated audio"),
                 "Generated audio",
             )
+        duration, words_per_minute, peak, technical_flags = _review_technical_metrics(
+            result, item.text
+        )
         records.append(
             ReviewItem(
                 queue_id=item.queue_id,
@@ -666,6 +721,10 @@ def list_review_items(workspace_directory):
                 ),
                 state=summary.state,
                 queue=queue_path,
+                duration_seconds=duration,
+                words_per_minute=words_per_minute,
+                peak=peak,
+                technical_flags=technical_flags,
             )
         )
     return tuple(records)
@@ -1262,7 +1321,11 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward requires explicit non-Narrator characters"
         )
-    selected = tuple(sorted({_required_text(value, "Carry-forward character") for value in characters}))
+    selected = tuple(
+        sorted(
+            {_required_text(value, "Carry-forward character") for value in characters}
+        )
+    )
     if not selected or "Narrator" in selected:
         raise AuthoringWorkbenchError(
             "Carry-forward characters must be explicit and exclude Narrator"
@@ -1292,7 +1355,9 @@ def _carry_forward_review_outcomes(
         )
     source_output = source_directory / "generated-audio"
     source_state_path = source_output / "generation-state.json"
-    source_state_payload = _read_file_bytes(source_state_path, "source generation state")
+    source_state_payload = _read_file_bytes(
+        source_state_path, "source generation state"
+    )
     source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
         parsed_source_state = json.loads(source_state_payload.decode("utf-8"))
@@ -1488,7 +1553,9 @@ def _validate_full_carry_forward_item(
         synthesis_text.encode("utf-8")
     ).hexdigest()
     expected["text_transform"] = text_transform
-    mismatched = [field for field, value in expected.items() if result.get(field) != value]
+    mismatched = [
+        field for field, value in expected.items() if result.get(field) != value
+    ]
     if mismatched:
         raise AuthoringWorkbenchError(
             f"Carry-forward controls differ for {queue_item.queue_id!r}: "
@@ -1508,9 +1575,7 @@ def _workspace_generation_provenance(directory, workspace):
     run_config = workspace["run_config"]
     backend = _required_text(run_config.get("backend"), "Generation backend")
     model = _required_text(run_config.get("model"), "Generation model")
-    profile = _required_text(
-        run_config.get("generation_profile"), "Generation profile"
-    )
+    profile = _required_text(run_config.get("generation_profile"), "Generation profile")
     manifest = _selected_voice_manifest(directory, workspace)
     if manifest is None:
         raise AuthoringWorkbenchError("Carry-forward source has no voice manifest")
@@ -1536,9 +1601,7 @@ def _workspace_generation_provenance(directory, workspace):
             model_path,
             sha256_control_path(model_path),
         )
-    narrator = _required_text(
-        workspace.get("narrator_character"), "Narrator character"
-    )
+    narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
     narrator_voice = registry.resolve(narrator)
     if narrator_voice is not None and narrator_voice.references:
         reference = narrator_voice.references[0]
@@ -2036,7 +2099,9 @@ def _validate_workspace_carry_forward(directory, workspace):
             raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
         queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
         if queue_id in seen:
-            raise AuthoringWorkbenchError("Workspace carry-forward queue ID is duplicated")
+            raise AuthoringWorkbenchError(
+                "Workspace carry-forward queue ID is duplicated"
+            )
         seen.add(queue_id)
         if (
             item.get("mode") not in {"review-only", "full-outcome"}

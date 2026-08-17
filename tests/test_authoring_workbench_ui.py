@@ -511,6 +511,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     None,
                     workspace / "generated-audio/audio/rhiannon.wav",
                     "main",
+                    duration_seconds=2.5,
+                    words_per_minute=144.0,
+                    peak=0.99,
+                    technical_flags=("near clipping",),
                 ),
                 ReviewItem(
                     "narrator-pending",
@@ -547,6 +551,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog._apply_review_filters()
 
             self.assertEqual(dialog.review_table.rowCount(), 2)
+            dialog.review_status.setCurrentText("Technical attention")
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(
+                dialog._selected_review_item().queue_id, "rhiannon-pending"
+            )
+            self.assertIn("near clipping", dialog.review_table.item(0, 5).text())
+            dialog.review_status.setCurrentText("Awaiting review")
             dialog.rhiannon_only.click()
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(

@@ -403,16 +403,16 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(result["carry_forward"]["mode"], "review-only")
         self.assertEqual(workspace["carry_forward"]["characters"], ["Rhiannon"])
         self.assertEqual(workspace["narrator_character"], "Paper Heron")
-        self.assertEqual(
-            manifest["entries"][0]["carry_forward"]["mode"], "review-only"
-        )
+        self.assertEqual(manifest["entries"][0]["carry_forward"]["mode"], "review-only")
         self.assertEqual(source_state_sha256_after, source_state_sha256)
 
     def test_carry_forward_copies_new_full_outcome_with_exact_controls(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, imported, source = create_carry_source_workspace(root)
-            source_state_path = source.directory / "generated-audio/generation-state.json"
+            source_state_path = (
+                source.directory / "generated-audio/generation-state.json"
+            )
             source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
             queue_item = VoiceGenerationQueue.load(
                 source.directory / "queue.jsonl"
@@ -424,9 +424,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 np.sin(np.linspace(0, 6 * np.pi, 6_000, dtype=np.float32)) * 0.2,
                 16_000,
             )
-            item.update(
-                self._current_carry_fields(source.directory, queue_item, audio)
-            )
+            item.update(self._current_carry_fields(source.directory, queue_item, audio))
             source_state["active"] = None
             source_state_path.write_text(
                 json.dumps(source_state, sort_keys=True), encoding="utf-8"
@@ -498,7 +496,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 if not path.name.startswith(".")
             ]
 
-        self.assertEqual([path.resolve() for path in remaining], [source.directory.resolve()])
+        self.assertEqual(
+            [path.resolve() for path in remaining], [source.directory.resolve()]
+        )
 
     def test_carry_forward_rejects_narrator_and_moving_source_state(self):
         with TemporaryDirectory() as directory:
@@ -527,7 +527,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 result = real_publish(*args, **kwargs)
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 state["external_change"] = True
-                state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+                state_path.write_text(
+                    json.dumps(state, sort_keys=True), encoding="utf-8"
+                )
                 return result
 
             with (
@@ -859,7 +861,36 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(items[0].review_status, "approved")
         self.assertEqual(items[0].collection_id, "main")
         self.assertEqual(items[0].voice_character, "Rhiannon")
+        self.assertGreater(items[0].duration_seconds, 0)
+        self.assertGreater(items[0].words_per_minute, 0)
+        self.assertGreater(items[0].peak, 0)
+        self.assertIsInstance(items[0].technical_flags, tuple)
         self.assertEqual(source_hash_after, source_hash)
+
+    def test_review_technical_metrics_are_conservative_attention_aids(self):
+        result = {
+            "quality": {"duration_seconds": 6.0, "peak": 0.99},
+            "speech_quality": {
+                "silence_ratio": 0.2,
+                "longest_internal_silence_seconds": 0.6,
+            },
+        }
+
+        duration, words_per_minute, peak, flags = (
+            workbench_module._review_technical_metrics(result, "Three deliberate words")
+        )
+
+        self.assertEqual(duration, 6.0)
+        self.assertEqual(words_per_minute, 30.0)
+        self.assertEqual(peak, 0.99)
+        self.assertEqual(
+            flags,
+            ("near clipping", "slow pace", "notable silence", "notable pause"),
+        )
+        self.assertEqual(
+            workbench_module._review_technical_metrics({}, "No WAV"),
+            (None, None, None, ()),
+        )
 
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
         with TemporaryDirectory() as directory:
@@ -1292,9 +1323,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 retries=4,
                 seed=9,
             )
-            queue_id = VoiceGenerationQueue.load(
-                created.directory / "queue.jsonl"
-            ).items[0].queue_id
+            queue_id = (
+                VoiceGenerationQueue.load(created.directory / "queue.jsonl")
+                .items[0]
+                .queue_id
+            )
             regeneration = generation_command(
                 created.directory,
                 queue_ids=(queue_id,),

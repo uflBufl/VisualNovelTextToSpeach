@@ -73,6 +73,7 @@ from vntts.authoring.workbench import (
     list_workspace_collections,
     prepare_review_audio,
     review_selected_item,
+    review_technical_summary,
     workspace_voice_snapshot,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -614,7 +615,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_character.setAccessibleName("Filter review by character")
         self.review_status = QComboBox()
         self.review_status.addItems(
-            ["Awaiting review", "All statuses", "Approved", "Rejected", "Failed"]
+            [
+                "Awaiting review",
+                "Technical attention",
+                "All statuses",
+                "Approved",
+                "Rejected",
+                "Failed",
+            ]
         )
         self.review_status.setAccessibleName("Filter review by status")
         self.review_collection = QComboBox()
@@ -655,7 +663,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_action_reason.setAccessibleName("Review action availability reason")
         self.review_action_reason.setWordWrap(True)
 
-        self.review_table = QTableWidget(0, 7)
+        self.review_table = QTableWidget(0, 8)
         self.review_table.setHorizontalHeaderLabels(
             [
                 "Line",
@@ -663,6 +671,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Character",
                 "Status",
                 "Collection",
+                "Technical",
                 "Text",
                 "Queue ID",
             ]
@@ -675,7 +684,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setSortingEnabled(False)
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.Stretch
+            6, QHeaderView.ResizeMode.Stretch
         )
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
@@ -800,9 +809,7 @@ class AuthoringWorkbenchDialog(QDialog):
         review_layout.addWidget(self.review_action_reason)
         review_layout.addLayout(review_actions)
 
-        self.generation_section = DisclosureSection(
-            "Generation scope and controls"
-        )
+        self.generation_section = DisclosureSection("Generation scope and controls")
         self.generation_section.setAccessibleName(
             "Collection-scoped generation controls"
         )
@@ -1618,13 +1625,14 @@ class AuthoringWorkbenchDialog(QDialog):
                     review.voice_character,
                     review.review_status or review.status,
                     review.collection_id or "Unassigned",
+                    review_technical_summary(review),
                     review.text,
                     review.queue_id,
                 )
             ):
                 self.review_table.setItem(row, column, QTableWidgetItem(value))
             self.review_table.item(row, 0).setData(256, review)
-        for column, width in enumerate((190, 120, 120, 110, 120)):
+        for column, width in enumerate((190, 120, 120, 110, 120, 260)):
             self.review_table.setColumnWidth(column, width)
 
     def _populate_review_filter_choices(self):
@@ -1695,6 +1703,12 @@ class AuthoringWorkbenchDialog(QDialog):
                     None,
                     "pending_review",
                 }
+            if status == "Technical attention":
+                return (
+                    item.status == "generated"
+                    and item.review_status in {None, "pending_review"}
+                    and bool(item.technical_flags)
+                )
             if status == "Approved":
                 return item.status == "approved" and item.review_status == "approved"
             if status == "Rejected":
@@ -1907,7 +1921,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.current_review.setText(
                 f"Current review: {selected.line_id} | speaker {selected.speaker} | "
                 f"character {selected.voice_character} | "
-                f"status {selected.review_status or selected.status}"
+                f"status {selected.review_status or selected.status} | "
+                f"{review_technical_summary(selected)}"
             )
 
     def play_selected_outcome(self):
