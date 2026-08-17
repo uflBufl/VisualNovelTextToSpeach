@@ -12,6 +12,7 @@ from time import monotonic
 
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
@@ -22,6 +23,7 @@ from vntts.dialog_capture import (
 )
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
+    GeneratedAudioLibrary,
     PlaybackStatus,
     SourceAudioRoute,
 )
@@ -38,6 +40,7 @@ LIVE_REPLAY_CORPUS_VERSION = 1
 @dataclass(frozen=True)
 class ReplayDialogue:
     frames: tuple[CapturedDialogFrame, ...]
+    frame_sha256s: tuple[str, ...]
     character: str
     text: str
     expected_source: str | None
@@ -48,6 +51,33 @@ class LiveReplayCorpus:
     name: str
     dialogue: tuple[ReplayDialogue, ...]
     story_document: dict
+    generated_audio_manifest: Path | None = None
+
+
+class ReplayAudioOutput:
+    """Device-free output that still consumes exact generated PCM."""
+
+    def __init__(self):
+        self.played = []
+
+    def query_devices(self, _device=None, _kind=None):
+        return {"default_samplerate": 24_000}
+
+    def play(self, samples, sample_rate, **_options):
+        samples = samples.astype("<f4", copy=False)
+        self.played.append(
+            {
+                "sample_rate": int(sample_rate),
+                "sample_count": int(len(samples)),
+                "pcm_sha256": hashlib.sha256(samples.tobytes()).hexdigest(),
+            }
+        )
+
+    def wait(self):
+        return type("ReplayStatus", (), {"output_underflow": False})()
+
+    def stop(self):
+        return None
 
 
 class ReplayLiveSpeechBackend:
@@ -90,10 +120,18 @@ class ReplayFrameSource:
     def capture(self):
         with self.lock:
             current = self.dialogue[self.dialogue_index]
-            frame = current.frames[self.frame_index]
+            return current.frames[self.frame_index]
+
+    def acknowledge(self, frame):
+        """Advance only after OCR consumed this exact frame, never on capture drop."""
+        with self.lock:
+            current = self.dialogue[self.dialogue_index]
+            if frame.image is not current.frames[self.frame_index].image:
+                return False
             if self.frame_index + 1 < len(current.frames):
                 self.frame_index += 1
-            return frame
+                return True
+            return False
 
     def advance(self):
         with self.lock:
@@ -119,9 +157,7 @@ class LiveReplayRunner:
         if not corpus.dialogue:
             raise ValueError("Live replay corpus has no dialogue frames")
         self.corpus = corpus
-        self.recognizer = recognizer or (
-            lambda frame: recognize_live_frame(frame, minimum_confidence=0)
-        )
+        self.recognizer = recognizer or _recognize_replay_frame
         self.interval_seconds = float(interval_seconds)
         self.timeout_seconds = float(timeout_seconds)
         self.audio_source_policy = audio_source_policy
@@ -129,11 +165,20 @@ class LiveReplayRunner:
     def run(self):
         frame_source = ReplayFrameSource(self.corpus.dialogue)
         resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
+        library = (
+            GeneratedAudioLibrary(
+                GeneratedAudioIndex.load(self.corpus.generated_audio_manifest)
+            )
+            if self.corpus.generated_audio_manifest is not None
+            else None
+        )
+        audio_output = ReplayAudioOutput()
         router = GeneratedAudioFallbackBackend(
             ReplayLiveSpeechBackend(),
-            None,
+            library,
             resolver,
             audio_source_policy=self.audio_source_policy,
+            audio_output=audio_output,
         )
         router.set_live_mode_active(True)
         timelines = GenerationTimelineLog(maximum_entries=len(self.corpus.dialogue) + 1)
@@ -141,6 +186,15 @@ class LiveReplayRunner:
         routes = []
         errors = []
         advance_states = []
+        recognized_frames = []
+
+        def recognize(frame):
+            result = self.recognizer(frame)
+            recognized_frames.append(
+                {"character": str(result[0]), "text": str(result[1])}
+            )
+            frame_source.acknowledge(frame)
+            return result
 
         def prepare(chunk):
             prepared = router.prepare_route(chunk.character, chunk.text)
@@ -222,6 +276,28 @@ class LiveReplayRunner:
             ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"replay-{name}")
             for name in ("capture", "ocr", "speech", "playback")
         ]
+        tracker_options = {
+            "idle_flush_seconds": max(0.5, self.interval_seconds * 10),
+            "min_chunk_characters": 1,
+            "complete_dialogue_only": self.audio_source_policy != "live-tts-only",
+        }
+        if tracker_options["complete_dialogue_only"]:
+            tracker_options["incomplete_dialogue_probe"] = (
+                resolver.is_unique_incomplete_prefix
+            )
+        if library is not None:
+            tracker_options["early_dialogue_resolver"] = lambda character, text: (
+                line.text
+                if (
+                    line := resolver.resolve_unique_prefix(
+                        character,
+                        text,
+                        candidate_filter=router.has_generated_line,
+                    )
+                )
+                is not None
+                else None
+            )
         reader = LiveDialogReader(
             capture_executor=executors[0],
             ocr_executor=executors[1],
@@ -229,18 +305,14 @@ class LiveReplayRunner:
             playback_executor=executors[3],
             read_snapshot=lambda: (None, ""),
             capture_frame=frame_source.capture,
-            recognize_frame=self.recognizer,
-            frame_fingerprint=fingerprint_dialog_frame,
+            recognize_frame=recognize,
+            frame_fingerprint=_fingerprint_replay_frame,
             speak_chunk=lambda _chunk: None,
             prepare_chunk=prepare,
             play_prepared=play,
             report_error=errors.append,
             interval_seconds=self.interval_seconds,
-            tracker_options={
-                "idle_flush_seconds": max(0.02, self.interval_seconds * 2),
-                "min_chunk_characters": 1,
-                "complete_dialogue_only": self.audio_source_policy != "live-tts-only",
-            },
+            tracker_options=tracker_options,
             adaptive_options={
                 "fast_interval": self.interval_seconds,
                 "idle_interval": self.interval_seconds,
@@ -308,6 +380,15 @@ class LiveReplayRunner:
             "advance_requests": frame_source.advance_requests,
             "advance_states": advance_states,
             "errors": [str(error) for error in errors],
+            "media_integrity": {
+                "frame_sha256s": [
+                    digest
+                    for dialogue in self.corpus.dialogue
+                    for digest in dialogue.frame_sha256s
+                ],
+                "generated_playback": audio_output.played,
+                "recognized_frames": recognized_frames,
+            },
             "timelines": timelines.snapshot(),
         }
 
@@ -323,6 +404,9 @@ def load_live_replay_corpus(path):
     region = _decode_region(document.get("dialog_region"))
     dialogue = []
     story_rows = []
+    generated_audio_manifest = _optional_document_path(
+        path, document.get("generated_audio_manifest")
+    )
     for index, item in enumerate(document.get("dialogue", ()), start=1):
         if not isinstance(item, dict):
             raise ValueError(f"Live replay dialogue {index} must be an object")
@@ -333,11 +417,15 @@ def load_live_replay_corpus(path):
         frame_paths = item.get("frames")
         if not isinstance(frame_paths, list) or not frame_paths:
             raise ValueError(f"Live replay dialogue {index} has no frames")
-        frames = tuple(
-            _load_frame(path.parent / frame_path, region) for frame_path in frame_paths
+        loaded_frames = tuple(
+            _load_frame(path.parent, frame_spec, region) for frame_spec in frame_paths
         )
+        frames = tuple(frame for frame, _digest in loaded_frames)
+        frame_sha256s = tuple(digest for _frame, digest in loaded_frames)
         expected_source = str(item.get("expected_source") or "").strip() or None
-        dialogue.append(ReplayDialogue(frames, character, text, expected_source))
+        dialogue.append(
+            ReplayDialogue(frames, frame_sha256s, character, text, expected_source)
+        )
         story_rows.append(
             {
                 "line_id": str(item.get("line_id") or f"replay:{index}"),
@@ -357,7 +445,12 @@ def load_live_replay_corpus(path):
         )
     if not dialogue:
         raise ValueError("Live replay corpus has no dialogue entries")
-    return LiveReplayCorpus(name, tuple(dialogue), {"dialogue": story_rows})
+    return LiveReplayCorpus(
+        name,
+        tuple(dialogue),
+        {"dialogue": story_rows},
+        generated_audio_manifest,
+    )
 
 
 def _decode_region(value):
@@ -373,15 +466,67 @@ def _decode_region(value):
     )
 
 
-def _load_frame(path, region):
-    path = Path(path).expanduser().resolve()
+def _load_frame(root, frame_spec, region):
+    expected_sha256 = None
+    observation = None
+    if isinstance(frame_spec, str):
+        relative_path = frame_spec
+    elif isinstance(frame_spec, dict):
+        relative_path = frame_spec.get("path")
+        expected_sha256 = frame_spec.get("sha256")
+        observed_character = frame_spec.get("observed_character")
+        observed_text = frame_spec.get("observed_text")
+        if observed_character is not None or observed_text is not None:
+            if (
+                not isinstance(observed_character, str)
+                or not observed_character.strip()
+            ):
+                raise ValueError("Replay frame observed_character must be non-empty")
+            if not isinstance(observed_text, str) or not observed_text.strip():
+                raise ValueError("Replay frame observed_text must be non-empty")
+            observation = observed_character.strip(), " ".join(observed_text.split())
+    else:
+        raise ValueError("Live replay frame must be a path or an object")
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise ValueError("Live replay frame path must be non-empty")
+    path = (Path(root) / relative_path).expanduser().resolve()
     if not path.is_file():
         raise ValueError(f"Live replay frame does not exist: {path}")
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if expected_sha256 is not None and expected_sha256 != digest:
+        raise ValueError(f"Live replay frame checksum does not match: {path}")
     with Image.open(path) as source:
         image = source.convert("RGB")
     if region is not None:
         image = region.crop(image)
-    return CapturedDialogFrame(image, 0.0)
+    if observation is not None:
+        image.info["vntts_replay_observation"] = observation
+    return CapturedDialogFrame(image, 0.0), digest
+
+
+def _recognize_replay_frame(frame):
+    observation = frame.image.info.get("vntts_replay_observation")
+    if observation is not None:
+        return observation
+    return recognize_live_frame(frame, minimum_confidence=0)
+
+
+def _fingerprint_replay_frame(frame):
+    fingerprint = fingerprint_dialog_frame(frame)
+    observation = frame.image.info.get("vntts_replay_observation")
+    return (fingerprint, observation) if observation is not None else fingerprint
+
+
+def _optional_document_path(document_path, value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("generated_audio_manifest must be a non-empty path")
+    path = (document_path.parent / value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"Generated audio manifest does not exist: {path}")
+    return path
 
 
 def _group_played_dialogue(played):

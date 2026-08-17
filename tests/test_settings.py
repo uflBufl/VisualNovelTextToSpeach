@@ -127,6 +127,7 @@ class SettingsTest(unittest.TestCase):
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 tts_language="en",
                 generated_audio_manifest="audio/generated.json",
+                live_speaker_corpus="audio/live-speakers.json",
                 audio_source_policy="prefer-generated",
                 voice_assignments={
                     "Narrator": "preset:alba",
@@ -140,6 +141,13 @@ class SettingsTest(unittest.TestCase):
             loaded = load_app_settings(path, environment={})
 
         self.assertEqual(loaded, settings)
+
+    def test_live_speaker_corpus_can_be_selected_from_environment(self):
+        settings = AppSettings().with_environment_overrides(
+            {"VNTTS_LIVE_SPEAKER_CORPUS": "session-speakers.json"}
+        )
+
+        self.assertEqual(settings.live_speaker_corpus, "session-speakers.json")
 
     def test_invalid_voice_assignments_are_ignored(self):
         warnings = []

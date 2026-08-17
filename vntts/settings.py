@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 20
+settings_schema_version = 21
 
 audio_source_policies = {
     "live-tts-only",
@@ -87,6 +87,7 @@ class AppSettings:
     game_pack: str | None = None
     voice_manifest: str | None = None
     story_index: str | None = None
+    live_speaker_corpus: str | None = None
     generated_audio_manifest: str | None = None
     narrator_speaker: str | None = None
     voice_assignments: dict[str, str] = field(default_factory=dict)
@@ -124,6 +125,7 @@ class AppSettings:
             "game_pack",
             "voice_manifest",
             "story_index",
+            "live_speaker_corpus",
             "generated_audio_manifest",
             "narrator_speaker",
             "game_window_title",
@@ -262,6 +264,7 @@ class AppSettings:
             "VNTTS_GAME_PACK": "game_pack",
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
             "VNTTS_STORY_INDEX": "story_index",
+            "VNTTS_LIVE_SPEAKER_CORPUS": "live_speaker_corpus",
             "VNTTS_GENERATED_AUDIO_MANIFEST": "generated_audio_manifest",
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
             "VNTTS_OCR_LANGUAGE": "ocr_language",

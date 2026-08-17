@@ -656,6 +656,18 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.settings().audio_source_policy, "live-tts-only")
         dialog.deleteLater()
 
+    def test_settings_preserve_explicit_live_speaker_corpus(self):
+        dialog = SettingsDialog(
+            AppSettings(live_speaker_corpus="session-speakers.json")
+        )
+
+        self.assertEqual(dialog.live_speaker_corpus.text(), "session-speakers.json")
+        self.assertEqual(
+            dialog.settings().live_speaker_corpus,
+            "session-speakers.json",
+        )
+        dialog.deleteLater()
+
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
             AppSettings(

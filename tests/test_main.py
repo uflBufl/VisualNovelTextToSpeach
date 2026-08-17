@@ -1495,6 +1495,45 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.live_reader.toggle.call_count, 2)
         self.assertTrue(controller._offer_unknown_speaker_mapping("Selone", "Line"))
 
+    def test_explicit_speaker_corpus_preflights_without_story_index(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "speakers.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "speakers": ["Rhiannon", "Hotelier", "Narrator", "???"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller = AppController(
+                AppSettings(live_speaker_corpus=str(path)),
+                tts_factory=Mock(),
+            )
+
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.side_effect = lambda character: (
+            object() if character == "Rhiannon" else None
+        )
+        controller.speech_backend = SimpleNamespace()
+
+        self.assertEqual(controller.unresolved_live_speakers(), ("Hotelier",))
+
+    def test_invalid_explicit_speaker_corpus_blocks_live_start(self):
+        statuses = []
+        controller = AppController(
+            AppSettings(live_speaker_corpus="missing-speakers.json"),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+        )
+        controller.live_reader = Mock(is_running=False)
+
+        self.assertFalse(controller.toggle_live())
+        controller.live_reader.toggle.assert_not_called()
+        self.assertIn("configured speaker corpus is invalid", statuses[-1])
+
     def test_direct_live_toggle_requires_exact_fresh_scoped_approval(self):
         statuses = []
         preloader = ChapterVoicePreloader.from_document(

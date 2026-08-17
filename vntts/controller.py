@@ -43,6 +43,7 @@ from vntts.live import (
     IncrementalDialogTracker,
     LiveDialogReader,
 )
+from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PreparedPlayback
@@ -229,6 +230,15 @@ class AppController:
             chapter_voice_preloader
             or ChapterVoicePreloader.load_optional(self.settings.story_index)
         )
+        self.live_speaker_corpus = None
+        self.live_speaker_corpus_error = None
+        if self.settings.live_speaker_corpus:
+            try:
+                self.live_speaker_corpus = LiveSpeakerCorpus.load(
+                    self.settings.live_speaker_corpus
+                )
+            except (OSError, TypeError, ValueError) as error:
+                self.live_speaker_corpus_error = str(error)
         self.generated_audio_library_factory = generated_audio_library_factory
         self.generated_audio_backend_factory = generated_audio_backend_factory
         self.route_trace_handler = route_trace_handler or (lambda _trace: None)
@@ -530,10 +540,16 @@ class AppController:
     def _live_voice_preflight_allows_start(self):
         unresolved = self.unresolved_live_speakers()
         if unresolved is None:
-            self.status_handler(
-                "Live reading could not start: read the current dialog once to "
-                "identify the story chapter"
-            )
+            if self.live_speaker_corpus_error:
+                self.status_handler(
+                    "Live reading could not start: configured speaker corpus is "
+                    f"invalid: {self.live_speaker_corpus_error}"
+                )
+            else:
+                self.status_handler(
+                    "Live reading could not start: read the current dialog once to "
+                    "identify the story chapter"
+                )
             return False
         unresolved = tuple(unresolved)
         approved = tuple(self.next_live_narrator_fallback_names.values())
@@ -770,16 +786,22 @@ class AppController:
     def unresolved_live_speakers(self):
         """Return scoped named speakers, or ``None`` until the chapter is known."""
         scope = self.chapter_voice_preloader.live_voice_preflight_rows()
+        if not self.chapter_voice_preloader.dialogue:
+            if self.live_speaker_corpus_error:
+                return None
+            if self.live_speaker_corpus is not None:
+                scope = self.live_speaker_corpus.speakers
         if scope is None:
             return None
         unresolved = []
         seen = set()
         for line in scope:
-            character = str(line.speaker or "").strip()
+            character = str(getattr(line, "speaker", line) or "").strip()
+            text = getattr(line, "text", None)
             key = normalize_character_name(character)
             if key in seen or not self._speaker_requires_voice_decision(
                 character,
-                line.text,
+                text,
                 live_preflight=True,
             ):
                 continue

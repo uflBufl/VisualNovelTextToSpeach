@@ -191,9 +191,7 @@ def moss_generation_limits(text):
     # that exhausted the former 6.5s ceiling. The absolute 20-second guard is
     # unchanged.
     max_audio_seconds = (
-        3.0
-        if word_count <= 2
-        else min(20.0, max(4.0, 2.5 + word_count / 1.5))
+        3.0 if word_count <= 2 else min(20.0, max(4.0, 2.5 + word_count / 1.5))
     )
     max_tokens = min(2048, max(256, round(max_audio_seconds * 100)))
     return max_tokens, max_audio_seconds
@@ -2254,13 +2252,13 @@ class MossTTSVoiceRouterBackend:
 
         # Compile the MLX generation path before live reading begins. The
         # generated warm-up is cached and never sent to the output device.
-        prepared = self.prepare("Narrator", text)
+        warmup_request = SynthesisRequest(
+            voice="Narrator",
+            text=text,
+            generation_profile=self.generation_profile,
+        )
+        prepared = self._prepare_request(warmup_request)
         if prepared.cached_audio is None:
-            warmup_request = SynthesisRequest(
-                voice="Narrator",
-                text=text,
-                generation_profile=prepared.generation_profile,
-            )
             self.playback_stop.clear()
             self._render_prepared(
                 replace(prepared, max_tokens=128),

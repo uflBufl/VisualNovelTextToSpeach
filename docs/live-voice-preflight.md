@@ -38,5 +38,11 @@ before starting. Any change refreshes the prompt or blocks the start.
 
 An unexpected OCR speaker outside the established lookahead still fails closed:
 speech waits and the existing voice-choice prompt opens. A session without a
-story index has no trustworthy speaker corpus to preflight, so it retains this
-runtime behavior until an explicit corpus contract is provided.
+story index can instead configure `live_speaker_corpus`, a version 1 JSON object
+with a non-empty, case-insensitively unique `speakers` list. The entire explicit
+list is preflighted before every start. Narrator and exact `???` need no choice;
+other named speakers still need an assigned/resolved voice or a fresh one-session
+Narrator approval. A configured corpus that is missing, damaged, empty, or has
+duplicate/invalid names blocks live start rather than silently reverting to an
+empty scope. `VNTTS_LIVE_SPEAKER_CORPUS` provides the equivalent environment
+override. See `samples/rhiannon-live-speakers.json` for a representative file.

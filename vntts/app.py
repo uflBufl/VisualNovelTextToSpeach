@@ -264,6 +264,7 @@ class SettingsDialog(QDialog):
             or (str(default_voice_manifest) if default_voice_manifest else "")
         )
         self.story_index = QLineEdit(settings.story_index or "")
+        self.live_speaker_corpus = QLineEdit(settings.live_speaker_corpus or "")
         self.generated_audio_manifest = QLineEdit(
             settings.generated_audio_manifest or ""
         )
@@ -352,6 +353,7 @@ class SettingsDialog(QDialog):
         speech_form.addRow("Game pack", self.game_pack)
         speech_form.addRow("Voice manifest", self.voice_manifest)
         speech_form.addRow("Story index", self.story_index)
+        speech_form.addRow("Live speaker corpus", self.live_speaker_corpus)
         speech_form.addRow("Generated audio manifest", self.generated_audio_manifest)
         speech_form.addRow("Narrator speaker", self.narrator_speaker)
         speech_form.addRow("Voice profile", self.tts_profile)
@@ -619,6 +621,7 @@ class SettingsDialog(QDialog):
                 "game_pack": optional_text(self.game_pack),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "story_index": optional_text(self.story_index),
+                "live_speaker_corpus": optional_text(self.live_speaker_corpus),
                 "generated_audio_manifest": optional_text(
                     self.generated_audio_manifest
                 ),

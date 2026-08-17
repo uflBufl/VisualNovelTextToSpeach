@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "name": "Representative device-free Rhiannon route matrix",
+  "fixture_kind": "representative-observations-over-saved-project-frames",
+  "generated_audio_manifest": "rhiannon-live-replay-generated.json",
+  "dialogue": [
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Rhiannon",
+          "observed_text": "I, erhm ..."
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Rhiannon",
+          "observed_text": "I, erhm ..."
+        }
+      ],
+      "character": "Rhiannon",
+      "text": "I, erhm ...",
+      "line_id": "fixture:rhiannon:1",
+      "source_audio_status": "available",
+      "source_audio_duration_seconds": 0.001,
+      "expected_source": "game"
+    },
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Hotelier",
+          "observed_text": "A single room will be four coins"
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Hotelier",
+          "observed_text": "A single room will be four coins"
+        },
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Hotelier",
+          "observed_text": "A single room will be four coins per night."
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Hotelier",
+          "observed_text": "A single room will be four coins per night."
+        }
+      ],
+      "character": "Hotelier",
+      "text": "A single room will be four coins per night.",
+      "line_id": "fixture:hotelier:1",
+      "source_audio_status": "missing",
+      "expected_source": "live:replay-live-tts"
+    },
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Adar Llwch Gwin Fledgling",
+          "observed_text": "The old forest remembers every"
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Adar Llwch Gwin Fledgling",
+          "observed_text": "The old forest remembers every"
+        },
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Adar Llwch Gwin Fledgling",
+          "observed_text": "The old forest remembers every"
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Adar Llwch Gwin Fledgling",
+          "observed_text": "The old forest remembers every"
+        }
+      ],
+      "character": "Adar Llwch Gwin Fledgling",
+      "text": "The old forest remembers every footstep.",
+      "line_id": "fixture:fledgling:1",
+      "source_audio_status": "missing",
+      "expected_source": "generated"
+    },
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        },
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        },
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        }
+      ],
+      "character": "Narrator",
+      "text": "Night settles over the lake.",
+      "line_id": "fixture:narrator:1",
+      "source_audio_status": "missing",
+      "expected_source": "live:replay-live-tts"
+    }
+  ]
+}
