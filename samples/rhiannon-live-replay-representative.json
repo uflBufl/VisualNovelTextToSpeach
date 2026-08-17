@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "Representative device-free Rhiannon route matrix",
-  "fixture_kind": "representative-observations-over-saved-project-frames",
+  "fixture_kind": "representative-observations-with-exact-frame-ledger",
   "generated_audio_manifest": {
     "path": "rhiannon-live-replay-generated.json",
     "sha256": "8a3fba8c0ba96fac31b1a8d40e87e3b423a39786eb46da71ce2705cc44541840"

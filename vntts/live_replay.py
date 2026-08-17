@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from threading import Event, Lock
+from threading import Condition, Event, Lock
 from time import monotonic
 
 from PIL import Image
@@ -48,6 +48,7 @@ LIVE_REPLAY_CORPUS_VERSION = 1
 @dataclass(frozen=True)
 class ReplayDialogue:
     frames: tuple[CapturedDialogFrame, ...]
+    frame_paths: tuple[str, ...]
     frame_sha256s: tuple[str, ...]
     frame_recognition_sources: tuple[str, ...]
     character: str
@@ -142,33 +143,127 @@ class ReplayFrameSource:
         self.frame_index = 0
         self.advance_requests = 0
         self.completed = Event()
-        self.lock = Lock()
+        self.condition = Condition(Lock())
+        self.stopped = False
+        self.consumed = [[False for _frame in item.frames] for item in self.dialogue]
+        self.skipped = [0 for _item in self.dialogue]
+        self.unmapped_skipped = 0
 
     def capture(self):
-        with self.lock:
+        with self.condition:
             current = self.dialogue[self.dialogue_index]
             return current.frames[self.frame_index]
 
     def acknowledge(self, frame):
-        """Advance only after OCR consumed this exact frame, never on capture drop."""
-        with self.lock:
-            current = self.dialogue[self.dialogue_index]
-            if frame.image is not current.frames[self.frame_index].image:
-                return False
-            if self.frame_index + 1 < len(current.frames):
-                self.frame_index += 1
-                return True
-            return False
+        """Consume one exact declared frame and return its ledger event."""
+        identity = frame.image.info.get("vntts_replay_declared_identity")
+        with self.condition:
+            event = self._event_for_identity(identity)
+            expected = self.dialogue_index, self.frame_index
+            if identity == expected and not self.consumed[identity[0]][identity[1]]:
+                self.consumed[identity[0]][identity[1]] = True
+                event["consumed"] = True
+                event["skip_reason"] = None
+                if self.frame_index + 1 < len(
+                    self.dialogue[self.dialogue_index].frames
+                ):
+                    self.frame_index += 1
+                self.condition.notify_all()
+                return event
+            event["consumed"] = False
+            if identity is None or event["dialogue_index"] is None:
+                event["skip_reason"] = "not-declared"
+            elif self.consumed[identity[0]][identity[1]]:
+                event["skip_reason"] = "already-consumed"
+            elif identity[0] != self.dialogue_index:
+                event["skip_reason"] = "different-dialogue"
+            else:
+                event["skip_reason"] = "out-of-order"
+            if event["dialogue_index"] is not None:
+                self.skipped[event["dialogue_index"] - 1] += 1
+            else:
+                self.unmapped_skipped += 1
+            return event
 
     def advance(self):
-        with self.lock:
+        with self.condition:
             self.advance_requests += 1
+            while not self._current_dialogue_consumed() and not self.stopped:
+                self.condition.wait()
+            if self.stopped:
+                return False
             if self.dialogue_index + 1 >= len(self.dialogue):
                 self.completed.set()
                 return False
             self.dialogue_index += 1
             self.frame_index = 0
             return True
+
+    def stop(self):
+        with self.condition:
+            self.stopped = True
+            self.condition.notify_all()
+
+    def snapshot(self):
+        with self.condition:
+            dialogues = []
+            for dialogue_index, dialogue in enumerate(self.dialogue):
+                frames = [
+                    {
+                        "frame_index": frame_index + 1,
+                        "path": dialogue.frame_paths[frame_index],
+                        "sha256": dialogue.frame_sha256s[frame_index],
+                        "consumed": self.consumed[dialogue_index][frame_index],
+                    }
+                    for frame_index in range(len(dialogue.frames))
+                ]
+                dialogues.append(
+                    {
+                        "dialogue_index": dialogue_index + 1,
+                        "declared_count": len(frames),
+                        "consumed_count": sum(frame["consumed"] for frame in frames),
+                        "skipped_count": self.skipped[dialogue_index],
+                        "frames": frames,
+                    }
+                )
+            declared_count = sum(item["declared_count"] for item in dialogues)
+            consumed_count = sum(item["consumed_count"] for item in dialogues)
+            return {
+                "complete": consumed_count == declared_count,
+                "declared_count": declared_count,
+                "consumed_count": consumed_count,
+                "skipped_count": sum(item["skipped_count"] for item in dialogues)
+                + self.unmapped_skipped,
+                "unmapped_skipped_count": self.unmapped_skipped,
+                "dialogues": dialogues,
+            }
+
+    def _current_dialogue_consumed(self):
+        return all(self.consumed[self.dialogue_index])
+
+    def _event_for_identity(self, identity):
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 2
+            or not all(isinstance(value, int) for value in identity)
+            or identity[0] < 0
+            or identity[0] >= len(self.dialogue)
+            or identity[1] < 0
+            or identity[1] >= len(self.dialogue[identity[0]].frames)
+        ):
+            return {
+                "dialogue_index": None,
+                "frame_index": None,
+                "path": None,
+                "sha256": None,
+            }
+        dialogue = self.dialogue[identity[0]]
+        return {
+            "dialogue_index": identity[0] + 1,
+            "frame_index": identity[1] + 1,
+            "path": dialogue.frame_paths[identity[1]],
+            "sha256": dialogue.frame_sha256s[identity[1]],
+        }
 
 
 class LiveReplayRunner:
@@ -221,6 +316,7 @@ class LiveReplayRunner:
 
         def recognize(frame):
             result = self.recognizer(frame)
+            ledger_event = frame_source.acknowledge(frame)
             recognized_frames.append(
                 {
                     "character": str(result[0]),
@@ -228,9 +324,9 @@ class LiveReplayRunner:
                     "source": frame.image.info.get(
                         "vntts_replay_recognition_source", "ocr"
                     ),
+                    **ledger_event,
                 }
             )
-            frame_source.acknowledge(frame)
             return result
 
         def prepare(chunk):
@@ -377,13 +473,16 @@ class LiveReplayRunner:
         try:
             reader.start()
             completed = frame_source.completed.wait(self.timeout_seconds)
+            frame_source.stop()
             reader.stop()
             reader.wait()
         finally:
+            frame_source.stop()
             for executor in executors:
                 executor.shutdown(wait=True, cancel_futures=True)
             router.stop()
 
+        frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)
         expected = [
             {"character": item.character, "text": item.text}
@@ -402,6 +501,7 @@ class LiveReplayRunner:
         ]
         successful = bool(
             completed
+            and frame_consumption["complete"]
             and not errors
             and observed == expected
             and actual_expected_sources == expected_sources
@@ -426,6 +526,7 @@ class LiveReplayRunner:
                 ],
                 "generated_playback": audio_output.played,
                 "recognized_frames": recognized_frames,
+                "frame_consumption": frame_consumption,
             },
             "provenance": {
                 "corpus_sha256": self.corpus.source_sha256,
@@ -479,18 +580,30 @@ def load_live_replay_corpus(path):
         frame_paths = item.get("frames")
         if not isinstance(frame_paths, list) or not frame_paths:
             raise ValueError(f"Live replay dialogue {index} has no frames")
-        loaded_frames = tuple(
-            _load_frame(path.parent, frame_spec, region) for frame_spec in frame_paths
+        loaded_frames = []
+        for frame_index, frame_spec in enumerate(frame_paths):
+            loaded = _load_frame(path.parent, frame_spec, region)
+            loaded[0].image.info["vntts_replay_declared_identity"] = (
+                index - 1,
+                frame_index,
+            )
+            loaded_frames.append(loaded)
+        loaded_frames = tuple(loaded_frames)
+        frames = tuple(frame for frame, _path, _digest, _source in loaded_frames)
+        frame_paths = tuple(
+            frame_path for _frame, frame_path, _digest, _source in loaded_frames
         )
-        frames = tuple(frame for frame, _digest, _source in loaded_frames)
-        frame_sha256s = tuple(digest for _frame, digest, _source in loaded_frames)
+        frame_sha256s = tuple(
+            digest for _frame, _path, digest, _source in loaded_frames
+        )
         frame_recognition_sources = tuple(
-            source for _frame, _digest, source in loaded_frames
+            source for _frame, _path, _digest, source in loaded_frames
         )
         expected_source = str(item.get("expected_source") or "").strip() or None
         dialogue.append(
             ReplayDialogue(
                 frames,
+                frame_paths,
                 frame_sha256s,
                 frame_recognition_sources,
                 character,
@@ -572,7 +685,7 @@ def _load_frame(root, frame_spec, region):
         )
     if not isinstance(relative_path, str) or not relative_path.strip():
         raise ValueError("Live replay frame path must be non-empty")
-    path, _relative, payload = _read_contained_file(
+    path, relative, payload = _read_contained_file(
         root,
         relative_path,
         "Live replay frame",
@@ -588,7 +701,7 @@ def _load_frame(root, frame_spec, region):
         image.info["vntts_replay_observation"] = observation
     recognition_source = "declared-observation" if observation is not None else "ocr"
     image.info["vntts_replay_recognition_source"] = recognition_source
-    return CapturedDialogFrame(image, 0.0), digest, recognition_source
+    return CapturedDialogFrame(image, 0.0), relative, digest, recognition_source
 
 
 def _recognize_replay_frame(frame):
@@ -601,7 +714,8 @@ def _recognize_replay_frame(frame):
 def _fingerprint_replay_frame(frame):
     fingerprint = fingerprint_dialog_frame(frame)
     observation = frame.image.info.get("vntts_replay_observation")
-    return (fingerprint, observation) if observation is not None else fingerprint
+    identity = frame.image.info.get("vntts_replay_declared_identity")
+    return fingerprint, observation, identity
 
 
 def _read_replay_document(value):

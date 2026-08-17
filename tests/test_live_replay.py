@@ -6,6 +6,7 @@ from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -14,6 +15,7 @@ from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_m
 
 from vntts.live_replay import (
     LiveReplayRunner,
+    ReplayFrameSource,
     _load_frame,
     load_live_replay_corpus,
     main,
@@ -121,6 +123,123 @@ class LiveReplayTest(unittest.TestCase):
         self.assertFalse(report["successful"])
         self.assertEqual(report["route_sources"], ["game"])
         self.assertEqual(report["advance_requests"], 0)
+
+    def test_advance_waits_until_every_declared_frame_is_acknowledged(self):
+        with TemporaryDirectory() as temporary_directory:
+            corpus = load_live_replay_corpus(self.create_corpus(temporary_directory))
+            source = ReplayFrameSource(corpus.dialogue)
+            first = source.acknowledge(source.capture())
+            started = Event()
+            result = []
+
+            def advance():
+                started.set()
+                result.append(source.advance())
+
+            thread = Thread(target=advance)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            thread.join(0.05)
+            self.assertTrue(thread.is_alive())
+
+            second = source.acknowledge(source.capture())
+            thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [True])
+        self.assertTrue(first["consumed"])
+        self.assertEqual(first["frame_index"], 1)
+        self.assertTrue(second["consumed"])
+        self.assertEqual(second["frame_index"], 2)
+
+    def test_stop_unblocks_an_incomplete_frame_wait_without_completion(self):
+        with TemporaryDirectory() as temporary_directory:
+            corpus = load_live_replay_corpus(self.create_corpus(temporary_directory))
+            source = ReplayFrameSource(corpus.dialogue)
+            source.acknowledge(source.capture())
+            started = Event()
+            result = []
+
+            def advance():
+                started.set()
+                result.append(source.advance())
+
+            thread = Thread(target=advance)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            thread.join(0.05)
+            self.assertTrue(thread.is_alive())
+
+            source.stop()
+            thread.join(1)
+            consumption = source.snapshot()
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [False])
+        self.assertFalse(source.completed.is_set())
+        self.assertFalse(consumption["complete"])
+        self.assertLess(consumption["consumed_count"], consumption["declared_count"])
+
+    def test_hundred_declared_frames_are_all_consumed_before_success(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            frame = root / "frame.png"
+            Image.new("RGB", (20, 20), "black").save(frame)
+            frame_sha256 = sha256_file(frame)
+            frame_spec = {
+                "path": frame.name,
+                "sha256": frame_sha256,
+                "observed_character": "Rhiannon",
+                "observed_text": "I, erhm ...",
+            }
+            path = root / "corpus.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "fixture_kind": "declared-frame-ledger-regression",
+                        "dialogue": [
+                            {
+                                "frames": [dict(frame_spec) for _index in range(100)],
+                                "character": "Rhiannon",
+                                "text": "I, erhm ...",
+                                "line_id": "fixture:rhiannon:100",
+                                "source_audio_status": "available",
+                                "source_audio_duration_seconds": 0.001,
+                                "expected_source": "game",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = LiveReplayRunner(
+                load_live_replay_corpus(path),
+                interval_seconds=0.001,
+                timeout_seconds=3,
+            ).run()
+
+        consumption = report["media_integrity"]["frame_consumption"]
+        consumed_events = [
+            event
+            for event in report["media_integrity"]["recognized_frames"]
+            if event["consumed"]
+        ]
+        self.assertTrue(report["successful"], report)
+        self.assertTrue(consumption["complete"])
+        self.assertEqual(consumption["declared_count"], 100)
+        self.assertEqual(consumption["consumed_count"], 100)
+        self.assertEqual(
+            [event["frame_index"] for event in consumed_events],
+            list(range(1, 101)),
+        )
+        self.assertTrue(
+            all(
+                event["path"] == "frame.png" and event["sha256"] == frame_sha256
+                for event in consumed_events
+            )
+        )
 
     def test_cli_rejects_an_empty_corpus(self):
         with TemporaryDirectory() as temporary_directory:
@@ -256,6 +375,10 @@ class LiveReplayTest(unittest.TestCase):
         )
         self.assertEqual(report["advance_requests"], 4)
         self.assertEqual(len(report["media_integrity"]["frame_sha256s"]), 20)
+        frame_consumption = report["media_integrity"]["frame_consumption"]
+        self.assertTrue(frame_consumption["complete"])
+        self.assertEqual(frame_consumption["declared_count"], 20)
+        self.assertEqual(frame_consumption["consumed_count"], 20)
         generated = report["media_integrity"]["generated_playback"]
         self.assertEqual(generated[0]["sample_count"], 3)
         self.assertEqual(len(generated[0]["pcm_sha256"]), 64)
@@ -341,7 +464,7 @@ class LiveReplayTest(unittest.TestCase):
                 return source
 
             with patch.object(Path, "open", open_with_swap):
-                captured, digest, source = _load_frame(
+                captured, relative_path, digest, source = _load_frame(
                     root,
                     {
                         "path": frame.name,
@@ -353,6 +476,7 @@ class LiveReplayTest(unittest.TestCase):
                 )
 
         self.assertTrue(swapped)
+        self.assertEqual(relative_path, "frame.png")
         self.assertEqual(digest, expected_sha256)
         self.assertEqual(captured.image.getpixel((0, 0)), (0, 0, 0))
         self.assertEqual(source, "declared-observation")

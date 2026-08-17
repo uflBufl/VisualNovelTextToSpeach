@@ -4,7 +4,10 @@
 incremental dialogue tracker, exact story resolver, generated-audio verifier,
 route preparation/playback outcome, completion seal and auto-advance state.
 Capture frames advance only after OCR consumes that exact image; a dropped or
-replaced capture therefore cannot silently skip a fixture state.
+replaced capture therefore cannot silently skip a fixture state. A route may
+finish early, but its auto-advance callback waits until OCR has acknowledged
+every declared frame for that dialogue. Final success additionally requires the
+full corpus frame ledger to be consumed.
 
 Corpus frame entries may remain a path string for real OCR replay, or use an
 object with `path`, `sha256`, `observed_character` and `observed_text`. The object
@@ -16,6 +19,10 @@ observation came from OCR or a declared fixture value. An observation is invalid
 without its exact frame digest. Serialized media paths are relative, contained
 under the corpus directory and may not traverse symlinks. This is useful for
 state/routing regression, but is not evidence of OCR quality on those pixels.
+Each recognized event is mapped to its one-based dialogue/frame index, relative
+path and digest. `frame_consumption` reports declared, consumed and skipped event
+counts plus every frame's consumed state; skipped duplicate/stale recognitions
+remain visible but cannot substitute for a missing declared frame.
 
 An optional `generated_audio_manifest` object binds a contained relative `path`
 and exact `sha256`. Every manifest audio path is independently contained and
@@ -35,7 +42,8 @@ The tracked `samples/rhiannon-live-replay-representative.json` covers:
   unique prefix expansion;
 - Narrator through live synthesis fallback;
 - exact observed dialogue order, route order, four completion-bound advances,
-  no duplicate/stale/skipped dialogue, and generated PCM consumption.
+  complete per-frame consumption, no duplicate/stale/skipped dialogue, and
+  generated PCM consumption.
 
 The sample reuses saved project images and a checked-in WAV with explicit
 fixture observations. It is representative software evidence only. The
