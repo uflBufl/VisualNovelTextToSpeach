@@ -492,6 +492,8 @@ class AppController:
         if not self.is_ready:
             return False
         starting = not self.live_reader.is_running
+        if starting and not self._live_voice_preflight_allows_start():
+            return False
         if starting and self.capture_target is not None:
             try:
                 self.capture_target.get_geometry()
@@ -524,6 +526,28 @@ class AppController:
             "Live reading started" if running else "Live reading stopping"
         )
         return running
+
+    def _live_voice_preflight_allows_start(self):
+        unresolved = self.unresolved_live_speakers()
+        if unresolved is None:
+            self.status_handler(
+                "Live reading could not start: read the current dialog once to "
+                "identify the story chapter"
+            )
+            return False
+        unresolved = tuple(unresolved)
+        if not unresolved:
+            self.next_live_narrator_fallback_names.clear()
+            return True
+        approved = tuple(self.next_live_narrator_fallback_names.values())
+        if approved == unresolved:
+            return True
+        self.next_live_narrator_fallback_names.clear()
+        self.status_handler(
+            "Live reading could not start: choose voices or explicitly approve "
+            f"Narrator for {', '.join(unresolved)}"
+        )
+        return False
 
     def toggle_speech_pause(self):
         if not self.is_ready:
@@ -1220,9 +1244,9 @@ class AppController:
         assignments = getattr(self.voice_router.registry, "assignments", {})
         if isinstance(assignments, dict) and key in assignments:
             return False
-        if self.voice_router.registry.resolve_closest(character) is not None:
+        if self.voice_router.registry.resolve(character) is not None:
             return False
-        if key in self.narrator_fallback_speakers:
+        if key in self.narrator_fallback_speakers and not live_preflight:
             return False
         source_audio_check = getattr(
             self.speech_backend,

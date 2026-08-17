@@ -260,7 +260,54 @@ class TrayApplicationTest(unittest.TestCase):
         controller.approve_live_narrator_fallbacks.assert_called_once_with(
             ("Selone", "Hotelier")
         )
+        self.assertEqual(controller.unresolved_live_speakers.call_count, 2)
         controller.toggle_live.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_live_preflight_rejects_stale_narrator_approval_and_refreshes(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [
+            ("Selone",),
+            ("Hotelier",),
+        ]
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.configure_floating_window"):
+            self.assertFalse(tray_application.toggle_live())
+            self.application.processEvents()
+            tray_application.live_voice_preflight_narrator_button.click()
+            self.application.processEvents()
+
+        controller.approve_live_narrator_fallbacks.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertIn(
+            "Hotelier",
+            tray_application.live_voice_preflight_prompt.informativeText(),
+        )
+        tray_application.shutdown()
+
+    def test_live_preflight_does_not_start_when_narrator_scope_becomes_empty(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [("Selone",), ()]
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.configure_floating_window"):
+            self.assertFalse(tray_application.toggle_live())
+            self.application.processEvents()
+            tray_application.live_voice_preflight_narrator_button.click()
+            self.application.processEvents()
+
+        controller.approve_live_narrator_fallbacks.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertIn("changed", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
     def test_live_preflight_requires_current_scope_before_claiming_coverage(self):
@@ -365,6 +412,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_voice_mapping_resumes_live_mode_after_assignment(self):
         controller = Mock()
         controller.is_live_running = True
+        controller.unresolved_live_speakers.return_value = ()
 
         def toggle_live():
             controller.is_live_running = not controller.is_live_running
@@ -386,6 +434,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with()
         self.assertFalse(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
@@ -393,6 +442,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_narrator_choice_resumes_live_after_cancelled_voice_mapping(self):
         controller = Mock()
         controller.is_live_running = False
+        controller.unresolved_live_speakers.return_value = ()
 
         def toggle_live():
             controller.is_live_running = True
@@ -409,6 +459,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application._continue_unknown_with_narrator("Selone")
 
         controller.allow_narrator_fallback.assert_called_once_with("Selone")
+        controller.unresolved_live_speakers.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
         self.assertTrue(controller.is_live_running)
         self.assertFalse(tray_application.resume_live_after_unknown_mapping)
@@ -738,6 +789,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_narrator_voice_dialog_pauses_live_and_restores_it(self):
         controller = Mock()
         controller.is_live_running = True
+        controller.unresolved_live_speakers.return_value = ()
         controller.available_voice_characters.return_value = ["Narrator"]
         controller.available_voice_choices.return_value = []
 
@@ -759,6 +811,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with()
         tray_application.shutdown()
 
@@ -782,6 +835,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_history_dialog_pauses_live_capture_and_restores_it_after_close(self):
         controller = Mock()
         controller.is_live_running = True
+        controller.unresolved_live_speakers.return_value = ()
 
         def toggle_live():
             controller.is_live_running = not controller.is_live_running
@@ -801,6 +855,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with()
         tray_application.shutdown()
 

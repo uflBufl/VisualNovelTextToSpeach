@@ -931,26 +931,42 @@ class TrayApplication(QObject):
         self.controller.read_once()
 
     def toggle_live(self):
-        if not self.controller.is_live_running and self._offer_live_voice_preflight():
-            self.signals.live_changed.emit(False)
-            return False
+        if not self.controller.is_live_running:
+            return self._start_live_with_preflight()
+        return self._toggle_controller_live()
+
+    def _toggle_controller_live(self):
         running = self.controller.toggle_live()
         self.signals.live_changed.emit(running)
         return running
 
-    def _offer_live_voice_preflight(self):
+    def _start_live_with_preflight(self, *, narrator_approval=None):
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
         if result is None:
             self.pending_live_voice_preflight_speakers = ()
             self._show_live_voice_scope_required()
-            return True
-        speakers = tuple(result)
-        if not speakers:
+            self.signals.live_changed.emit(False)
             return False
-        self.pending_live_voice_preflight_speakers = speakers
-        self._show_live_voice_preflight(speakers)
-        return True
+        speakers = tuple(result)
+        if narrator_approval is not None:
+            approved = tuple(narrator_approval)
+            if speakers != approved:
+                self.pending_live_voice_preflight_speakers = speakers
+                if speakers:
+                    self._show_live_voice_preflight(speakers)
+                else:
+                    self.set_status("Voice preflight changed; start live reading again")
+                self.signals.live_changed.emit(False)
+                return False
+            self.controller.approve_live_narrator_fallbacks(approved)
+            return self._toggle_controller_live()
+        if speakers:
+            self.pending_live_voice_preflight_speakers = speakers
+            self._show_live_voice_preflight(speakers)
+            self.signals.live_changed.emit(False)
+            return False
+        return self._toggle_controller_live()
 
     def _show_live_voice_preflight(self, speakers):
         if self.live_voice_preflight_prompt is not None:
@@ -1052,10 +1068,8 @@ class TrayApplication(QObject):
             prompt.close()
             QTimer.singleShot(0, self._review_live_voice_preflight)
         elif button is self.live_voice_preflight_narrator_button:
-            self.controller.approve_live_narrator_fallbacks(speakers)
             prompt.close()
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
+            self._start_live_with_preflight(narrator_approval=speakers)
         else:
             prompt.close()
             self.set_status("Live reading cancelled: character voices need a decision")
@@ -1066,9 +1080,7 @@ class TrayApplication(QObject):
             return
         self.pending_unknown_speaker = speakers[0]
         self.open_speaker_mapping()
-        if not self._offer_live_voice_preflight():
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
+        self._start_live_with_preflight()
 
     def _live_voice_preflight_finished(self, _result):
         prompt = self.sender()
@@ -1445,8 +1457,7 @@ class TrayApplication(QObject):
             dialog.exec()
         finally:
             if resume_live and not self.controller.is_live_running:
-                running = self.controller.toggle_live()
-                self.signals.live_changed.emit(running)
+                self.toggle_live()
 
     def offer_speaker_mapping(self, speaker):
         self.pending_unknown_speaker = speaker
@@ -1541,8 +1552,7 @@ class TrayApplication(QObject):
             self.resume_live_after_unknown_mapping
             and not self.controller.is_live_running
         ):
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
+            self.toggle_live()
         self.resume_live_after_unknown_mapping = False
 
     def _open_pending_speaker_mapping(self, speaker=None):
@@ -1563,8 +1573,7 @@ class TrayApplication(QObject):
             self._show_unknown_speaker_prompt(speaker)
             return
         if self.resume_live_after_unknown_mapping:
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
+            self.toggle_live()
         self.resume_live_after_unknown_mapping = False
 
     def open_speaker_mapping(self):
@@ -1629,8 +1638,7 @@ class TrayApplication(QObject):
             dialog.exec()
         finally:
             if resume_live and not self.controller.is_live_running:
-                running = self.controller.toggle_live()
-                self.signals.live_changed.emit(running)
+                self.toggle_live()
 
     def export_support_bundle(self):
         path, _selected_filter = QFileDialog.getSaveFileName(

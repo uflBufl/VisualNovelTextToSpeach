@@ -23,6 +23,19 @@ live session, or cancel. Assignment is followed by a fresh scope check; live
 reading starts only after it passes. Narrator approvals expire when that live
 session ends, so a later session must make a new decision.
 
+The controller enforces the same preflight for every start, including the
+historical command-line hotkey and restarts after modal voice/history windows.
+The tray is the richer decision UI, but direct callers cannot bypass the
+controller guard. A voice satisfies the guard only through the same exact
+registry resolution used by the synthesis backend after high-confidence OCR
+canonicalization; a nearby name such as `Selene` does not silently resolve to
+`Selone`.
+
+Clicking the bulk Narrator choice does not trust the speakers captured when the
+prompt opened. The tray recomputes the current scoped set, requires an exact
+match, stages that set, and then the controller recomputes it again immediately
+before starting. Any change refreshes the prompt or blocks the start.
+
 An unexpected OCR speaker outside the established lookahead still fails closed:
 speech waits and the existing voice-choice prompt opens. A session without a
 story index has no trustworthy speaker corpus to preflight, so it retains this

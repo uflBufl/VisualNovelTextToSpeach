@@ -1017,6 +1017,9 @@ class MainTest(unittest.TestCase):
             controller.clear_speech_queue,
             controller.emergency_stop,
         )
+        live_hotkey_callback = listen_for_hotkeys.call_args.args[8]
+        live_hotkey_callback()
+        controller.toggle_live.assert_called_once_with()
         controller.shutdown.assert_called_once_with()
 
     def test_controller_applies_window_capture_settings_without_restart(self):
@@ -1230,6 +1233,7 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve_closest.return_value = None
+        controller.voice_router.registry.resolve.return_value = None
 
         controller._dialog_observed("Selone", "First line")
         controller._dialog_observed("Selone", "Second line")
@@ -1248,11 +1252,49 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve_closest.return_value = None
+        controller.voice_router.registry.resolve.return_value = None
 
         self.assertTrue(controller._dialog_observed("???", "Unattributed line"))
         self.assertFalse(controller._dialog_observed("Selone", "Named line"))
 
         self.assertEqual(offered, ["Selone"])
+
+    def test_nearby_named_speaker_stays_unknown_at_backend_resolution_boundary(self):
+        offered = []
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Selene",
+                        "text": "This is not Selone.",
+                    }
+                ]
+            }
+        )
+        preloader.recommend("Selene", "This is not Selone.")
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            dialog_handler=lambda _character, _text: None,
+            unknown_speaker_handler=offered.append,
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = SimpleNamespace(
+            registry=CharacterVoiceRegistry([CharacterVoice("Selone", "selone-voice")])
+        )
+        controller.speech_backend = SimpleNamespace()
+
+        self.assertEqual(controller.unresolved_live_speakers(), ("Selene",))
+        self.assertFalse(controller._dialog_observed("Selene", "This is not Selone."))
+        self.assertEqual(offered, ["Selene"])
+
+        controller.allow_narrator_fallback("Selone")
+        controller.reported_unknown_speakers.clear()
+        controller.pending_unknown_speakers.clear()
+        self.assertFalse(controller._dialog_observed("Selene", "This is not Selone."))
+        self.assertEqual(offered, ["Selene", "Selene"])
 
     def test_controller_defers_unknown_voice_until_narrator_is_allowed(self):
         offered = []
@@ -1264,6 +1306,7 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve_closest.return_value = None
+        controller.voice_router.registry.resolve.return_value = None
 
         self.assertFalse(controller._dialog_observed("Selone", "First line"))
         self.assertTrue(controller.allow_narrator_fallback("Selone"))
@@ -1281,6 +1324,7 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve_closest.return_value = None
+        controller.voice_router.registry.resolve.return_value = None
         controller.speech_backend = Mock()
         controller.speech_backend.will_use_source_audio.return_value = True
 
@@ -1296,7 +1340,7 @@ class MainTest(unittest.TestCase):
             unknown_speaker_handler=offered.append,
         )
         controller.voice_router = Mock()
-        controller.voice_router.registry.resolve_closest.return_value = Mock()
+        controller.voice_router.registry.resolve.return_value = Mock()
 
         controller._dialog_observed("Kamuta", "A line")
 
@@ -1312,6 +1356,7 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve_closest.return_value = None
+        controller.voice_router.registry.resolve.return_value = None
         controller.live_reader = Mock()
         controller.live_reader.is_running = False
         controller.live_reader.toggle.return_value = True
@@ -1391,9 +1436,7 @@ class MainTest(unittest.TestCase):
             chapter_voice_preloader=preloader,
         )
         controller.voice_router = Mock()
-        controller.voice_router.registry.resolve_closest.side_effect = (
-            lambda character: Mock() if character == "Marcus" else None
-        )
+        controller.voice_router.registry.resolve.return_value = None
         controller.speech_backend = Mock()
         controller.speech_backend.will_use_source_audio_in_live_mode.side_effect = (
             lambda _character, text: text in {"Original only", "Original first"}
@@ -1407,11 +1450,28 @@ class MainTest(unittest.TestCase):
         )
 
     def test_live_voice_preflight_narrator_approval_is_one_session_only(self):
-        controller = AppController(AppSettings(), tts_factory=Mock())
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Selone",
+                        "text": "Line",
+                    }
+                ]
+            }
+        )
+        preloader.recommend("Selone", "Line")
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
         controller.voice_router = Mock()
         controller.voice_router.registry.assignments = {}
-        controller.voice_router.registry.resolve_closest.return_value = None
-        controller.speech_backend = Mock()
+        controller.voice_router.registry.resolve.return_value = None
+        controller.speech_backend = SimpleNamespace()
         controller.live_reader = Mock(is_running=False)
         controller.live_reader.toggle.return_value = True
 
@@ -1431,8 +1491,55 @@ class MainTest(unittest.TestCase):
         controller.pending_unknown_speakers.clear()
         controller.live_reader.is_running = False
         controller.live_reader.toggle.return_value = True
-        self.assertTrue(controller.toggle_live())
+        self.assertFalse(controller.toggle_live())
+        self.assertEqual(controller.live_reader.toggle.call_count, 2)
         self.assertTrue(controller._offer_unknown_speaker_mapping("Selone", "Line"))
+
+    def test_direct_live_toggle_requires_exact_fresh_scoped_approval(self):
+        statuses = []
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Selone",
+                        "text": "Line",
+                    }
+                ]
+            }
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.return_value = None
+        controller.speech_backend = SimpleNamespace()
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.return_value = True
+
+        self.assertFalse(controller.toggle_live())
+        self.assertIn("read the current dialog once", statuses[-1])
+        controller.live_reader.toggle.assert_not_called()
+
+        preloader.recommend("Selone", "Line")
+        controller.allow_narrator_fallback("Selone")
+        self.assertFalse(controller.toggle_live())
+        self.assertIn("explicitly approve Narrator for Selone", statuses[-1])
+        controller.live_reader.toggle.assert_not_called()
+
+        controller.approve_live_narrator_fallbacks(["Hotelier"])
+        self.assertFalse(controller.toggle_live())
+        self.assertEqual(controller.next_live_narrator_fallback_names, {})
+        controller.live_reader.toggle.assert_not_called()
+
+        controller.approve_live_narrator_fallbacks(["Selone"])
+        self.assertTrue(controller.toggle_live())
+        controller.live_reader.toggle.assert_called_once_with()
 
     def test_live_mode_uses_playback_safe_backend_threads(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
