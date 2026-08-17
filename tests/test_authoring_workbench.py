@@ -1320,6 +1320,69 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIn("--regenerate-existing", regeneration)
         self.assertEqual(regeneration[regeneration.index("--queue-id") + 1], queue_id)
 
+    def test_scoped_regeneration_accepts_only_pending_review_outcomes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            queue = VoiceGenerationQueue.load(created.directory / "queue.jsonl")
+            queue_id = queue.items[0].queue_id
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id]["status"] = "generated"
+            state["items"][queue_id]["review_status"] = "pending_review"
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            workbench_module.publish_generated_manifest(state_path)
+
+            ordinary = inspect_generation_readiness(
+                created.directory,
+                queue_ids=(queue_id,),
+            )
+            regeneration = inspect_generation_readiness(
+                created.directory,
+                queue_ids=(queue_id,),
+                regenerate_existing=True,
+            )
+            command = generation_command(
+                created.directory,
+                queue_ids=(queue_id,),
+                regenerate_existing=True,
+            )
+
+            self.assertEqual(ordinary.selected, 0)
+            self.assertTrue(ordinary.blocked_reasons)
+            self.assertEqual(regeneration.selected, 1)
+            self.assertEqual(regeneration.ready, 1)
+            self.assertEqual(regeneration.queue_ids, (queue_id,))
+            self.assertFalse(regeneration.blocked_reasons)
+            self.assertIn("--regenerate-existing", command)
+            self.assertEqual(command[command.index("--queue-id") + 1], queue_id)
+
+            review_workspace_item(created.directory, queue_id, "approved")
+            protected = inspect_generation_readiness(
+                created.directory,
+                queue_ids=(queue_id,),
+                regenerate_existing=True,
+            )
+            self.assertEqual(protected.selected, 0)
+            self.assertTrue(protected.blocked_reasons)
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError,
+                "No pending, failed, or regenerable pending-review",
+            ):
+                generation_command(
+                    created.directory,
+                    queue_ids=(queue_id,),
+                    regenerate_existing=True,
+                )
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "requires explicit queue IDs"
+            ):
+                inspect_generation_readiness(
+                    created.directory,
+                    regenerate_existing=True,
+                )
+
     def test_collection_selection_maps_exact_queue_ids_and_empty_is_explicit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

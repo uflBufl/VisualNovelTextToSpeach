@@ -761,7 +761,16 @@ def review_selected_item(item, decision):
     return result
 
 
-def inspect_generation_readiness(workspace_directory, *, queue_ids=None):
+def inspect_generation_readiness(
+    workspace_directory,
+    *,
+    queue_ids=None,
+    regenerate_existing=False,
+):
+    if regenerate_existing and queue_ids is None:
+        raise AuthoringWorkbenchError(
+            "Workspace regeneration requires explicit queue IDs"
+        )
     summary = inspect_workspace(workspace_directory)
     queue = VoiceGenerationQueue.load(summary.queue)
     state_items = {}
@@ -793,6 +802,12 @@ def inspect_generation_readiness(workspace_directory, *, queue_ids=None):
         elif status is None:
             pending += 1
             candidates.append(item)
+        elif (
+            regenerate_existing
+            and status == "generated"
+            and result.get("review_status") == "pending_review"
+        ):
+            candidates.append(item)
     manifest = summary.voice_manifest
     missing, reasons = _voice_readiness(
         _load_workspace(workspace_directory)[1], candidates, set(), manifest
@@ -802,7 +817,12 @@ def inspect_generation_readiness(workspace_directory, *, queue_ids=None):
         *reasons,
     )
     if not candidates:
-        reasons = ("No pending or failed queue items are selected",)
+        scope = (
+            "pending, failed, or regenerable pending-review"
+            if regenerate_existing
+            else "pending or failed"
+        )
+        reasons = (f"No {scope} queue items are selected",)
     return GenerationReadiness(
         selected=len(candidates),
         pending=pending,
@@ -1092,7 +1112,11 @@ def generation_command(
         )
     generation_profile = configured_profile
     summary = inspect_workspace(directory, voice_manifest=voice_manifest)
-    readiness = inspect_generation_readiness(workspace_directory, queue_ids=queue_ids)
+    readiness = inspect_generation_readiness(
+        workspace_directory,
+        queue_ids=queue_ids,
+        regenerate_existing=regenerate_existing,
+    )
     if readiness.blocked_reasons:
         raise AuthoringWorkbenchError("; ".join(readiness.blocked_reasons))
     manifest = summary.voice_manifest
