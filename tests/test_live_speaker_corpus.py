@@ -1,5 +1,6 @@
 import json
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -29,6 +30,10 @@ class LiveSpeakerCorpusTest(unittest.TestCase):
 
             corpus = LiveSpeakerCorpus.load(path)
 
+            self.assertEqual(corpus.path, path.resolve())
+            self.assertEqual(corpus.sha256, sha256(path.read_bytes()).hexdigest())
+            self.assertIs(corpus.revalidate(), corpus)
+
         self.assertEqual(corpus.name, "Rhiannon session")
         self.assertEqual(corpus.speakers[0], "Rhiannon")
         self.assertEqual(len(corpus.speakers), 5)
@@ -44,6 +49,28 @@ class LiveSpeakerCorpusTest(unittest.TestCase):
 
                 with self.assertRaises(ValueError):
                     LiveSpeakerCorpus.load(path)
+
+    def test_revalidation_rejects_changed_bytes_and_symlinked_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "speakers.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Rhiannon"]}),
+                encoding="utf-8",
+            )
+            corpus = LiveSpeakerCorpus.load(path)
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Hotelier"]}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "changed after settings"):
+                corpus.revalidate()
+
+            link = root / "linked.json"
+            link.symlink_to(path)
+            with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                LiveSpeakerCorpus.load(link)
 
 
 if __name__ == "__main__":

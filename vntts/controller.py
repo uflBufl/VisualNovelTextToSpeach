@@ -232,13 +232,7 @@ class AppController:
         )
         self.live_speaker_corpus = None
         self.live_speaker_corpus_error = None
-        if self.settings.live_speaker_corpus:
-            try:
-                self.live_speaker_corpus = LiveSpeakerCorpus.load(
-                    self.settings.live_speaker_corpus
-                )
-            except (OSError, TypeError, ValueError) as error:
-                self.live_speaker_corpus_error = str(error)
+        self._load_live_speaker_corpus()
         self.generated_audio_library_factory = generated_audio_library_factory
         self.generated_audio_backend_factory = generated_audio_backend_factory
         self.route_trace_handler = route_trace_handler or (lambda _trace: None)
@@ -538,6 +532,15 @@ class AppController:
         return running
 
     def _live_voice_preflight_allows_start(self):
+        if (
+            not self.chapter_voice_preloader.dialogue
+            and not self._revalidate_live_speaker_corpus()
+        ):
+            self.status_handler(
+                "Live reading could not start: configured speaker corpus is "
+                f"invalid: {self.live_speaker_corpus_error}"
+            )
+            return False
         unresolved = self.unresolved_live_speakers()
         if unresolved is None:
             if self.live_speaker_corpus_error:
@@ -809,6 +812,31 @@ class AppController:
             unresolved.append(character)
         return tuple(unresolved)
 
+    def _load_live_speaker_corpus(self):
+        self.live_speaker_corpus = None
+        self.live_speaker_corpus_error = None
+        if not self.settings.live_speaker_corpus:
+            return
+        try:
+            self.live_speaker_corpus = LiveSpeakerCorpus.load(
+                self.settings.live_speaker_corpus
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self.live_speaker_corpus_error = str(error)
+
+    def _revalidate_live_speaker_corpus(self):
+        if not self.settings.live_speaker_corpus:
+            return True
+        if self.live_speaker_corpus is None:
+            return False
+        try:
+            self.live_speaker_corpus.revalidate()
+        except (OSError, TypeError, ValueError) as error:
+            self.live_speaker_corpus_error = str(error)
+            return False
+        self.live_speaker_corpus_error = None
+        return True
+
     def approve_live_narrator_fallbacks(self, characters):
         """Stage explicit narrator choices for the next live session only."""
         if self.is_live_running:
@@ -921,6 +949,7 @@ class AppController:
         self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
             self.settings.story_index
         )
+        self._load_live_speaker_corpus()
         self._configure_generated_audio_backend()
         self.refresh_corrections()
         self.capture_target = self._create_capture_target()
@@ -983,8 +1012,7 @@ class AppController:
             correction_dictionary=self.correction_dictionary,
         )
         if was_live:
-            self._set_backend_live_mode(True)
-            self.live_reader.start()
+            self.toggle_live()
 
     def _get_live_configuration(self):
         configuration = get_live_configuration(self.settings)

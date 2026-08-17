@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
+import json
+import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from threading import Event, Lock
 from time import monotonic
 
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.generated_audio import GeneratedAudioIndex
+from vntts_artifacts.generated_audio import (
+    GeneratedAudioIndex,
+    GeneratedAudioManifestError,
+)
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
@@ -32,7 +41,6 @@ from vntts.ocr import DialogRegion
 from vntts.playback import PreparedPlayback, outcome_for_prepared
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
-from vntts.versioned_json import read_versioned_json
 
 LIVE_REPLAY_CORPUS_VERSION = 1
 
@@ -41,17 +49,36 @@ LIVE_REPLAY_CORPUS_VERSION = 1
 class ReplayDialogue:
     frames: tuple[CapturedDialogFrame, ...]
     frame_sha256s: tuple[str, ...]
+    frame_recognition_sources: tuple[str, ...]
     character: str
     text: str
     expected_source: str | None
 
 
 @dataclass(frozen=True)
+class GeneratedAudioArtifactBinding:
+    relative_path: str
+    path: Path
+    sha256: str
+
+
+@dataclass(frozen=True)
+class GeneratedAudioManifestBinding:
+    root: Path
+    relative_path: str
+    path: Path
+    sha256: str
+    artifacts: tuple[GeneratedAudioArtifactBinding, ...]
+
+
+@dataclass(frozen=True)
 class LiveReplayCorpus:
     name: str
+    fixture_kind: str
+    source_sha256: str
     dialogue: tuple[ReplayDialogue, ...]
     story_document: dict
-    generated_audio_manifest: Path | None = None
+    generated_audio_manifest: GeneratedAudioManifestBinding | None = None
 
 
 class ReplayAudioOutput:
@@ -163,13 +190,17 @@ class LiveReplayRunner:
         self.audio_source_policy = audio_source_policy
 
     def run(self):
+        with _generated_audio_index_snapshot(
+            self.corpus.generated_audio_manifest
+        ) as generated_audio_index:
+            return self._run(generated_audio_index)
+
+    def _run(self, generated_audio_index):
         frame_source = ReplayFrameSource(self.corpus.dialogue)
         resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
         library = (
-            GeneratedAudioLibrary(
-                GeneratedAudioIndex.load(self.corpus.generated_audio_manifest)
-            )
-            if self.corpus.generated_audio_manifest is not None
+            GeneratedAudioLibrary(generated_audio_index)
+            if generated_audio_index is not None
             else None
         )
         audio_output = ReplayAudioOutput()
@@ -191,7 +222,13 @@ class LiveReplayRunner:
         def recognize(frame):
             result = self.recognizer(frame)
             recognized_frames.append(
-                {"character": str(result[0]), "text": str(result[1])}
+                {
+                    "character": str(result[0]),
+                    "text": str(result[1]),
+                    "source": frame.image.info.get(
+                        "vntts_replay_recognition_source", "ocr"
+                    ),
+                }
             )
             frame_source.acknowledge(frame)
             return result
@@ -373,6 +410,7 @@ class LiveReplayRunner:
         return {
             "schema_version": 1,
             "corpus": self.corpus.name,
+            "fixture_kind": self.corpus.fixture_kind,
             "successful": successful,
             "expected_dialogue": expected,
             "observed_dialogue": observed,
@@ -389,22 +427,46 @@ class LiveReplayRunner:
                 "generated_playback": audio_output.played,
                 "recognized_frames": recognized_frames,
             },
+            "provenance": {
+                "corpus_sha256": self.corpus.source_sha256,
+                "generated_audio_manifest_sha256": (
+                    self.corpus.generated_audio_manifest.sha256
+                    if self.corpus.generated_audio_manifest is not None
+                    else None
+                ),
+                "generated_audio_artifacts": (
+                    [
+                        {
+                            "path": artifact.relative_path,
+                            "sha256": artifact.sha256,
+                        }
+                        for artifact in self.corpus.generated_audio_manifest.artifacts
+                    ]
+                    if self.corpus.generated_audio_manifest is not None
+                    else []
+                ),
+                "recognition_sources": sorted(
+                    {
+                        source
+                        for dialogue in self.corpus.dialogue
+                        for source in dialogue.frame_recognition_sources
+                    }
+                ),
+            },
             "timelines": timelines.snapshot(),
         }
 
 
 def load_live_replay_corpus(path):
-    path = Path(path).expanduser().resolve()
-    document = read_versioned_json(
-        path,
-        schema_version=LIVE_REPLAY_CORPUS_VERSION,
-        document_name="live replay corpus",
-    )
+    path, payload, document = _read_replay_document(path)
     name = str(document.get("name") or path.stem).strip()
+    fixture_kind = str(document.get("fixture_kind") or "saved-frame-ocr-replay").strip()
+    if not fixture_kind:
+        raise ValueError("Live replay fixture_kind must be non-empty")
     region = _decode_region(document.get("dialog_region"))
     dialogue = []
     story_rows = []
-    generated_audio_manifest = _optional_document_path(
+    generated_audio_manifest = _generated_audio_manifest_binding(
         path, document.get("generated_audio_manifest")
     )
     for index, item in enumerate(document.get("dialogue", ()), start=1):
@@ -420,11 +482,21 @@ def load_live_replay_corpus(path):
         loaded_frames = tuple(
             _load_frame(path.parent, frame_spec, region) for frame_spec in frame_paths
         )
-        frames = tuple(frame for frame, _digest in loaded_frames)
-        frame_sha256s = tuple(digest for _frame, digest in loaded_frames)
+        frames = tuple(frame for frame, _digest, _source in loaded_frames)
+        frame_sha256s = tuple(digest for _frame, digest, _source in loaded_frames)
+        frame_recognition_sources = tuple(
+            source for _frame, _digest, source in loaded_frames
+        )
         expected_source = str(item.get("expected_source") or "").strip() or None
         dialogue.append(
-            ReplayDialogue(frames, frame_sha256s, character, text, expected_source)
+            ReplayDialogue(
+                frames,
+                frame_sha256s,
+                frame_recognition_sources,
+                character,
+                text,
+                expected_source,
+            )
         )
         story_rows.append(
             {
@@ -447,6 +519,8 @@ def load_live_replay_corpus(path):
         raise ValueError("Live replay corpus has no dialogue entries")
     return LiveReplayCorpus(
         name,
+        fixture_kind,
+        hashlib.sha256(payload).hexdigest(),
         tuple(dialogue),
         {"dialogue": story_rows},
         generated_audio_manifest,
@@ -477,6 +551,10 @@ def _load_frame(root, frame_spec, region):
         observed_character = frame_spec.get("observed_character")
         observed_text = frame_spec.get("observed_text")
         if observed_character is not None or observed_text is not None:
+            expected_sha256 = _required_sha256(
+                expected_sha256,
+                "Replay frame observation sha256",
+            )
             if (
                 not isinstance(observed_character, str)
                 or not observed_character.strip()
@@ -487,22 +565,30 @@ def _load_frame(root, frame_spec, region):
             observation = observed_character.strip(), " ".join(observed_text.split())
     else:
         raise ValueError("Live replay frame must be a path or an object")
+    if expected_sha256 is not None:
+        expected_sha256 = _required_sha256(
+            expected_sha256,
+            "Replay frame sha256",
+        )
     if not isinstance(relative_path, str) or not relative_path.strip():
         raise ValueError("Live replay frame path must be non-empty")
-    path = (Path(root) / relative_path).expanduser().resolve()
-    if not path.is_file():
-        raise ValueError(f"Live replay frame does not exist: {path}")
-    payload = path.read_bytes()
+    path, _relative, payload = _read_contained_file(
+        root,
+        relative_path,
+        "Live replay frame",
+    )
     digest = hashlib.sha256(payload).hexdigest()
     if expected_sha256 is not None and expected_sha256 != digest:
         raise ValueError(f"Live replay frame checksum does not match: {path}")
-    with Image.open(path) as source:
-        image = source.convert("RGB")
+    with Image.open(io.BytesIO(payload)) as source:
+        image = source.convert("RGB").copy()
     if region is not None:
         image = region.crop(image)
     if observation is not None:
         image.info["vntts_replay_observation"] = observation
-    return CapturedDialogFrame(image, 0.0), digest
+    recognition_source = "declared-observation" if observation is not None else "ocr"
+    image.info["vntts_replay_recognition_source"] = recognition_source
+    return CapturedDialogFrame(image, 0.0), digest, recognition_source
 
 
 def _recognize_replay_frame(frame):
@@ -518,15 +604,197 @@ def _fingerprint_replay_frame(frame):
     return (fingerprint, observation) if observation is not None else fingerprint
 
 
-def _optional_document_path(document_path, value):
+def _read_replay_document(value):
+    selected_path = Path(value).expanduser()
+    if selected_path.is_symlink():
+        raise ValueError(f"Live replay corpus must not be a symlink: {selected_path}")
+    path, _relative, payload = _read_contained_file(
+        selected_path.parent,
+        selected_path.name,
+        "Live replay corpus",
+    )
+    document = _decode_json_object(payload, "live replay corpus")
+    version = document.get("schema_version")
+    if isinstance(version, bool) or version != LIVE_REPLAY_CORPUS_VERSION:
+        raise ValueError(f"unsupported live replay corpus schema version: {version}")
+    return path, payload, document
+
+
+def _decode_json_object(payload, document_name):
+    document = json.loads(payload.decode("utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError(f"{document_name} root must be an object")
+    return document
+
+
+def _required_sha256(value, label):
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _contained_regular_file(root, value, label):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} path must be non-empty")
+    if "\\" in value:
+        raise ValueError(f"{label} path must use a contained relative path")
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError(f"{label} path must use a contained relative path")
+    root = Path(root).resolve()
+    candidate = root.joinpath(*relative.parts)
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"{label} path must not contain symlinks: {value}")
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise ValueError(f"{label} path leaves the corpus directory") from error
+    if not resolved.is_file():
+        raise ValueError(f"{label} does not exist: {resolved}")
+    return resolved, relative.as_posix()
+
+
+def _read_contained_file(root, value, label):
+    path, relative = _contained_regular_file(root, value, label)
+    with path.open("rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"{label} is not a regular file: {path}")
+        payload = source.read()
+    current, current_relative = _contained_regular_file(root, value, label)
+    current_stat = current.stat(follow_symlinks=False)
+    if (
+        current_relative != relative
+        or current != path
+        or (opened.st_dev, opened.st_ino) != (current_stat.st_dev, current_stat.st_ino)
+    ):
+        raise ValueError(f"{label} changed while it was being read: {path}")
+    return path, relative, payload
+
+
+def _generated_audio_manifest_binding(document_path, value):
     if value is None:
         return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("generated_audio_manifest must be a non-empty path")
-    path = (document_path.parent / value).expanduser().resolve()
-    if not path.is_file():
-        raise ValueError(f"Generated audio manifest does not exist: {path}")
-    return path
+    if not isinstance(value, dict):
+        raise ValueError(
+            "generated_audio_manifest must bind a relative path and sha256"
+        )
+    path, relative, payload = _read_contained_file(
+        document_path.parent,
+        value.get("path"),
+        "Generated audio manifest",
+    )
+    expected_sha256 = _required_sha256(
+        value.get("sha256"),
+        "Generated audio manifest sha256",
+    )
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError("Generated audio manifest checksum does not match")
+    manifest_document = _decode_json_object(payload, "generated audio manifest")
+    artifacts = _generated_audio_artifact_bindings(path, manifest_document)
+    binding = GeneratedAudioManifestBinding(
+        document_path.parent.resolve(),
+        relative,
+        path,
+        expected_sha256,
+        artifacts,
+    )
+    try:
+        with _generated_audio_index_snapshot(binding):
+            pass
+    except GeneratedAudioManifestError as error:
+        raise ValueError(f"Generated audio manifest is invalid: {error}") from error
+    return binding
+
+
+def _generated_audio_artifact_bindings(manifest_path, document):
+    entries = document.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("Generated audio manifest must contain an entries list")
+    artifacts = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Generated audio entry {index} must be an object")
+        path, relative, payload = _read_contained_file(
+            manifest_path.parent,
+            entry.get("audio"),
+            f"Generated audio entry {index}",
+        )
+        expected_sha256 = _required_sha256(
+            entry.get("audio_sha256"),
+            f"Generated audio entry {index} audio_sha256",
+        )
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise ValueError(
+                f"Generated audio entry {index} checksum does not match: {path}"
+            )
+        previous = artifacts.get(relative)
+        if previous is not None and previous.sha256 != expected_sha256:
+            raise ValueError(
+                f"Generated audio path {relative!r} has conflicting checksums"
+            )
+        artifacts[relative] = GeneratedAudioArtifactBinding(
+            relative,
+            path,
+            expected_sha256,
+        )
+    return tuple(artifacts[key] for key in sorted(artifacts))
+
+
+@contextmanager
+def _generated_audio_index_snapshot(binding):
+    if binding is None:
+        yield None
+        return
+    _manifest_path, _relative, manifest_payload = _read_contained_file(
+        binding.root,
+        binding.relative_path,
+        "Generated audio manifest",
+    )
+    if hashlib.sha256(manifest_payload).hexdigest() != binding.sha256:
+        raise ValueError("Generated audio manifest changed after corpus validation")
+    manifest_document = _decode_json_object(
+        manifest_payload,
+        "generated audio manifest",
+    )
+    current_artifacts = _generated_audio_artifact_bindings(
+        binding.path,
+        manifest_document,
+    )
+    if current_artifacts != binding.artifacts:
+        raise ValueError("Generated audio inventory changed after corpus validation")
+    with TemporaryDirectory(prefix="vntts-live-replay-") as temporary_directory:
+        snapshot_root = Path(temporary_directory)
+        snapshot_manifest = snapshot_root / "generated-audio.json"
+        for artifact in binding.artifacts:
+            _path, _relative, payload = _read_contained_file(
+                binding.path.parent,
+                artifact.relative_path,
+                "Generated audio",
+            )
+            if hashlib.sha256(payload).hexdigest() != artifact.sha256:
+                raise ValueError(
+                    f"Generated audio changed after corpus validation: {artifact.path}"
+                )
+            destination = snapshot_root.joinpath(
+                *PurePosixPath(artifact.relative_path).parts
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+        snapshot_manifest.write_bytes(manifest_payload)
+        yield GeneratedAudioIndex.load(snapshot_manifest)
 
 
 def _group_played_dialogue(played):

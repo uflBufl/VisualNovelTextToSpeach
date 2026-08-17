@@ -281,9 +281,11 @@ uv run vntts-replay-live \
 That corpus is explicitly representative, not a real-game capture or listening
 test. Its saved project frames, generated manifest and WAV are checksum-bound;
 declared frame observations deterministically drive the production live tracker
-after capture/fingerprint. It verifies incomplete-prefix waiting, one verified
-generated-prefix expansion, exact game/generated/live route selection, PCM
-consumption, completion and advance integrity. See
+after capture/fingerprint. The report preserves the fixture kind, corpus and
+generated-manifest digests, and recognition-source provenance. It verifies
+incomplete-prefix waiting, one verified generated-prefix expansion, exact
+game/generated/live route selection, PCM consumption, completion and advance
+integrity. See
 [live replay acceptance](docs/live-replay-acceptance.md) for the evidence
 boundary and remaining manual/device gates.
 

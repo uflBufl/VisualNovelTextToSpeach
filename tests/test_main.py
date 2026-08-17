@@ -1521,6 +1521,77 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(controller.unresolved_live_speakers(), ("Hotelier",))
 
+    def test_applying_settings_loads_a_new_explicit_speaker_corpus(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "speakers.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Rhiannon", "Hotelier"]}),
+                encoding="utf-8",
+            )
+            controller = AppController(AppSettings(), tts_factory=Mock())
+            controller.voice_router = Mock()
+            controller.voice_router.registry.assignments = {}
+            controller.voice_router.registry.resolve.side_effect = lambda character: (
+                object() if character == "Rhiannon" else None
+            )
+            controller.speech_backend = SimpleNamespace(name="typed-test")
+
+            controller.apply_settings(AppSettings(live_speaker_corpus=str(path)))
+
+            self.assertEqual(controller.unresolved_live_speakers(), ("Hotelier",))
+            self.assertEqual(controller.live_speaker_corpus.path, path.resolve())
+            self.assertIsNone(controller.live_speaker_corpus_error)
+
+    def test_live_start_revalidates_the_bound_speaker_corpus(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "speakers.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Rhiannon"]}),
+                encoding="utf-8",
+            )
+            statuses = []
+            controller = AppController(
+                AppSettings(live_speaker_corpus=str(path)),
+                tts_factory=Mock(),
+                status_handler=statuses.append,
+            )
+            controller.live_reader = Mock(is_running=False)
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Hotelier"]}),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(controller.toggle_live())
+
+        controller.live_reader.toggle.assert_not_called()
+        self.assertIn("changed after settings were applied", statuses[-1])
+
+    def test_settings_restart_routes_through_fresh_speaker_preflight(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "speakers.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "speakers": ["Rhiannon"]}),
+                encoding="utf-8",
+            )
+            statuses = []
+            controller = AppController(
+                AppSettings(live_speaker_corpus=str(path)),
+                tts_factory=Mock(),
+                status_handler=statuses.append,
+            )
+            controller.live_reader = Mock(is_running=True)
+            controller.live_reader.stop.side_effect = lambda: setattr(
+                controller.live_reader, "is_running", False
+            )
+
+            controller.apply_settings(
+                AppSettings(live_speaker_corpus=str(path.with_name("missing.json")))
+            )
+
+        controller.live_reader.start.assert_not_called()
+        controller.live_reader.toggle.assert_not_called()
+        self.assertIn("configured speaker corpus is invalid", statuses[-1])
+
     def test_invalid_explicit_speaker_corpus_blocks_live_start(self):
         statuses = []
         controller = AppController(
@@ -1533,6 +1604,35 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller.toggle_live())
         controller.live_reader.toggle.assert_not_called()
         self.assertIn("configured speaker corpus is invalid", statuses[-1])
+
+    def test_story_scope_takes_precedence_over_an_invalid_explicit_corpus(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Rhiannon",
+                        "text": "Line",
+                    }
+                ]
+            }
+        )
+        preloader.recommend("Rhiannon", "Line")
+        controller = AppController(
+            AppSettings(live_speaker_corpus="missing-speakers.json"),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.return_value = object()
+        controller.speech_backend = SimpleNamespace()
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.return_value = True
+
+        self.assertTrue(controller.toggle_live())
+        controller.live_reader.toggle.assert_called_once_with()
 
     def test_direct_live_toggle_requires_exact_fresh_scoped_approval(self):
         statuses = []

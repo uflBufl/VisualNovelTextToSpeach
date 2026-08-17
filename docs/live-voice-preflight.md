@@ -44,5 +44,10 @@ list is preflighted before every start. Narrator and exact `???` need no choice;
 other named speakers still need an assigned/resolved voice or a fresh one-session
 Narrator approval. A configured corpus that is missing, damaged, empty, or has
 duplicate/invalid names blocks live start rather than silently reverting to an
-empty scope. `VNTTS_LIVE_SPEAKER_CORPUS` provides the equivalent environment
+empty scope. Applying settings reloads the selected corpus as one exact byte
+snapshot. Every live start, including an automatic restart after applying
+settings, revalidates its canonical non-symlink path and SHA-256 through the
+same central preflight guard. A changed file remains blocked until settings are
+applied again. A loaded story index still takes precedence over this explicit
+no-story scope. `VNTTS_LIVE_SPEAKER_CORPUS` provides the equivalent environment
 override. See `samples/rhiannon-live-speakers.json` for a representative file.

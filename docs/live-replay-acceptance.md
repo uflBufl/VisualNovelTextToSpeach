@@ -11,15 +11,21 @@ object with `path`, `sha256`, `observed_character` and `observed_text`. The obje
 form is a deterministic recognition fixture: bytes must match the declared
 SHA-256, the production image fingerprint remains part of the key, and the
 declared observation replaces OCR only after capture/fingerprint. Reports retain
-every frame digest and consumed observation. This is useful for state/routing
-regression, but is not evidence of OCR quality on those pixels.
+the corpus digest, `fixture_kind`, every frame digest, and whether each consumed
+observation came from OCR or a declared fixture value. An observation is invalid
+without its exact frame digest. Serialized media paths are relative, contained
+under the corpus directory and may not traverse symlinks. This is useful for
+state/routing regression, but is not evidence of OCR quality on those pixels.
 
-An optional `generated_audio_manifest` is resolved relative to the corpus and
-loaded through the production manifest/index/library validators. If it is
-declared but missing or invalid, the run fails. Generated playback uses a
-device-free output sink that consumes the exact decoded float32 PCM and reports
-sample rate, sample count and PCM SHA-256. It deliberately reports no device
-underrun claim.
+An optional `generated_audio_manifest` object binds a contained relative `path`
+and exact `sha256`. Every manifest audio path is independently contained and
+bound by its declared WAV SHA-256. The runner copies the one verified manifest
+and WAV byte snapshot into a private temporary bundle, then loads and decodes
+that snapshot through the production manifest/index/library validators. A
+manifest or WAV mutation after corpus loading fails instead of changing the
+route. Generated playback uses a device-free output sink that consumes the exact
+decoded float32 PCM and reports sample rate, sample count and PCM SHA-256. It
+deliberately reports no device underrun claim.
 
 The tracked `samples/rhiannon-live-replay-representative.json` covers:
 
