@@ -84,9 +84,6 @@ sections after their implementation has been verified and committed.
       `last_*` compatibility facade in a major release after an external API
       usage audit and documented migration window. Internal playback and the
       benchmark already use typed call-bound results.
-- [ ] Document the final routing precedence, source-audio completion contract,
-      cache semantics, and auto-advance confirmation behavior in the README and
-      game-pack contract.
 
 ### P0 - Validate performance and resilience
 

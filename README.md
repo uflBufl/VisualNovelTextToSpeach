@@ -120,8 +120,8 @@ that appeared while OCR was still collecting the two frames needed to accept
 it. The compact/full status asks the player to advance manually. While
 confirmation is pending, VNTTS runs OCR again even when the dialogue fingerprint
 is unchanged, so a static or visually similar next screen can still confirm the
-transition. A temporary focus loss postpones dispatch or confirmation without
-consuming the one permitted key.
+transition. Paused live reading or a temporary focus loss postpones dispatch or
+confirmation without consuming the one permitted key.
 
 Reverse: 1999 choices are rendered outside the configured dialogue capture
 region, so VNTTS does not attempt to detect them from dialogue OCR. Pause live
@@ -134,17 +134,28 @@ provide a positive `source_audio_duration_seconds` for an exact line; VNTTS
 then waits for that interval before the line is considered complete. Legacy
 `display_seconds` is not treated as audio duration. When auto advance is
 enabled and no completion value is available, that source route is rejected
-before playback and the line falls through to generated or live speech.
+before playback and the line falls through to generated or live speech. With
+auto advance disabled, the source may pass through as unobserved: VNTTS seals
+the exact OCR line to suppress duplicate suffixes, but does not treat the pass
+through as evidence that game audio completed. A declared duration is a
+conservative delay measured from route acceptance, not observation of the
+game's audio device.
 
 Each game profile has an explicit **Audio source policy** in Settings:
+
+A manual voice assignment wins before this policy. In particular, a saved
+Narrator choice deliberately forces live TTS for Narrator and bypasses source
+and generated narrator tracks until the override is removed.
 
 - **Live TTS only** always uses the selected speech engine. This is the default,
   including for profiles created before the setting was introduced.
 - **Prefer generated audio** uses a verified generated-audio manifest entry for
-  an exact story-line match, then falls back to the selected live engine.
-- **Prefer original game audio** first lets an exact installed source-audio line
-  with usable completion timing play in the game, then tries verified generated
-  audio, then live synthesis.
+  an exact or uniquely normalized story-line match, then falls back to the
+  selected live engine.
+- **Prefer original game audio** first lets an exact or uniquely normalized
+  installed source-audio line play in the game when any completion required by
+  auto advance is available, then tries verified generated audio, then live
+  synthesis.
 
 Loading a story index does not change this policy. The full Dashboard shows the
 configured engine and policy, whether the generated-audio manifest is available,
@@ -157,6 +168,9 @@ reference identifier, and artifact preflight state together. In addition,
 `generation-timelines.json` keeps one bounded timeline per generation with
 capture, OCR, stable-text, route, voice, generation, first-PCM, playback,
 key-dispatch, and terminal next-dialogue confirmation or timeout timestamps.
+Every per-chunk stage is keyed by its privacy-safe chunk ID, so two chunks in
+one OCR generation remain distinct while duplicate reports for the same
+stage/chunk merge.
 The first two seconds without a stable replacement are a nonfatal waiting
 state; confirmation remains active for ten seconds and never dispatches a
 second key for the same generation. The same privacy-safe
@@ -177,9 +191,13 @@ For a verified generated-audio entry, a stable prefix of at least 20 normalized
 characters may start the full indexed line before the typewriter animation
 finishes, but only when that speaker/prefix identifies exactly one eligible
 manifest entry. Short, ambiguous, or corrupted prefixes keep waiting for the
-ordinary exact route. After an exact generated or original-audio route finishes,
-late OCR suffix chunks in that same dialogue generation are suppressed; a real
-next dialogue receives a new generation and remains eligible.
+ordinary exact route. Verification reads one WAV byte snapshot, hashes those
+exact bytes, and decodes the same bytes. Prefix expansion reserves that verified
+PCM and canonical line together; if the reservation later becomes invalid, the
+expanded text cannot silently fall through to live TTS. After an exact generated
+or original-audio route finishes, late OCR suffix chunks in that same dialogue
+generation are suppressed; a real next dialogue receives a new generation and
+remains eligible.
 An idle OCR fragment that is still one unique prefix of a longer indexed line
 is not spoken or auto-advanced. This protects typewriter pauses from turning
 the first half of a line into a complete dialogue.
@@ -197,6 +215,20 @@ first real-time write to reduce output underruns; cached audio remains available
 immediately. Once playback has started, a transient OCR generation replacement
 does not cut it short. Pause, Skip, Clear Queue, and Emergency Stop remain
 explicit interruption controls.
+
+A completed generated route or observed source-delay route seals its exact OCR
+generation and may become auto-advance eligible. An unobserved source pass
+through seals only duplicate OCR and blocks automatic dispatch. Live TTS remains
+tracker-driven rather than being force-sealed by the router. Any interrupted or
+failed generated/live/source outcome leaves the generation unsealed and blocks
+auto advance until a new dialogue generation or explicit reader reset. Only complete live
+renders enter the memory/persistent speech caches; source and generated routes
+bypass those caches. The render-only benchmark measures generation/cache stages
+without an audio device, so underrun and driver timing remain hardware gates.
+Concrete backend payload methods and mutable `last_*` metrics are deprecated
+compatibility only; current routing consumes call-bound typed outcomes. See
+[typed live audio routing](docs/live-audio-routing.md) and
+[device-independent rendering](docs/synthesis-rendering.md).
 
 Tune live reading with `VNTTS_LIVE_INTERVAL_MS`,
 `VNTTS_LIVE_STABILITY_FRAMES`, `VNTTS_LIVE_IDLE_FLUSH_MS`, and
