@@ -141,6 +141,30 @@ and
 This pilot proves scoped Centurion regeneration and review, not completion of
 the remaining Narrator queue or final-pack publication.
 
+The subsequent bounded rollout replaced all 175 remaining legacy
+generated/pending-review Narrator seeds in eight explicit-ID batches. It
+published 114 complete Centurion WAVs and preserved 61 bounded or quality-gated
+failures without a WAV. A separate first-attempt batch covered all 10 Narrator
+items that previously had no state: one completed and nine failed closed. No
+legacy Narrator seed or absent Narrator item remains.
+
+One diagnostic batch then retried the 24 shortest legacy failures whose stored
+outcomes predated the current synthesis-control provenance. Only three
+completed; 21 failed closed again. That low yield is the stop gate for blind
+mass retries: the other 99 legacy failures remain preserved until a specific
+model, text or quality-gate diagnosis justifies another attempt. The final
+Narrator state is 4 approved, 118 generated/pending-review and 195 failed; 96
+of those failures have already been exercised under the current Centurion
+controls.
+
+Across the rollout, all 19 pre-existing approved/rejected decisions remained
+byte-identical. The final state is idle with no lease or partial WAV; its
+SHA-256 is
+`e5ece47ba13d7b68b44cb9628cb180dcac8ddb516ed58d481d49770f4f6194ba`.
+The approved-only manifest still contains exactly 14 entries and has SHA-256
+`3370b864105d85c431227f5cc283e7b95890687d4fd30c70148367c254832af1`.
+No rollout result beyond the four pilot WAVs was approved automatically.
+
 ## Truthful inspection and focused retry
 
 `inspect_workspace()` projects the exact queue and authoritative state into

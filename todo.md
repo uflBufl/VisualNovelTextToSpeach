@@ -26,13 +26,14 @@ sections after their implementation has been verified and committed.
       "Use pregenerated narrator tracks when available" must remove that
       override and restore artifact routing. The manual presentation decision
       selected Centurion; retain Paper Heron as an ordinary character voice.
-  - [ ] Continue the Centurion rollout for the remaining 313 spoken Narrator
-        queue items in bounded explicit-ID batches, retaining all proven
-        Rhiannon outcomes. The first eight-item pilot produced four manually
-        approved results and four fail-closed results; do not raise the bounded
-        audio cap blindly. Regenerate and review every remaining item, then
-        expose the complete approved-only manifest for the Character Story
-        generated-audio routing acceptance run.
+  - [ ] Manually review the 118 current Centurion Narrator WAVs, retaining all
+        proven Rhiannon outcomes, then expose the resulting approved-only
+        manifest for the Character Story generated-audio routing acceptance
+        run. Diagnose the 195 failed Narrator items before selective retries:
+        96 already failed under the current controls, and a diagnostic retry of
+        the 24 shortest legacy failures completed only three, so do not raise
+        the bounded audio cap or mass-retry the other 99 legacy failures
+        blindly.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the
