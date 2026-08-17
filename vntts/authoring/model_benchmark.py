@@ -43,6 +43,7 @@ class ModelVariant:
     backend: str
     model: str | None = None
     generation_profile: str = "stable"
+    voice: str | None = None
 
 
 def select_representative_items(items, sample_size=24):
@@ -172,8 +173,9 @@ def benchmark_renderer(
     audio_root.mkdir(parents=True, exist_ok=True)
     rendered_samples = []
     for index, sample in enumerate(samples, start=1):
+        synthesis_voice = variant.voice or sample["character"]
         request = SynthesisRequest(
-            voice=sample["character"],
+            voice=synthesis_voice,
             text=sample["text"],
             seed=seed,
             generation_profile=variant.generation_profile,
@@ -212,6 +214,7 @@ def benchmark_renderer(
                 "wall_ms": result.timing.total_ms,
                 "seed": result.diagnostics.seed,
                 "generation_profile": result.diagnostics.generation_profile,
+                "synthesis_voice": synthesis_voice,
             }
         )
     report = {
@@ -223,6 +226,7 @@ def benchmark_renderer(
         "backend": variant.backend,
         "model": variant.model or variant.backend,
         "generation_profile": variant.generation_profile,
+        "voice_override": variant.voice,
         "samples": rendered_samples,
     }
     atomic_write_json(output_directory / "report.json", report, sort_keys=True)
@@ -310,12 +314,20 @@ def load_model_variants(path):
             for field in ("model_id", "backend")
         ):
             raise ModelBenchmarkError(f"Model variant {index} is invalid")
+        voice = item.get("voice")
+        if "voice" in item and (
+            not isinstance(voice, str) or not voice.strip()
+        ):
+            raise ModelBenchmarkError(
+                f"Model variant {index} voice must be non-empty text"
+            )
         variants.append(
             ModelVariant(
                 model_id=item["model_id"],
                 backend=item["backend"],
                 model=item.get("model"),
                 generation_profile=str(item.get("generation_profile") or "stable"),
+                voice=voice.strip() if isinstance(voice, str) else None,
             )
         )
     return variants

@@ -14,6 +14,7 @@ from vntts.authoring.model_benchmark import (
     benchmark_renderer,
     build_benchmark_corpus,
     load_benchmark_corpus,
+    load_model_variants,
     select_representative_items,
 )
 from vntts.synthesis import (
@@ -127,6 +128,65 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(backend.play_calls, 0)
         self.assertEqual(report["samples"][0]["sample_rate"], 16_000)
         self.assertRegex(report["samples"][0]["audio_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_renderer_applies_explicit_variant_voice_without_changing_corpus_identity(
+        self,
+    ):
+        backend = FakeRenderBackend()
+        variant = ModelVariant("narrator/paper-heron", "fake", voice="Paper Heron")
+        with TemporaryDirectory() as directory:
+            report = benchmark_renderer(
+                variant,
+                backend,
+                [
+                    {
+                        "id": "narration-line",
+                        "line_id": "line:narration",
+                        "character": "Narrator",
+                        "text": "A fixed narration line.",
+                    }
+                ],
+                directory,
+                seed=7,
+            )
+
+        self.assertEqual(backend.requests[0].voice, "Paper Heron")
+        self.assertEqual(report["voice_override"], "Paper Heron")
+        self.assertEqual(report["samples"][0]["character"], "Narrator")
+        self.assertEqual(report["samples"][0]["synthesis_voice"], "Paper Heron")
+        self.assertEqual(report["samples"][0]["seed"], 7)
+
+    def test_model_variants_validate_optional_voice_override(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "model_id": "narrator/centurion",
+                            "backend": "fake",
+                            "voice": "Centurion",
+                        },
+                        {
+                            "model_id": "narrator/paper-heron",
+                            "backend": "fake",
+                            "voice": "Paper Heron",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            variants = load_model_variants(path)
+            self.assertEqual(
+                [variant.voice for variant in variants], ["Centurion", "Paper Heron"]
+            )
+            for invalid in (None, "", "   ", 3141):
+                with self.subTest(invalid=invalid):
+                    document = json.loads(path.read_text(encoding="utf-8"))
+                    document[0]["voice"] = invalid
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(ModelBenchmarkError, "voice"):
+                        load_model_variants(path)
 
     def test_limited_render_is_not_published_as_benchmark_sample(self):
         with TemporaryDirectory() as directory, self.assertRaisesRegex(

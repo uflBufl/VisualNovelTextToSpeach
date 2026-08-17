@@ -12,6 +12,19 @@ sections after their implementation has been verified and committed.
       are available. Preserve source-audio candidates instead of replacing them
       with generated speech.
 
+### P1 - Make authoring workbench controls visible and discoverable
+
+- [ ] Redesign the secondary workbench pane so expanding the window or a detail
+      section cannot leave Generation scope, Readiness details, Voice references,
+      or Technical details as empty header-sized frames while only the dialogue
+      review grid grows. Put the secondary content in a vertically scrollable
+      inspector, replace the status-like `QGroupBox` checkboxes with disclosure
+      chevrons, and ensure expanding a section makes its first controls visible
+      without shrinking the review pane below its usable minimum. Preserve each
+      section's workspace-local expanded state, keep Reset layout available, and
+      add Qt regressions for the default, resized, and persisted-all-expanded
+      layouts that prove every expanded control is visible or scroll-reachable.
+
 ## Live mode
 
 ### P0 - Repair failures observed in the latest Character Story run
@@ -28,6 +41,18 @@ sections after their implementation has been verified and committed.
       compare Centurion with Paper Heron after extractor-owned, game-derived
       Paper Heron references are available; the current Matilda-like result was
       rejected as insufficiently confident and presentational.
+  - [ ] Preserve the completed Rhiannon review when the chosen Narrator creates
+        a new config-addressed workspace. Add an explicit, non-destructive
+        carry-forward operation that accepts only terminal non-Narrator
+        outcomes whose queue item, exact character references, model, profile,
+        synthesis text and WAV hashes still match. Never carry Narrator audio,
+        silently reinterpret a changed manifest, or discard the existing
+        Rhiannon decisions; fail closed to explicit regeneration when the
+        per-item controls cannot be proven equivalent.
+  - [ ] After the narrator comparison is decided, regenerate only Narrator
+        queue IDs in the chosen workspace while retaining the proven Rhiannon
+        outcomes, then expose the resulting approved-only manifest for the
+        Character Story generated-audio routing acceptance run.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the

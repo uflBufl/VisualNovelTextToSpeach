@@ -34,12 +34,29 @@ dot paths, path escape and case-insensitive destination collisions are rejected.
 The aggregate `vntts.voice-model-benchmark` version 1 document records the exact
 corpus and per-model report paths; model selection remains a manual decision.
 
+A model variant may set an explicit `voice` override. This changes only the
+voice passed to synthesis: the corpus character, line identity, exact text,
+seed and generation profile remain unchanged. The report preserves both the
+corpus `character` and the effective `synthesis_voice`, and records the
+top-level `voice_override`. This supports controlled narrator comparisons
+without misrepresenting the shared sample as character dialogue.
+
 Example model configuration:
 
 ```json
 [
   {"model_id": "moss/stable", "backend": "moss-tts", "generation_profile": "stable"},
   {"model_id": "moss/expressive", "backend": "moss-tts", "generation_profile": "expressive"}
+]
+```
+
+For a same-model narrator comparison, keep the model and profile identical and
+vary only `voice`:
+
+```json
+[
+  {"model_id": "narrator/centurion", "backend": "moss-tts", "generation_profile": "stable", "voice": "Centurion"},
+  {"model_id": "narrator/paper-heron", "backend": "moss-tts", "generation_profile": "stable", "voice": "Paper Heron"}
 ]
 ```
 
@@ -55,6 +72,39 @@ uv run vntts-benchmark-models \
 
 Use `--queue /path/to/queue.jsonl --sample-size 24` instead of `--corpus` to
 build the shared corpus from a generation queue.
+
+### Verified Centurion and Paper Heron narrator comparison
+
+On 2026-08-17, the extractor-owned playable-voice index supplied one compact
+Paper Heron reference from `hero3141_mainvoc.bnk`, media ID `354191196`. The
+source WEM SHA-256 is
+`ff74e74071734a622c6a779ab16843605489fff54c50a757c683365d5ff8033c`;
+the decoded PCM16 mono reference SHA-256 is
+`aa888913cc71dea8b1744c2eb017c17e3ebdb7a3e9c725e51799a8cb2700c007`.
+It is 9.554 seconds long and passed the technical reference preflight with a
+score of 100, no clipping, 0.195 silence ratio, no leading silence and 0.08
+seconds trailing silence. Perceptual suitability remains a listening decision.
+
+The first controlled comparison used narration line
+`reverse1999:314601:6`, seed 0 and the stable profile. Centurion completed, but
+Paper Heron correctly returned `limited`; no Paper Heron WAV was published and
+the safety cap was not extended. A second comparison therefore used the shorter
+real narration line `reverse1999:314601:69`, exact text SHA-256
+`22efd1a9278e220da2ca6b525083e1e062c034ac4ccbadcea5bbc0c3580262b9`,
+with the same model, profile and seed. Both variants completed as PCM16 mono at
+48 kHz:
+
+- Centurion: 238,080 samples / 4.96 seconds, WAV SHA-256
+  `10b6e0ecb8ac5723b0e49d6d37d1130344dab859fb14ab3c2041a42093524ad1`.
+- Paper Heron: 215,040 samples / 4.48 seconds, WAV SHA-256
+  `b497187721bff59c7c08fa0fada7a00e3805ebdce2ea96189a46233eb038da39`.
+
+The ignored local comparison lives under
+`data/reverse1999-voices/narrator-comparisons/centurion-paper-heron/` and has a
+one-trial blind session. Its session SHA-256 is
+`83c4a5956162a46aa63c1bc5838188ab41b9ae7b16e5a47a36429185f5019c1f`.
+Choosing the narrator remains a manual confidence and presentation gate; the
+comparison does not authorize batch regeneration.
 
 ## Blind listening and report semantics
 
