@@ -263,8 +263,28 @@ class CharacterVoiceRouter:
             **self._speech_arguments(character),
         )
 
+    def prepare_playback(
+        self,
+        character,
+        text,
+        *,
+        synthesis_options=None,
+        cache_policy="use",
+        cancellation=None,
+    ):
+        return self.tts.prepare_synthesis(
+            text,
+            synthesis_options=synthesis_options,
+            cache_policy=cache_policy,
+            cancellation=cancellation,
+            **self._speech_arguments(character),
+        )
+
     def play(self, audio, *, playback_guard=None):
         return self.tts.play(audio, playback_guard=playback_guard)
+
+    def play_prepared(self, prepared, *, playback_guard=None):
+        return self.tts.play_prepared(prepared, playback_guard=playback_guard)
 
     def warm_up(self, *, progress=None, text="Voice ready."):
         progress = progress or (lambda _current, _total, _character: None)

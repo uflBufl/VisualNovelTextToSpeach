@@ -2,12 +2,17 @@ import re
 import warnings
 from collections import OrderedDict
 from os import PathLike
-from threading import Lock
+from threading import Event, Lock
 from time import monotonic
 
 import numpy as np
 from scipy.signal import resample_poly
 
+from vntts.playback import (
+    PlaybackStatus,
+    PreparedPlayback,
+    outcome_for_prepared,
+)
 from vntts.synthesis import SynthesisCachePolicy
 
 
@@ -155,7 +160,9 @@ class TTSEngine:
         # two PortAudio streams to overlap.
         self.synthesis_lock = Lock()
         self.playback_lock = Lock()
+        self.playback_state_lock = Lock()
         self.playback_active = False
+        self.active_playback_stop = None
         self.last_playback_underrun = False
         self.last_synthesis_ms = None
         self.last_playback_ms = None
@@ -190,38 +197,82 @@ class TTSEngine:
         Live mode uses this separately from ``synthesize`` so sentence N+1 can
         be prepared while sentence N is using the output device.
         """
-        self.last_playback_ms = None
-        self.last_playback_underrun = False
+        prepared = PreparedPlayback(audio, None, None, None, "live:coqui-xtts")
+        outcome = self.play_prepared(prepared, playback_guard=playback_guard)
+        self.last_playback_ms = outcome.playback_ms
+        self.last_playback_underrun = outcome.underflowed
+        if outcome.status is PlaybackStatus.FAILED:
+            raise AudioPlaybackError(outcome.error or "Audio playback failed")
+        return outcome.successful
+
+    def play_prepared(self, prepared, *, playback_guard=None):
+        """Play one typed PCM payload and return call-bound device metrics."""
+        if not isinstance(prepared, PreparedPlayback):
+            raise TTSConfigurationError("TTS playback received an invalid payload")
         if playback_guard is not None and not playback_guard():
-            return False
+            return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
 
         with self.playback_lock:
             if playback_guard is not None and not playback_guard():
-                return False
+                return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
+            stop_requested = Event()
             playback_started = self.clock()
+            underflowed = False
+            first_audio_ms = None
             try:
-                self.playback_active = True
+                with self.playback_state_lock:
+                    self.playback_active = True
+                    self.active_playback_stop = stop_requested
                 audio_output = self._resolve_audio_output()
-                prepared, playback_sample_rate = match_output_sample_rate(
+                audio, playback_sample_rate = match_output_sample_rate(
                     audio_output,
-                    self._prepare_audio(audio),
+                    self._prepare_audio(prepared.payload),
                     self.sample_rate,
                 )
-                audio_output.play(
-                    prepared,
-                    playback_sample_rate,
-                    latency=self.playback_latency,
-                )
-                playback_status = audio_output.wait()
-                self.last_playback_underrun = self._playback_underflowed(
-                    playback_status
-                )
+                with self.playback_state_lock:
+                    interrupted = stop_requested.is_set() or (
+                        playback_guard is not None and not playback_guard()
+                    )
+                    if not interrupted:
+                        audio_output.play(
+                            audio,
+                            playback_sample_rate,
+                            latency=self.playback_latency,
+                        )
+                        first_audio_ms = (self.clock() - playback_started) * 1000
+                if not interrupted:
+                    playback_status = audio_output.wait()
+                    underflowed = self._playback_underflowed(playback_status)
+                    interrupted = stop_requested.is_set() or (
+                        playback_guard is not None and not playback_guard()
+                    )
             except Exception as error:
-                raise AudioPlaybackError(str(error)) from error
+                if stop_requested.is_set():
+                    return outcome_for_prepared(
+                        prepared,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.clock() - playback_started) * 1000,
+                        first_audio_ms=first_audio_ms,
+                    )
+                return outcome_for_prepared(
+                    prepared,
+                    PlaybackStatus.FAILED,
+                    (self.clock() - playback_started) * 1000,
+                    error=str(error),
+                    error_type=type(error),
+                )
             finally:
-                self.playback_active = False
-                self.last_playback_ms = (self.clock() - playback_started) * 1000
-        return True
+                with self.playback_state_lock:
+                    self.playback_active = False
+                    if self.active_playback_stop is stop_requested:
+                        self.active_playback_stop = None
+        return outcome_for_prepared(
+            prepared,
+            PlaybackStatus.INTERRUPTED if interrupted else PlaybackStatus.COMPLETED,
+            (self.clock() - playback_started) * 1000,
+            underflowed=underflowed,
+            first_audio_ms=first_audio_ms,
+        )
 
     def _playback_underflowed(self, playback_status=None):
         value = getattr(playback_status, "output_underflow", None)
@@ -255,6 +306,36 @@ class TTSEngine:
                 synthesis_options=synthesis_options,
                 cache_policy=cache_policy,
                 cancellation=cancellation,
+            )
+
+    def prepare_synthesis(
+        self,
+        text,
+        speaker=None,
+        language=None,
+        speaker_wav=None,
+        synthesis_options=None,
+        cache_policy=SynthesisCachePolicy.USE,
+        cancellation=None,
+    ):
+        """Return exact call-bound synthesis metrics without opening a device."""
+        with self.synthesis_lock:
+            audio = self._synthesize_locked(
+                text,
+                speaker=speaker,
+                language=language,
+                speaker_wav=speaker_wav,
+                synthesis_options=synthesis_options,
+                cache_policy=cache_policy,
+                cancellation=cancellation,
+            )
+            return PreparedPlayback(
+                audio,
+                self.last_synthesis_ms,
+                None,
+                self.last_cache_source,
+                "live:coqui-xtts",
+                generation_completed=not self.last_synthesis_cancelled,
             )
 
     def _synthesize_locked(
@@ -496,9 +577,13 @@ class TTSEngine:
         return prepared
 
     def stop(self):
-        was_playing = self.playback_active
-        if self.audio_output is not None:
-            self.audio_output.stop()
+        with self.playback_state_lock:
+            was_playing = self.playback_active
+            stop_requested = self.active_playback_stop
+            if was_playing and stop_requested is not None:
+                stop_requested.set()
+            if was_playing and self.audio_output is not None:
+                self.audio_output.stop()
         return was_playing
 
     def _resolve_audio_output(self):

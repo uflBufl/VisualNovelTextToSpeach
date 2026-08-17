@@ -63,6 +63,22 @@ underrun protection without delaying direct-render access to first PCM.
 rendering and signals cooperative model cancellation where the engine supports
 it.
 
+Live device playback has a second typed boundary. `prepare_playback()` returns
+an immutable `PreparedPlayback`, and `play_prepared()` returns its exact
+`PlaybackOutcome`. Synthesis time, actual first device write, cache source,
+playback time, underrun, interruption, and failure therefore remain bound to
+one call even when the next line is prepared concurrently. XTTS and Chatterbox
+use per-call stop tokens around their owned output-device call. Pocket and MOSS
+bind stop to their owned stream; a MOSS consumer that does not exit after a
+bounded abort remains explicitly owned and blocks another playback attempt.
+
+The single-backend benchmark uses only typed `render()` results. Its cold stage
+uses `REFRESH`, then verifies an exact `USE` memory hit, clears memory, and
+verifies an exact persistent hit when that cache exists. It rejects incomplete
+renders, identity/diagnostic mismatches, and an unexpected cache source before
+publishing any WAV. It does not open an audio device, so its underrun fields are
+deliberately unknown rather than scraped from mutable playback state.
+
 Voice previews and OCR speech tests select the live backend rather than an
 artifact-routing wrapper, so XTTS preview generation also crosses this render
 boundary before playback.
@@ -70,3 +86,11 @@ boundary before playback.
 Ahead-of-time callers should consume `result.pcm` and `result.sample_rate`
 directly and write their WAV from those fields. They should not provide a fake,
 capture, or discard audio output to obtain generated samples.
+
+The concrete backend `prepare()`, `play()`, `speak()`, and `last_*` attributes
+remain only as a deprecated compatibility facade for existing external Python
+callers. Repository production paths use the typed methods and do not read the
+mutable facade. MOSS preserves its historical synthesis/configuration exception
+types through that facade; Pocket keeps its historical `AudioPlaybackError`
+normalization. Remove the facade only in a major release after an external API
+usage audit and a documented migration window.

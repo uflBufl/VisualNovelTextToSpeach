@@ -2,13 +2,14 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 
-from vntts.services.tts_engine import TTSConfigurationError
+from vntts.playback import PlaybackStatus
+from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     activate_moss_tts_runtime,
@@ -124,6 +125,50 @@ class CoordinatedAudioOutput(FakeAudioOutput):
         return CoordinatedOutputStream(self, **options)
 
 
+class BlockingOutputStream(FakeOutputStream):
+    def write(self, audio):
+        self.owner.write_started.set()
+        self.owner.release_write.wait(timeout=1)
+        return super().write(audio)
+
+    def abort(self):
+        super().abort()
+        if self.owner.abort_unblocks:
+            self.owner.release_write.set()
+
+
+class BlockingAudioOutput(FakeAudioOutput):
+    def __init__(self, *, abort_unblocks=True):
+        super().__init__()
+        self.abort_unblocks = abort_unblocks
+        self.write_started = Event()
+        self.release_write = Event()
+
+    def OutputStream(self, **options):
+        return BlockingOutputStream(self, **options)
+
+
+class FailingOutputStream(FakeOutputStream):
+    def __enter__(self):
+        if self.owner.failure_stage == "open":
+            raise RuntimeError("device open failed")
+        return super().__enter__()
+
+    def write(self, audio):
+        if self.owner.failure_stage == "write":
+            raise RuntimeError("device write failed")
+        return super().write(audio)
+
+
+class FailingAudioOutput(FakeAudioOutput):
+    def __init__(self, failure_stage):
+        super().__init__()
+        self.failure_stage = failure_stage
+
+    def OutputStream(self, **options):
+        return FailingOutputStream(self, **options)
+
+
 class MossTTSBackendTest(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = TemporaryDirectory()
@@ -143,6 +188,7 @@ class MossTTSBackendTest(unittest.TestCase):
         prompt_cache_directory=None,
         audio_output=_default_audio_output,
         generation_profile="stable",
+        playback_consumer_join_timeout=5.0,
     ):
         model = model or FakeMossModel()
         model_factory = Mock(return_value=model)
@@ -174,6 +220,7 @@ class MossTTSBackendTest(unittest.TestCase):
             prompt_code_saver=save_codes,
             array_evaluator=lambda _value: None,
             generation_profile=generation_profile,
+            playback_consumer_join_timeout=playback_consumer_join_timeout,
         )
         model_factory.assert_called_once_with(backend.model_name, lazy=False)
         return backend, model, audio_output
@@ -227,14 +274,19 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(result.diagnostics.generation_profile, "natural")
         self.assertEqual(result.diagnostics.seed, 7)
-        self.assertEqual(result.limits, backend.render(
-            SynthesisRequest(
-                voice="Narrator",
-                text="Render this line.",
-                seed=7,
-                generation_profile="natural",
+        self.assertEqual(
+            result.limits,
+            backend.render(
+                SynthesisRequest(
+                    voice="Narrator",
+                    text="Render this line.",
+                    seed=7,
+                    generation_profile="natural",
+                )
             )
-        ).collect().limits)
+            .collect()
+            .limits,
+        )
         self.assertEqual(len(model.generate_calls), 1)
 
     def test_render_only_backend_does_not_import_sounddevice(self):
@@ -283,9 +335,7 @@ class MossTTSBackendTest(unittest.TestCase):
         )
 
     def test_render_cancellation_keeps_typed_result_when_generator_raises(self):
-        backend, _model, _output = self.create_backend(
-            model=ErrorAfterFirstMossModel()
-        )
+        backend, _model, _output = self.create_backend(model=ErrorAfterFirstMossModel())
         cancelled = Event()
         stream = backend.render(
             SynthesisRequest(
@@ -520,6 +570,67 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertTrue(backend.stop())
 
         self.assertTrue(stream.aborted)
+
+    def test_stop_aborts_and_joins_the_owned_blocked_stream(self):
+        output = BlockingAudioOutput()
+        backend, _model, _output = self.create_backend(audio_output=output)
+        prepared = backend.prepare_playback("Narrator", "Stop this stream.")
+        outcomes = []
+        thread = Thread(target=lambda: outcomes.append(backend.play_prepared(prepared)))
+        thread.start()
+        self.assertTrue(output.write_started.wait(timeout=1))
+
+        self.assertTrue(backend.stop())
+        thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        self.assertTrue(output.streams[0].aborted)
+        self.assertIsNone(backend.active_stream)
+        self.assertFalse(backend.playback_active)
+
+    def test_ignored_abort_fails_but_retains_stream_ownership(self):
+        output = BlockingAudioOutput(abort_unblocks=False)
+        backend, _model, _output = self.create_backend(
+            audio_output=output,
+            playback_consumer_join_timeout=0.01,
+        )
+        prepared = backend.prepare_playback("Narrator", "Blocked stream.")
+
+        outcome = backend.play_prepared(prepared)
+
+        self.assertEqual(outcome.status, PlaybackStatus.FAILED)
+        self.assertIn("remains active", outcome.error)
+        self.assertIsNotNone(backend.active_stream)
+        self.assertTrue(backend.playback_active)
+        retry = backend.play_prepared(prepared)
+        self.assertEqual(retry.status, PlaybackStatus.FAILED)
+        output.release_write.set()
+        for _index in range(100):
+            if backend.active_stream is None:
+                break
+            Event().wait(0.001)
+        self.assertIsNone(backend.active_stream)
+
+    def test_legacy_moss_play_preserves_synthesis_error_type(self):
+        backend, _model, _output = self.create_backend(model=ErrorAfterFirstMossModel())
+        prepared = backend.prepare("Narrator", "Broken generation.")
+
+        with self.assertRaisesRegex(TTSSynthesisError, "generation was closed"):
+            backend.play(prepared)
+
+    def test_device_open_and_write_errors_are_failed_not_interrupted(self):
+        for stage in ("open", "write"):
+            with self.subTest(stage=stage):
+                backend, _model, _output = self.create_backend(
+                    audio_output=FailingAudioOutput(stage)
+                )
+                prepared = backend.prepare_playback("Narrator", "Device error.")
+
+                outcome = backend.play_prepared(prepared)
+
+                self.assertEqual(outcome.status, PlaybackStatus.FAILED)
+                self.assertIn(f"device {stage} failed", outcome.error)
 
     def test_runtime_activation_requires_private_environment(self):
         with TemporaryDirectory() as temporary_directory:

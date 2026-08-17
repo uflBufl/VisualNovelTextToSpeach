@@ -46,8 +46,11 @@ exported backend API. All repository callers use `prepare_route()` and
 `play_route()`; it therefore has no payload-only `prepare()`/`play()` facade and
 does not mirror outcomes through mutable `last_*` fields. No deprecated alias is
 kept because this wrapper was never an application entry point or documented
-extension interface. The individual live TTS backends retain their existing
-public APIs while they are migrated independently.
+extension interface. The individual live TTS backends now provide typed
+`prepare_playback()`/`play_prepared()` calls. Their legacy payload methods and
+mutable metrics are retained only as the deprecated external compatibility
+facade described in `synthesis-rendering.md`; the controller and replay paths
+do not consume them.
 
 Real driver underrun, device-stop latency, game-audio alignment, focus/key
 confirmation, and long-soak behavior remain hardware acceptance gates rather

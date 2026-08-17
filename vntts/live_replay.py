@@ -27,6 +27,7 @@ from vntts.generated_audio import (
 )
 from vntts.live import LiveDialogReader
 from vntts.ocr import DialogRegion
+from vntts.playback import PreparedPlayback, outcome_for_prepared
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
 from vntts.versioned_json import read_versioned_json
@@ -55,19 +56,23 @@ class ReplayLiveSpeechBackend:
     name = "replay-live-tts"
     capabilities = SpeechBackendCapabilities(True, False, True)
 
-    def __init__(self):
-        self.last_audio_source = None
-        self.last_synthesis_ms = 0.0
-        self.last_first_audio_ms = 0.0
-        self.last_playback_ms = 0.0
-        self.last_playback_underrun = False
+    def prepare_playback(self, character, text):
+        return PreparedPlayback(
+            (character, text),
+            0.0,
+            0.0,
+            "replay",
+            "live:replay-live-tts",
+        )
 
-    def prepare(self, character, text):
-        self.last_audio_source = "live:replay-live-tts"
-        return character, text
-
-    def play(self, _prepared, *, playback_guard=None):
-        return playback_guard is None or bool(playback_guard())
+    def play_prepared(self, prepared, *, playback_guard=None):
+        completed = playback_guard is None or bool(playback_guard())
+        return outcome_for_prepared(
+            prepared,
+            PlaybackStatus.COMPLETED if completed else PlaybackStatus.INTERRUPTED,
+            0.0,
+            first_audio_ms=prepared.first_audio_ms if completed else None,
+        )
 
     def stop(self):
         return False

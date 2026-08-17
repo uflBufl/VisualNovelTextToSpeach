@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
@@ -24,7 +25,11 @@ from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
 )
-from vntts.synthesis import SynthesisCompletion, SynthesisRequest
+from vntts.synthesis import (
+    SynthesisCachePolicy,
+    SynthesisCompletion,
+    SynthesisRequest,
+)
 from vntts.versioned_json import read_versioned_json
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -192,7 +197,7 @@ def _contained_child(root, name, label):
     return candidate
 
 
-def _validate_render_result(result, request, stage):
+def _validate_render_result(result, request, stage, *, expected_cache_source):
     if result.completion is not SynthesisCompletion.COMPLETE:
         raise RuntimeError(
             f"{stage} render did not complete: {result.completion.value}"
@@ -204,6 +209,11 @@ def _validate_render_result(result, request, stage):
         or result.diagnostics.generation_profile != request.generation_profile
     ):
         raise RuntimeError(f"{stage} render diagnostics do not match the request")
+    if result.diagnostics.cache_source != expected_cache_source:
+        raise RuntimeError(
+            f"{stage} render used {result.diagnostics.cache_source!r}; "
+            f"expected {expected_cache_source!r}"
+        )
     return result
 
 
@@ -346,66 +356,50 @@ def _benchmark_backend_staged(
             generation_started = clock()
             cpu_started = cpu_clock()
             render = getattr(backend, "render", None)
-            render_request = SynthesisRequest(
+            if not callable(render):
+                raise RuntimeError(
+                    f"Benchmark backend {backend_name!r} has no typed renderer"
+                )
+            fresh_request = SynthesisRequest(
                 voice=character,
                 text=sample_text,
                 generation_profile=getattr(backend, "generation_profile", "stable"),
+                cache_policy=SynthesisCachePolicy.REFRESH,
             )
-            if callable(render):
-                rendered = _validate_render_result(
-                    render(render_request).collect(), render_request, "Fresh"
-                )
-                audio = rendered.pcm
-                audio_sample_rate = rendered.sample_rate
-                first_audio_ms = rendered.timing.first_chunk_ms
-                fresh_cache_source = rendered.diagnostics.cache_source
-            else:
-                prepared = backend.prepare(character, sample_text)
-                fresh_cache_source = getattr(prepared, "cache_source", None)
-            if backend.capabilities.streaming and not callable(render):
-                backend.play(prepared)
-                normalized_text = " ".join(sample_text.split())
-                voice = registry.resolve(character)
-                voice_key = voice.speaker if voice is not None else "narrator"
-                audio = backend.audio_cache.get((voice_key, normalized_text))
-                if audio is None:
-                    audio = getattr(backend, "last_generated_audio", None)
-                if audio is None:
-                    raise RuntimeError("Streaming backend produced no completed audio")
-                audio_sample_rate = backend.sample_rate
-                first_audio_ms = backend.last_first_audio_ms
-            elif not callable(render):
-                audio = prepared
-                audio_sample_rate = backend.sample_rate
-                first_audio_ms = (clock() - generation_started) * 1000
+            rendered = _validate_render_result(
+                render(fresh_request).collect(),
+                fresh_request,
+                "Fresh",
+                expected_cache_source="fresh-generation",
+            )
+            audio = rendered.pcm
+            audio_sample_rate = rendered.sample_rate
+            first_audio_ms = rendered.timing.first_chunk_ms
+            fresh_cache_source = rendered.diagnostics.cache_source
             generation_wall_ms = (clock() - generation_started) * 1000
             generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
             duration_seconds = len(audio) / audio_sample_rate
-            fresh_underrun = bool(getattr(backend, "last_playback_underrun", False))
-            fresh_generation_limited = bool(
-                getattr(backend, "last_generation_limited", False)
+            fresh_underrun = None
+            fresh_generation_limited = (
+                rendered.completion is SynthesisCompletion.LIMITED
             )
 
             cached_started = clock()
-            if callable(render):
-                memory_rendered = _validate_render_result(
-                    render(render_request).collect(), render_request, "Memory-cache"
-                )
-                memory_cache_source = memory_rendered.diagnostics.cache_source
-            else:
-                cached_prepared = backend.prepare(character, sample_text)
-                memory_cache_source = getattr(cached_prepared, "cache_source", None)
-            if backend.capabilities.streaming and not callable(render):
-                backend.play(cached_prepared)
-            cached_replay_ms = (clock() - cached_started) * 1000
-            memory_first_audio_ms = (
-                memory_rendered.timing.first_chunk_ms
-                if callable(render)
-                else getattr(backend, "last_first_audio_ms", None)
+            cache_request = replace(
+                fresh_request, cache_policy=SynthesisCachePolicy.USE
             )
-            memory_underrun = bool(getattr(backend, "last_playback_underrun", False))
-            memory_generation_limited = bool(
-                getattr(backend, "last_generation_limited", False)
+            memory_rendered = _validate_render_result(
+                render(cache_request).collect(),
+                cache_request,
+                "Memory-cache",
+                expected_cache_source="memory-cache",
+            )
+            memory_cache_source = memory_rendered.diagnostics.cache_source
+            cached_replay_ms = (clock() - cached_started) * 1000
+            memory_first_audio_ms = memory_rendered.timing.first_chunk_ms
+            memory_underrun = None
+            memory_generation_limited = (
+                memory_rendered.completion is SynthesisCompletion.LIMITED
             )
 
             persistent_replay_ms = None
@@ -413,39 +407,21 @@ def _benchmark_backend_staged(
             persistent_cache_source = None
             persistent_underrun = None
             persistent_generation_limited = None
-            if backend.capabilities.streaming and hasattr(
-                backend, "persistent_audio_cache"
-            ):
+            if hasattr(backend, "persistent_audio_cache"):
                 backend.audio_cache.clear()
                 persistent_started = clock()
-                if callable(render):
-                    persistent_rendered = _validate_render_result(
-                        render(render_request).collect(),
-                        render_request,
-                        "Persistent-cache",
-                    )
-                    persistent_cache_source = (
-                        persistent_rendered.diagnostics.cache_source
-                    )
-                else:
-                    persistent_prepared = backend.prepare(character, sample_text)
-                    persistent_cache_source = getattr(
-                        persistent_prepared,
-                        "cache_source",
-                        None,
-                    )
-                    backend.play(persistent_prepared)
+                persistent_rendered = _validate_render_result(
+                    render(cache_request).collect(),
+                    cache_request,
+                    "Persistent-cache",
+                    expected_cache_source="persistent-cache",
+                )
+                persistent_cache_source = persistent_rendered.diagnostics.cache_source
                 persistent_replay_ms = (clock() - persistent_started) * 1000
-                persistent_first_audio_ms = (
-                    persistent_rendered.timing.first_chunk_ms
-                    if callable(render)
-                    else getattr(backend, "last_first_audio_ms", None)
-                )
-                persistent_underrun = bool(
-                    getattr(backend, "last_playback_underrun", False)
-                )
-                persistent_generation_limited = bool(
-                    getattr(backend, "last_generation_limited", False)
+                persistent_first_audio_ms = persistent_rendered.timing.first_chunk_ms
+                persistent_underrun = None
+                persistent_generation_limited = (
+                    persistent_rendered.completion is SynthesisCompletion.LIMITED
                 )
 
             expected_text_sha256 = hashlib.sha256(

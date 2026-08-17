@@ -13,6 +13,7 @@ import numpy as np
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.speech_backend_runtime import BoundedCache
 from vntts.synthesis import (
+    SynthesisCachePolicy,
     SynthesisChunk,
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -51,26 +52,6 @@ class FakeBackend:
         return False
 
 
-class FakeStreamingBackend(FakeBackend):
-    capabilities = SpeechBackendCapabilities(True, True, True)
-
-    def __init__(self):
-        super().__init__()
-        self.audio_cache = BoundedCache(1)
-        self.last_first_audio_ms = 125.0
-
-    def prepare(self, character, text):
-        return character, text
-
-    def play(self, prepared):
-        character, text = prepared
-        self.audio_cache.put(
-            (character.casefold(), " ".join(text.split())),
-            np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32),
-        )
-        return True
-
-
 class FakeRenderingBackend(FakeBackend):
     capabilities = SpeechBackendCapabilities(True, True, True)
     generation_profile = "stable"
@@ -81,19 +62,36 @@ class FakeRenderingBackend(FakeBackend):
         completions=(SynthesisCompletion.COMPLETE,),
         result_sample_rate=None,
         diagnostics_profile=None,
+        cache_sources=None,
     ):
         super().__init__()
         self.render_requests = []
         self.completions = tuple(completions)
         self.result_sample_rate = result_sample_rate or self.sample_rate
         self.diagnostics_profile = diagnostics_profile
+        self.cache_sources = tuple(cache_sources or ())
+        self.audio_cache = BoundedCache(2)
+        self.persistent_audio_cache = object()
+        self.persistent_cached = False
 
     def render(self, request):
         self.render_requests.append(request)
         call_index = len(self.render_requests) - 1
-        cache_source = (
-            "fresh-generation" if len(self.render_requests) == 1 else "memory-cache"
-        )
+        if request.cache_policy is SynthesisCachePolicy.REFRESH:
+            cache_source = "fresh-generation"
+            self.audio_cache.put("sample", True)
+            self.persistent_cached = True
+        elif self.audio_cache.get("sample"):
+            cache_source = "memory-cache"
+        elif self.persistent_cached:
+            cache_source = "persistent-cache"
+            self.audio_cache.put("sample", True)
+        else:
+            cache_source = "fresh-generation"
+        if self.cache_sources:
+            cache_source = self.cache_sources[
+                min(call_index, len(self.cache_sources) - 1)
+            ]
         completion = self.completions[min(call_index, len(self.completions) - 1)]
         audio = np.array([[0.0], [0.5], [-0.5], [0.0]], dtype=np.float32)
 
@@ -135,11 +133,11 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("No complete voice manifest", errors.getvalue())
 
-    def test_reads_streamed_audio_through_bounded_cache_interface(self):
+    def test_reads_audio_only_from_typed_render_result(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
         )
-        backend = FakeStreamingBackend()
+        backend = FakeRenderingBackend()
 
         def create_fake_backend(name, registry, cache):
             del name, registry, cache
@@ -159,7 +157,7 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(report["schema"], "vntts.tts-benchmark-report")
         self.assertEqual(report["model_id"], "fake")
         self.assertEqual(sample["duration_seconds"], 1.0)
-        self.assertEqual(sample["first_audio_ms"], 125.0)
+        self.assertEqual(sample["first_audio_ms"], 25.0)
         self.assertEqual(sample["line_id"], "Kamuta")
         self.assertRegex(sample["text_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(sample["audio_sha256"], r"^[0-9a-f]{64}$")
@@ -181,7 +179,7 @@ class TTSBenchmarkTest(unittest.TestCase):
             )
 
         sample = report["samples"][0]
-        self.assertEqual(len(backend.render_requests), 2)
+        self.assertEqual(len(backend.render_requests), 3)
         self.assertEqual(backend.render_requests[0].voice, "Kamuta")
         self.assertEqual(sample["fresh"]["cache_source"], "fresh-generation")
         self.assertEqual(sample["memory_cache"]["cache_source"], "memory-cache")
@@ -200,6 +198,16 @@ class TTSBenchmarkTest(unittest.TestCase):
                 )
             ),
             FakeRenderingBackend(diagnostics_profile="different"),
+            FakeRenderingBackend(
+                cache_sources=("fresh-generation", "fresh-generation")
+            ),
+            FakeRenderingBackend(
+                cache_sources=(
+                    "fresh-generation",
+                    "memory-cache",
+                    "memory-cache",
+                )
+            ),
         )
         for backend in cases:
             with self.subTest(backend=backend), TemporaryDirectory() as directory:
@@ -271,8 +279,8 @@ class TTSBenchmarkTest(unittest.TestCase):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
         )
-        backend = FakeBackend()
-        wall_times = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.4, 3.0, 3.01, 4.01])
+        backend = FakeRenderingBackend()
+        wall_times = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.4, 3.0, 3.01, 4.0, 4.01])
         cpu_times = iter([0.0, 0.05, 1.0, 1.1])
 
         def create_fake_backend(name, registry, cache):
@@ -294,8 +302,7 @@ class TTSBenchmarkTest(unittest.TestCase):
             sample = report["samples"][0]
             self.assertTrue(Path(sample["audio"]).is_file())
             self.assertEqual(sample["duration_seconds"], 1.0)
-            self.assertAlmostEqual(sample["first_audio_ms"], 400.0)
-            self.assertAlmostEqual(sample["realtime_factor"], 1.0)
+            self.assertAlmostEqual(sample["first_audio_ms"], 25.0)
             self.assertEqual(backend.primed, ["Kamuta"])
 
     def test_writes_valid_wave_and_json_report(self):
@@ -465,7 +472,7 @@ class TTSBenchmarkTest(unittest.TestCase):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Rhiannon", "rhiannon", references=(Path("voice.wav"),))]
         )
-        backend = FakeStreamingBackend()
+        backend = FakeRenderingBackend()
 
         with TemporaryDirectory() as temporary_directory:
             report = benchmark_backend(
@@ -488,9 +495,23 @@ class TTSBenchmarkTest(unittest.TestCase):
         sample = report["samples"][0]
         self.assertEqual(report["corpus"], "Rhiannon regression")
         self.assertEqual(sample["id"], "short-line")
-        self.assertEqual(sample["fresh"]["first_pcm_ms"], 125.0)
-        self.assertEqual(sample["memory_cache"]["first_pcm_ms"], 125.0)
-        self.assertIsNone(sample["persistent_cache"]["wall_ms"])
+        self.assertEqual(sample["fresh"]["first_pcm_ms"], 25.0)
+        self.assertEqual(sample["memory_cache"]["first_pcm_ms"], 25.0)
+        self.assertEqual(sample["persistent_cache"]["first_pcm_ms"], 25.0)
+        self.assertIsNotNone(sample["persistent_cache"]["wall_ms"])
+        self.assertEqual(
+            [request.cache_policy for request in backend.render_requests],
+            [
+                SynthesisCachePolicy.REFRESH,
+                SynthesisCachePolicy.USE,
+                SynthesisCachePolicy.USE,
+            ],
+        )
+        identities = {
+            (request.voice, request.text, request.generation_profile, request.seed)
+            for request in backend.render_requests
+        }
+        self.assertEqual(len(identities), 1)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from vntts.generated_audio import (
     PlaybackStatus,
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
+    SourceAudioRoute,
 )
 from vntts.live import AdaptiveSpeechBackpressure, SpeechChunk
 from vntts.main import (
@@ -46,11 +47,54 @@ from vntts.main import (
     speak_live_chunk,
 )
 from vntts.ocr import DialogRegion, OCRResult
+from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+
+class StubTypedPlaybackBackend:
+    name = "typed-test"
+
+    def __init__(self, outcome=None, prepared=None):
+        self.outcome = outcome or PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            10.0,
+            first_audio_ms=1.0,
+            audio_source="live:typed-test",
+        )
+        self.prepared = prepared or PreparedPlayback(
+            SimpleNamespace(voice_key="rhiannon-v2"),
+            5.0,
+            None,
+            "fresh-generation",
+            "moss-tts:fresh-generation",
+        )
+
+    def prepare_playback(self, _character, _text):
+        return self.prepared
+
+    def play_prepared(self, _prepared, *, playback_guard=None):
+        if playback_guard is not None and not playback_guard():
+            return PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
+        return self.outcome
+
+    def play_route(self, _route, *, playback_guard=None):
+        return self.play_prepared(None, playback_guard=playback_guard)
+
+
+def stub_route_trace(source, line_id=None):
+    return AudioRouteTrace(
+        None,
+        source,
+        "exact",
+        None,
+        None,
+        line_id,
+        "verified",
+    )
 
 
 class MainTest(unittest.TestCase):
@@ -1316,23 +1360,25 @@ class MainTest(unittest.TestCase):
             speech_backpressure_factory=Mock(return_value=policy),
         )
         controller.live_reader = Mock()
-        controller.speech_backend = Mock()
-        controller.speech_backend.play.return_value = True
-        controller.speech_backend.last_first_audio_ms = None
-        controller.speech_backend.last_playback_underrun = True
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 10.0, underflowed=True)
+        )
+        prepared = controller.speech_backend.prepared
         chunk = SpeechChunk(1, "Kamuta", "A line.")
 
-        self.assertTrue(controller._play_live_chunk(chunk, "prepared"))
+        self.assertTrue(controller._play_live_chunk(chunk, prepared))
         self.assertEqual(controller.live_reader.max_speech_jobs, 1)
         self.assertIn("prefetch disabled", statuses[-1])
 
-        controller.speech_backend.last_playback_underrun = False
+        controller.speech_backend.outcome = PlaybackOutcome(
+            PlaybackStatus.COMPLETED, 10.0
+        )
         now[0] = 9.0
-        controller._play_live_chunk(chunk, "prepared")
+        controller._play_live_chunk(chunk, prepared)
         self.assertEqual(controller.live_reader.max_speech_jobs, 1)
 
         now[0] = 10.0
-        controller._play_live_chunk(chunk, "prepared")
+        controller._play_live_chunk(chunk, prepared)
         self.assertEqual(controller.live_reader.max_speech_jobs, 2)
         self.assertIn("prefetch restored", statuses[-1])
 
@@ -1345,15 +1391,17 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock()
         controller.live_reader.wait_until_playable.return_value = True
-        controller.speech_backend = Mock()
-        controller.speech_backend.play.return_value = True
-        controller.speech_backend.last_playback_underrun = False
-        controller.speech_backend.last_first_audio_ms = None
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(PlaybackStatus.PASSTHROUGH_UNOBSERVED, None)
+        )
         chunk = SpeechChunk(7, "Rhiannon", "An original voiced line.")
-        prepared = PreparedSourceAudioPassThrough(
-            "reverse1999:1:2",
-            "hash",
-            "voice-7",
+        prepared = SourceAudioRoute(
+            PreparedSourceAudioPassThrough(
+                "reverse1999:1:2",
+                "hash",
+                "voice-7",
+            ),
+            stub_route_trace("game-source", "reverse1999:1:2"),
         )
 
         self.assertTrue(controller._play_live_chunk(chunk, prepared))
@@ -1369,16 +1417,16 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
         controller.live_reader.wait_until_playable.return_value = True
-        controller.speech_backend = Mock()
-        controller.speech_backend.play.return_value = True
-        controller.speech_backend.last_playback_underrun = False
-        controller.speech_backend.last_first_audio_ms = None
-        prepared = PreparedSourceAudioPassThrough(
-            "reverse1999:1:2",
-            "hash",
-            "voice-7",
-            completion_seconds=2.5,
-            completion_source="story-index",
+        controller.speech_backend = StubTypedPlaybackBackend()
+        prepared = SourceAudioRoute(
+            PreparedSourceAudioPassThrough(
+                "reverse1999:1:2",
+                "hash",
+                "voice-7",
+                completion_seconds=2.5,
+                completion_source="story-index",
+            ),
+            stub_route_trace("game-source", "reverse1999:1:2"),
         )
 
         self.assertTrue(
@@ -1395,13 +1443,10 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
         controller.live_reader.wait_until_playable.return_value = True
-        controller.speech_backend = Mock(
-            last_playback_underrun=False,
-            last_first_audio_ms=0.0,
-        )
-        controller.speech_backend.play.return_value = True
-        prepared = PreparedGeneratedAudio(
-            "reverse1999:314601:41", "hash", Mock(), 48_000
+        controller.speech_backend = StubTypedPlaybackBackend()
+        prepared = GeneratedAudioRoute(
+            PreparedGeneratedAudio("reverse1999:314601:41", "hash", Mock(), 48_000),
+            stub_route_trace("generated-audio", "reverse1999:314601:41"),
         )
 
         self.assertTrue(
@@ -1417,13 +1462,17 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
         controller.live_reader.wait_until_playable.return_value = True
-        controller.speech_backend = Mock()
-        controller.speech_backend.play.return_value = True
-        controller.speech_backend.last_playback_underrun = False
-        controller.speech_backend.last_first_audio_ms = 125.0
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(
+                PlaybackStatus.COMPLETED,
+                20.0,
+                first_audio_ms=125.0,
+                audio_source="live:typed-test",
+            )
+        )
         chunk = SpeechChunk(1, "Kamuta", "A line.")
 
-        controller._play_live_chunk(chunk, "prepared")
+        controller._play_live_chunk(chunk, controller.speech_backend.prepared)
 
         timestamp = controller.live_reader.record_first_pcm.call_args.args[0]
         self.assertIsInstance(timestamp, float)
@@ -1533,17 +1582,20 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock()
         controller.live_reader.wait_until_playable.return_value = True
-        controller.speech_backend = Mock(
-            last_playback_underrun=False,
-            last_generation_limited=True,
-            last_first_audio_ms=100.0,
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(
+                PlaybackStatus.COMPLETED,
+                20.0,
+                generation_limited=True,
+                first_audio_ms=100.0,
+                audio_source="moss-tts:fresh-generation",
+            )
         )
-        controller.speech_backend.play.return_value = True
 
         self.assertTrue(
             controller._play_live_chunk(
                 SpeechChunk(4, "Rhiannon", "I, erhm ..."),
-                "prepared",
+                controller.speech_backend.prepared,
             )
         )
 
@@ -1792,7 +1844,7 @@ class MainTest(unittest.TestCase):
 
         controller.live_reader.set_auto_advance.assert_called_once_with(None)
 
-    def test_diagnostic_reports_effective_audio_source(self):
+    def test_diagnostic_does_not_scrape_legacy_backend_metrics(self):
         diagnostics = []
         controller = AppController(
             AppSettings(),
@@ -1803,15 +1855,13 @@ class MainTest(unittest.TestCase):
             last_playback_ms=34.0,
             last_first_audio_ms=5.0,
         )
-        controller.last_audio_source_description = (
-            "MOSS persistent cache (voice: rhiannon)"
-        )
+        controller.last_audio_source_description = "MOSS persistent cache"
 
         controller._publish_diagnostic(DiagnosticSnapshot(None))
 
         self.assertEqual(
             diagnostics[-1].audio_source,
-            "MOSS persistent cache (voice: rhiannon)",
+            "Not selected",
         )
 
     def test_diagnostic_uses_route_bound_outcome_metrics(self):
@@ -1916,14 +1966,7 @@ class MainTest(unittest.TestCase):
             ),
         )
         controller.voice_router = Mock(registry=registry)
-        controller.speech_backend = Mock(
-            name="moss-tts",
-            last_audio_source="moss-tts:fresh-generation",
-            last_route_trace=None,
-        )
-        controller.speech_backend.prepare.return_value = SimpleNamespace(
-            voice_key="rhiannon-v2"
-        )
+        controller.speech_backend = StubTypedPlaybackBackend()
 
         controller._prepare_live_chunk(SpeechChunk(9, "Rhiannon", "I, erhm ..."))
 
@@ -1966,14 +2009,7 @@ class MainTest(unittest.TestCase):
             pipeline_event_handler=timelines.record,
         )
         controller.voice_router = Mock(registry=registry)
-        controller.speech_backend = Mock(
-            name="moss-tts",
-            last_audio_source="moss-tts:fresh-generation",
-            last_route_trace=None,
-        )
-        controller.speech_backend.prepare.return_value = SimpleNamespace(
-            voice_key="rhiannon-v2"
-        )
+        controller.speech_backend = StubTypedPlaybackBackend()
 
         controller._prepare_live_chunk(
             SpeechChunk(9, "Rhiannon", "First chunk.", ordinal=1)

@@ -276,10 +276,12 @@ letting playback completion and auto advance finish normally.
 The default MOSS streaming profile uses 4 first-chunk frames and a 0.25-second
 interval. On the local Rhiannon probe this reduced fresh first PCM from about
 1264 ms at 16/1.0 to 640 ms, while the run remained faster than realtime (RTF
-0.88) and the benchmark sink reported no underrun. Use
+0.88). Use
 `--moss-first-chunk-frames` and `--moss-streaming-interval` with
-`vntts-benchmark-tts` to repeat the grid on another machine. A real audio-device
-soak is still required because a discard sink cannot expose driver jitter.
+`vntts-benchmark-tts` to repeat the device-independent render/cache grid on
+another machine. The benchmark deliberately leaves underrun unknown because it
+does not open a device; underrun, driver jitter, and stop latency require a real
+audio-device soak.
 
 For the faster English CPU engine, install its isolated runtime once, select
 Chatterbox Nano in Settings, and restart the app:

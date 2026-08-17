@@ -5,8 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import wave
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, replace
 from threading import Event, Lock
 from time import monotonic
 
@@ -17,6 +16,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
 )
 
+from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
@@ -114,33 +114,6 @@ class LiveTTSRoute:
 
 
 RouteDecision = SourceAudioRoute | GeneratedAudioRoute | LiveTTSRoute
-
-
-class PlaybackStatus(str, Enum):
-    COMPLETED = "completed"
-    INTERRUPTED = "interrupted"
-    FAILED = "failed"
-    PASSTHROUGH_UNOBSERVED = "passthrough-unobserved"
-
-
-@dataclass(frozen=True)
-class PlaybackOutcome:
-    status: PlaybackStatus
-    playback_ms: float | None
-    underflowed: bool = False
-    generation_limited: bool = False
-    first_audio_ms: float | None = None
-    error: str | None = None
-    synthesis_ms: float | None = None
-    cache_source: str | None = None
-    audio_source: str | None = None
-
-    @property
-    def successful(self):
-        return self.status in {
-            PlaybackStatus.COMPLETED,
-            PlaybackStatus.PASSTHROUGH_UNOBSERVED,
-        }
 
 
 class GeneratedAudioLibrary:
@@ -396,16 +369,9 @@ class GeneratedAudioFallbackBackend:
             elif self.speed != 1.0:
                 artifact_preflight_state = "generated-audio-skipped-nondefault-speed"
             fallback_reasons.append(artifact_preflight_state)
-        prepared = self.live_backend.prepare(character, text)
-        live_source = getattr(self.live_backend, "last_audio_source", None)
-        effective_source = (
-            live_source
-            if isinstance(live_source, str) and live_source
-            else f"live:{self.live_backend.name}"
-        )
+        prepared = self.live_backend.prepare_playback(character, text)
+        effective_source = prepared.audio_source
         line_id = line.line_id if line is not None else None
-        synthesis_ms = getattr(self.live_backend, "last_synthesis_ms", None)
-        first_audio_ms = getattr(self.live_backend, "last_first_audio_ms", None)
         trace = AudioRouteTrace(
             None,
             effective_source,
@@ -418,9 +384,9 @@ class GeneratedAudioFallbackBackend:
         return LiveTTSRoute(
             prepared,
             trace,
-            synthesis_ms,
-            first_audio_ms,
-            _prepared_cache_source(prepared, self.live_backend),
+            prepared.synthesis_ms,
+            prepared.first_audio_ms,
+            prepared.cache_source,
         )
 
     def _resolve_line(self, character, text, voice_overridden):
@@ -536,9 +502,8 @@ class GeneratedAudioFallbackBackend:
     def _play_live_route(self, route, playback_guard):
         if playback_guard is not None and not playback_guard():
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
-        started = self.clock()
         try:
-            result = self.live_backend.play(
+            outcome = self.live_backend.play_prepared(
                 route.prepared,
                 playback_guard=playback_guard,
             )
@@ -546,31 +511,13 @@ class GeneratedAudioFallbackBackend:
             return _route_outcome(
                 route,
                 PlaybackStatus.FAILED,
-                (self.clock() - started) * 1000,
+                None,
                 first_audio_ms=route.first_audio_ms,
                 error=str(error),
             )
-        playback_ms = _numeric_metric(
-            getattr(self.live_backend, "last_playback_ms", None)
-        )
-        if playback_ms is None:
-            playback_ms = (self.clock() - started) * 1000
-        first_audio_ms = route.first_audio_ms
-        if first_audio_ms is None:
-            first_audio_ms = _numeric_metric(
-                getattr(self.live_backend, "last_first_audio_ms", None)
-            )
-        return _route_outcome(
-            route,
-            PlaybackStatus.COMPLETED if result else PlaybackStatus.INTERRUPTED,
-            playback_ms,
-            underflowed=bool(
-                getattr(self.live_backend, "last_playback_underrun", False)
-            ),
-            generation_limited=(
-                getattr(self.live_backend, "last_generation_limited", False) is True
-            ),
-            first_audio_ms=first_audio_ms,
+        return replace(
+            outcome,
+            audio_source=route.trace.effective_source,
         )
 
     def prime(self, character):
@@ -633,13 +580,6 @@ def _numeric_metric(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return None
-
-
-def _prepared_cache_source(prepared, backend):
-    value = getattr(prepared, "cache_source", None)
-    if not isinstance(value, str) or not value:
-        value = getattr(backend, "last_cache_source", None)
-    return value if isinstance(value, str) and value else None
 
 
 def _route_outcome(

@@ -2,11 +2,12 @@ import unittest
 import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
 
+from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSEngine,
@@ -130,7 +131,7 @@ class TTSEngineTest(unittest.TestCase):
         audio_output.wait.assert_called_once_with()
 
     def test_speak_records_synthesis_and_playback_latency(self):
-        clock = iter((0.0, 0.15, 1.0, 1.4)).__next__
+        clock = iter((0.0, 0.15, 1.0, 1.005, 1.4)).__next__
         engine, _, _ = self.create_engine(clock=clock)
 
         engine.speak("Hello")
@@ -464,13 +465,65 @@ class TTSEngineTest(unittest.TestCase):
         audio_output.play.assert_not_called()
         self.assertFalse(result)
 
-    def test_stop_delegates_to_audio_output(self):
+    def test_inactive_stop_does_not_claim_the_audio_output(self):
         engine, _, audio_output = self.create_engine()
 
         result = engine.stop()
 
-        audio_output.stop.assert_called_once_with()
+        audio_output.stop.assert_not_called()
         self.assertFalse(result)
+
+    def test_stop_interrupts_only_the_active_typed_playback(self):
+        entered_wait = Event()
+        release_wait = Event()
+        engine, _, audio_output = self.create_engine()
+
+        def wait():
+            entered_wait.set()
+            release_wait.wait(timeout=1)
+
+        audio_output.wait.side_effect = wait
+        outcomes = []
+        thread = Thread(
+            target=lambda: outcomes.append(
+                engine.play_prepared(
+                    PreparedPlayback(
+                        [0.0, 0.5, 0.0],
+                        5.0,
+                        5.0,
+                        "fresh-generation",
+                        "live:coqui-xtts",
+                    )
+                )
+            )
+        )
+        thread.start()
+        self.assertTrue(entered_wait.wait(timeout=1))
+
+        self.assertTrue(engine.stop())
+        release_wait.set()
+        thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        audio_output.stop.assert_called_once_with()
+
+    def test_typed_playback_keeps_synthesis_and_first_device_write_separate(self):
+        clock = iter((1.0, 1.005, 1.4)).__next__
+        engine, _, _audio_output = self.create_engine(clock=clock)
+        prepared = PreparedPlayback(
+            [0.0, 0.5, 0.0],
+            125.0,
+            None,
+            "fresh-generation",
+            "live:coqui-xtts",
+        )
+
+        outcome = engine.play_prepared(prepared)
+
+        self.assertEqual(outcome.synthesis_ms, 125.0)
+        self.assertAlmostEqual(outcome.first_audio_ms, 5.0)
+        self.assertAlmostEqual(outcome.playback_ms, 400.0)
 
     def test_has_speaker_checks_model_and_newly_cached_voices(self):
         engine, _, _ = self.create_engine(

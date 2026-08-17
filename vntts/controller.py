@@ -45,6 +45,7 @@ from vntts.live import (
 )
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.playback import PreparedPlayback
 from vntts.runtime_config import (
     get_live_configuration,
     get_tts_configuration,
@@ -446,10 +447,7 @@ class AppController:
                         False,
                     )
                 ),
-                first_pcm_on_prepare=not bool(
-                    getattr(backend_capabilities, "streaming", False)
-                )
-                and not isinstance(self.speech_backend, GeneratedAudioFallbackBackend),
+                first_pcm_on_prepare=False,
                 **self._get_live_configuration(),
             )
             self.schedule_dialog_read = create_dialog_read_scheduler(
@@ -1299,7 +1297,6 @@ class AppController:
                 pipeline_metrics.max_speech_queue_depth if pipeline_metrics else 0
             ),
         )
-        metric_source = self.speech_backend or self.tts
         if route_metrics is not None:
             snapshot = replace(
                 snapshot,
@@ -1319,16 +1316,6 @@ class AppController:
                 or route_metrics.audio_source
                 or "Not selected",
             )
-        elif metric_source is not None and not isinstance(
-            metric_source, GeneratedAudioFallbackBackend
-        ):
-            snapshot = replace(
-                snapshot,
-                synthesis_ms=getattr(metric_source, "last_synthesis_ms", None),
-                playback_ms=getattr(metric_source, "last_playback_ms", None),
-                last_first_audio_ms=getattr(metric_source, "last_first_audio_ms", None),
-                audio_source=self.last_audio_source_description,
-            )
         with self.diagnostic_lock:
             self.last_diagnostic = snapshot
         self.diagnostic_handler(snapshot)
@@ -1347,11 +1334,19 @@ class AppController:
         prepared = None
         try:
             prepare_route = getattr(type(self.speech_backend), "prepare_route", None)
-            prepared = (
-                prepare_route(self.speech_backend, chunk.character, chunk.text)
-                if callable(prepare_route)
-                else self.speech_backend.prepare(chunk.character, chunk.text)
+            prepare_playback = getattr(
+                type(self.speech_backend), "prepare_playback", None
             )
+            if callable(prepare_route):
+                prepared = prepare_route(
+                    self.speech_backend, chunk.character, chunk.text
+                )
+            elif callable(prepare_playback):
+                prepared = prepare_playback(
+                    self.speech_backend, chunk.character, chunk.text
+                )
+            else:
+                raise TypeError("Speech backend does not implement prepare_playback()")
             self.last_audio_source_description = self._describe_audio_source(prepared)
             trace = self._build_audio_route_trace(chunk, prepared)
             self.last_audio_route_trace = trace
@@ -1365,7 +1360,13 @@ class AppController:
             self._refresh_diagnostic_metrics(
                 prepared
                 if isinstance(
-                    prepared, (GeneratedAudioRoute, SourceAudioRoute, LiveTTSRoute)
+                    prepared,
+                    (
+                        GeneratedAudioRoute,
+                        SourceAudioRoute,
+                        LiveTTSRoute,
+                        PreparedPlayback,
+                    ),
                 )
                 else None,
                 self._describe_audio_source(prepared) if prepared is not None else None,
@@ -1399,6 +1400,7 @@ class AppController:
         outcome = None
         try:
             play_route = getattr(type(self.speech_backend), "play_route", None)
+            play_prepared = getattr(type(self.speech_backend), "play_prepared", None)
             outcome = (
                 play_route(
                     self.speech_backend,
@@ -1411,14 +1413,19 @@ class AppController:
                 )
                 else None
             )
-            result = (
-                outcome.successful
-                if outcome is not None
-                else self.speech_backend.play(
+            if (
+                outcome is None
+                and callable(play_prepared)
+                and isinstance(audio, PreparedPlayback)
+            ):
+                outcome = play_prepared(
+                    self.speech_backend,
                     audio,
                     playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
                 )
-            )
+            if outcome is None:
+                raise TypeError("Speech backend does not implement typed playback")
+            result = outcome.successful
             if not result:
                 self.live_reader.block_auto_advance_for_generation(
                     chunk.generation,
@@ -1434,17 +1441,8 @@ class AppController:
                 ),
             ):
                 self.live_reader.seal_generation(chunk.generation)
-            underflowed = (
-                outcome.underflowed
-                if outcome is not None
-                else bool(getattr(self.speech_backend, "last_playback_underrun", False))
-            )
-            generation_limited = (
-                outcome.generation_limited
-                if outcome is not None
-                else getattr(self.speech_backend, "last_generation_limited", False)
-                is True
-            )
+            underflowed = outcome.underflowed
+            generation_limited = outcome.generation_limited
             outcome_name = (
                 outcome.status.value
                 if outcome is not None
@@ -1504,11 +1502,7 @@ class AppController:
                     if underflowed
                     else "Audio playback stable; live speech prefetch restored"
                 )
-            first_audio_ms = (
-                outcome.first_audio_ms
-                if outcome is not None
-                else getattr(self.speech_backend, "last_first_audio_ms", None)
-            )
+            first_audio_ms = outcome.first_audio_ms
             if isinstance(first_audio_ms, (int, float)) and not isinstance(
                 first_audio_ms, bool
             ):
@@ -1522,6 +1516,8 @@ class AppController:
     def _describe_audio_source(self, prepared):
         if isinstance(prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)):
             prepared = prepared.prepared
+        if isinstance(prepared, PreparedPlayback):
+            prepared = prepared.payload
         if isinstance(prepared, PreparedSourceAudioPassThrough):
             completion = (
                 f", completion {prepared.completion_seconds:.2f}s"
@@ -1580,17 +1576,13 @@ class AppController:
             if isinstance(
                 prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)
             )
-            else getattr(self.speech_backend, "last_route_trace", None)
+            else None
         )
         if route is None:
             line, match_result = self._resolve_trace_line(chunk)
-            effective_source = getattr(
-                self.speech_backend,
-                "last_audio_source",
-                None,
-            )
-            if not effective_source:
-                effective_source = f"live:{getattr(self.speech_backend, 'name', 'tts')}"
+            if not isinstance(prepared, PreparedPlayback):
+                raise TypeError("Speech backend returned an untyped prepared payload")
+            effective_source = prepared.audio_source
             if self.settings.audio_source_policy == "live-tts-only":
                 fallback_reason = "policy-live-tts-only"
                 artifact_state = "not-requested-live-tts-policy"
@@ -1616,6 +1608,8 @@ class AppController:
             )
             else prepared
         )
+        if isinstance(prepared_payload, PreparedPlayback):
+            prepared_payload = prepared_payload.payload
         voice_reference_id = (
             None
             if isinstance(

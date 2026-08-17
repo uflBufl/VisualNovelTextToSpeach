@@ -25,6 +25,7 @@ from vntts.generated_audio import (
     PreparedSourceAudioPassThrough,
     SourceAudioRoute,
 )
+from vntts.playback import PreparedPlayback, outcome_for_prepared
 from vntts.speech_backend import SpeechBackendCapabilities
 
 
@@ -109,6 +110,17 @@ class GeneratedAudioTest(unittest.TestCase):
         backend.capabilities = SpeechBackendCapabilities(True, False, True)
         backend.prepare.return_value = "live-audio"
         backend.play.return_value = True
+        backend.prepare_playback.return_value = PreparedPlayback(
+            "live-audio", None, None, "fresh-generation", "live:live-test"
+        )
+        backend.play_prepared.side_effect = lambda prepared, **_kwargs: (
+            outcome_for_prepared(
+                prepared,
+                PlaybackStatus.COMPLETED,
+                0.0,
+                first_audio_ms=prepared.first_audio_ms,
+            )
+        )
         backend.stop.return_value = False
         return backend
 
@@ -150,7 +162,7 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertIsInstance(route, GeneratedAudioRoute)
         self.assertEqual(route.prepared.line_id, "game:1")
-        live.prepare.assert_not_called()
+        live.prepare_playback.assert_not_called()
         self.assertEqual(route.synthesis_ms, 0.0)
         self.assertEqual(route.trace.effective_source, "generated")
         self.assertEqual(route.trace.match_result, "exact")
@@ -195,7 +207,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(
             route.trace.artifact_preflight_state, "generated-audio-entry-reserved"
         )
-        live.prepare.assert_not_called()
+        live.prepare_playback.assert_not_called()
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -297,9 +309,9 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertIsInstance(first, LiveTTSRoute)
         self.assertIsInstance(changed, LiveTTSRoute)
-        self.assertEqual(first.prepared, "live-audio")
-        self.assertEqual(changed.prepared, "live-audio")
-        self.assertEqual(live.prepare.call_count, 2)
+        self.assertEqual(first.prepared.payload, "live-audio")
+        self.assertEqual(changed.prepared.payload, "live-audio")
+        self.assertEqual(live.prepare_playback.call_count, 2)
 
     def test_manual_voice_override_skips_matching_generated_audio(self):
         with TemporaryDirectory() as directory:
@@ -316,8 +328,8 @@ class GeneratedAudioTest(unittest.TestCase):
             route = backend.prepare_route("Ada", "Hello.")
 
         self.assertIsInstance(route, LiveTTSRoute)
-        self.assertEqual(route.prepared, "live-audio")
-        live.prepare.assert_called_once_with("Ada", "Hello.")
+        self.assertEqual(route.prepared.payload, "live-audio")
+        live.prepare_playback.assert_called_once_with("Ada", "Hello.")
         self.assertEqual(
             route.trace.fallback_reason,
             "manual-voice-override",
@@ -346,7 +358,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.prepared.source_audio_id, "voice-7")
         self.assertIsNone(route.prepared.completion_seconds)
         self.assertEqual(route.trace.effective_source, "game")
-        live.prepare.assert_not_called()
+        live.prepare_playback.assert_not_called()
 
     def test_auto_advance_falls_back_when_game_audio_has_no_completion(self):
         live = self.create_live_backend()
@@ -366,7 +378,7 @@ class GeneratedAudioTest(unittest.TestCase):
         route = backend.prepare_route("Ada", "Hello.")
 
         self.assertIsInstance(route, LiveTTSRoute)
-        self.assertEqual(route.prepared, "live-audio")
+        self.assertEqual(route.prepared.payload, "live-audio")
         self.assertEqual(route.trace.effective_source, "live:live-test")
         self.assertIn(
             "source-audio-completion-unavailable",
@@ -407,7 +419,7 @@ class GeneratedAudioTest(unittest.TestCase):
         outcome = backend.play_route(route)
         self.assertIs(outcome.status, PlaybackStatus.PASSTHROUGH_UNOBSERVED)
         self.assertIsNone(outcome.playback_ms)
-        live.prepare.assert_not_called()
+        live.prepare_playback.assert_not_called()
 
     def test_story_audio_with_explicit_completion_waits_before_finishing(self):
         live = self.create_live_backend()
@@ -443,8 +455,8 @@ class GeneratedAudioTest(unittest.TestCase):
         route = backend.prepare_route("Ada", "Hello.")
 
         self.assertIsInstance(route, LiveTTSRoute)
-        self.assertEqual(route.prepared, "live-audio")
-        live.prepare.assert_called_once_with("Ada", "Hello.")
+        self.assertEqual(route.prepared.payload, "live-audio")
+        live.prepare_playback.assert_called_once_with("Ada", "Hello.")
 
     def test_live_tts_policy_skips_game_and_generated_audio(self):
         with TemporaryDirectory() as directory:
@@ -462,9 +474,9 @@ class GeneratedAudioTest(unittest.TestCase):
             route = backend.prepare_route("Ada", "Hello.")
 
         self.assertIsInstance(route, LiveTTSRoute)
-        self.assertEqual(route.prepared, "live-audio")
+        self.assertEqual(route.prepared.payload, "live-audio")
         self.assertEqual(route.trace.effective_source, "live:live-test")
-        live.prepare.assert_called_once_with("Ada", "Hello.")
+        live.prepare_playback.assert_called_once_with("Ada", "Hello.")
 
     def test_generated_policy_does_not_pass_through_game_audio(self):
         with TemporaryDirectory() as directory:
@@ -483,7 +495,7 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertIsInstance(route, GeneratedAudioRoute)
         self.assertEqual(route.trace.effective_source, "generated")
-        live.prepare.assert_not_called()
+        live.prepare_playback.assert_not_called()
 
     def test_invalid_audio_source_policy_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown audio source policy"):
@@ -623,7 +635,7 @@ class GeneratedAudioTest(unittest.TestCase):
         generated_outcome = backend.play_route(generated)
 
         live = self.create_live_backend()
-        live.play.side_effect = RuntimeError("live failed")
+        live.play_prepared.side_effect = RuntimeError("live failed")
         backend = GeneratedAudioFallbackBackend(
             live,
             None,
@@ -678,15 +690,26 @@ class GeneratedAudioTest(unittest.TestCase):
         first_audio = iter((10.0, 999.0))
 
         def prepare(_character, text):
-            live.last_first_audio_ms = next(first_audio)
-            live.last_synthesis_ms = 5.0 if text == "First." else 500.0
-            return text
+            first_ms = next(first_audio)
+            synthesis_ms = 5.0 if text == "First." else 500.0
+            return PreparedPlayback(
+                text,
+                synthesis_ms,
+                first_ms,
+                "fresh-generation",
+                "live:live-test",
+            )
 
-        live.prepare.side_effect = prepare
-        live.last_playback_ms = 20.0
-        live.last_playback_underrun = False
-        live.last_generation_limited = True
-        live.last_cache_source = "fresh-generation"
+        live.prepare_playback.side_effect = prepare
+        live.play_prepared.side_effect = lambda prepared, **_kwargs: (
+            outcome_for_prepared(
+                prepared,
+                PlaybackStatus.COMPLETED,
+                20.0,
+                generation_limited=True,
+                first_audio_ms=prepared.first_audio_ms,
+            )
+        )
         backend = GeneratedAudioFallbackBackend(
             live,
             None,

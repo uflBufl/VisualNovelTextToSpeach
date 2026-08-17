@@ -3,13 +3,14 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
 
-from vntts.services.tts_engine import TTSConfigurationError
+from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.services.tts_engine import AudioPlaybackError, TTSConfigurationError
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
@@ -486,6 +487,42 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         )
         audio_output.play.assert_not_called()
 
+    def test_chatterbox_stop_interrupts_only_its_active_typed_call(self):
+        entered_wait = Event()
+        release_wait = Event()
+        audio_output = Mock()
+
+        def wait():
+            entered_wait.set()
+            release_wait.wait(timeout=1)
+
+        audio_output.wait.side_effect = wait
+        backend, _model = self.create_backend(
+            CharacterVoiceRegistry(), audio_output=audio_output
+        )
+        prepared = PreparedPlayback(
+            np.zeros(10, dtype=np.float32),
+            5.0,
+            5.0,
+            "fresh-generation",
+            "live:chatterbox-nano",
+        )
+        outcomes = []
+        thread = Thread(target=lambda: outcomes.append(backend.play_prepared(prepared)))
+        thread.start()
+        self.assertTrue(entered_wait.wait(timeout=1))
+
+        self.assertTrue(backend.stop())
+        release_wait.set()
+        thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        audio_output.stop.assert_called_once_with()
+        audio_output.reset_mock()
+        self.assertFalse(backend.stop())
+        audio_output.stop.assert_not_called()
+
     def test_play_uses_backend_sample_rate_and_volume(self):
         audio_output = Mock()
         backend, _model = self.create_backend(
@@ -537,6 +574,21 @@ class XTTSBackendTest(unittest.TestCase):
             [0.0, 0.5, -0.5, 0.0],
             dtype=np.float32,
         )
+        voice_router.prepare_playback.return_value = PreparedPlayback(
+            np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32),
+            125.0,
+            None,
+            "fresh-generation",
+            "live:coqui-xtts",
+        )
+        voice_router.play_prepared.return_value = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            10.0,
+            first_audio_ms=5.0,
+            synthesis_ms=5.0,
+            cache_source="fresh-generation",
+            audio_source="live:coqui-xtts",
+        )
         options = {} if clock is None else {"clock": clock}
         return XTTSVoiceRouterBackend(voice_router, **options), voice_router
 
@@ -564,7 +616,7 @@ class XTTSBackendTest(unittest.TestCase):
         self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
         self.assertEqual(result.timing.first_chunk_ms, 125.0)
         self.assertIsNone(result.limits.max_tokens)
-        voice_router.synthesize.assert_called_once_with(
+        voice_router.prepare_playback.assert_called_once_with(
             "Lucy",
             "Render this.",
             synthesis_options=None,
@@ -584,7 +636,7 @@ class XTTSBackendTest(unittest.TestCase):
             )
         ).collect()
 
-        options = voice_router.synthesize.call_args.kwargs["synthesis_options"]
+        options = voice_router.prepare_playback.call_args.kwargs["synthesis_options"]
         self.assertEqual(options["temperature"], 0.85)
         self.assertFalse(options["split_sentences"])
 
@@ -593,10 +645,10 @@ class XTTSBackendTest(unittest.TestCase):
 
         self.assertTrue(backend.speak("Narrator", "Shared path."))
 
-        voice_router.synthesize.assert_called_once()
-        voice_router.play.assert_called_once()
+        voice_router.prepare_playback.assert_called_once()
+        voice_router.play_prepared.assert_called_once()
         np.testing.assert_array_equal(
-            voice_router.play.call_args.args[0],
+            voice_router.play_prepared.call_args.args[0].payload,
             np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32),
         )
 
@@ -604,12 +656,18 @@ class XTTSBackendTest(unittest.TestCase):
         backend, voice_router = self.create_backend()
         cancelled = Event()
 
-        def synthesize(*_args, **_kwargs):
+        def prepare_playback(*_args, **_kwargs):
             cancelled.set()
-            voice_router.tts.last_synthesis_cancelled = True
-            return np.array([0.0, 0.5, 0.0], dtype=np.float32)
+            return PreparedPlayback(
+                np.array([0.0, 0.5, 0.0], dtype=np.float32),
+                5.0,
+                None,
+                "fresh-generation",
+                "live:coqui-xtts",
+                generation_completed=False,
+            )
 
-        voice_router.synthesize.side_effect = synthesize
+        voice_router.prepare_playback.side_effect = prepare_playback
 
         result = backend.render(
             SynthesisRequest(
@@ -932,6 +990,15 @@ class PocketTTSBackendTest(unittest.TestCase):
             "fresh-generation",
         )
 
+    def test_legacy_pocket_play_normalizes_synthesis_failure(self):
+        model = FakePocketModel()
+        model.generate_audio_stream = Mock(side_effect=RuntimeError("stream failed"))
+        backend, _model, _audio_output = self.create_backend(model=model)
+        prepared = backend.prepare("Narrator", "Broken stream.")
+
+        with self.assertRaisesRegex(AudioPlaybackError, "stream failed"):
+            backend.play(prepared)
+
     def test_locked_voice_cloning_reports_actionable_setup(self):
         model = FakePocketModel()
         model.get_state_for_audio_prompt = Mock(
@@ -979,8 +1046,13 @@ class PocketTTSBackendTest(unittest.TestCase):
             yield FakeTensor([0.2, -0.2])
             generated.append(3)
 
-        self.assertFalse(backend._write_chunks(stream, chunks(), None))
+        completed, underflowed, first_audio_ms = backend._write_chunks(
+            stream, chunks(), None
+        )
 
+        self.assertFalse(completed)
+        self.assertFalse(underflowed)
+        self.assertIsNone(first_audio_ms)
         self.assertEqual(generated, [1, 2, 3])
         self.assertEqual(len(stream.writes), 1)
 

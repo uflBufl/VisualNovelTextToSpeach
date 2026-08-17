@@ -1180,6 +1180,7 @@ class LiveDialogReader:
             LiveTTSRoute,
             SourceAudioRoute,
         )
+        from vntts.playback import PreparedPlayback
 
         if not self.wait_until_playable(chunk):
             return
@@ -1188,7 +1189,13 @@ class LiveDialogReader:
             self.last_spoken_chunk = chunk
             self._record_speech_metrics_locked(playback_started=True)
         if self.first_pcm_on_prepare and not isinstance(
-            prepared, (GeneratedAudioRoute, LiveTTSRoute, SourceAudioRoute)
+            prepared,
+            (
+                GeneratedAudioRoute,
+                LiveTTSRoute,
+                SourceAudioRoute,
+                PreparedPlayback,
+            ),
         ):
             self._report_pipeline_event(
                 "first-pcm",

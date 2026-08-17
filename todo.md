@@ -59,8 +59,9 @@ sections after their implementation has been verified and committed.
 - [ ] Run `vntts-benchmark-tts` on the completed exact Rhiannon replay corpus,
       add generated/original game-audio route timing, and retain the report as
       acceptance evidence. The reported-line regression already covers fresh,
-      memory/persistent cache, first PCM, realtime factor, underruns, and the
-      missed-EOS safety cap.
+      memory/persistent cache, first-chunk timing, realtime factor, and the
+      missed-EOS safety cap. Underrun remains a real-device hardware acceptance
+      gate because the render-only benchmark does not open an output device.
 - [ ] Run a small blinded listening comparison for Rhiannon speaker similarity,
       pronunciation, prosody, noise, repetitions, and trailing silence. Compare
       the stable generation profile with the current reference codec roundtrip
@@ -79,10 +80,10 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Simplify the live speech boundary after the P0 replay passes
 
-- [ ] Migrate the individual live TTS backend adapters and generic benchmark
-      from their legacy `prepare()`/`play()` and `last_*` metric surface to
-      typed playback outcomes. The generated/source route wrapper is already
-      typed; this residual concerns the standalone backend APIs.
+- [ ] Remove the deprecated concrete-backend `prepare()`/`play()` and mutable
+      `last_*` compatibility facade in a major release after an external API
+      usage audit and documented migration window. Internal playback and the
+      benchmark already use typed call-bound results.
 - [ ] Document the final routing precedence, source-audio completion contract,
       cache semantics, and auto-advance confirmation behavior in the README and
       game-pack contract.
