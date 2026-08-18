@@ -195,6 +195,16 @@ deterministic cumulative seed rule and clamps the run to at most three total
 attempts even if a caller supplies a larger `--retries` value. Reopening the
 policy after the third failed attempt is rejected without changing state.
 
+Reference comparison and selection are implemented as a separate immutable
+manifest workflow, documented in
+[`authoring-reference-selection.md`](authoring-reference-selection.md).
+`reference-report` checksum-binds objective metrics for every candidate;
+`select-reference` publishes a new no-overwrite manifest only after a human
+chooses the candidate number. Workspace creation verifies the selection
+extension against its copied WAV bytes. Because a reference change affects the
+whole character, generation still requires an explicit queue-ID cohort and all
+new WAVs remain pending review.
+
 Example workspace creation for one sentence repair:
 
 ```bash

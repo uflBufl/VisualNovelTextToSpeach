@@ -33,6 +33,7 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.reference_selection import select_voice_reference
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -268,6 +269,49 @@ def write_carry_target_manifest(root, *, rhiannon_payloads=None):
 
 
 class AuthoringWorkbenchTest(unittest.TestCase):
+    def test_workspace_binds_selected_reference_extension_to_copied_wavs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, _workspace = create_test_workspace(root)
+            manifest = Path(fixture["job"]["voice_manifest"])
+            for index, name in enumerate(("rhiannon.wav", "rhiannon-2.wav"), start=1):
+                samples = (
+                    np.sin(np.linspace(0, np.pi * 2 * index * 220, 32_000)).astype(
+                        np.float32
+                    )
+                    * 0.2
+                )
+                write_pcm16_wav(manifest.parent / name, samples, 16_000)
+            selected = manifest.with_name("selected-voice-manifest.json")
+            select_voice_reference(manifest, "Rhiannon", 2, selected)
+
+            created = create_resume_workspace(
+                imported,
+                root / "selected-workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=selected,
+                backend="moss-tts",
+                model="model",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            )
+            (manifest.parent / "rhiannon-2.wav").write_bytes(b"mutated")
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "selection candidate changed"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "tampered-workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=selected,
+                    backend="moss-tts",
+                    model="model",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                )
+
+        self.assertTrue(created.directory.name.startswith("resume-"))
+
     def create_workspace(self, root):
         return create_test_workspace(root)
 

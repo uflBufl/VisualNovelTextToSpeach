@@ -65,6 +65,10 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.reference_selection import (
+    ReferenceSelectionError,
+    validate_reference_selection_provenance,
+)
 from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
@@ -2092,6 +2096,10 @@ def _copy_input_snapshots(
                 selected_sources.append(
                     (reference_source, reference_digest, "voice reference")
                 )
+        try:
+            validate_reference_selection_provenance(target, document)
+        except ReferenceSelectionError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
         voice_config = {
             "path": "inputs/voice/manifest.json",
             "sha256": digest,

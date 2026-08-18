@@ -440,6 +440,12 @@ versioned policy rather than claiming the fallback is the original speaker.
 See the [workspace contract](docs/authoring-workspaces.md) for the typed API and
 review behavior.
 
+Reference changes are explicit too: `reference-report` checksum-binds objective
+candidate metrics, and `select-reference` publishes a no-overwrite manifest
+whose selected-first ordering is revalidated when a workspace copies the WAVs.
+Perceptual choice remains manual. See
+[immutable reference selection](docs/authoring-reference-selection.md).
+
 After every selected queue item has a terminal approval or rejection, publish a
 portable final delivery with `vntts-pregenerate publish-pack`. Publication
 copies only bound inputs and approved WAVs into sibling staging, validates the

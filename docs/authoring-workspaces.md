@@ -30,6 +30,12 @@ selected digest are retained, and the workspace never claims they are the same.
 Selected files are copied into application data, so resume does not depend on
 mutable extractor paths.
 
+An optional `vntts.authoring.reference_selection` voice-manifest extension is
+validated against every copied candidate WAV before workspace publication. See
+[authoring-reference-selection.md](authoring-reference-selection.md). This
+turns a manually chosen first reference into a hash-bound workspace input rather
+than a mutable UI preference.
+
 A bounded failure-repair policy is also part of this identity. It contains only
 exact queue IDs authorized for safe sentence-boundary segmentation or edge-only
 silence trimming. Changing an ID, strategy or sentence pause creates a new

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import wave
 from pathlib import Path
 
@@ -16,7 +17,24 @@ from vntts.cli import cli_error, cli_messages
 def analyze_reference(path, *, silence_db=-40.0, window_ms=20.0):
     path = Path(path).expanduser().resolve()
     try:
-        with wave.open(str(path), "rb") as source:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"Unable to read reference WAV {path}: {error}") from error
+    return analyze_reference_bytes(
+        payload,
+        path=path,
+        silence_db=silence_db,
+        window_ms=window_ms,
+    )
+
+
+def analyze_reference_bytes(payload, *, path, silence_db=-40.0, window_ms=20.0):
+    """Analyze one immutable byte snapshot and bind the report to its digest."""
+    path = Path(path).expanduser().resolve()
+    if not isinstance(payload, bytes):
+        raise ValueError("Reference WAV payload must be bytes")
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as source:
             channels = source.getnchannels()
             sample_width = source.getsampwidth()
             sample_rate = source.getframerate()
@@ -70,7 +88,7 @@ def analyze_reference(path, *, silence_db=-40.0, window_ms=20.0):
 
     return {
         "path": str(path),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
         "sample_rate": sample_rate,
         "duration_seconds": round(duration_seconds, 3),
         "peak": round(peak, 6),

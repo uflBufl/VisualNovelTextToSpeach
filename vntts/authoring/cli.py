@@ -62,6 +62,11 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reference_selection import (
+    ReferenceSelectionError,
+    inspect_voice_reference_candidates,
+    select_voice_reference,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -347,6 +352,20 @@ def create_parser():
     )
     repairs.add_argument("--state", type=Path, required=True)
     repairs.add_argument("--queue", type=Path, required=True)
+    references = subparsers.add_parser(
+        "reference-report",
+        help="Inspect immutable objective metrics for one character's references",
+    )
+    references.add_argument("--voice-manifest", type=Path, required=True)
+    references.add_argument("--character", required=True)
+    select_reference = subparsers.add_parser(
+        "select-reference",
+        help="Publish a no-overwrite manifest with one explicit first reference",
+    )
+    select_reference.add_argument("--voice-manifest", type=Path, required=True)
+    select_reference.add_argument("--character", required=True)
+    select_reference.add_argument("--reference-number", type=int, required=True)
+    select_reference.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -700,6 +719,27 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "reference-report":
+            print(
+                json.dumps(
+                    inspect_voice_reference_candidates(
+                        arguments.voice_manifest, arguments.character
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "select-reference":
+            result = select_voice_reference(
+                arguments.voice_manifest,
+                arguments.character,
+                arguments.reference_number,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "publish-pack":
             producers = arguments.producer or [
                 {
@@ -781,6 +821,7 @@ def main(argv=None):
         FinalGamePackError,
         LegacyAuthoringImportError,
         ListeningImportError,
+        ReferenceSelectionError,
         StoryIndexError,
         VoiceGenerationQueueError,
         VoiceManifestError,

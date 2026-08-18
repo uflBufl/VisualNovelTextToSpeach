@@ -93,6 +93,13 @@ from vntts.authoring.queue_builder import (
     plan_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reference_selection import (
+    ReferenceSelectionError,
+    ReferenceSelectionResult,
+    inspect_voice_reference_candidates,
+    select_voice_reference,
+    validate_reference_selection_provenance,
+)
 from vntts.authoring.workbench import (
     CollectionSelection,
     ImmutableHistoryTimestamp,
@@ -136,6 +143,8 @@ __all__ = [
     "MissingVoicePolicyError",
     "NARRATOR_ALL_UNRESOLVED",
     "NARRATOR_ROLES",
+    "ReferenceSelectionError",
+    "ReferenceSelectionResult",
     "EDGE_SILENCE_TRIM",
     "SENTENCE_BOUNDARY_SEGMENTATION",
     "GenerationQueueBuildError",
@@ -162,6 +171,7 @@ __all__ = [
     "inspect_listening_session",
     "inspect_collection_selection",
     "inspect_generation_queue",
+    "inspect_voice_reference_candidates",
     "inspect_generated_wav",
     "inspect_generated_speech",
     "inspect_standalone_generation",
@@ -184,6 +194,8 @@ __all__ = [
     "immutable_history_timestamps",
     "sha256_control_path",
     "select_representative_items",
+    "select_voice_reference",
     "workspace_voice_snapshot",
     "trim_excess_edge_silence",
+    "validate_reference_selection_provenance",
 ]
