@@ -99,6 +99,17 @@ session is preserved as historical, non-authoritative evidence and must not be
 completed or used to choose source references. The six cross-character trials
 were a workflow-design error, not missing human work.
 
+The replacement quality review was published at
+`authoring/source-reference-quality-reviews/character-story-20260818`. Its
+initial `review.json` SHA-256 is
+`5766f51cac1545cb0bf476cc51b1354f516c2e3ec071b2775b8462328ca002cd`.
+It starts at `0/4`, contains nine copied generated WAVs and seven visible
+excluded outcomes. The four cards are Dobharchú portrait `534704` (37 affected
+lines, 3 generated, 1 excluded), Dobharchú portrait `534703` (11, 1, 3),
+Poacher portrait `505601` (4, 2, 2), and Aderyn's Father portrait `534604`
+(1, 3, 1). The historical blind session remains at `1/9` and is not binding
+authority.
+
 After every cluster card has an explicit decision, publish the accepted set.
 The binding CLI verifies that the review is complete and belongs to the exact
 plan; direct variant IDs are not accepted at this boundary:

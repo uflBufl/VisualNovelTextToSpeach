@@ -10,17 +10,7 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Replace the invalid nine-trial source-reference session with a
-      cluster-specific quality review. Preserve the historical `1/9` session as
-      non-authoritative evidence, but do not use its six cross-character
-      fixed-text comparisons to choose a voice. Present one card for each of the
-      four accepted character/portrait clusters with its exact original
-      reference, every checksum-valid generated sample, excluded failure
-      reasons and separate `Accept reference`, `Reject reference` and
-      `Need another sample` decisions. Only accepted clusters may feed
-      `build-reference-bindings`.
-
-- [ ] Complete the replacement cluster-specific review for the four accepted
+- [ ] Complete the published cluster-specific review for the four accepted
       reference variants. The bounded fixed-corpus run published 9 of 16 WAVs;
       five typed audio-limit and two speech-silence failures must remain visible
       rather than becoming listening audio. Source-audio technical acceptance
