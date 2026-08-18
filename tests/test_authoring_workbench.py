@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import time
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import asdict
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -1256,6 +1258,34 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fallback_summary = inspect_workspace(fallback.directory)
             fallback_readiness = inspect_generation_readiness(fallback.directory)
             fallback_command = generation_command(fallback.directory)
+            cli_output = StringIO()
+            with redirect_stdout(cli_output):
+                self.assertEqual(
+                    authoring_main(
+                        [
+                            "create-workspace",
+                            str(imported),
+                            "--workspaces-root",
+                            str(root / "workspaces"),
+                            "--story-index",
+                            str(fixture["job"]["story_index"]),
+                            "--voice-manifest",
+                            str(fixture["job"]["voice_manifest"]),
+                            "--backend",
+                            "moss-tts",
+                            "--model",
+                            "moss-v1.5",
+                            "--generation-profile",
+                            "stable",
+                            "--narrator-character",
+                            "Rhiannon",
+                            "--narrator-fallback-role",
+                            "Uncovered",
+                        ]
+                    ),
+                    0,
+                )
+            cli_workspace = json.loads(cli_output.getvalue())
 
             summary = inspect_workspace(created.directory)
             covered = inspect_collection_selection(
@@ -1307,6 +1337,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fallback_command[fallback_command.index("--narrator-fallback-role") + 1],
             "Uncovered",
         )
+        self.assertFalse(cli_workspace["created"])
+        self.assertEqual(cli_workspace["directory"], str(fallback.directory))
         self.assertEqual(summary.missing_voice, 1)
         self.assertEqual(covered.readiness.failed, 1)
         self.assertEqual(covered.readiness.ready, 1)

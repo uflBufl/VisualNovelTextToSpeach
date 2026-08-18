@@ -57,6 +57,13 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
+    create_resume_workspace,
+    default_workspaces_root,
+    generation_control_bindings,
+    generation_output_identity,
+)
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoice,
@@ -118,6 +125,24 @@ def _generation_missing_voice_policy(arguments):
         return MissingVoicePolicy()
     except MissingVoicePolicyError as error:
         raise BulkGenerationError(str(error)) from error
+
+
+def _add_missing_voice_policy_arguments(parser):
+    fallback = parser.add_mutually_exclusive_group()
+    fallback.add_argument(
+        "--narrator-fallback-role",
+        action="append",
+        dest="narrator_fallback_roles",
+        help=(
+            "Use Narrator only when this exact requested role still has no "
+            "configured reference; repeat for multiple roles"
+        ),
+    )
+    fallback.add_argument(
+        "--narrator-fallback-all",
+        action="store_true",
+        help="Use Narrator for every still-unresolved named role in this exact queue",
+    )
 
 
 def create_parser():
@@ -190,6 +215,27 @@ def create_parser():
         )
         if command == "build-queue":
             queue.add_argument("--output", type=Path, required=True)
+    workspace = subparsers.add_parser(
+        "create-workspace",
+        help="Create an immutable config-addressed resume workspace",
+    )
+    workspace.add_argument("import_directory", type=Path)
+    workspace.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    workspace.add_argument("--story-index", type=Path)
+    workspace.add_argument("--voice-manifest", type=Path)
+    workspace.add_argument("--narrator-character")
+    workspace.add_argument(
+        "--backend", choices=("pocket-tts", "chatterbox-nano", "moss-tts")
+    )
+    workspace.add_argument("--model")
+    workspace.add_argument("--generation-profile")
+    workspace.add_argument("--carry-forward-from", type=Path)
+    workspace.add_argument(
+        "--carry-forward-character", action="append", dest="carry_forward_characters"
+    )
+    _add_missing_voice_policy_arguments(workspace)
     generate = subparsers.add_parser(
         "generate", help="Resume typed device-independent generation from a queue"
     )
@@ -213,21 +259,7 @@ def create_parser():
         help="Manifest character whose first reference voices queue Narrator lines",
     )
     generate.add_argument("--generation-profile")
-    fallback = generate.add_mutually_exclusive_group()
-    fallback.add_argument(
-        "--narrator-fallback-role",
-        action="append",
-        dest="narrator_fallback_roles",
-        help=(
-            "Use Narrator only when this exact requested role still has no "
-            "configured reference; repeat for multiple roles"
-        ),
-    )
-    fallback.add_argument(
-        "--narrator-fallback-all",
-        action="store_true",
-        help="Use Narrator for every still-unresolved named role in this exact queue",
-    )
+    _add_missing_voice_policy_arguments(generate)
     generate.add_argument("--limit", type=int)
     generate.add_argument("--retries", type=int, default=2)
     generate.add_argument("--seed", type=int, default=0)
@@ -350,18 +382,40 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "create-workspace":
+            missing_voice_policy = _generation_missing_voice_policy(arguments)
+            result = create_resume_workspace(
+                arguments.import_directory,
+                arguments.workspaces_root,
+                story_index=arguments.story_index,
+                voice_manifest=arguments.voice_manifest,
+                narrator_character=arguments.narrator_character,
+                backend=arguments.backend,
+                model=arguments.model,
+                generation_profile=arguments.generation_profile,
+                missing_voice_policy=missing_voice_policy,
+                carry_forward_from=arguments.carry_forward_from,
+                carry_forward_characters=arguments.carry_forward_characters,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                        "missing_voice_policy": missing_voice_policy.to_document(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "generate":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
             expected_workspace_controls = None
             workspace_output_identity = None
             if arguments.workspace is not None:
-                from vntts.authoring.workbench import (
-                    AuthoringWorkbenchError,
-                    generation_control_bindings,
-                    generation_output_identity,
-                )
-
                 try:
                     expected_workspace_controls = generation_control_bindings(
                         arguments.workspace,
@@ -655,6 +709,7 @@ def main(argv=None):
                 arguments.destination_root,
             )
     except (
+        AuthoringWorkbenchError,
         GenerationQueueBuildError,
         BulkGenerationError,
         DeliveryAnnotationError,

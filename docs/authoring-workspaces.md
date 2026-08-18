@@ -239,6 +239,26 @@ its `Character` column shows the effective synthesis role; the header names the
 selected Narrator character. Canonical audio contains only the original story
 text and never prepends a speaker announcement.
 
+The same configuration is available without a Python snippet:
+
+```sh
+uv run vntts-pregenerate create-workspace IMPORT_DIRECTORY \
+  --story-index STORY_INDEX.jsonl \
+  --voice-manifest VOICES/manifest.json \
+  --narrator-character Centurion \
+  --backend moss-tts \
+  --model MODEL_DIRECTORY \
+  --generation-profile stable \
+  --narrator-fallback-role 'Poacher I' \
+  --narrator-fallback-role 'Poacher II' \
+  --narrator-fallback-role 'Glyndŵr'
+```
+
+The command prints the canonical workspace directory and whether it was newly
+created. Repeating the exact command is idempotent; changing policy or another
+bound input produces a different workspace instead of reconfiguring one in
+place.
+
 ## Child-process trust boundary
 
 The generated command passes `--workspace` to a fresh
