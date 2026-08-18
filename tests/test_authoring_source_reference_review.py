@@ -269,25 +269,38 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         return report, review, story
 
-    def write_base_voice_manifest(self, root):
+    def write_base_voice_manifest(self, root, *, include_rhiannon=False):
         reference = root / "base-references" / "centurion.wav"
         reference.parent.mkdir()
         values = np.sin(np.linspace(0, 24, 4_000, dtype=np.float32)) * 0.2
         write_pcm16_wav(reference, values, 16_000)
         manifest = root / "base-voice-manifest.json"
+        voices = [
+            {
+                "character": "Centurion",
+                "speaker": "centurion",
+                "references": ["base-references/centurion.wav"],
+            }
+        ]
+        if include_rhiannon:
+            rhiannon_reference = root / "base-references" / "rhiannon.wav"
+            values = np.sin(np.linspace(0, 18, 5_000, dtype=np.float32)) * 0.2
+            write_pcm16_wav(rhiannon_reference, values, 16_000)
+            voices.append(
+                {
+                    "character": "Rhiannon",
+                    "speaker": "rhiannon",
+                    "aliases": ["Aderyn (adult)"],
+                    "references": ["base-references/rhiannon.wav"],
+                }
+            )
         write_voice_manifest(
             manifest,
             {
                 "version": 2,
                 "game": "Synthetic",
                 "language": "en",
-                "voices": [
-                    {
-                        "character": "Centurion",
-                        "speaker": "centurion",
-                        "references": ["base-references/centurion.wav"],
-                    }
-                ],
+                "voices": voices,
             },
         )
         return manifest
@@ -613,7 +626,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
-            manifest = self.write_base_voice_manifest(root)
+            manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
             session = load_source_reference_quality_review(result.session)
             for card in session["variants"]:
                 record_source_reference_quality_decision(
@@ -630,6 +643,8 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                         str(manifest),
                         "--narrator-character",
                         "Centurion",
+                        "--include-base-character",
+                        "Rhiannon",
                         "--quality-review",
                         str(result.session),
                         "--output",
@@ -643,6 +658,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["selected_variants"], 2)
+        self.assertIn("Rhiannon", {voice["character"] for voice in manifest["voices"]})
         self.assertEqual(
             len(
                 manifest["vntts.authoring.source_reference_bindings"][
@@ -745,6 +761,102 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 result["source_reference_binding"]["synthesis_voice_character"],
                 character,
             )
+
+    def test_binding_manifest_copies_only_explicit_base_characters(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            base_manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
+            plan_result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(plan_result.directory)
+            variant = f"{plan['clusters'][0]['cluster_id']}-anchor-1"
+            default_result = publish_source_reference_bindings(
+                plan_result.directory,
+                base_manifest,
+                "Centurion",
+                [variant],
+                root / "default-bindings",
+            )
+            default_document, default_voices = load_voice_manifest(
+                default_result.directory / "voice-manifest.json", allow_legacy=False
+            )
+            result = publish_source_reference_bindings(
+                plan_result.directory,
+                base_manifest,
+                "Centurion",
+                [variant],
+                root / "included-bindings",
+                base_characters=("Rhiannon",),
+            )
+            document, voices = load_voice_manifest(
+                result.directory / "voice-manifest.json", allow_legacy=False
+            )
+            rhiannon = next(voice for voice in voices if voice.character == "Rhiannon")
+            copied = result.directory / rhiannon.references[0]
+            original = root / "base-references/rhiannon.wav"
+            copied_payload = copied.read_bytes()
+            original_payload = original.read_bytes()
+            included_base_characters = document[
+                "vntts.authoring.source_reference_bindings"
+            ]["included_base_characters"]
+
+        self.assertNotIn("Rhiannon", {voice.character for voice in default_voices})
+        self.assertNotIn(
+            "included_base_characters",
+            default_document["vntts.authoring.source_reference_bindings"],
+        )
+        self.assertEqual(len(voices), 3)
+        self.assertIn("Centurion", {voice.character for voice in voices})
+        self.assertIn("Rhiannon", {voice.character for voice in voices})
+        self.assertTrue(
+            any(voice.character.startswith("Source reference") for voice in voices)
+        )
+        self.assertEqual(copied_payload, original_payload)
+        self.assertEqual(
+            included_base_characters,
+            [
+                {
+                    "character": "Rhiannon",
+                    "reference_sha256s": [hashlib.sha256(original_payload).hexdigest()],
+                }
+            ],
+        )
+
+    def test_binding_manifest_rejects_unknown_or_duplicate_base_character(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            base_manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
+            plan_result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(plan_result.directory)
+            variant = f"{plan['clusters'][0]['cluster_id']}-anchor-1"
+
+            with self.assertRaisesRegex(
+                SourceReferenceReviewError, "has no references"
+            ):
+                publish_source_reference_bindings(
+                    plan_result.directory,
+                    base_manifest,
+                    "Centurion",
+                    [variant],
+                    root / "unknown-bindings",
+                    base_characters=("Missing",),
+                )
+            with self.assertRaisesRegex(SourceReferenceReviewError, "distinct"):
+                publish_source_reference_bindings(
+                    plan_result.directory,
+                    base_manifest,
+                    "Centurion",
+                    [variant],
+                    root / "duplicate-bindings",
+                    base_characters=("Rhiannon", "rhiannon"),
+                )
+            self.assertFalse((root / "unknown-bindings").exists())
+            self.assertFalse((root / "duplicate-bindings").exists())
 
     def test_binding_manifest_rejects_tampered_override_digest(self):
         with TemporaryDirectory() as directory:

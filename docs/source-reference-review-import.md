@@ -140,6 +140,7 @@ uv run vntts-pregenerate build-reference-bindings \
   --plan /new/source-reference-plan \
   --voice-manifest /path/to/base/voice-manifest.json \
   --narrator-character Centurion \
+  --include-base-character Rhiannon \
   --quality-review /new/source-reference-quality-review/review.json \
   --output /new/source-reference-bindings
 ```
@@ -152,6 +153,12 @@ generation records the effective synthetic voice, binding-map checksum and
 source queue ID in each result. Resume and final-pack publication reject a
 changed map, an unselected manifest voice, or state whose effective voice no
 longer agrees with that exact binding.
+
+`--include-base-character` is explicit and repeatable. It checksum-copies only
+the named base-manifest voices into the self-contained output. Use it when a
+new workspace must carry reviewed full outcomes for that character; omit it to
+retain the default partial-manifest behavior. Unknown, duplicate and narrator
+entries fail closed.
 
 The real portrait-enabled review was completed `4/4` with all four variants
 accepted. `build-reference-bindings` published 53 exact queue-ID bindings under

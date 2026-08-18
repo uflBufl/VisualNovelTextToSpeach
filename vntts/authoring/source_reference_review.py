@@ -384,6 +384,7 @@ def publish_source_reference_bindings(
     output,
     *,
     quality_review=None,
+    base_characters=(),
 ):
     """Publish a partial manifest with explicit queue-to-variant bindings."""
     plan_directory = Path(plan_directory).expanduser().resolve()
@@ -450,6 +451,32 @@ def publish_source_reference_bindings(
         raise SourceReferenceReviewError(
             f"Narrator character has no references: {narrator_character}"
         )
+    requested_base_characters = tuple(
+        _text(value, "Included base character") for value in base_characters
+    )
+    normalized_base_characters = tuple(
+        normalize_character_name(value) for value in requested_base_characters
+    )
+    if len(normalized_base_characters) != len(set(normalized_base_characters)):
+        raise SourceReferenceReviewError("Included base characters must be distinct")
+    normalized_narrator = normalize_character_name(narrator.character)
+    if normalized_narrator in normalized_base_characters:
+        raise SourceReferenceReviewError(
+            "Narrator is already included and must not be repeated as a base character"
+        )
+    base_voices_by_character = {
+        normalize_character_name(voice.character): voice for voice in base_voices
+    }
+    included_base_voices = []
+    for character, normalized in zip(
+        requested_base_characters, normalized_base_characters, strict=True
+    ):
+        voice = base_voices_by_character.get(normalized)
+        if voice is None or not voice.references:
+            raise SourceReferenceReviewError(
+                f"Included base character has no references: {character}"
+            )
+        included_base_voices.append(voice)
     requested_variants = tuple(
         _text(value, "Selected source-reference variant")
         for value in selected_variant_ids
@@ -515,6 +542,45 @@ def publish_source_reference_bindings(
             }
         )
 
+        included_base_characters = []
+        for voice_index, voice in enumerate(included_base_voices, start=1):
+            copied_references = []
+            reference_sha256s = []
+            for reference_index, relative in enumerate(voice.references, start=1):
+                source = _contained_file(base_voice_manifest.parent, relative)
+                digest = sha256_file(source)
+                suffix = source.suffix.lower() or ".wav"
+                target_relative = (
+                    Path("references")
+                    / "base"
+                    / f"{voice_index:02d}"
+                    / f"{reference_index:02d}{suffix}"
+                )
+                target = staging / target_relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                if sha256_file(target) != digest:
+                    raise SourceReferenceReviewError(
+                        f"Base voice reference changed while copied: {voice.character}"
+                    )
+                copied_references.append(target_relative.as_posix())
+                reference_sha256s.append(digest)
+                source_snapshots.append((source, digest))
+            voices.append(
+                {
+                    "character": voice.character,
+                    "speaker": voice.speaker,
+                    "aliases": list(voice.aliases),
+                    "references": copied_references,
+                }
+            )
+            included_base_characters.append(
+                {
+                    "character": voice.character,
+                    "reference_sha256s": reference_sha256s,
+                }
+            )
+
         queue_overrides = {}
         selected_variants = []
         for variant_id in requested_variants:
@@ -576,6 +642,8 @@ def publish_source_reference_bindings(
                 queue_overrides
             ),
         }
+        if included_base_characters:
+            bindings["included_base_characters"] = included_base_characters
         if quality_review_sha256 is not None:
             bindings["source_reference_quality_review_sha256"] = quality_review_sha256
         manifest = {

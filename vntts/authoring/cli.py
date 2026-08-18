@@ -436,6 +436,16 @@ def create_parser():
         required=True,
         help="Completed cluster-specific review.json authorizing accepted variants",
     )
+    reference_bindings.add_argument(
+        "--include-base-character",
+        action="append",
+        default=[],
+        dest="base_characters",
+        help=(
+            "Copy one exact character and its references from the base manifest; "
+            "repeat for additional characters"
+        ),
+    )
     reference_bindings.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
@@ -872,6 +882,7 @@ def main(argv=None):
                 None,
                 arguments.output,
                 quality_review=arguments.quality_review,
+                base_characters=arguments.base_characters,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
