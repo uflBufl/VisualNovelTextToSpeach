@@ -10,11 +10,11 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Consume the extractor's versioned checksum-bound reference-review
-      document without flattening portrait/bank variants. Map accepted anchors
-      to exact queue IDs and synthesis controls, create a new config-addressed
-      workspace, and preserve rejected/uncertain decisions across unchanged
-      report and WAV hashes.
+- [ ] Bind accepted clusters from the immutable source-reference plan to their
+      exact queue IDs as config-addressed synthesis controls, then create a new
+      workspace. The importer already preserves separate character/portrait/bank
+      clusters, accepted WAVs, rejected/uncertain/invalidated evidence and exact
+      story-derived queue IDs without mutating manifests or existing workspaces.
 
 - [ ] Generate one fixed evaluation corpus for every accepted reference or
       approved portrait cluster and provide blind source/result A/B review.

@@ -471,6 +471,22 @@ whose selected-first ordering is revalidated when a workspace copies the WAVs.
 Perceptual choice remains manual. See
 [immutable reference selection](docs/authoring-reference-selection.md).
 
+Extractor-owned Character Story decisions enter VNTTS through a separate
+variant-aware boundary:
+
+```bash
+uv run vntts-pregenerate import-reference-review \
+  --report CANDIDATES/report.json \
+  --review CANDIDATES/review.json \
+  --story-index STORY/story-index.jsonl \
+  --output AUTHORING/source-reference-plan
+```
+
+The plan copies accepted WAVs, keeps character/portrait/bank clusters separate,
+maps each cluster to exact story-derived queue IDs and includes a fixed
+evaluation corpus. It does not edit a manifest or authorize generation. See
+[variant-aware source-reference import](docs/source-reference-review-import.md).
+
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with
 `vntts-pregenerate publish-pack`. Publication

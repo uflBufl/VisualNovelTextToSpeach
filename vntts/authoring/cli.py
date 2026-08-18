@@ -69,6 +69,10 @@ from vntts.authoring.reference_selection import (
     inspect_voice_reference_candidates,
     select_voice_reference,
 )
+from vntts.authoring.source_reference_review import (
+    SourceReferenceReviewError,
+    import_source_reference_review,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -390,6 +394,14 @@ def create_parser():
     select_reference.add_argument("--character", required=True)
     select_reference.add_argument("--reference-number", type=int, required=True)
     select_reference.add_argument("--output", type=Path, required=True)
+    import_reference_review = subparsers.add_parser(
+        "import-reference-review",
+        help="Publish an immutable variant-aware plan from extractor decisions",
+    )
+    import_reference_review.add_argument("--report", type=Path, required=True)
+    import_reference_review.add_argument("--review", type=Path, required=True)
+    import_reference_review.add_argument("--story-index", type=Path, required=True)
+    import_reference_review.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -781,6 +793,15 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "import-reference-review":
+            result = import_source_reference_review(
+                arguments.report,
+                arguments.review,
+                arguments.story_index,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "publish-pack":
             producers = arguments.producer or [
                 {
@@ -863,6 +884,7 @@ def main(argv=None):
         LegacyAuthoringImportError,
         ListeningImportError,
         ReferenceSelectionError,
+        SourceReferenceReviewError,
         StoryIndexError,
         VoiceGenerationQueueError,
         VoiceManifestError,

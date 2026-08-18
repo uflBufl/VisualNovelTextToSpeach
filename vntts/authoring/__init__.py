@@ -103,6 +103,12 @@ from vntts.authoring.reference_selection import (
     select_voice_reference,
     validate_reference_selection_provenance,
 )
+from vntts.authoring.source_reference_review import (
+    SourceReferencePlanResult,
+    SourceReferenceReviewError,
+    import_source_reference_review,
+    load_source_reference_plan,
+)
 from vntts.authoring.workbench import (
     CollectionSelection,
     ImmutableHistoryTimestamp,
@@ -178,6 +184,7 @@ __all__ = [
     "inspect_collection_selection",
     "inspect_generation_queue",
     "inspect_voice_reference_candidates",
+    "import_source_reference_review",
     "inspect_generated_wav",
     "inspect_generated_speech",
     "inspect_standalone_generation",
@@ -185,6 +192,7 @@ __all__ = [
     "list_workspace_collections",
     "load_listening_session",
     "load_generation_state",
+    "load_source_reference_plan",
     "is_spoken_queue_item",
     "next_pending_trial",
     "plan_generation_queue",
@@ -201,6 +209,8 @@ __all__ = [
     "sha256_control_path",
     "select_representative_items",
     "select_voice_reference",
+    "SourceReferencePlanResult",
+    "SourceReferenceReviewError",
     "workspace_voice_snapshot",
     "trim_excess_edge_silence",
     "validate_reference_selection_provenance",
