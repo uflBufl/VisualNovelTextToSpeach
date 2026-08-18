@@ -32,6 +32,12 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.source_reference_bindings import (
+    SOURCE_REFERENCE_BINDINGS_FIELD,
+    SOURCE_REFERENCE_BINDINGS_SCHEMA,
+    SOURCE_REFERENCE_BINDINGS_VERSION,
+    queue_voice_overrides_sha256,
+)
 from vntts.game_pack import import_game_pack
 from vntts.synthesis import (
     SynthesisChunk,
@@ -100,6 +106,7 @@ def prepare_authoring_fixture(
     legacy_narrator=False,
     narrator_selection_character=None,
     named_narrator_fallback=None,
+    queue_voice_override=False,
 ):
     root.mkdir(parents=True, exist_ok=True)
     items = [queue_item(name) for name in names]
@@ -137,18 +144,45 @@ def prepare_authoring_fixture(
     reference = root / "inputs" / "references" / "hero.wav"
     write_pcm16_wav(reference, audio_samples(), 16_000)
     voices = root / "inputs" / "voice-manifest.json"
-    write_voice_manifest(
-        voices,
-        {
-            "version": 2,
-            "voices": [
+    voice_document = {
+        "version": 2,
+        "voices": [
+            {
+                "character": "Hero",
+                "speaker": "synthetic-hero",
+                "references": ["references/hero.wav"],
+            }
+        ],
+    }
+    queue_voice_overrides = {}
+    if queue_voice_override:
+        variant_character = "Source reference Hero cluster-fixture-anchor-1"
+        voice_document["voices"].append(
+            {
+                "character": variant_character,
+                "speaker": "source-reference:fixture",
+                "references": ["references/hero.wav"],
+            }
+        )
+        queue_voice_overrides = {item["queue_id"]: variant_character for item in items}
+        voice_document[SOURCE_REFERENCE_BINDINGS_FIELD] = {
+            "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
+            "schema_version": SOURCE_REFERENCE_BINDINGS_VERSION,
+            "source_reference_plan_sha256": "1" * 64,
+            "selected_variants": [
                 {
-                    "character": "Hero",
-                    "speaker": "synthetic-hero",
-                    "references": ["references/hero.wav"],
+                    "variant_id": "cluster-fixture-anchor-1",
+                    "voice_character": variant_character,
                 }
             ],
-        },
+            "queue_voice_overrides": queue_voice_overrides,
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(
+                queue_voice_overrides
+            ),
+        }
+    write_voice_manifest(
+        voices,
+        voice_document,
     )
     queue = root / "inputs" / "queue.jsonl"
     metadata = {"game": "Synthetic Game", "language": "en"}
@@ -194,6 +228,7 @@ def prepare_authoring_fixture(
             if named_narrator_fallback is not None
             else None
         ),
+        queue_voice_overrides=queue_voice_overrides,
     )
     return {
         "items": items,
@@ -223,6 +258,28 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_exact_source_reference_binding_survives_final_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(
+                root / "source", names=("one",), queue_voice_override=True
+            )
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+
+            result = publish(fixture, root / "pack")
+            pack = load_game_pack(result.manifest)
+            generated_record = json.loads(
+                pack.generated_audio.path.read_text(encoding="utf-8")
+            )["entries"][0]
+
+        self.assertEqual(result.approved_count, 1)
+        self.assertEqual(
+            generated_record["voice_character"],
+            "Source reference Hero cluster-fixture-anchor-1",
+        )
+
     def test_explicit_live_fallback_is_terminal_and_published_losslessly(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

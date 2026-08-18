@@ -33,6 +33,12 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
+from vntts.authoring.source_reference_bindings import (
+    SOURCE_REFERENCE_BINDINGS_FIELD,
+    SOURCE_REFERENCE_BINDINGS_SCHEMA,
+    SOURCE_REFERENCE_BINDINGS_VERSION,
+    queue_voice_overrides_sha256,
+)
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSION = 1
@@ -99,6 +105,21 @@ class SourceReferenceListeningReportsResult:
             "reports": self.reports,
             "samples": self.samples,
             "blind_trials": self.blind_trials,
+        }
+
+
+@dataclass(frozen=True)
+class SourceReferenceBindingsResult:
+    directory: Path
+    selected_variants: int
+    bound_queue_items: int
+
+    def to_dict(self):
+        return {
+            "directory": str(self.directory),
+            "manifest": str(self.directory / "voice-manifest.json"),
+            "selected_variants": self.selected_variants,
+            "bound_queue_items": self.bound_queue_items,
         }
 
 
@@ -353,6 +374,196 @@ def load_source_reference_plan(directory):
                 )
             seen_queue_ids.add(queue_id)
     return plan
+
+
+def publish_source_reference_bindings(
+    plan_directory,
+    base_voice_manifest,
+    narrator_character,
+    selected_variant_ids,
+    output,
+):
+    """Publish a partial manifest with explicit queue-to-variant bindings."""
+    plan_directory = Path(plan_directory).expanduser().resolve()
+    plan = load_source_reference_plan(plan_directory)
+    plan_path = plan_directory / "plan.json"
+    plan_sha256 = sha256_file(plan_path)
+    base_voice_manifest = Path(base_voice_manifest).expanduser().resolve()
+    try:
+        base_payload = base_voice_manifest.read_bytes()
+        base_document, base_voices = load_voice_manifest(
+            base_voice_manifest, allow_legacy=False
+        )
+    except (OSError, VoiceManifestError) as error:
+        raise SourceReferenceReviewError(str(error)) from error
+    base_sha256 = hashlib.sha256(base_payload).hexdigest()
+    narrator_character = _text(narrator_character, "Narrator character")
+    narrator = next(
+        (
+            voice
+            for voice in base_voices
+            if normalize_character_name(voice.character)
+            == normalize_character_name(narrator_character)
+        ),
+        None,
+    )
+    if narrator is None or not narrator.references:
+        raise SourceReferenceReviewError(
+            f"Narrator character has no references: {narrator_character}"
+        )
+    requested_variants = tuple(
+        _text(value, "Selected source-reference variant")
+        for value in selected_variant_ids
+    )
+    if not requested_variants or len(requested_variants) != len(
+        set(requested_variants)
+    ):
+        raise SourceReferenceReviewError(
+            "Select one or more distinct source-reference variants"
+        )
+    available = {}
+    for cluster in plan["clusters"]:
+        for reference_index, reference in enumerate(cluster["references"], start=1):
+            variant_id = f"{cluster['cluster_id']}-anchor-{reference_index}"
+            available[variant_id] = (cluster, reference)
+    unknown = set(requested_variants) - set(available)
+    if unknown:
+        raise SourceReferenceReviewError(
+            "Selected source-reference variants are absent from the plan: "
+            + ", ".join(sorted(unknown))
+        )
+    selected_clusters = [
+        available[value][0]["cluster_id"] for value in requested_variants
+    ]
+    if len(selected_clusters) != len(set(selected_clusters)):
+        raise SourceReferenceReviewError(
+            "Select at most one source-reference variant per portrait cluster"
+        )
+
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise SourceReferenceReviewError(
+            f"Source-reference bindings output exists: {output}"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+    ).resolve()
+    source_snapshots = []
+    try:
+        voices = []
+        narrator_references = []
+        for index, relative in enumerate(narrator.references, start=1):
+            source = _contained_file(base_voice_manifest.parent, relative)
+            digest = sha256_file(source)
+            suffix = source.suffix.lower() or ".wav"
+            target_relative = Path("references") / "narrator" / f"{index:02d}{suffix}"
+            target = staging / target_relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            if sha256_file(target) != digest:
+                raise SourceReferenceReviewError(
+                    "Narrator reference changed while copied"
+                )
+            narrator_references.append(target_relative.as_posix())
+            source_snapshots.append((source, digest))
+        voices.append(
+            {
+                "character": narrator.character,
+                "speaker": narrator.speaker,
+                "aliases": list(narrator.aliases),
+                "references": narrator_references,
+            }
+        )
+
+        queue_overrides = {}
+        selected_variants = []
+        for variant_id in requested_variants:
+            cluster, reference = available[variant_id]
+            source = _contained_file(plan_directory, reference["path"])
+            digest = _sha256(
+                reference.get("sha256"), f"variant {variant_id} reference hash"
+            )
+            if sha256_file(source) != digest:
+                raise SourceReferenceReviewError(
+                    f"Source-reference plan artifact changed: {variant_id}"
+                )
+            suffix = source.suffix.lower() or ".wav"
+            target_relative = Path("references") / variant_id / f"source{suffix}"
+            target = staging / target_relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            if sha256_file(target) != digest:
+                raise SourceReferenceReviewError(
+                    f"Source-reference variant changed while copied: {variant_id}"
+                )
+            source_snapshots.append((source, digest))
+            voice_character = f"Source reference {cluster['character']} {variant_id}"
+            voices.append(
+                {
+                    "character": voice_character,
+                    "speaker": f"source-reference:{variant_id}",
+                    "references": [target_relative.as_posix()],
+                }
+            )
+            queue_ids = []
+            for item in cluster["queue_items"]:
+                queue_id = _text(item.get("queue_id"), "Bound queue ID")
+                if queue_id in queue_overrides:
+                    raise SourceReferenceReviewError(
+                        f"Queue ID belongs to multiple selected variants: {queue_id}"
+                    )
+                queue_overrides[queue_id] = voice_character
+                queue_ids.append(queue_id)
+            selected_variants.append(
+                {
+                    "variant_id": variant_id,
+                    "cluster_id": cluster["cluster_id"],
+                    "character": cluster["character"],
+                    "portrait": cluster["portrait"],
+                    "source_bank": cluster["source_bank"],
+                    "voice_character": voice_character,
+                    "reference_sha256": digest,
+                    "queue_ids": queue_ids,
+                }
+            )
+        bindings = {
+            "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
+            "schema_version": SOURCE_REFERENCE_BINDINGS_VERSION,
+            "source_reference_plan_sha256": plan_sha256,
+            "selected_variants": selected_variants,
+            "queue_voice_overrides": dict(sorted(queue_overrides.items())),
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(
+                queue_overrides
+            ),
+        }
+        manifest = {
+            "version": 2,
+            "game": base_document.get("game"),
+            "language": base_document.get("language"),
+            "voices": voices,
+            SOURCE_REFERENCE_BINDINGS_FIELD: bindings,
+        }
+        manifest_path = staging / "voice-manifest.json"
+        write_voice_manifest(manifest_path, manifest)
+        if sha256_file(plan_path) != plan_sha256:
+            raise SourceReferenceReviewError(
+                "Source-reference plan changed during binding publication"
+            )
+        if sha256_file(base_voice_manifest) != base_sha256:
+            raise SourceReferenceReviewError(
+                "Base voice manifest changed during binding publication"
+            )
+        for source, digest in source_snapshots:
+            _assert_source_unchanged(source, digest, f"voice reference {source.name}")
+        _rename_directory_no_replace(staging, output)
+        return SourceReferenceBindingsResult(
+            output, len(selected_variants), len(queue_overrides)
+        )
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
 
 
 def publish_source_reference_evaluation(plan_directory, output):

@@ -491,7 +491,11 @@ The same workflow publishes non-overwriting fixed-corpus inputs with
 separate mutable directory until blind source/result review is complete.
 Checksum-valid results can be converted to strict reports with
 `vntts-pregenerate build-reference-listening-reports` and opened through the
-existing `vntts-listen` blind workbench.
+existing `vntts-listen` blind workbench. After manual review,
+`vntts-pregenerate build-reference-bindings` publishes a new self-contained
+partial manifest that maps only explicitly chosen variants to their exact queue
+IDs. Generation state and final packs preserve and verify that mapping; no
+existing manifest or workspace is rewritten.
 
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with

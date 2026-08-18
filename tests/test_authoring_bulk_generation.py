@@ -1489,6 +1489,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     return_value=(
                         registry,
                         sha256_file(voice_manifest),
+                        {},
+                        (),
                     ),
                 ),
                 patch(

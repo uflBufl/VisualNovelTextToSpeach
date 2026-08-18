@@ -69,6 +69,10 @@ from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     validate_reference_selection_provenance,
 )
+from vntts.authoring.source_reference_bindings import (
+    SourceReferenceBindingError,
+    queue_voice_overrides_from_manifest,
+)
 from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
@@ -2769,7 +2773,12 @@ def _voice_readiness(workspace, spoken, completed_ids, manifest_path):
         return set(), ("Select an existing voice manifest",)
     try:
         registry = CharacterVoiceRegistry.from_file(manifest_path)
-    except Exception as error:
+        document, entries = load_voice_manifest(manifest_path, allow_legacy=False)
+        queue_overrides = queue_voice_overrides_from_manifest(
+            document,
+            voices=entries,
+        )
+    except (SourceReferenceBindingError, VoiceManifestError, OSError) as error:
         raise AuthoringWorkbenchError(
             f"Unable to load voice manifest: {error}"
         ) from error
@@ -2788,7 +2797,7 @@ def _voice_readiness(workspace, spoken, completed_ids, manifest_path):
         requested_character = synthesis_character_for_line(
             item.speaker, item.voice_character
         )
-        character = (
+        character = queue_overrides.get(item.queue_id) or (
             narrator if requested_character == "Narrator" else requested_character
         )
         voice = registry.resolve(character or item.speaker or "")

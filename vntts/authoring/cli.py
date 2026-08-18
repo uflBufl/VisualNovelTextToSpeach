@@ -69,9 +69,14 @@ from vntts.authoring.reference_selection import (
     inspect_voice_reference_candidates,
     select_voice_reference,
 )
+from vntts.authoring.source_reference_bindings import (
+    SourceReferenceBindingError,
+    queue_voice_overrides_from_manifest,
+)
 from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
+    publish_source_reference_bindings,
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
@@ -102,7 +107,7 @@ def _load_stable_voice_registry(manifest_path):
     with TemporaryDirectory() as directory:
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
-        _document, entries = load_voice_manifest(snapshot)
+        document, entries = load_voice_manifest(snapshot)
     voices = [
         CharacterVoice(
             character=entry.character,
@@ -115,7 +120,7 @@ def _load_stable_voice_registry(manifest_path):
         )
         for entry in entries
     ]
-    return CharacterVoiceRegistry(voices), digest
+    return CharacterVoiceRegistry(voices), digest, document, entries
 
 
 def _producer_record(value):
@@ -417,6 +422,15 @@ def create_parser():
     reference_listening.add_argument("--evaluation", type=Path, required=True)
     reference_listening.add_argument("--state", type=Path, required=True)
     reference_listening.add_argument("--output", type=Path, required=True)
+    reference_bindings = subparsers.add_parser(
+        "build-reference-bindings",
+        help="Publish explicit queue-to-variant voice bindings",
+    )
+    reference_bindings.add_argument("--plan", type=Path, required=True)
+    reference_bindings.add_argument("--voice-manifest", type=Path, required=True)
+    reference_bindings.add_argument("--narrator-character", required=True)
+    reference_bindings.add_argument("--variant", action="append", required=True)
+    reference_bindings.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -557,14 +571,25 @@ def main(argv=None):
                     )
                 except AuthoringWorkbenchError as error:
                     raise BulkGenerationError(str(error)) from error
-            registry, voice_manifest_sha256 = _load_stable_voice_registry(
-                voice_manifest
-            )
+            (
+                registry,
+                voice_manifest_sha256,
+                voice_manifest_document,
+                voice_manifest_entries,
+            ) = _load_stable_voice_registry(voice_manifest)
             try:
                 policy_queue = VoiceGenerationQueue.load(arguments.queue)
             except VoiceGenerationQueueError as error:
                 raise BulkGenerationError(str(error)) from error
             synthesis_character_overrides = {}
+            try:
+                queue_voice_overrides = queue_voice_overrides_from_manifest(
+                    voice_manifest_document,
+                    queue_ids=(item.queue_id for item in policy_queue.items),
+                    voices=voice_manifest_entries,
+                )
+            except SourceReferenceBindingError as error:
+                raise BulkGenerationError(str(error)) from error
             for item in policy_queue.items:
                 requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
@@ -652,7 +677,10 @@ def main(argv=None):
                 requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
                 )
-                character = synthesis_character_overrides.get(requested, requested)
+                character = queue_voice_overrides.get(
+                    item.queue_id,
+                    synthesis_character_overrides.get(requested, requested),
+                )
                 if character == "Narrator":
                     return narrator_reference is not None
                 voice = registry.resolve(character)
@@ -701,6 +729,7 @@ def main(argv=None):
                         ),
                         workspace_output_identity=workspace_output_identity,
                         synthesis_character_overrides=synthesis_character_overrides,
+                        queue_voice_overrides=queue_voice_overrides,
                         missing_voice_policy=missing_voice_policy.to_document(),
                         narrator_character=arguments.narrator_character,
                         failure_repair_policy=failure_repair_policy.to_document(),
@@ -829,6 +858,16 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "build-reference-bindings":
+            result = publish_source_reference_bindings(
+                arguments.plan,
+                arguments.voice_manifest,
+                arguments.narrator_character,
+                arguments.variant,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "publish-pack":
             producers = arguments.producer or [
                 {
@@ -912,6 +951,7 @@ def main(argv=None):
         ListeningImportError,
         ReferenceSelectionError,
         SourceReferenceReviewError,
+        SourceReferenceBindingError,
         StoryIndexError,
         VoiceGenerationQueueError,
         VoiceManifestError,

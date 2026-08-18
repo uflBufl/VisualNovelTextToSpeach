@@ -41,6 +41,11 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
 )
+from vntts.authoring.source_reference_bindings import (
+    SourceReferenceBindingError,
+    queue_voice_overrides_from_manifest,
+    queue_voice_overrides_sha256,
+)
 from vntts.voices import synthesis_character_for_line
 
 
@@ -135,9 +140,13 @@ def publish_final_game_pack(
                     )
 
                 story = _load_story(story_copy)
-                voice_entries = _load_voices(voice_copy)
+                voice_document, voice_entries = _load_voices(voice_copy)
                 narrator_selection = _verify_voice_control_provenance(
-                    state, queue, voice_manifest_path, voice_entries
+                    state,
+                    queue,
+                    voice_manifest_path,
+                    voice_document,
+                    voice_entries,
                 )
                 voice_override = _validate_source_bindings(
                     queue.metadata,
@@ -532,10 +541,10 @@ def _load_story(path):
 
 def _load_voices(path):
     try:
-        _document, entries = load_voice_manifest(path, allow_legacy=False)
+        document, entries = load_voice_manifest(path, allow_legacy=False)
     except VoiceManifestError as error:
         raise FinalGamePackError(str(error)) from error
-    return entries
+    return document, entries
 
 
 def _validate_source_bindings(
@@ -615,7 +624,9 @@ def _validate_story_identity(state, story):
             )
 
 
-def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_entries):
+def _verify_voice_control_provenance(
+    state, queue, voice_manifest_path, voice_document, voice_entries
+):
     registry = state.get("synthesis_controls")
     if not isinstance(registry, dict):
         raise FinalGamePackError(
@@ -644,6 +655,19 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
                     normalize_character_name(name), set()
                 ).add((source, digest))
     queue_by_id = {item.queue_id: item for item in queue.items}
+    try:
+        queue_voice_overrides = queue_voice_overrides_from_manifest(
+            voice_document,
+            queue_ids=queue_by_id,
+            voices=voice_entries,
+        )
+    except SourceReferenceBindingError as error:
+        raise FinalGamePackError(str(error)) from error
+    queue_voice_overrides_digest = (
+        queue_voice_overrides_sha256(queue_voice_overrides)
+        if queue_voice_overrides
+        else None
+    )
     narrator_selections = set()
     for queue_id, result in state["items"].items():
         if result.get("status") == "live_fallback":
@@ -696,6 +720,22 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
         effective_character = result.get("voice_character") or (
             synthesis_character_for_line(item.speaker, item.voice_character)
         )
+        expected_override = queue_voice_overrides.get(queue_id)
+        binding = result.get("source_reference_binding")
+        if expected_override is not None:
+            if (
+                effective_character != expected_override
+                or not isinstance(binding, dict)
+                or binding.get("queue_voice_overrides_sha256")
+                != queue_voice_overrides_digest
+            ):
+                raise FinalGamePackError(
+                    f"Source-reference voice binding is missing for {queue_id!r}"
+                )
+        elif binding is not None:
+            raise FinalGamePackError(
+                f"State item {queue_id!r} has an unselected source-reference binding"
+            )
         if effective_character == "Narrator" and len(narrator_controls) != 1:
             raise FinalGamePackError(
                 f"Narrator item {queue_id!r} lacks one role-bound narrator selection"

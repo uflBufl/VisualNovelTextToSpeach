@@ -11,22 +11,29 @@ from vntts_artifacts import (
     VoiceGenerationQueue,
     expected_voice_generation_queue_id,
     write_story_index_document,
+    write_voice_generation_queue,
 )
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.voice_manifest import load_voice_manifest
+from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.authoring.bulk_generation import load_generation_state, run_bulk_generation
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
+)
+from vntts.authoring.source_reference_bindings import (
+    SourceReferenceBindingError,
+    queue_voice_overrides_from_manifest,
+    queue_voice_overrides_sha256,
 )
 from vntts.authoring.source_reference_review import (
     REFERENCE_PLAN_SCHEMA,
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_bindings,
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
@@ -45,7 +52,11 @@ class EvaluationRenderer:
     name = "synthetic"
     model_name = "synthetic-v1"
 
+    def __init__(self):
+        self.requests = []
+
     def render(self, request):
+        self.requests.append(request)
         pcm = np.sin(np.linspace(0, 20, 4_000, dtype=np.float32)) * 0.2
 
         def produce():
@@ -207,6 +218,29 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             records,
         )
         return report, review, story
+
+    def write_base_voice_manifest(self, root):
+        reference = root / "base-references" / "centurion.wav"
+        reference.parent.mkdir()
+        values = np.sin(np.linspace(0, 24, 4_000, dtype=np.float32)) * 0.2
+        write_pcm16_wav(reference, values, 16_000)
+        manifest = root / "base-voice-manifest.json"
+        write_voice_manifest(
+            manifest,
+            {
+                "version": 2,
+                "game": "Synthetic",
+                "language": "en",
+                "voices": [
+                    {
+                        "character": "Centurion",
+                        "speaker": "centurion",
+                        "references": ["base-references/centurion.wav"],
+                    }
+                ],
+            },
+        )
+        return manifest
 
     def test_imports_self_contained_variant_clusters_and_exact_queue_ids(self):
         with TemporaryDirectory() as directory:
@@ -458,6 +492,142 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["blind_trials"], 5)
+
+    def test_binding_manifest_routes_exact_queue_ids_with_provenance(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            base_manifest = self.write_base_voice_manifest(root)
+            plan_result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(plan_result.directory)
+            variants = [
+                f"{cluster['cluster_id']}-anchor-1" for cluster in plan["clusters"]
+            ]
+            bindings = publish_source_reference_bindings(
+                plan_result.directory,
+                base_manifest,
+                "Centurion",
+                variants,
+                root / "bindings",
+            )
+            manifest_document, voices = load_voice_manifest(
+                bindings.directory / "voice-manifest.json", allow_legacy=False
+            )
+            queue_items = []
+            for index in (1, 2):
+                text = f"Missing target {index}."
+                text_hash = text_sha256(text)
+                queue_items.append(
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": expected_voice_generation_queue_id(
+                            f"target:{index}", text_hash
+                        ),
+                        "line_id": f"target:{index}",
+                        "text": text,
+                        "text_sha256": text_hash,
+                        "speaker": "Hero",
+                        "voice_character": "Hero",
+                        "action": "generate",
+                    }
+                )
+            queue_path = root / "queue.jsonl"
+            write_voice_generation_queue(
+                queue_path,
+                {"game": "Synthetic", "language": "en"},
+                queue_items,
+            )
+            overrides = queue_voice_overrides_from_manifest(
+                manifest_document,
+                queue_ids=(item["queue_id"] for item in queue_items),
+                voices=voices,
+            )
+            renderer = EvaluationRenderer()
+            generation = run_bulk_generation(
+                queue_path,
+                root / "generated",
+                renderer,
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+                queue_voice_overrides=overrides,
+            )
+            state = load_generation_state(generation.state, queue_path)
+
+        self.assertEqual(bindings.selected_variants, 2)
+        self.assertEqual(bindings.bound_queue_items, 2)
+        self.assertEqual(len(overrides), 2)
+        self.assertEqual(
+            {request.voice for request in renderer.requests}, set(overrides.values())
+        )
+        for queue_id, character in overrides.items():
+            result = state["items"][queue_id]
+            self.assertEqual(result["voice_character"], character)
+            self.assertEqual(
+                result["source_reference_binding"]["synthesis_voice_character"],
+                character,
+            )
+
+    def test_binding_manifest_rejects_tampered_override_digest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            base_manifest = self.write_base_voice_manifest(root)
+            plan_result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(plan_result.directory)
+            variant = f"{plan['clusters'][0]['cluster_id']}-anchor-1"
+            result = publish_source_reference_bindings(
+                plan_result.directory,
+                base_manifest,
+                "Centurion",
+                [variant],
+                root / "bindings",
+            )
+            manifest, voices = load_voice_manifest(
+                result.directory / "voice-manifest.json", allow_legacy=False
+            )
+            manifest["vntts.authoring.source_reference_bindings"][
+                "queue_voice_overrides_sha256"
+            ] = "0" * 64
+
+            with self.assertRaisesRegex(SourceReferenceBindingError, "inconsistent"):
+                queue_voice_overrides_from_manifest(manifest, voices=voices)
+
+    def test_binding_manifest_rejects_unselected_manifest_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            base_manifest = self.write_base_voice_manifest(root)
+            plan_result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(plan_result.directory)
+            variant = f"{plan['clusters'][0]['cluster_id']}-anchor-1"
+            result = publish_source_reference_bindings(
+                plan_result.directory,
+                base_manifest,
+                "Centurion",
+                [variant],
+                root / "bindings",
+            )
+            manifest, voices = load_voice_manifest(
+                result.directory / "voice-manifest.json", allow_legacy=False
+            )
+            bindings = manifest["vntts.authoring.source_reference_bindings"]
+            queue_id = next(iter(bindings["queue_voice_overrides"]))
+            bindings["queue_voice_overrides"][queue_id] = "Centurion"
+            bindings["queue_voice_overrides_sha256"] = queue_voice_overrides_sha256(
+                bindings["queue_voice_overrides"]
+            )
+
+            with self.assertRaisesRegex(
+                SourceReferenceBindingError, "was not explicitly selected"
+            ):
+                queue_voice_overrides_from_manifest(manifest, voices=voices)
 
 
 if __name__ == "__main__":

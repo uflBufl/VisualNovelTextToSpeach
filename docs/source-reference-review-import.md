@@ -30,9 +30,7 @@ Rejected, uncertain and pending candidates never become synthesis controls.
 Every plan contains the same three identity-neutral evaluation sentences. A
 source acceptance is only the first gate: each cluster still requires generated
 quality review on that fixed corpus. The plan deliberately does not mutate a
-voice manifest, create a workspace or authorize bulk generation. The remaining
-integration must bind a chosen cluster to its exact queue IDs and preserve that
-binding in config-addressed synthesis controls.
+voice manifest, create a workspace or authorize bulk generation.
 
 Publish the evaluation inputs separately so the immutable decision plan stays
 read-only:
@@ -93,3 +91,30 @@ generated source-match pairs and six same-text comparisons between successful
 variants. It starts at 0/9 and remains a manual gate. Its public session SHA-256
 is `6218f26672df477dbc55fb5ff336cf9236b902351336b66d1437a342e28b126e`;
 the private blind key is mode 0600 and checksum-bound by the public session.
+
+After the blind session is complete, use its revealed results to select at most
+one winning variant per portrait cluster. Publication is deliberately explicit;
+there is no score-to-winner policy:
+
+```bash
+uv run vntts-pregenerate build-reference-bindings \
+  --plan /new/source-reference-plan \
+  --voice-manifest /path/to/base/voice-manifest.json \
+  --narrator-character Centurion \
+  --variant CLUSTER-ID-anchor-1 \
+  --output /new/source-reference-bindings
+```
+
+Repeat `--variant` for independent clusters. The command publishes a new,
+self-contained partial voice manifest; it never edits the base manifest or the
+decision plan. Every selected variant is bound to the exact story-derived queue
+IDs from its cluster. Bulk generation records the effective synthetic voice,
+binding-map checksum and source queue ID in each result. Resume and final-pack
+publication reject a changed map, an unselected manifest voice, or state whose
+effective voice no longer agrees with that exact binding.
+
+Use the published `voice-manifest.json` when creating a new config-addressed
+workspace. A partial manifest intentionally leaves unrelated queue lines in the
+missing-reference preflight cohort; exact selected collection/queue retries can
+proceed, but an unfiltered run remains blocked until its own references or an
+explicit fallback policy are available.

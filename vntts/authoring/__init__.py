@@ -104,12 +104,14 @@ from vntts.authoring.reference_selection import (
     validate_reference_selection_provenance,
 )
 from vntts.authoring.source_reference_review import (
+    SourceReferenceBindingsResult,
     SourceReferenceEvaluationResult,
     SourceReferenceListeningReportsResult,
     SourceReferencePlanResult,
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_bindings,
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
@@ -215,9 +217,11 @@ __all__ = [
     "select_voice_reference",
     "SourceReferencePlanResult",
     "SourceReferenceEvaluationResult",
+    "SourceReferenceBindingsResult",
     "SourceReferenceListeningReportsResult",
     "SourceReferenceReviewError",
     "publish_source_reference_evaluation",
+    "publish_source_reference_bindings",
     "publish_source_reference_listening_reports",
     "workspace_voice_snapshot",
     "trim_excess_edge_silence",

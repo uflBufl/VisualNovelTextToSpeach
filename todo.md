@@ -10,19 +10,17 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Bind accepted clusters from the immutable source-reference plan to their
-      exact queue IDs as config-addressed synthesis controls, then create a new
-      workspace. The importer already preserves separate character/portrait/bank
-      clusters, accepted WAVs, rejected/uncertain/invalidated evidence and exact
-      story-derived queue IDs without mutating manifests or existing workspaces.
-
 - [ ] Complete the 9-trial checksum-bound blind review for the four accepted
       reference variants. The bounded fixed-corpus run published 9 of 16 WAVs;
       five typed audio-limit and two speech-silence failures remain excluded.
       The session contains three exact original/generated source-match trials
       and six same-text cross-variant trials. Source-audio technical acceptance
       must not imply generated cadence, pronunciation or speaker-similarity
-      approval.
+      approval. After revealing the results, explicitly publish at most one
+      winning variant per portrait cluster with `build-reference-bindings`, then
+      create a new config-addressed workspace from that partial manifest. The
+      binding implementation already preserves exact queue IDs and provenance;
+      it intentionally cannot choose a winner without the listening decision.
 
 - [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
       and Hotelier, then create a new config-addressed workspace and re-run
