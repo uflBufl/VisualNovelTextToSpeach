@@ -1,5 +1,6 @@
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -25,6 +26,8 @@ class VoicePreviewDialog(QDialog):
         current_assignment_handler,
         clear_assignment_handler=None,
         *,
+        force_live_handler=None,
+        current_force_live_handler=None,
         initial_character=None,
         parent=None,
     ):
@@ -33,6 +36,8 @@ class VoicePreviewDialog(QDialog):
         self.assignment_handler = assignment_handler
         self.current_assignment_handler = current_assignment_handler
         self.clear_assignment_handler = clear_assignment_handler
+        self.force_live_handler = force_live_handler
+        self.current_force_live_handler = current_force_live_handler
         self.signals = VoicePreviewSignals()
         self.setWindowTitle("Choose narrator or character voice")
         self.setMinimumWidth(560)
@@ -58,6 +63,9 @@ class VoicePreviewDialog(QDialog):
         self.assign_button.clicked.connect(self.assign)
         self.automatic_button.clicked.connect(self.clear_assignment)
         self.automatic_button.setVisible(clear_assignment_handler is not None)
+        self.force_live = QCheckBox(
+            "Always use live TTS for Narrator (bypass pregenerated tracks)"
+        )
         self.routing_note = QLabel()
         self.routing_note.setWordWrap(True)
         self.status = QLabel(
@@ -73,6 +81,7 @@ class VoicePreviewDialog(QDialog):
         form.addRow("Preview text", self.text)
         form.addRow("", self.preview_button)
         form.addRow("", self.assign_button)
+        form.addRow("", self.force_live)
         form.addRow("", self.automatic_button)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
@@ -99,12 +108,18 @@ class VoicePreviewDialog(QDialog):
         narrator = self.character.currentText().strip().casefold() == "narrator"
         if narrator:
             self.routing_note.setText(
-                "Selecting a voice here makes narration always use live TTS and "
-                "overrides pregenerated narrator tracks."
+                "The selected voice is used by live fallback. Pregenerated "
+                "Narrator tracks keep priority unless force-live is checked."
             )
-            self.assign_button.setText("Always use selected live narrator voice")
-            self.automatic_button.setText(
-                "Use pregenerated narrator tracks when available"
+            self.assign_button.setText("Use selected Narrator fallback voice")
+            self.automatic_button.setText("Use default Narrator voice")
+            self.force_live.setVisible(self.force_live_handler is not None)
+            self.force_live.setChecked(
+                bool(
+                    self.current_force_live_handler()
+                    if self.current_force_live_handler is not None
+                    else False
+                )
             )
         else:
             self.routing_note.setText(
@@ -113,6 +128,7 @@ class VoicePreviewDialog(QDialog):
             )
             self.assign_button.setText("Use for this character")
             self.automatic_button.setText("Use automatic voice routing")
+            self.force_live.setVisible(False)
         self.select_current_assignment()
 
     def preview(self):
@@ -146,12 +162,24 @@ class VoicePreviewDialog(QDialog):
         try:
             character = self.character.currentText().strip()
             self.assignment_handler(character, self.voice.currentData())
+            if (
+                character.casefold() == "narrator"
+                and self.force_live_handler is not None
+            ):
+                self.force_live_handler(self.force_live.isChecked())
         except Exception as error:
             self.status.setText(f"Voice assignment failed: {error}")
             return
-        self.status.setText(
-            f"Saved {self.voice.currentText()} for {character or 'the selected target'}"
-        )
+        if character.casefold() == "narrator":
+            message = f"Saved {self.voice.currentText()} as the Narrator live fallback"
+            if self.force_live.isChecked():
+                message += " (force-live)"
+        else:
+            message = (
+                f"Saved {self.voice.currentText()} for "
+                f"{character or 'the selected target'}"
+            )
+        self.status.setText(message)
 
     def clear_assignment(self):
         if self.clear_assignment_handler is None:
@@ -162,9 +190,11 @@ class VoicePreviewDialog(QDialog):
         except Exception as error:
             self.status.setText(f"Unable to restore automatic routing: {error}")
             return
+        if character.casefold() == "narrator":
+            self.force_live.setChecked(False)
         self.select_current_assignment()
         self.status.setText(
-            "Pregenerated narrator tracks restored"
+            "Default Narrator voice and generated-first routing restored"
             if character.casefold() == "narrator"
             else f"Automatic voice routing restored for {character}"
         )

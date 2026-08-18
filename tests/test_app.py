@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -793,6 +793,8 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.assign_voice,
             controller.voice_assignment_for,
             tray_application.clear_voice_assignment,
+            force_live_handler=tray_application.set_force_live_narrator,
+            current_force_live_handler=ANY,
             initial_character="Narrator",
         )
         dialog.exec.assert_called_once_with()

@@ -1160,7 +1160,7 @@ class MainTest(unittest.TestCase):
         )
         self.assertFalse(controller._offer_unknown_speaker_mapping("Selone"))
 
-    def test_narrator_live_voice_override_can_be_restored_to_generated_routing(self):
+    def test_narrator_fallback_voice_and_force_live_are_independent(self):
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),
             tts_factory=Mock(),
@@ -1170,10 +1170,19 @@ class MainTest(unittest.TestCase):
         controller.voice_router.audio_cache = Mock()
 
         assigned = controller.assign_voice("Narrator", "preset:alba")
+        self.assertFalse(controller._has_manual_voice_override("Narrator"))
+        forced = controller.set_force_live_narrator(True)
+        self.assertTrue(controller._has_manual_voice_override("Narrator"))
+        generated_first = controller.set_force_live_narrator(False)
+        self.assertFalse(controller._has_manual_voice_override("Narrator"))
         restored = controller.clear_voice_assignment("Narrator")
 
         self.assertEqual(assigned.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertFalse(assigned.force_live_narrator)
+        self.assertTrue(forced.force_live_narrator)
+        self.assertFalse(generated_first.force_live_narrator)
         self.assertEqual(restored.voice_assignments, {})
+        self.assertFalse(restored.force_live_narrator)
         self.assertNotIn("narrator", controller.voice_router.registry.assignments)
 
     def test_controller_previews_a_catalog_choice_on_the_speech_executor(self):
@@ -2137,6 +2146,7 @@ class MainTest(unittest.TestCase):
                 story_index="story.jsonl",
                 audio_source_policy="prefer-game-audio",
                 voice_assignments={"Narrator": "preset:alba"},
+                force_live_narrator=True,
             ),
             tts_factory=Mock(),
             chapter_voice_preloader=preloader,

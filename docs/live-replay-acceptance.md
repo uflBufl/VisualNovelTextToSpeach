@@ -52,8 +52,8 @@ with transient nameplate/background OCR noise, a 20-line gameplay run, voice and
 pronunciation listening, reference contamination review, real audio-device
 underrun/stop/prefill behavior, Windows capture/hotkeys and a long soak.
 
-Narrator live override and `Use pregenerated narrator tracks when available`
-restoration are controller/UI routing gates covered by focused tests. They do
+Narrator fallback selection and the separate force-live override are
+controller/UI routing gates covered by focused tests. They do
 not compare Centurion/Paper Heron perceptually. Exact generated-manifest lookup,
 manual-override bypass, corrupt/missing/checksum/metadata fallback and reserved
 prefix behavior are covered by generated-audio tests and the replay matrix.

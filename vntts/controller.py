@@ -764,7 +764,10 @@ class AppController:
             if normalize_character_name(configured_character) != character_key
         }
         self.voice_router.registry.assignments.pop(character_key, None)
-        self.settings = self.settings.updated(voice_assignments=assignments)
+        update = {"voice_assignments": assignments}
+        if character_key == "narrator":
+            update["force_live_narrator"] = False
+        self.settings = self.settings.updated(**update)
         if character_key == "narrator":
             self._apply_narrator_voice(None)
         self._clear_voice_runtime_cache()
@@ -772,6 +775,20 @@ class AppController:
             "Pregenerated narrator tracks enabled when available"
             if character_key == "narrator"
             else f"Automatic voice routing restored for {character}"
+        )
+        return self.settings
+
+    def set_force_live_narrator(self, enabled):
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before changing Narrator routing")
+        enabled = bool(enabled)
+        if enabled and self.voice_assignment_for("Narrator") is None:
+            raise ValueError("Choose a Narrator voice before forcing live TTS")
+        self.settings = self.settings.updated(force_live_narrator=enabled)
+        self.status_handler(
+            "Narrator will always use live TTS"
+            if enabled
+            else "Pregenerated Narrator tracks enabled with live voice fallback"
         )
         return self.settings
 
@@ -1049,10 +1066,12 @@ class AppController:
     def _has_manual_voice_override(self, character):
         if is_unattributed_speaker(character):
             return False
-        return (
-            find_voice_assignment(self.settings.voice_assignments, character)
-            is not None
-        )
+        assignment = find_voice_assignment(self.settings.voice_assignments, character)
+        if assignment is None:
+            return False
+        if is_narrator(character):
+            return self.settings.force_live_narrator
+        return True
 
     def _set_backend_live_mode(self, active):
         configure = getattr(self.speech_backend, "set_live_mode_active", None)

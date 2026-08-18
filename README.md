@@ -143,9 +143,10 @@ game's audio device.
 
 Each game profile has an explicit **Audio source policy** in Settings:
 
-A manual voice assignment wins before this policy. In particular, a saved
-Narrator choice deliberately forces live TTS for Narrator and bypasses source
-and generated narrator tracks until the override is removed.
+A manual named-character assignment wins before this policy. A saved Narrator
+choice selects the live fallback voice without bypassing source or generated
+Narrator tracks. The Narrator dialog has a separate force-live checkbox for the
+deliberate override case.
 
 - **Live TTS only** always uses the selected speech engine. This is the default,
   including for profiles created before the setting was introduced.
@@ -203,9 +204,10 @@ is not spoken or auto-advanced. This protects typewriter pauses from turning
 the first half of a line into a complete dialogue.
 
 Use **Narrator voice** in the control window (or **Choose narrator voice...** in
-the tray menu) to audition and assign a live narrator. A saved Narrator choice
-intentionally overrides pregenerated narrator tracks. The same dialog can
-remove that override with **Use pregenerated narrator tracks when available**.
+the tray menu) to audition and assign the live fallback Narrator voice. With a
+generated-first audio policy, verified pregenerated tracks keep priority and
+the selected voice handles only live fallback. Enable the separate force-live
+checkbox only when every Narrator line should bypass pregenerated tracks.
 
 When auto advance is enabled, original game audio is selected only if the story
 index supplies completion duration. A source line without trustworthy timing

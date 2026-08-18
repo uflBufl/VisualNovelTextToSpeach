@@ -10,7 +10,7 @@ from vntts.settings import (
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-profiles_schema_version = 4
+profiles_schema_version = 5
 
 
 def get_profiles_path():
@@ -31,6 +31,7 @@ class GameProfile:
     generated_audio_manifest: str | None
     audio_source_policy: str
     voice_assignments: dict[str, str]
+    force_live_narrator: bool
 
     @classmethod
     def from_settings(cls, name, settings, *, region=None, profile_id=None):
@@ -47,11 +48,20 @@ class GameProfile:
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
+            force_live_narrator=settings.force_live_narrator,
         )
 
     @classmethod
-    def from_mapping(cls, values):
+    def from_mapping(cls, values, *, source_schema=profiles_schema_version):
         region = values["dialog_region"]
+        voice_assignments = _voice_assignments(values.get("voice_assignments"))
+        force_live_narrator = values.get("force_live_narrator", False)
+        if not isinstance(force_live_narrator, bool):
+            raise ValueError("force_live_narrator must be a boolean")
+        if source_schema < 5 and any(
+            character.casefold() == "narrator" for character in voice_assignments
+        ):
+            force_live_narrator = True
         return cls(
             id=str(values["id"]),
             name=_validated_name(values["name"]),
@@ -75,7 +85,8 @@ class GameProfile:
                 values.get("generated_audio_manifest")
             ),
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
-            voice_assignments=_voice_assignments(values.get("voice_assignments")),
+            voice_assignments=voice_assignments,
+            force_live_narrator=force_live_narrator,
         )
 
     def to_mapping(self):
@@ -95,6 +106,7 @@ class GameProfile:
             generated_audio_manifest=self.generated_audio_manifest,
             audio_source_policy=self.audio_source_policy,
             voice_assignments=dict(self.voice_assignments),
+            force_live_narrator=self.force_live_narrator,
         )
         if self.game_pack:
             from vntts.game_pack import apply_game_pack
@@ -115,6 +127,7 @@ class GameProfile:
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
+            force_live_narrator=settings.force_live_narrator,
         )
 
 
@@ -130,7 +143,11 @@ class GameProfileStore:
 
         def decode(payload):
             store.profiles = [
-                GameProfile.from_mapping(profile) for profile in payload["profiles"]
+                GameProfile.from_mapping(
+                    profile,
+                    source_schema=payload["schema_version"],
+                )
+                for profile in payload["profiles"]
             ]
             store._ensure_unique_names()
             return store

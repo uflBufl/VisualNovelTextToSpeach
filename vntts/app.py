@@ -1454,6 +1454,8 @@ class TrayApplication(QObject):
             self.assign_voice,
             self.controller.voice_assignment_for,
             self.clear_voice_assignment,
+            force_live_handler=self.set_force_live_narrator,
+            current_force_live_handler=lambda: self.settings.force_live_narrator,
             initial_character="Narrator",
         )
         try:
@@ -1588,6 +1590,8 @@ class TrayApplication(QObject):
             self.assign_voice,
             self.controller.voice_assignment_for,
             self.clear_voice_assignment,
+            force_live_handler=self.set_force_live_narrator,
+            current_force_live_handler=lambda: self.settings.force_live_narrator,
             initial_character=initial_character,
         )
         dialog.exec()
@@ -1608,6 +1612,13 @@ class TrayApplication(QObject):
         path = self.settings.save()
         self._sync_active_profile()
         self.set_status(f"Automatic voice routing for {character} saved to {path}")
+        return self.settings
+
+    def set_force_live_narrator(self, enabled):
+        self.settings = self.controller.set_force_live_narrator(enabled)
+        path = self.settings.save()
+        self._sync_active_profile()
+        self.set_status(f"Narrator routing saved to {path}")
         return self.settings
 
     def open_support_center(self):

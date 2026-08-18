@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 21
+settings_schema_version = 22
 
 audio_source_policies = {
     "live-tts-only",
@@ -91,6 +91,7 @@ class AppSettings:
     generated_audio_manifest: str | None = None
     narrator_speaker: str | None = None
     voice_assignments: dict[str, str] = field(default_factory=dict)
+    force_live_narrator: bool = False
     active_profile_id: str | None = None
 
     @classmethod
@@ -150,6 +151,7 @@ class AppSettings:
             "keep_running_on_close",
             "compact_controls",
             "auto_advance_enabled",
+            "force_live_narrator",
         )
 
         for name in string_fields:
@@ -239,6 +241,15 @@ class AppSettings:
         else:
             warn("Invalid 'voice_assignments' setting; using its default")
             parsed["voice_assignments"] = {}
+
+        # Before schema 22 a saved Narrator assignment always bypassed source
+        # and pregenerated audio. Preserve that behavior during migration while
+        # making the routing choice explicit for newly saved settings.
+        if source_schema < 22 and any(
+            character.strip().casefold() == "narrator"
+            for character in parsed["voice_assignments"]
+        ):
+            parsed["force_live_narrator"] = True
 
         return cls(**parsed)
 

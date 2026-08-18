@@ -12,7 +12,8 @@ preparation cannot mix metrics from different chunks.
 
 The selector keeps the established precedence:
 
-1. a manual voice override or `live-tts-only` policy selects live TTS;
+1. a manual named-character override, explicit force-live Narrator setting, or
+   `live-tts-only` policy selects live TTS;
 2. active live mode with `prefer-game-audio`, a resolved declared-available
    source, and any required completion duration selects game pass-through;
 3. `prefer-game-audio` or `prefer-generated` may select a verified generated

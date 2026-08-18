@@ -21,6 +21,8 @@ class VoicePreviewDialogTest(unittest.TestCase):
         preview_handler=None,
         assignment_handler=None,
         clear_assignment_handler=None,
+        force_live_handler=None,
+        current_force_live_handler=None,
     ):
         return VoicePreviewDialog(
             ["Narrator", "Marcus"],
@@ -32,6 +34,8 @@ class VoicePreviewDialogTest(unittest.TestCase):
             assignment_handler or Mock(),
             Mock(return_value="preset:alba"),
             clear_assignment_handler,
+            force_live_handler=force_live_handler,
+            current_force_live_handler=current_force_live_handler,
         )
 
     def test_plays_selected_candidate_and_reports_completion(self):
@@ -72,26 +76,36 @@ class VoicePreviewDialogTest(unittest.TestCase):
         self.assertEqual(dialog.status.text(), "Preview failed: engine unavailable")
         dialog.deleteLater()
 
-    def test_narrator_controls_explain_and_restore_generated_routing(self):
+    def test_narrator_controls_separate_fallback_voice_and_force_live(self):
         clear_assignment_handler = Mock()
+        force_live_handler = Mock()
         dialog = self.create_dialog(
             clear_assignment_handler=clear_assignment_handler,
+            force_live_handler=force_live_handler,
+            current_force_live_handler=Mock(return_value=False),
         )
 
-        self.assertIn("overrides pregenerated", dialog.routing_note.text())
+        self.assertIn("live fallback", dialog.routing_note.text())
         self.assertEqual(
             dialog.assign_button.text(),
-            "Always use selected live narrator voice",
+            "Use selected Narrator fallback voice",
         )
         self.assertEqual(
             dialog.automatic_button.text(),
-            "Use pregenerated narrator tracks when available",
+            "Use default Narrator voice",
         )
+        self.assertFalse(dialog.force_live.isChecked())
+        dialog.force_live.setChecked(True)
+        dialog.assign()
+        force_live_handler.assert_called_once_with(True)
 
         dialog.automatic_button.click()
 
         clear_assignment_handler.assert_called_once_with("Narrator")
-        self.assertEqual(dialog.status.text(), "Pregenerated narrator tracks restored")
+        self.assertEqual(
+            dialog.status.text(),
+            "Default Narrator voice and generated-first routing restored",
+        )
         dialog.deleteLater()
 
 

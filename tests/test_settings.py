@@ -59,6 +59,30 @@ class SettingsTest(unittest.TestCase):
     def test_live_tts_is_the_default_audio_source_policy(self):
         self.assertEqual(AppSettings().audio_source_policy, "live-tts-only")
 
+    def test_narrator_fallback_is_generated_first_by_default(self):
+        self.assertFalse(AppSettings().force_live_narrator)
+
+    def test_legacy_narrator_assignment_preserves_force_live_behavior(self):
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": 21,
+                "voice_assignments": {"Narrator": "preset:alba"},
+            }
+        )
+
+        self.assertTrue(settings.force_live_narrator)
+
+    def test_current_narrator_assignment_can_keep_generated_first(self):
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": settings_schema_version,
+                "voice_assignments": {"Narrator": "preset:alba"},
+                "force_live_narrator": False,
+            }
+        )
+
+        self.assertFalse(settings.force_live_narrator)
+
     def test_audio_source_policy_can_be_selected_from_environment(self):
         settings = AppSettings().with_environment_overrides(
             {"VNTTS_AUDIO_SOURCE_POLICY": "prefer-game-audio"}

@@ -25,11 +25,6 @@ Follow the evidence-backed order and invariants in
       and show source role and synthesis voice separately in review. Do not
       prepend speaker names to canonical story WAVs; evaluate a separate
       optional `announce speaker on change` accessibility route instead.
-- [ ] Separate the selected Narrator fallback voice from force-live routing.
-      With `prefer-generated`, approved Centurion WAVs must play first and
-      Pocket/Centurion must handle only absent, pending, rejected, failed or
-      invalid Narrator artifacts. A saved Centurion choice must not bypass all
-      pregenerated Narrator tracks.
 - [ ] Replace error-string-only failure handling with persisted typed cohorts
       and a report grouped by role, backend/model/profile, reference digest,
       attempt/seed, text length/punctuation, limit utilization and silence

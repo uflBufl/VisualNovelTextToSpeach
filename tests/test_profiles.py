@@ -33,6 +33,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 generated_audio_manifest="audio/generated.json",
                 audio_source_policy="prefer-generated",
                 voice_assignments={"Narrator": "preset:alba"},
+                force_live_narrator=False,
             )
             store = GameProfileStore(path)
 
@@ -49,6 +50,7 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
         self.assertEqual(applied.audio_source_policy, "prefer-generated")
         self.assertEqual(applied.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertFalse(applied.force_live_narrator)
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
         with TemporaryDirectory() as temporary_directory:
@@ -103,6 +105,38 @@ class GameProfileStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(profile.audio_source_policy, "live-tts-only")
+
+    def test_legacy_profile_preserves_narrator_force_live_routing(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "profiles": [
+                            {
+                                "id": "legacy",
+                                "name": "Legacy game",
+                                "capture_mode": "screen",
+                                "dialog_region": {
+                                    "left": 0.1,
+                                    "top": 0.6,
+                                    "width": 0.8,
+                                    "height": 0.3,
+                                },
+                                "voice_assignments": {
+                                    "Narrator": "reverse-1999-centurion-game-v1"
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = GameProfileStore.load(path).get("legacy")
+
+        self.assertTrue(profile.force_live_narrator)
 
     def test_duplicate_profile_names_are_rejected_case_insensitively(self):
         with TemporaryDirectory() as temporary_directory:
