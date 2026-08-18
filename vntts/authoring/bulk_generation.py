@@ -83,6 +83,15 @@ PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?
 SHORT_TRAILING_ELLIPSIS_PATTERN = re.compile(
     r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
 )
+LIVE_FALLBACK_SCHEMA = "vntts.authoring-live-fallback-decision"
+LIVE_FALLBACK_VERSION = 1
+LIVE_FALLBACK_REASONS = frozenset(
+    {
+        "offline_fallback_exhausted",
+        "reference_unavailable_after_audit",
+        "generated_audio_rejected",
+    }
+)
 
 
 class BulkGenerationError(RuntimeError):
@@ -1198,7 +1207,7 @@ def run_bulk_generation(
                 item.queue_id
                 for item in candidates
                 if state["items"].get(item.queue_id, {}).get("status")
-                in {"generated", "approved"}
+                in {"generated", "approved", "live_fallback"}
                 and state["items"][item.queue_id].get("review_status")
                 != "pending_review"
             ]
@@ -1218,6 +1227,14 @@ def run_bulk_generation(
             repair_document = _failure_repair_document(
                 repair_policy, queue_id, item.text, existing=existing
             )
+            if existing.get("status") == "live_fallback":
+                if regenerate_existing:
+                    raise BulkGenerationError(
+                        "Regeneration cannot overwrite a terminal live fallback "
+                        f"decision for {queue_id!r}"
+                    )
+                skipped_existing += 1
+                continue
             if existing.get("status") in {"generated", "approved"}:
                 _validate_success_item(
                     queue_id,
@@ -1687,6 +1704,187 @@ def review_generation_item(
         )
 
 
+def authorize_live_fallback(
+    state_path,
+    queue_path,
+    queue_id,
+    *,
+    reason,
+    provider="pocket-tts",
+    model,
+    generation_profile="default",
+):
+    """Record one exact terminal live-Pocket decision without publishing audio."""
+    if reason not in LIVE_FALLBACK_REASONS:
+        raise BulkGenerationError("Live fallback reason is unsupported")
+    if provider != "pocket-tts":
+        raise BulkGenerationError("Live fallback currently requires Pocket TTS")
+    provider = _required_text(provider, "Live fallback provider")
+    model = _required_text(model, "Live fallback model")
+    generation_profile = _required_text(
+        generation_profile, "Live fallback generation profile"
+    )
+    if model != "pocket-tts" or generation_profile != "default":
+        raise BulkGenerationError(
+            "Live fallback requires the exact Pocket TTS default model/profile"
+        )
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    queue, queue_sha256 = _load_stable_queue(queue_path)
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    queue_item = queue_by_id.get(queue_id)
+    if queue_item is None:
+        raise BulkGenerationError(f"Unknown live fallback queue item: {queue_id!r}")
+    with _GenerationLease(
+        state_path.parent,
+        queue_sha256,
+        process_checker=process_is_alive,
+    ) as lease:
+        try:
+            state_payload = state_path.read_bytes()
+            state = json.loads(state_payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise BulkGenerationError(
+                f"Unable to read generation state {state_path}: {error}"
+            ) from error
+        if not isinstance(state, dict):
+            raise BulkGenerationError("Generation state must be a JSON object")
+        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        _validate_state_document(state, state_path.parent, queue, queue_sha256)
+        existing = state["items"].get(queue_id)
+        _validate_live_fallback_source(existing, queue_item, reason)
+        previous_sha256 = None if existing is None else _canonical_sha256(existing)
+        requested = synthesis_character_for_line(
+            queue_item.speaker, queue_item.voice_character
+        )
+        decision = {
+            "schema": LIVE_FALLBACK_SCHEMA,
+            "schema_version": LIVE_FALLBACK_VERSION,
+            "reason": reason,
+            "provider": provider,
+            "model": model,
+            "generation_profile": generation_profile,
+            "queue_id": queue_id,
+            "line_id": queue_item.line_id,
+            "text_sha256": queue_item.text_sha256,
+            "speaker": queue_item.speaker,
+            "requested_voice_character": requested,
+            "previous_result_sha256": previous_sha256,
+            "decided_at": _now(),
+        }
+        proposed = copy.deepcopy(state)
+        proposed_item = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+        if reason == "generated_audio_rejected":
+            proposed_item["live_fallback"] = decision
+            proposed_item["updated_at"] = _now()
+        else:
+            for field in (
+                "path",
+                "file_sha256",
+                "quality",
+                "speech_quality",
+                "review_status",
+            ):
+                proposed_item.pop(field, None)
+            proposed_item.update(
+                {
+                    "status": "live_fallback",
+                    "review_status": "live_fallback",
+                    "attempts": _nonnegative_int(
+                        proposed_item.get("attempts", 0), "Live fallback attempts"
+                    ),
+                    "line_id": queue_item.line_id,
+                    "text_sha256": queue_item.text_sha256,
+                    "speaker": queue_item.speaker,
+                    "requested_voice_character": requested,
+                    "voice_character": proposed_item.get("voice_character", requested),
+                    "live_fallback": decision,
+                    "updated_at": _now(),
+                }
+            )
+        proposed["items"][queue_id] = proposed_item
+        _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
+        entries = _approved_manifest_entries(proposed, state_path.parent)
+        transaction_id = secrets.token_hex(16)
+        staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
+        manifest_path = state_path.parent / "manifest.json"
+        staged_manifest = manifest_path.with_name(
+            f".{manifest_path.name}.{transaction_id}.tmp"
+        )
+        try:
+            atomic_write_json(staged_state, proposed, sort_keys=True)
+            _write_generated_manifest_from_state(
+                proposed,
+                state_path.parent,
+                staged_manifest,
+                entries=entries,
+            )
+            if sha256_file(queue_path) != queue_sha256:
+                raise BulkGenerationSourceChangedError(
+                    "Generation queue changed before live fallback commit"
+                )
+            if sha256_file(state_path) != state_sha256:
+                raise BulkGenerationSourceChangedError(
+                    "Generation state changed before live fallback commit"
+                )
+            _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
+            lease.assert_owned()
+            os.replace(staged_state, state_path)
+            try:
+                lease.assert_owned()
+            except BulkGenerationError as error:
+                raise BulkGenerationError(
+                    "Live fallback was saved, but manifest rebuild was blocked: "
+                    f"{error}"
+                ) from error
+            os.replace(staged_manifest, manifest_path)
+            lease.mark_committed()
+        finally:
+            for path in (staged_state, staged_manifest):
+                try:
+                    if path.exists():
+                        path.unlink()
+                except OSError:
+                    pass
+    return decision
+
+
+def _validate_live_fallback_source(existing, queue_item, reason):
+    if reason == "reference_unavailable_after_audit":
+        if existing is not None and (
+            existing.get("status") != "failed"
+            or not isinstance(existing.get("failure"), dict)
+            or existing["failure"].get("kind") != "reference_unavailable"
+        ):
+            raise BulkGenerationError(
+                "Reference-unavailable fallback requires no result or an exact "
+                "reference-unavailable failure"
+            )
+        return
+    if not isinstance(existing, dict):
+        raise BulkGenerationError("Live fallback requires an existing outcome")
+    if reason == "generated_audio_rejected":
+        if (existing.get("status"), existing.get("review_status")) != (
+            "generated",
+            "rejected",
+        ):
+            raise BulkGenerationError(
+                "Rejected-audio fallback requires a reviewed rejected WAV"
+            )
+        return
+    repair = existing.get("failure_repair")
+    if (
+        existing.get("status") != "failed"
+        or existing.get("provider") != "pocket-tts"
+        or not isinstance(existing.get("failure"), dict)
+        or not isinstance(repair, dict)
+        or repair.get("strategy") != OFFLINE_FALLBACK_BACKEND
+    ):
+        raise BulkGenerationError(
+            "Offline-exhausted live fallback requires a typed failed Pocket fallback"
+        )
+
+
 def _review_generation_item_locked(
     state_path,
     queue_id,
@@ -1994,6 +2192,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             "failed": {None},
             "generated": {"pending_review", "rejected"},
             "approved": {"approved"},
+            "live_fallback": {"live_fallback"},
         }
         if status not in valid or review not in valid[status]:
             raise BulkGenerationError(
@@ -2003,7 +2202,26 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             result.get("attempts", 0), f"Item {queue_id!r} attempts"
         )
         _provider_attempts(result, total_attempts)
+        _validate_live_fallback_decision(
+            result,
+            queue_id,
+            None if queue_by_id is None else queue_by_id[queue_id],
+        )
         if status == "failed":
+            if "failure" in result:
+                _validate_failure_record(result["failure"], queue_id)
+            _validate_synthesis_identity(
+                result,
+                queue_id,
+                None if queue_by_id is None else queue_by_id[queue_id],
+            )
+            _validate_failure_repair_record(
+                result,
+                queue_id,
+                None if queue_by_id is None else queue_by_id[queue_id],
+            )
+            continue
+        if status == "live_fallback":
             if "failure" in result:
                 _validate_failure_record(result["failure"], queue_id)
             _validate_synthesis_identity(
@@ -2063,6 +2281,73 @@ def _validate_failure_record(failure, queue_id):
     }:
         raise BulkGenerationError(
             f"State item {queue_id!r} failure completion is invalid"
+        )
+
+
+def _validate_live_fallback_decision(result, queue_id, queue_item):
+    decision = result.get("live_fallback")
+    if decision is None:
+        if result.get("status") == "live_fallback":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} live fallback decision is missing"
+            )
+        return
+    expected_fields = {
+        "schema",
+        "schema_version",
+        "reason",
+        "provider",
+        "model",
+        "generation_profile",
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "requested_voice_character",
+        "previous_result_sha256",
+        "decided_at",
+    }
+    if (
+        not isinstance(decision, dict)
+        or set(decision) != expected_fields
+        or decision.get("schema") != LIVE_FALLBACK_SCHEMA
+        or decision.get("schema_version") != LIVE_FALLBACK_VERSION
+        or decision.get("reason") not in LIVE_FALLBACK_REASONS
+        or decision.get("provider") != "pocket-tts"
+        or decision.get("model") != "pocket-tts"
+        or decision.get("generation_profile") != "default"
+        or decision.get("queue_id") != queue_id
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} live fallback decision is malformed"
+        )
+    for field in ("model", "generation_profile", "decided_at"):
+        _required_text(
+            decision.get(field), f"State item {queue_id!r} live fallback {field}"
+        )
+    previous = decision.get("previous_result_sha256")
+    if previous is not None:
+        _required_sha256(previous, f"State item {queue_id!r} previous result SHA-256")
+    if queue_item is not None:
+        expected = {
+            "line_id": queue_item.line_id,
+            "text_sha256": queue_item.text_sha256,
+            "speaker": queue_item.speaker,
+            "requested_voice_character": synthesis_character_for_line(
+                queue_item.speaker, queue_item.voice_character
+            ),
+        }
+        if any(decision.get(field) != value for field, value in expected.items()):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} live fallback identity changed"
+            )
+    status_pair = result.get("status"), result.get("review_status")
+    if status_pair not in {
+        ("generated", "rejected"),
+        ("live_fallback", "live_fallback"),
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} live fallback has an invalid terminal state"
         )
 
 

@@ -15,7 +15,9 @@ from vntts_artifacts import (
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
 from vntts.authoring.bulk_generation import (
+    LIVE_FALLBACK_REASONS,
     BulkGenerationError,
+    authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
     is_spoken_queue_item,
@@ -342,6 +344,19 @@ def create_parser():
     review.add_argument("--state", type=Path, required=True)
     review.add_argument("queue_id")
     review.add_argument("decision", choices=("approved", "rejected"))
+    live_fallback = subparsers.add_parser(
+        "live-fallback",
+        help="Authorize exact terminal Pocket live synthesis for one queue item",
+    )
+    live_fallback.add_argument("--state", type=Path, required=True)
+    live_fallback.add_argument("--queue", type=Path, required=True)
+    live_fallback.add_argument("queue_id")
+    live_fallback.add_argument(
+        "--reason", choices=tuple(sorted(LIVE_FALLBACK_REASONS)), required=True
+    )
+    live_fallback.add_argument("--provider", default="pocket-tts")
+    live_fallback.add_argument("--model", required=True)
+    live_fallback.add_argument("--generation-profile", default="default")
     publish = subparsers.add_parser(
         "publish", help="Rebuild the approved-only manifest from generation state"
     )
@@ -685,13 +700,30 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "live-fallback":
+            decision = authorize_live_fallback(
+                arguments.state,
+                arguments.queue,
+                arguments.queue_id,
+                reason=arguments.reason,
+                provider=arguments.provider,
+                model=arguments.model,
+                generation_profile=arguments.generation_profile,
+            )
+            print(json.dumps(decision, indent=2, sort_keys=True))
+            return 0
         if arguments.command == "publish":
             manifest = publish_generated_manifest(arguments.state)
             print(json.dumps({"manifest": str(manifest)}, indent=2, sort_keys=True))
             return 0
         if arguments.command == "status":
             state = load_generation_state(arguments.state, arguments.queue)
-            counts = {"failed": 0, "generated": 0, "approved": 0}
+            counts = {
+                "failed": 0,
+                "generated": 0,
+                "approved": 0,
+                "live_fallback": 0,
+            }
             for item in state["items"].values():
                 counts[item["status"]] += 1
             print(

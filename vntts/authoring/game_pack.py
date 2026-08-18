@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import errno
 import hashlib
@@ -55,6 +56,7 @@ class FinalGamePackResult:
     game_version: str
     approved_count: int
     rejected_count: int
+    live_fallback_count: int
     source_queue_sha256: str
     source_state_sha256: str
 
@@ -155,7 +157,9 @@ def publish_final_game_pack(
 
                 generated_manifest = staging / "generated" / "manifest.json"
                 generated_records = _approved_manifest_entries(state, state_path.parent)
+                live_fallback_records = _live_fallback_records(state, queue)
                 _validate_generated_story_records(generated_records, story)
+                _validate_live_fallback_story_records(live_fallback_records, story)
                 for record in generated_records:
                     relative = _safe_relative(
                         record["audio"], "Generated-audio state path"
@@ -179,6 +183,11 @@ def publish_final_game_pack(
                             "language": state.get("language"),
                             "source_queue_sha256": state["queue_sha256"],
                             "generated_at": created_at,
+                            "vntts.authoring.live_fallback": {
+                                "schema_version": 1,
+                                "mode": "explicit",
+                                "entries": live_fallback_records,
+                            },
                         },
                         generated_records,
                     )
@@ -246,6 +255,7 @@ def publish_final_game_pack(
         game_version=game_version,
         approved_count=counts["approved_count"],
         rejected_count=counts["rejected_count"],
+        live_fallback_count=counts["live_fallback_count"],
         source_queue_sha256=queue_sha256,
         source_state_sha256=state_sha256,
     )
@@ -399,8 +409,32 @@ def _review_counts(state):
         "rejected_count": sum(
             item.get("review_status") == "rejected" for item in state["items"].values()
         ),
+        "live_fallback_count": sum(
+            isinstance(item.get("live_fallback"), dict)
+            for item in state["items"].values()
+        ),
         "state_item_count": len(state["items"]),
     }
+
+
+def _live_fallback_records(state, queue):
+    queue_ids = {item.queue_id for item in queue.items}
+    records = []
+    for queue_id, item in state["items"].items():
+        decision = item.get("live_fallback")
+        if not isinstance(decision, dict):
+            continue
+        if queue_id not in queue_ids:
+            raise FinalGamePackError(
+                f"Live fallback item {queue_id!r} is missing from the queue"
+            )
+        records.append(
+            {
+                **copy.deepcopy(decision),
+                "decision_sha256": _canonical_sha256(decision),
+            }
+        )
+    return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
 
 
 def _copy_control(source, destination, inventory, label):
@@ -612,6 +646,8 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
     queue_by_id = {item.queue_id: item for item in queue.items}
     narrator_selections = set()
     for queue_id, result in state["items"].items():
+        if result.get("status") == "live_fallback":
+            continue
         provenance = result.get("synthesis_provenance_sha256")
         controls = registry.get(provenance)
         if not isinstance(controls, list):
@@ -702,6 +738,16 @@ def _validate_generated_story_records(records, story):
         if line is None or line.text_sha256 != generated["text_sha256"]:
             raise FinalGamePackError(
                 f"Approved generated item {generated['line_id']!r} does not match the story index"
+            )
+
+
+def _validate_live_fallback_story_records(records, story):
+    lines = {record.line_id: record for record in story.records}
+    for fallback in records:
+        line = lines.get(fallback["line_id"])
+        if line is None or line.text_sha256 != fallback["text_sha256"]:
+            raise FinalGamePackError(
+                f"Live fallback item {fallback['line_id']!r} does not match the story index"
             )
 
 

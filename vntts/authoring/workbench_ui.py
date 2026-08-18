@@ -1153,6 +1153,7 @@ class AuthoringWorkbenchDialog(QDialog):
                     f"Generated awaiting review: {self.summary.generated}",
                     f"Approved: {self.summary.approved}",
                     f"Rejected: {self.summary.rejected}",
+                    f"Live fallback: {self.summary.live_fallback}",
                     f"Failed: {self.summary.failed}",
                     f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
                     f"Recoverable source audio: {self.summary.recoverable_source_audio}",

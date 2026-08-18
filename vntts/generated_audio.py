@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import wave
 from dataclasses import dataclass, replace
 from threading import Event, Lock
@@ -21,6 +22,14 @@ from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
 from vntts.voices import synthesis_character
+
+LIVE_FALLBACK_REASONS = frozenset(
+    {
+        "offline_fallback_exhausted",
+        "reference_unavailable_after_audit",
+        "generated_audio_rejected",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +115,34 @@ class GeneratedAudioRoute:
 
 
 @dataclass(frozen=True)
+class LiveFallbackDecision:
+    schema: str
+    schema_version: int
+    reason: str
+    provider: str
+    model: str
+    generation_profile: str
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    speaker: str
+    requested_voice_character: str
+    previous_result_sha256: str | None
+    decided_at: str
+    decision_sha256: str
+
+
+@dataclass(frozen=True)
+class LiveFallbackRoute:
+    prepared: object
+    decision: LiveFallbackDecision
+    trace: AudioRouteTrace
+    synthesis_ms: float | None
+    first_audio_ms: float | None
+    cache_source: str | None = None
+
+
+@dataclass(frozen=True)
 class LiveTTSRoute:
     prepared: object
     trace: AudioRouteTrace
@@ -114,7 +151,9 @@ class LiveTTSRoute:
     cache_source: str | None = None
 
 
-RouteDecision = SourceAudioRoute | GeneratedAudioRoute | LiveTTSRoute
+RouteDecision = (
+    SourceAudioRoute | GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute
+)
 
 
 class GeneratedAudioLibrary:
@@ -123,6 +162,7 @@ class GeneratedAudioLibrary:
         self.warn = warn or (lambda _message: None)
         self.cache = BoundedCache(cache_size)
         self.warned_entries = set()
+        self.live_fallbacks = _live_fallback_index(index.metadata)
 
     @classmethod
     def load_optional(cls, path, *, warn=None, cache_size=32):
@@ -130,11 +170,11 @@ class GeneratedAudioLibrary:
             return None
         try:
             index = GeneratedAudioIndex.load(path)
-        except GeneratedAudioManifestError as error:
+            return cls(index, warn=warn, cache_size=cache_size)
+        except (GeneratedAudioManifestError, ValueError) as error:
             if warn is not None:
                 warn(f"Generated audio disabled: {error}")
             return None
-        return cls(index, warn=warn, cache_size=cache_size)
 
     def find(self, line_id, text_sha256):
         prepared, _state = self.find_with_preflight(line_id, text_sha256)
@@ -185,6 +225,9 @@ class GeneratedAudioLibrary:
         )
         self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"
+
+    def find_live_fallback(self, line_id, text_sha256):
+        return self.live_fallbacks.get((line_id, text_sha256))
 
     def _warn_once(self, entry, message):
         identity = entry.line_id, entry.text_sha256
@@ -382,8 +425,20 @@ class GeneratedAudioFallbackBackend:
             elif self.speed != 1.0:
                 artifact_preflight_state = "generated-audio-skipped-nondefault-speed"
             fallback_reasons.append(artifact_preflight_state)
+        live_fallback = (
+            None
+            if line is None or self.library is None
+            else self.library.find_live_fallback(line.line_id, line.text_sha256)
+        )
+        if live_fallback is not None:
+            _validate_live_fallback_backend(self.live_backend, live_fallback)
         prepared = self.live_backend.prepare_playback(
-            synthesis_character(character), text
+            (
+                live_fallback.requested_voice_character
+                if live_fallback is not None
+                else synthesis_character(character)
+            ),
+            text,
         )
         effective_source = prepared.audio_source
         line_id = line.line_id if line is not None else None
@@ -396,6 +451,28 @@ class GeneratedAudioFallbackBackend:
             line_id,
             artifact_preflight_state,
         )
+        if live_fallback is not None:
+            trace = AudioRouteTrace(
+                None,
+                "live-fallback",
+                match_result,
+                ";".join(
+                    dict.fromkeys(
+                        [*fallback_reasons, f"authorized:{live_fallback.reason}"]
+                    )
+                ),
+                None,
+                line_id,
+                "live-fallback-authorized",
+            )
+            return LiveFallbackRoute(
+                prepared,
+                live_fallback,
+                trace,
+                prepared.synthesis_ms,
+                prepared.first_audio_ms,
+                prepared.cache_source,
+            )
         return LiveTTSRoute(
             prepared,
             trace,
@@ -419,6 +496,8 @@ class GeneratedAudioFallbackBackend:
             return self._play_source_route(route, playback_guard)
         if isinstance(route, GeneratedAudioRoute):
             return self._play_generated_route(route, playback_guard)
+        if isinstance(route, LiveFallbackRoute):
+            return self._play_live_route(route, playback_guard)
         if isinstance(route, LiveTTSRoute):
             return self._play_live_route(route, playback_guard)
         raise TypeError(f"Unsupported audio route: {type(route).__name__}")
@@ -566,6 +645,118 @@ class GeneratedAudioFallbackBackend:
             self.generated_audio_stop.set()
             self.audio_output.stop()
         return bool(self.live_backend.stop()) or was_playing
+
+
+def _live_fallback_index(metadata):
+    value = metadata.get("vntts.authoring.live_fallback")
+    if value is None:
+        return {}
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "mode", "entries"}
+        or value.get("schema_version") != 1
+        or value.get("mode") != "explicit"
+        or not isinstance(value.get("entries"), list)
+    ):
+        raise ValueError("Generated-audio live fallback ledger is malformed")
+    fields = {
+        "schema",
+        "schema_version",
+        "reason",
+        "provider",
+        "model",
+        "generation_profile",
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "requested_voice_character",
+        "previous_result_sha256",
+        "decided_at",
+        "decision_sha256",
+    }
+    indexed = {}
+    for raw in value["entries"]:
+        if not isinstance(raw, dict) or set(raw) != fields:
+            raise ValueError("Generated-audio live fallback entry is malformed")
+        for field in fields - {
+            "schema_version",
+            "text_sha256",
+            "previous_result_sha256",
+            "decision_sha256",
+        }:
+            if not isinstance(raw[field], str) or not raw[field].strip():
+                raise ValueError(
+                    "Generated-audio live fallback text fields must be non-empty"
+                )
+        if (
+            raw["schema"] != "vntts.authoring-live-fallback-decision"
+            or raw["schema_version"] != 1
+        ):
+            raise ValueError("Generated-audio live fallback schema is unsupported")
+        for field in ("text_sha256", "decision_sha256"):
+            value_hash = raw[field]
+            if (
+                not isinstance(value_hash, str)
+                or len(value_hash) != 64
+                or any(character not in "0123456789abcdef" for character in value_hash)
+            ):
+                raise ValueError(
+                    "Generated-audio live fallback hashes must be lowercase SHA-256"
+                )
+        previous = raw["previous_result_sha256"]
+        if previous is not None and (
+            not isinstance(previous, str)
+            or len(previous) != 64
+            or any(character not in "0123456789abcdef" for character in previous)
+        ):
+            raise ValueError(
+                "Generated-audio previous-result hash must be lowercase SHA-256"
+            )
+        if (
+            raw["reason"] not in LIVE_FALLBACK_REASONS
+            or raw["provider"] != "pocket-tts"
+            or raw["model"] != "pocket-tts"
+            or raw["generation_profile"] != "default"
+        ):
+            raise ValueError("Generated-audio live fallback policy is unsupported")
+        decision_document = {
+            key: value for key, value in raw.items() if key != "decision_sha256"
+        }
+        decision_sha256 = hashlib.sha256(
+            json.dumps(
+                decision_document,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if decision_sha256 != raw["decision_sha256"]:
+            raise ValueError("Generated-audio live fallback decision hash changed")
+        decision = LiveFallbackDecision(**raw)
+        identity = decision.line_id, decision.text_sha256
+        if identity in indexed:
+            raise ValueError("Generated-audio live fallback identity is duplicated")
+        indexed[identity] = decision
+    return indexed
+
+
+def _validate_live_fallback_backend(backend, decision):
+    provider = getattr(backend, "name", None)
+    model = (
+        getattr(backend, "model_identity", None)
+        or getattr(backend, "model_name", None)
+        or provider
+    )
+    profile = getattr(backend, "generation_profile", None)
+    if (
+        provider != decision.provider
+        or str(model) != decision.model
+        or profile != decision.generation_profile
+    ):
+        raise ValueError(
+            "Configured live backend differs from the authorized fallback decision"
+        )
 
 
 def _read_pcm16_mono_wav_bytes(payload):

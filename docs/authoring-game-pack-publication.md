@@ -13,7 +13,8 @@ Final publication requires all of the following:
 
 - state is bound to the SHA-256 of the exact raw queue bytes;
 - state contains exactly the selected queue IDs, with every item terminal as
-  approved or rejected; active, failed, pending or partial state is rejected;
+  approved, rejected or explicitly authorized `live_fallback`; active, raw
+  failed, pending or partial state is rejected;
 - queue metadata contains non-optional source paths and SHA-256 bindings for
   its original story index and voice manifest. Story identity must still match
   exactly. A deliberate replacement voice snapshot is allowed only when every
@@ -31,7 +32,9 @@ The original generated-audio manifest may be absent or stale. It is not the
 review authority and is never rewritten by this command. A fresh approved-only
 manifest is built inside staging from the exact state snapshot. Rejected audio,
 partial WAVs, queue/state files and review diagnostics remain in application
-data and are not shipped.
+data and are not shipped. The generated-audio metadata carries a checksum-bound
+`vntts.authoring.live_fallback` ledger for every deliberate fallback identity.
+It contains no audio and cannot be inferred from an absent or failed record.
 
 When a proven replacement voice snapshot is published, the raw game-pack
 authoring extension retains the original queue voice-manifest SHA-256, the
@@ -79,7 +82,14 @@ uv run vntts-pregenerate publish-pack \
 `--producer NAME=VERSION` can be repeated. If omitted, the installed VNTTS
 package identity is recorded. `--game-id` defaults to the bound state game;
 `--game-version` is always explicit. The command prints the final manifest,
-source queue/state hashes and approved/rejected counts as JSON.
+source queue/state hashes and approved/rejected/live-fallback counts as JSON.
+
+At runtime the ledger is matched by exact line ID and text SHA-256 after source
+audio and approved generated-audio checks. A match permits only the recorded
+Pocket provider/model/profile and produces a typed `LiveFallbackRoute`; a
+different live backend fails closed. Lines without a ledger entry retain the
+ordinary live-routing policy and are not silently treated as an authoring
+decision.
 
 The resulting `game-pack.json` can be checked through
 `vntts-preflight-game-pack` and consumed directly through the existing Settings,

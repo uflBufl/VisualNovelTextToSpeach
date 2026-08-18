@@ -24,11 +24,6 @@ Follow the evidence-backed order and invariants in
       `reference-report` metrics cannot decide speaker identity, background
       contamination or pronunciation. Keep the 20-second ceiling and do not
       mass retry a low-yield cohort.
-- [ ] Add an explicit terminal `live_fallback` route decision after source
-      discovery and offline fallback generation are exhausted. Final hybrid
-      publication must distinguish approved source/generated audio from a
-      deliberate Pocket fallback; pending review and raw failed state remain
-      nonterminal.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

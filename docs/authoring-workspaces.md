@@ -118,8 +118,8 @@ uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
   --voice-manifest VOICES/manifest.json \
   --narrator-character Centurion \
   --backend pocket-tts \
-  --model POCKET_MODEL \
-  --generation-profile stable \
+  --model pocket-tts \
+  --generation-profile default \
   --carry-forward-from MOSS_WORKSPACE \
   --offline-fallback-failed QUEUE_ID
 ```
@@ -135,6 +135,27 @@ attempts. State and approved-manifest records retain both the fallback repair
 ledger and provider counters. Pocket output passes the same typed-completion,
 PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
 other generated artifact.
+
+When source/reference discovery and the bounded offline fallback are both
+exhausted, authoring can record an explicit terminal Pocket live-fallback
+decision for one exact queue identity. This does not create or approve a WAV:
+
+```sh
+uv run vntts-pregenerate live-fallback \
+  --state WORKSPACE/generated-audio/generation-state.json \
+  --queue WORKSPACE/queue.jsonl \
+  --reason offline_fallback_exhausted \
+  --model pocket-tts \
+  QUEUE_ID
+```
+
+The other accepted reasons are `reference_unavailable_after_audit` for an
+absent item or an exact typed reference-unavailable failure, and
+`generated_audio_rejected` for a generated WAV already reviewed as rejected.
+The command requires the exact Pocket `pocket-tts`/`default` model/profile,
+binds the queue line/text/speaker and prior result hash, and rebuilds the
+approved-only manifest under the generation lease. Raw failed or pending-review
+items remain nonterminal until this explicit decision is recorded.
 
 Optional `--carry-forward-character` values may preserve terminal approved or
 rejected decisions for unchanged non-Narrator character references in the new

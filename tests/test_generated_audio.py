@@ -1,4 +1,5 @@
 import hashlib
+import json
 import unittest
 import wave
 from pathlib import Path
@@ -19,6 +20,7 @@ from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
     GeneratedAudioRoute,
+    LiveFallbackRoute,
     LiveTTSRoute,
     PlaybackStatus,
     PreparedGeneratedAudio,
@@ -124,6 +126,101 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         backend.stop.return_value = False
         return backend
+
+    def create_live_fallback_library(self, root, *, model="pocket-tts"):
+        text = "Hello."
+        manifest = root / "generated-audio.json"
+        decision = {
+            "schema": "vntts.authoring-live-fallback-decision",
+            "schema_version": 1,
+            "reason": "generated_audio_rejected",
+            "provider": "pocket-tts",
+            "model": model,
+            "generation_profile": "default",
+            "queue_id": "queue:1",
+            "line_id": "game:1",
+            "text_sha256": text_sha256(text),
+            "speaker": "Ada",
+            "requested_voice_character": "Narrator",
+            "previous_result_sha256": "b" * 64,
+            "decided_at": "2026-08-18T12:00:00+00:00",
+        }
+        decision["decision_sha256"] = hashlib.sha256(
+            json.dumps(
+                decision,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        write_generated_audio_manifest(
+            manifest,
+            {
+                "vntts.authoring.live_fallback": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": [decision],
+                }
+            },
+            [],
+        )
+        return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest))
+
+    def test_explicit_live_fallback_uses_only_bound_pocket_backend(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = self.create_live_fallback_library(root)
+            live = self.create_live_backend()
+            live.name = "pocket-tts"
+            live.model_identity = None
+            live.model_name = "pocket-tts"
+            live.generation_profile = "default"
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(),
+                audio_output=FakeAudioOutput(),
+            )
+
+            route = backend.prepare_route("Ada", "Hello.")
+            outcome = backend.play_route(route)
+            live.model_name = "different-model"
+            with self.assertRaisesRegex(ValueError, "authorized fallback"):
+                backend.prepare_route("Ada", "Hello.")
+
+        self.assertIsInstance(route, LiveFallbackRoute)
+        self.assertEqual(route.decision.reason, "generated_audio_rejected")
+        self.assertEqual(route.trace.effective_source, "live-fallback")
+        self.assertEqual(
+            route.trace.artifact_preflight_state, "live-fallback-authorized"
+        )
+        self.assertTrue(outcome.successful)
+        self.assertEqual(outcome.audio_source, "live-fallback")
+        live.prepare_playback.assert_called_with("Narrator", "Hello.")
+
+    def test_malformed_live_fallback_disables_optional_generated_library(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest,
+                {
+                    "vntts.authoring.live_fallback": {
+                        "schema_version": 1,
+                        "mode": "implicit",
+                        "entries": [],
+                    }
+                },
+                [],
+            )
+            warnings = []
+            library = GeneratedAudioLibrary.load_optional(
+                manifest, warn=warnings.append
+            )
+
+        self.assertIsNone(library)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("live fallback ledger is malformed", warnings[0])
 
     def test_route_wrapper_has_no_payload_only_or_mutable_metric_facade(self):
         backend = GeneratedAudioFallbackBackend(

@@ -1177,6 +1177,7 @@ class LiveDialogReader:
     def _play_if_current(self, chunk, prepared):
         from vntts.generated_audio import (
             GeneratedAudioRoute,
+            LiveFallbackRoute,
             LiveTTSRoute,
             SourceAudioRoute,
         )
@@ -1192,6 +1193,7 @@ class LiveDialogReader:
             prepared,
             (
                 GeneratedAudioRoute,
+                LiveFallbackRoute,
                 LiveTTSRoute,
                 SourceAudioRoute,
                 PreparedPlayback,

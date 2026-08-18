@@ -496,7 +496,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             policy = FailureRepairPolicy(
                 offline_fallback_queue_ids=(fixture["queue_id"],)
             )
-            with self.assertRaisesRegex(AuthoringWorkbenchError, "Pocket TTS target"):
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "Pocket TTS default"):
                 create_resume_workspace(
                     imported,
                     root / "unsafe-same-backend",
@@ -518,8 +518,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     story_index=fixture["job"]["story_index"],
                     voice_manifest=fixture["job"]["voice_manifest"],
                     backend="pocket-tts",
-                    model="pocket-v1",
-                    generation_profile="stable",
+                    model="pocket-tts",
+                    generation_profile="default",
                     narrator_character="Rhiannon",
                     failure_repair_policy=policy,
                 )
@@ -530,8 +530,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 story_index=fixture["job"]["story_index"],
                 voice_manifest=fixture["job"]["voice_manifest"],
                 backend="pocket-tts",
-                model="pocket-v1",
-                generation_profile="stable",
+                model="pocket-tts",
+                generation_profile="default",
                 narrator_character="Rhiannon",
                 failure_repair_policy=policy,
                 carry_forward_from=source.directory,
@@ -559,14 +559,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 [SynthesisCompletion.LIMITED], diagnostics_backend="pocket-tts"
             )
             renderer.name = "pocket-tts"
-            renderer.model_name = "pocket-v1"
+            renderer.model_name = "pocket-tts"
             first_result = run_bulk_generation(
                 fallback.directory / "queue.jsonl",
                 fallback.directory / "generated-audio",
                 renderer,
                 provider="pocket-tts",
-                model="pocket-v1",
-                generation_profile="stable",
+                model="pocket-tts",
+                generation_profile="default",
                 retries=0,
                 seed=0,
                 include_queue_ids=(fixture["queue_id"],),
@@ -577,14 +577,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             second_renderer = SyntheticRenderer(diagnostics_backend="pocket-tts")
             second_renderer.name = "pocket-tts"
-            second_renderer.model_name = "pocket-v1"
+            second_renderer.model_name = "pocket-tts"
             result = run_bulk_generation(
                 fallback.directory / "queue.jsonl",
                 fallback.directory / "generated-audio",
                 second_renderer,
                 provider="pocket-tts",
-                model="pocket-v1",
-                generation_profile="stable",
+                model="pocket-tts",
+                generation_profile="default",
                 retries=0,
                 seed=0,
                 include_queue_ids=(fixture["queue_id"],),

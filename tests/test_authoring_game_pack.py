@@ -21,8 +21,11 @@ from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
+import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
 from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
+    authorize_live_fallback,
     review_generation_item,
     run_bulk_generation,
 )
@@ -220,6 +223,142 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_explicit_live_fallback_is_terminal_and_published_losslessly(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source")
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+            review_generation_item(
+                fixture["state"], fixture["items"][1]["queue_id"], "rejected"
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "live-fallback",
+                        "--state",
+                        str(fixture["state"]),
+                        "--queue",
+                        str(fixture["queue"]),
+                        "--reason",
+                        "generated_audio_rejected",
+                        "--model",
+                        "pocket-tts",
+                        fixture["items"][1]["queue_id"],
+                    ]
+                )
+            decision = json.loads(stdout.getvalue())
+            result = publish(fixture, root / "pack")
+            pack = load_game_pack(result.manifest)
+            generated = GeneratedAudioIndex.load(pack.generated_audio.path)
+            ledger = generated.metadata["vntts.authoring.live_fallback"]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(result.approved_count, 1)
+        self.assertEqual(result.rejected_count, 1)
+        self.assertEqual(result.live_fallback_count, 1)
+        self.assertEqual(ledger["mode"], "explicit")
+        self.assertEqual(len(ledger["entries"]), 1)
+        self.assertEqual(ledger["entries"][0]["reason"], "generated_audio_rejected")
+        self.assertEqual(ledger["entries"][0]["provider"], "pocket-tts")
+        self.assertEqual(
+            ledger["entries"][0]["decision_sha256"],
+            game_pack_module._canonical_sha256(decision),
+        )
+
+    def test_live_fallback_refuses_pending_or_unbound_backend(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            before = fixture["state"].read_bytes()
+            with self.assertRaisesRegex(BulkGenerationError, "reviewed rejected WAV"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    fixture["items"][0]["queue_id"],
+                    reason="generated_audio_rejected",
+                    model="pocket-tts",
+                )
+            with self.assertRaisesRegex(BulkGenerationError, "Pocket TTS"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    fixture["items"][0]["queue_id"],
+                    reason="reference_unavailable_after_audit",
+                    provider="moss-tts",
+                    model="moss-v1",
+                )
+            after = fixture["state"].read_bytes()
+
+        self.assertEqual(after, before)
+
+    def test_live_fallback_rejects_state_change_during_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            queue_id = fixture["items"][0]["queue_id"]
+            review_generation_item(fixture["state"], queue_id, "rejected")
+            real_write = bulk_generation_module._write_generated_manifest_from_state
+
+            def mutate_state(*args, **kwargs):
+                result = real_write(*args, **kwargs)
+                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state["external_change"] = True
+                fixture["state"].write_text(
+                    json.dumps(state, sort_keys=True), encoding="utf-8"
+                )
+                return result
+
+            with patch.object(
+                bulk_generation_module,
+                "_write_generated_manifest_from_state",
+                side_effect=mutate_state,
+            ):
+                with self.assertRaisesRegex(BulkGenerationError, "state changed"):
+                    authorize_live_fallback(
+                        fixture["state"],
+                        fixture["queue"],
+                        queue_id,
+                        reason="generated_audio_rejected",
+                        model="pocket-tts",
+                    )
+
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+
+        self.assertNotIn("live_fallback", state["items"][queue_id])
+
+    def test_audited_missing_reference_can_be_terminal_without_a_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source")
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["items"].pop(fixture["items"][1]["queue_id"])
+            fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
+            authorize_live_fallback(
+                fixture["state"],
+                fixture["queue"],
+                fixture["items"][1]["queue_id"],
+                reason="reference_unavailable_after_audit",
+                model="pocket-tts",
+            )
+            result = publish(fixture, root / "pack")
+            final_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            fallback_item = final_state["items"][fixture["items"][1]["queue_id"]]
+
+        self.assertEqual(result.live_fallback_count, 1)
+        self.assertEqual(
+            (fallback_item["status"], fallback_item["review_status"]),
+            ("live_fallback", "live_fallback"),
+        )
+        self.assertNotIn("path", fallback_item)
+
     def test_named_missing_voice_fallback_survives_final_pack_validation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

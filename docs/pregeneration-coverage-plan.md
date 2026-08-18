@@ -250,11 +250,13 @@ If a sample reveals a substantive defect, expand review to that complete
 cohort. Unchanged WAV hashes retain their decisions; regeneration invalidates
 the old decision.
 
-The final hybrid route must distinguish approved generated audio from a
-deliberate live fallback. Pending review and raw failure remain nonterminal.
-Final publication may include an explicit terminal `live_fallback` decision
-only after source/reference discovery and offline fallback generation were
-exhausted for that exact line or role. Runtime routing then becomes:
+The final hybrid route distinguishes approved generated audio from a deliberate
+live fallback. Pending review and raw failure remain nonterminal. The
+`live-fallback` authoring command records the exact queue/text/speaker, prior
+result hash, reason and fixed Pocket model/profile only after source/reference
+discovery and offline fallback generation were exhausted. Final publication
+ships that decision in a checksum-bound metadata ledger; runtime accepts it
+only with the matching Pocket backend. Runtime routing then becomes:
 
 1. verified original game audio when policy permits;
 2. approved pregenerated audio;

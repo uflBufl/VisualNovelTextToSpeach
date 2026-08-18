@@ -124,6 +124,7 @@ class WorkspaceSummary:
     generated: int
     approved: int
     rejected: int
+    live_fallback: int
     failed: int
     skipped_actions: int
     skipped_sound_effects: int
@@ -601,7 +602,14 @@ def inspect_workspace(
         for queue_id, value in relevant.items()
         if value.get("status") == "failed"
     }
-    completed_ids = approved_ids | rejected_ids | generated_ids | failed_ids
+    live_fallback_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if isinstance(value.get("live_fallback"), dict)
+    }
+    completed_ids = (
+        approved_ids | rejected_ids | generated_ids | failed_ids | live_fallback_ids
+    )
     selected_voice_manifest = _selected_voice_manifest(
         directory, workspace, voice_manifest
     )
@@ -643,6 +651,7 @@ def inspect_workspace(
         generated=len(generated_ids),
         approved=len(approved_ids),
         rejected=len(rejected_ids),
+        live_fallback=len(live_fallback_ids),
         failed=len(failed_ids),
         skipped_actions=(
             len(queue.items)
@@ -1478,9 +1487,11 @@ def _carry_forward_review_outcomes(
     if failed_selected and (
         run_config.get("backend") != "pocket-tts"
         or source_run_config.get("backend") == run_config.get("backend")
+        or run_config.get("model") not in {None, "pocket-tts"}
+        or run_config.get("generation_profile") not in {None, "default"}
     ):
         raise AuthoringWorkbenchError(
-            "Offline fallback requires a different source backend and Pocket TTS target"
+            "Offline fallback requires a different source backend and the exact Pocket TTS default model/profile"
         )
     source_output = source_directory / "generated-audio"
     source_state_path = source_output / "generation-state.json"
@@ -2311,6 +2322,8 @@ def _validate_workspace_carry_forward(directory, workspace):
         if (
             target_run_config["backend"] != "pocket-tts"
             or target_run_config["backend"] == source_run_config["backend"]
+            or target_run_config["model"] not in {None, "pocket-tts"}
+            or target_run_config["generation_profile"] not in {None, "default"}
         ):
             raise AuthoringWorkbenchError(
                 "Workspace offline fallback backend provenance is inconsistent"

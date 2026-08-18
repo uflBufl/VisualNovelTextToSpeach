@@ -447,14 +447,23 @@ source-provider attempts, references and failure hashes remain bound while
 Pocket starts its own provider-local seed sequence and uses the same output and
 manual-review gates.
 
+If an exact line still cannot produce acceptable offline audio after source
+audit and bounded Pocket generation, `vntts-pregenerate live-fallback` can make
+that outcome explicitly terminal without pretending a WAV exists. Final packs
+carry the exact decision in generated-audio metadata, and runtime permits only
+the bound Pocket model/profile for that line after source and approved generated
+audio have been considered. Raw failures and pending review never imply this
+authorization.
+
 Reference changes are explicit too: `reference-report` checksum-binds objective
 candidate metrics, and `select-reference` publishes a no-overwrite manifest
 whose selected-first ordering is revalidated when a workspace copies the WAVs.
 Perceptual choice remains manual. See
 [immutable reference selection](docs/authoring-reference-selection.md).
 
-After every selected queue item has a terminal approval or rejection, publish a
-portable final delivery with `vntts-pregenerate publish-pack`. Publication
+After every selected queue item has a terminal approval, rejection or explicit
+live-fallback decision, publish a portable final delivery with
+`vntts-pregenerate publish-pack`. Publication
 copies only bound inputs and approved WAVs into sibling staging, validates the
 complete shared game-pack contract, and commits with atomic no-replace rename;
 the queue, generated WAVs and review state remain unchanged in application

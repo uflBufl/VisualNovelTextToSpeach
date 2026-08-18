@@ -30,6 +30,7 @@ from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
     GeneratedAudioRoute,
+    LiveFallbackRoute,
     LiveTTSRoute,
     PlaybackOutcome,
     PlaybackStatus,
@@ -1526,6 +1527,7 @@ class AppController:
                     prepared,
                     (
                         GeneratedAudioRoute,
+                        LiveFallbackRoute,
                         SourceAudioRoute,
                         LiveTTSRoute,
                         PreparedPlayback,
@@ -1572,7 +1574,13 @@ class AppController:
                 )
                 if callable(play_route)
                 and isinstance(
-                    audio, (GeneratedAudioRoute, SourceAudioRoute, LiveTTSRoute)
+                    audio,
+                    (
+                        GeneratedAudioRoute,
+                        LiveFallbackRoute,
+                        SourceAudioRoute,
+                        LiveTTSRoute,
+                    ),
                 )
                 else None
             )
@@ -1677,7 +1685,15 @@ class AppController:
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _describe_audio_source(self, prepared):
-        if isinstance(prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)):
+        if isinstance(prepared, LiveFallbackRoute):
+            return (
+                "Authorized live fallback "
+                f"({prepared.decision.provider}/{prepared.decision.model})"
+            )
+        if isinstance(
+            prepared,
+            (SourceAudioRoute, GeneratedAudioRoute, LiveFallbackRoute, LiveTTSRoute),
+        ):
             prepared = prepared.prepared
         if isinstance(prepared, PreparedPlayback):
             prepared = prepared.payload
@@ -1737,7 +1753,13 @@ class AppController:
         route = (
             prepared.trace
             if isinstance(
-                prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)
+                prepared,
+                (
+                    SourceAudioRoute,
+                    GeneratedAudioRoute,
+                    LiveFallbackRoute,
+                    LiveTTSRoute,
+                ),
             )
             else None
         )
@@ -1767,7 +1789,13 @@ class AppController:
         prepared_payload = (
             prepared.prepared
             if isinstance(
-                prepared, (SourceAudioRoute, GeneratedAudioRoute, LiveTTSRoute)
+                prepared,
+                (
+                    SourceAudioRoute,
+                    GeneratedAudioRoute,
+                    LiveFallbackRoute,
+                    LiveTTSRoute,
+                ),
             )
             else prepared
         )
