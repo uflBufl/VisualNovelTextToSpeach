@@ -21,9 +21,11 @@ Follow the evidence-backed order and invariants in
 - [ ] Implement bounded cohort-specific prevention: evidence-based text
       normalization, safe sentence-boundary segmentation/concatenation for
       suitable long lines, limited seed diversification, reference comparison,
-      and edge-silence handling. Keep the 20-second ceiling, never split inside
-      a phrase, and do not reintroduce token-level duration control or mass
-      retry a low-yield cohort.
+      and edge-silence handling. Execute only exact fresh queue IDs from the
+      versioned `failure-repair-plan`; the planner is read-only and does not yet
+      perform these repairs. Keep the 20-second ceiling, never split inside a
+      phrase, and do not reintroduce token-level duration control or mass retry
+      a low-yield cohort.
 - [ ] Add an immutable offline fallback-backend contract so exact cohorts that
       still fail MOSS can be pregenerated with Pocket TTS. Bind provider/model,
       provider-specific seed semantics, references and output hashes per item;

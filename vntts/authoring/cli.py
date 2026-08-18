@@ -16,6 +16,7 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manife
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    generation_failure_repair_plan,
     generation_failure_report,
     is_spoken_queue_item,
     load_generation_state,
@@ -298,6 +299,12 @@ def create_parser():
     )
     failures.add_argument("--state", type=Path, required=True)
     failures.add_argument("--queue", type=Path, required=True)
+    repairs = subparsers.add_parser(
+        "failure-repair-plan",
+        help="Plan exact-ID bounded repairs without changing generation state",
+    )
+    repairs.add_argument("--state", type=Path, required=True)
+    repairs.add_argument("--queue", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -629,6 +636,16 @@ def main(argv=None):
             print(
                 json.dumps(
                     generation_failure_report(arguments.state, arguments.queue),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "failure-repair-plan":
+            print(
+                json.dumps(
+                    generation_failure_repair_plan(arguments.state, arguments.queue),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,

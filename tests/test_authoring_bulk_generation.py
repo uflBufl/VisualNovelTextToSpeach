@@ -21,6 +21,7 @@ from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
+    generation_failure_repair_plan,
     generation_failure_report,
     generation_review_authority,
     load_generation_state,
@@ -590,6 +591,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             atomic_write_json(result.state, state, sort_keys=True)
 
             report = generation_failure_report(result.state, queue)
+            repair_plan = generation_failure_repair_plan(result.state, queue)
             output = StringIO()
             with redirect_stdout(output):
                 exit_code = authoring_main(
@@ -601,9 +603,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         str(queue),
                     ]
                 )
+            repair_output = StringIO()
+            with redirect_stdout(repair_output):
+                repair_exit_code = authoring_main(
+                    [
+                        "failure-repair-plan",
+                        "--state",
+                        str(result.state),
+                        "--queue",
+                        str(queue),
+                    ]
+                )
 
         self.assertEqual(exit_code, 0)
+        self.assertEqual(repair_exit_code, 0)
         self.assertEqual(json.loads(output.getvalue()), report)
+        self.assertEqual(json.loads(repair_output.getvalue()), repair_plan)
         self.assertEqual(report["failure_count"], 2)
         self.assertEqual(
             {entry["value"]: entry["count"] for entry in report["cohorts"]["kind"]},
@@ -616,6 +631,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertTrue(legacy["failure"]["inferred_from_legacy_error"])
         self.assertEqual(legacy["requested_voice_character"], "Rhiannon")
+        self.assertEqual(
+            repair_plan["action_counts"],
+            {"bounded_seed_retry": 1, "reference_comparison": 1},
+        )
+        actions = {
+            record["queue_id"]: record["action"] for record in repair_plan["records"]
+        }
+        self.assertEqual(actions[limited_item["queue_id"]], "bounded_seed_retry")
+        self.assertEqual(actions[silence_item["queue_id"]], "reference_comparison")
 
     def test_stereo_renderer_is_downmixed_without_doubling_wav_duration(self):
         with TemporaryDirectory() as directory:

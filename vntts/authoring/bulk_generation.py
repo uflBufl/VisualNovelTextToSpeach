@@ -751,6 +751,85 @@ def generation_failure_report(state_path, queue_path):
     }
 
 
+def generation_failure_repair_plan(state_path, queue_path):
+    """Return deterministic exact-ID repair candidates without changing state."""
+    report = generation_failure_report(state_path, queue_path)
+    planned = []
+    for record in report["records"]:
+        failure = record["failure"]
+        kind = failure["kind"]
+        features = failure["text_features"]
+        attempts = record["attempts"]
+        if kind == "missed_eos_audio_limit":
+            if features["sentence_boundary_count"] >= 2:
+                action = "sentence_boundary_segmentation"
+                reason = "multiple complete sentence boundaries"
+            elif attempts < 3:
+                action = "bounded_seed_retry"
+                reason = "fewer than three completed primary attempts"
+            else:
+                action = "offline_fallback_backend"
+                reason = "primary bounded attempts are exhausted"
+        elif kind == "speech_silence":
+            quality = failure.get("speech_quality")
+            edge_only = bool(
+                isinstance(quality, dict)
+                and (
+                    quality.get("leading_silence_seconds", 0)
+                    > MAX_LEADING_SILENCE_SECONDS
+                    or quality.get("trailing_silence_seconds", 0)
+                    > MAX_TRAILING_SILENCE_SECONDS
+                )
+                and quality.get("longest_internal_silence_seconds", 0)
+                <= MAX_INTERNAL_SILENCE_SECONDS
+            )
+            if edge_only:
+                action = "edge_silence_trim_review"
+                reason = "only measured boundary silence exceeds the speech gate"
+            else:
+                action = "reference_comparison"
+                reason = (
+                    "internal or untyped silence requires listening and reference audit"
+                )
+        elif kind == "reference_unavailable":
+            action = "reference_discovery"
+            reason = "no exact synthesis reference was available"
+        elif kind in {"cancelled", "interrupted"}:
+            action = "safe_resume"
+            reason = "the attempt did not reach a terminal synthesis result"
+        else:
+            action = "backend_diagnosis"
+            reason = "the typed backend failure has no safe automatic repair"
+        planned.append(
+            {
+                "queue_id": record["queue_id"],
+                "line_id": record["line_id"],
+                "speaker": record["speaker"],
+                "requested_voice_character": record["requested_voice_character"],
+                "synthesis_voice_character": record["synthesis_voice_character"],
+                "failure_kind": kind,
+                "attempts": attempts,
+                "seed": record["seed"],
+                "action": action,
+                "reason": reason,
+            }
+        )
+    action_counts = {}
+    for record in planned:
+        action_counts[record["action"]] = action_counts.get(record["action"], 0) + 1
+    return {
+        "schema": "vntts.authoring-generation-failure-repair-plan",
+        "schema_version": 1,
+        "state": report["state"],
+        "state_sha256": report["state_sha256"],
+        "queue": report["queue"],
+        "queue_sha256": report["queue_sha256"],
+        "failure_count": report["failure_count"],
+        "action_counts": dict(sorted(action_counts.items())),
+        "records": planned,
+    }
+
+
 def run_bulk_generation(
     queue_path,
     output_directory,

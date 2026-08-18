@@ -149,6 +149,32 @@ reconciles all 211 failures exactly as 167 `missed_eos_audio_limit` and 44
 whose established effective voice is Narrator. This classification is a retry
 planning input, not permission to regenerate a whole low-yield cohort.
 
+Before changing state, derive an exact-ID repair plan:
+
+```bash
+uv run vntts-pregenerate failure-repair-plan \
+  --state WORKSPACE/generated-audio/generation-state.json \
+  --queue WORKSPACE/queue.jsonl > failure-repair-plan.json
+```
+
+The read-only versioned plan never starts synthesis. It separates
+multiple-sentence limit failures for sentence-boundary segmentation, low-attempt
+limit failures for a bounded seed retry, exhausted limits for the offline
+fallback backend, edge-only measured silence for trim-and-listen review, other
+silence for reference comparison, unavailable references for source discovery,
+cancelled/interrupted work for safe resume and remaining backend failures for
+manual diagnosis. Every recommendation carries the exact queue ID and current
+state/queue hashes, so later execution can require a fresh authority snapshot
+instead of mass retrying a stale cohort.
+
+The read-only 2026-08-18 plan for the Character Story snapshot reconciles all
+211 failures into 71 sentence-boundary segmentation candidates, 22 bounded
+seed retries, 74 exhausted primary items for an offline fallback backend and 44
+reference-comparison cases. Its state SHA-256 is the same
+`10ad11119a57fda8ffccf37f31e1a949ee03d4bbd1092c99d867c36be866b875` as the
+source failure report. These counts are selection evidence only; no generation
+state or WAV was changed.
+
 A fallback backend chain is part of immutable workspace configuration. It must
 not mutate an existing MOSS-only workspace in place. Either create a new
 config-addressed workspace that can safely carry forward exact terminal
