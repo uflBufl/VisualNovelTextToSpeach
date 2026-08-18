@@ -162,6 +162,7 @@ def _generation_failure_repair_policy(arguments):
             tuple(arguments.trim_edge_silence_failed or ()),
             arguments.segment_pause_ms,
             tuple(arguments.bounded_seed_failed or ()),
+            tuple(arguments.offline_fallback_failed or ()),
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
@@ -182,6 +183,14 @@ def _add_failure_repair_arguments(parser):
         "--bounded-seed-failed",
         action="append",
         help="Retry this exact current missed-EOS failure up to three total attempts",
+    )
+    parser.add_argument(
+        "--offline-fallback-failed",
+        action="append",
+        help=(
+            "Generate this exact carried exhausted backend failure with the "
+            "config-addressed Pocket TTS fallback"
+        ),
     )
     parser.add_argument(
         "--segment-pause-ms",

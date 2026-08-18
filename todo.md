@@ -24,11 +24,6 @@ Follow the evidence-backed order and invariants in
       `reference-report` metrics cannot decide speaker identity, background
       contamination or pronunciation. Keep the 20-second ceiling and do not
       mass retry a low-yield cohort.
-- [ ] Add an immutable offline fallback-backend contract so exact cohorts that
-      still fail MOSS can be pregenerated with Pocket TTS. Bind provider/model,
-      provider-specific seed semantics, references and output hashes per item;
-      carry forward unchanged terminal decisions without mutating the existing
-      MOSS workspace. Apply the same WAV, silence and review gates to Pocket.
 - [ ] Add an explicit terminal `live_fallback` route decision after source
       discovery and offline fallback generation are exhausted. Final hybrid
       publication must distinguish approved source/generated audio from a

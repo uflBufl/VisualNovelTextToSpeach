@@ -37,8 +37,9 @@ turns a manually chosen first reference into a hash-bound workspace input rather
 than a mutable UI preference.
 
 A bounded failure-repair policy is also part of this identity. It contains only
-exact queue IDs authorized for safe sentence-boundary segmentation or edge-only
-silence trimming. Changing an ID, strategy or sentence pause creates a new
+exact queue IDs authorized for safe sentence-boundary segmentation, edge-only
+silence trimming, bounded same-provider seed retry or a different-backend
+offline fallback. Changing an ID, strategy or sentence pause creates a new
 workspace. `generation_command()` automatically emits the identical queue-ID
 selection and refuses a caller-supplied mismatch. The child revalidates that
 every selected item is still a current typed failure in the matching cohort
@@ -100,6 +101,46 @@ result = create_resume_workspace(
 
 This operation preserves review authority; it does not approve Narrator audio,
 run generation or publish a final game pack.
+
+## Moving exhausted failures to Pocket TTS
+
+An exhausted typed MOSS failure can move to a new immutable Pocket workspace
+without mutating or relabeling the MOSS history. The exact queue ID is declared
+with `--offline-fallback-failed`, and `--carry-forward-from` names the source
+workspace whose current failed item is copied as evidence. Creation requires a
+typed `missed_eos_audio_limit` result with at least three completed source
+attempts, a different source backend, and `pocket-tts` as the target backend.
+The generated child is restricted to exactly those IDs.
+
+```sh
+uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
+  --story-index STORY_INDEX.jsonl \
+  --voice-manifest VOICES/manifest.json \
+  --narrator-character Centurion \
+  --backend pocket-tts \
+  --model POCKET_MODEL \
+  --generation-profile stable \
+  --carry-forward-from MOSS_WORKSPACE \
+  --offline-fallback-failed QUEUE_ID
+```
+
+The carry ledger binds the source workspace/state/item hashes, source
+provider/model/profile, failure kind, attempts, seed, effective character and
+all source reference hashes. The target workspace independently binds its
+Pocket model, profile, manifest and copied reference controls. `attempts`
+remains the cumulative history across providers, while
+`attempts_by_provider` gives each backend its own seed sequence; the first
+Pocket attempt therefore uses the requested base seed even after five MOSS
+attempts. State and approved-manifest records retain both the fallback repair
+ledger and provider counters. Pocket output passes the same typed-completion,
+PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
+other generated artifact.
+
+Optional `--carry-forward-character` values may preserve terminal approved or
+rejected decisions for unchanged non-Narrator character references in the new
+workspace. Their original provider and full synthesis provenance remain on the
+item; they are never rewritten as Pocket output. Pending review is not promoted
+and no decision is made automatically.
 
 After the manual narrator decision, existing seed narration must be regenerated
 explicitly; an ordinary resume correctly skips valid existing WAVs. The bulk

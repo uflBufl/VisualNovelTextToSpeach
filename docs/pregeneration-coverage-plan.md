@@ -125,9 +125,9 @@ The current 167 limit and 44 silence failures need separate treatment:
   before synthesis so non-speech or incomplete text does not consume retries.
 - When bounded MOSS repairs still fail, render the exact cohort offline with
   Pocket TTS using the chosen role or Narrator reference. Record the different
-provider/model and nullable provider-specific seed semantics per item. A
-Pocket artifact must pass the same WAV, silence, checksum and manual-review
-gates as a MOSS artifact.
+  provider/model and provider-specific seed semantics per item. A Pocket
+  artifact must pass the same WAV, silence, checksum and manual-review gates as
+  a MOSS artifact.
 
 Current VNTTS generation writes a versioned `failure` record for every new
 failed attempt. It includes the stable kind, exact text-shape features and, when
@@ -167,16 +167,26 @@ manual diagnosis. Every recommendation carries the exact queue ID and current
 state/queue hashes, so later execution can require a fresh authority snapshot
 instead of mass retrying a stale cohort.
 
-Three conservative actions now have an executable, config-addressed path. Create
+Four conservative actions now have an executable, config-addressed path. Create
 a new workspace with repeated `--sentence-segment-failed QUEUE_ID` and/or
 `--trim-edge-silence-failed QUEUE_ID`, or
-`--bounded-seed-failed QUEUE_ID`. The generated child command carries the same
-exact queue IDs. Before any render, bulk generation requires the selected ID
+`--bounded-seed-failed QUEUE_ID`. An exhausted exact failure instead creates a
+Pocket workspace with `--carry-forward-from MOSS_WORKSPACE` and
+`--offline-fallback-failed QUEUE_ID`. The generated child command carries the
+same exact queue IDs. Before any render, bulk generation requires the selected ID
 set to equal the repair policy, reloads authoritative state, requires a current
 typed `failed` outcome and verifies that its failure kind and metrics still
 match the requested strategy. Historical string-only failures remain planning
 evidence and must first produce a typed current failure; they are not silently
 authorized.
+
+The offline fallback path also requires a carried source item from a different
+backend and a Pocket target. It preserves the MOSS workspace byte-for-byte,
+binds source state/item/reference hashes, and retains cumulative attempts while
+starting Pocket's provider-local seed sequence at the requested base seed.
+Terminal non-Narrator decisions may be copied explicitly with their original
+provider provenance; no pending or failed item becomes approved through
+carry-forward.
 
 Sentence repair uses only complete, substantial sentence boundaries. Each
 segment is an independent typed render with a deterministic successive seed;

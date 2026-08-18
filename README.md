@@ -440,6 +440,13 @@ versioned policy rather than claiming the fallback is the original speaker.
 See the [workspace contract](docs/authoring-workspaces.md) for the typed API and
 review behavior.
 
+Exact MOSS failures that exhaust their bounded attempts can move to a distinct
+Pocket TTS workspace with `--carry-forward-from` and repeated
+`--offline-fallback-failed` IDs. The source workspace is never mutated;
+source-provider attempts, references and failure hashes remain bound while
+Pocket starts its own provider-local seed sequence and uses the same output and
+manual-review gates.
+
 Reference changes are explicit too: `reference-report` checksum-binds objective
 candidate metrics, and `select-reference` publishes a no-overwrite manifest
 whose selected-first ordering is revalidated when a workspace copies the WAVs.

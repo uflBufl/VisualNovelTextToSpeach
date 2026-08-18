@@ -24,11 +24,13 @@ DEFAULT_EDGE_PADDING_SECONDS = 0.08
 DEFAULT_SILENCE_DBFS = -45.0
 DEFAULT_SEGMENT_PAUSE_MS = 180
 DEFAULT_MAX_REPAIRED_AUDIO_SECONDS = 20.0
-FAILURE_REPAIR_POLICY_VERSION = 2
+FAILURE_REPAIR_POLICY_VERSION = 3
 LEGACY_FAILURE_REPAIR_POLICY_VERSION = 1
+BOUNDED_SEED_POLICY_VERSION = 2
 SENTENCE_BOUNDARY_SEGMENTATION = "sentence_boundary_segmentation"
 EDGE_SILENCE_TRIM = "edge_silence_trim"
 BOUNDED_SEED_RETRY = "bounded_seed_retry"
+OFFLINE_FALLBACK_BACKEND = "offline_fallback_backend"
 MAX_BOUNDED_TOTAL_ATTEMPTS = 3
 
 
@@ -44,6 +46,7 @@ class FailureRepairPolicy:
     edge_silence_queue_ids: tuple[str, ...] = ()
     segment_pause_ms: int = DEFAULT_SEGMENT_PAUSE_MS
     bounded_seed_retry_queue_ids: tuple[str, ...] = ()
+    offline_fallback_queue_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         sentence = _canonical_queue_ids(
@@ -55,10 +58,16 @@ class FailureRepairPolicy:
         seed = _canonical_queue_ids(
             self.bounded_seed_retry_queue_ids, "Bounded-seed queue IDs"
         )
+        fallback = _canonical_queue_ids(
+            self.offline_fallback_queue_ids, "Offline-fallback queue IDs"
+        )
         overlap = (
             (set(sentence) & set(edge))
             | (set(sentence) & set(seed))
             | (set(edge) & set(seed))
+            | (set(sentence) & set(fallback))
+            | (set(edge) & set(fallback))
+            | (set(seed) & set(fallback))
         )
         if overlap:
             raise FailureRepairPolicyError(
@@ -80,6 +89,7 @@ class FailureRepairPolicy:
         object.__setattr__(self, "sentence_segment_queue_ids", sentence)
         object.__setattr__(self, "edge_silence_queue_ids", edge)
         object.__setattr__(self, "bounded_seed_retry_queue_ids", seed)
+        object.__setattr__(self, "offline_fallback_queue_ids", fallback)
 
     @property
     def queue_ids(self):
@@ -88,6 +98,7 @@ class FailureRepairPolicy:
                 self.sentence_segment_queue_ids
                 + self.edge_silence_queue_ids
                 + self.bounded_seed_retry_queue_ids
+                + self.offline_fallback_queue_ids
             )
         )
 
@@ -102,6 +113,8 @@ class FailureRepairPolicy:
             return EDGE_SILENCE_TRIM
         if queue_id in self.bounded_seed_retry_queue_ids:
             return BOUNDED_SEED_RETRY
+        if queue_id in self.offline_fallback_queue_ids:
+            return OFFLINE_FALLBACK_BACKEND
         return None
 
     def to_document(self):
@@ -112,9 +125,17 @@ class FailureRepairPolicy:
             "segment_pause_ms": self.segment_pause_ms,
         }
         if self.bounded_seed_retry_queue_ids:
+            document["schema_version"] = BOUNDED_SEED_POLICY_VERSION
+            document["bounded_seed_retry_queue_ids"] = list(
+                self.bounded_seed_retry_queue_ids
+            )
+        if self.offline_fallback_queue_ids:
             document["schema_version"] = FAILURE_REPAIR_POLICY_VERSION
             document["bounded_seed_retry_queue_ids"] = list(
                 self.bounded_seed_retry_queue_ids
+            )
+            document["offline_fallback_queue_ids"] = list(
+                self.offline_fallback_queue_ids
             )
         return document
 
@@ -131,16 +152,26 @@ class FailureRepairPolicy:
             "edge_silence_queue_ids",
             "segment_pause_ms",
         }
-        current_fields = legacy_fields | {"bounded_seed_retry_queue_ids"}
+        bounded_fields = legacy_fields | {"bounded_seed_retry_queue_ids"}
+        current_fields = bounded_fields | {"offline_fallback_queue_ids"}
         if (
-            version == LEGACY_FAILURE_REPAIR_POLICY_VERSION
-            and set(document) != legacy_fields
-        ) or (
-            version == FAILURE_REPAIR_POLICY_VERSION and set(document) != current_fields
+            (
+                version == LEGACY_FAILURE_REPAIR_POLICY_VERSION
+                and set(document) != legacy_fields
+            )
+            or (
+                version == BOUNDED_SEED_POLICY_VERSION
+                and set(document) != bounded_fields
+            )
+            or (
+                version == FAILURE_REPAIR_POLICY_VERSION
+                and set(document) != current_fields
+            )
         ):
             raise FailureRepairPolicyError("Failure-repair policy is malformed")
         if version not in {
             LEGACY_FAILURE_REPAIR_POLICY_VERSION,
+            BOUNDED_SEED_POLICY_VERSION,
             FAILURE_REPAIR_POLICY_VERSION,
         }:
             raise FailureRepairPolicyError("Unsupported failure-repair policy version")
@@ -155,6 +186,7 @@ class FailureRepairPolicy:
             tuple(edge),
             document.get("segment_pause_ms"),
             tuple(document.get("bounded_seed_retry_queue_ids") or ()),
+            tuple(document.get("offline_fallback_queue_ids") or ()),
         )
 
 

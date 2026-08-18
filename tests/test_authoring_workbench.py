@@ -454,6 +454,171 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(manifest["entries"][0]["carry_forward"]["mode"], "review-only")
         self.assertEqual(source_state_sha256_after, source_state_sha256)
 
+    def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            queue_path = source.directory / "queue.jsonl"
+            source_output = source.directory / "generated-audio"
+            moss_renderer = SyntheticRenderer(
+                [
+                    SynthesisCompletion.LIMITED,
+                    SynthesisCompletion.LIMITED,
+                    SynthesisCompletion.LIMITED,
+                ],
+                diagnostics_backend="moss-tts",
+            )
+            moss_renderer.name = "moss-tts"
+            moss_renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                source_output,
+                moss_renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=2,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                regenerate_existing=True,
+            )
+            source_state_path = source_output / "generation-state.json"
+            source_state_before = source_state_path.read_bytes()
+            source_state = load_generation_state(source_state_path, queue_path)
+            moss_attempts = source_state["items"][fixture["queue_id"]]["attempts"]
+            policy = FailureRepairPolicy(
+                offline_fallback_queue_ids=(fixture["queue_id"],)
+            )
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "Pocket TTS target"):
+                create_resume_workspace(
+                    imported,
+                    root / "unsafe-same-backend",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=fixture["job"]["voice_manifest"],
+                    backend="moss-tts",
+                    model="another-moss-model",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                    failure_repair_policy=policy,
+                    carry_forward_from=source.directory,
+                )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "require a source workspace"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "unsafe-no-source",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=fixture["job"]["voice_manifest"],
+                    backend="pocket-tts",
+                    model="pocket-v1",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                    failure_repair_policy=policy,
+                )
+
+            fallback = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="pocket-tts",
+                model="pocket-v1",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=policy,
+                carry_forward_from=source.directory,
+            )
+            carried = load_generation_state(
+                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "queue.jsonl",
+            )
+            fallback_state_path = (
+                fallback.directory / "generated-audio/generation-state.json"
+            )
+            fallback_state_bytes = fallback_state_path.read_bytes()
+            tampered = json.loads(fallback_state_bytes)
+            tampered["items"][fixture["queue_id"]]["last_error"] = "tampered"
+            fallback_state_path.write_text(
+                json.dumps(tampered, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "carried failure changed"
+            ):
+                generation_command(fallback.directory, retries=0, seed=0)
+            fallback_state_path.write_bytes(fallback_state_bytes)
+            command = generation_command(fallback.directory, retries=0, seed=0)
+            renderer = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="pocket-tts"
+            )
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-v1"
+            first_result = run_bulk_generation(
+                fallback.directory / "queue.jsonl",
+                fallback.directory / "generated-audio",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-v1",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            after_first = load_generation_state(
+                first_result.state, fallback.directory / "queue.jsonl"
+            )
+            second_renderer = SyntheticRenderer(diagnostics_backend="pocket-tts")
+            second_renderer.name = "pocket-tts"
+            second_renderer.model_name = "pocket-v1"
+            result = run_bulk_generation(
+                fallback.directory / "queue.jsonl",
+                fallback.directory / "generated-audio",
+                second_renderer,
+                provider="pocket-tts",
+                model="pocket-v1",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            final = load_generation_state(
+                result.state, fallback.directory / "queue.jsonl"
+            )
+            source_state_after = source_state_path.read_bytes()
+
+        carried_item = carried["items"][fixture["queue_id"]]
+        final_item = final["items"][fixture["queue_id"]]
+        self.assertEqual(carried_item["carry_forward"]["mode"], "failed-outcome")
+        self.assertEqual(carried_item["provider"], "moss-tts")
+        self.assertEqual([request.seed for request in renderer.requests], [0])
+        self.assertEqual([request.seed for request in second_renderer.requests], [1])
+        self.assertEqual(after_first["items"][fixture["queue_id"]]["status"], "failed")
+        self.assertEqual(final_item["attempts"], moss_attempts + 2)
+        self.assertEqual(
+            final_item["attempts_by_provider"],
+            {"moss-tts": moss_attempts, "pocket-tts": 2},
+        )
+        self.assertEqual(final_item["provider"], "pocket-tts")
+        self.assertEqual(final_item["seed"], 1)
+        self.assertEqual(
+            final_item["failure_repair"]["source_failure"]["source_provider"],
+            "moss-tts",
+        )
+        self.assertEqual(
+            command[command.index("--offline-fallback-failed") + 1],
+            fixture["queue_id"],
+        )
+        self.assertEqual(source_state_after, source_state_before)
+
     def test_carry_forward_copies_new_full_outcome_with_exact_controls(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

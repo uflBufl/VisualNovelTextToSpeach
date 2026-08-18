@@ -47,6 +47,7 @@ from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
     MAX_BOUNDED_TOTAL_ATTEMPTS,
+    OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
@@ -684,6 +685,9 @@ def generation_failure_report(state_path, queue_path):
         item = queue_by_id[queue_id]
         requested = synthesis_character_for_line(item.speaker, item.voice_character)
         failure = normalized_failure_record(result, text=item.text)
+        attempts = _nonnegative_int(
+            result.get("attempts", 0), f"State item {queue_id!r} attempts"
+        )
         records.append(
             {
                 "queue_id": queue_id,
@@ -698,7 +702,10 @@ def generation_failure_report(state_path, queue_path):
                 "model": result.get("model"),
                 "generation_profile": result.get("generation_profile"),
                 "synthesis_control_digest": result.get("synthesis_provenance_sha256"),
-                "attempts": result.get("attempts", 0),
+                "attempts": attempts,
+                "attempts_by_provider": _provider_attempts(
+                    result, attempts, default_provider=result.get("provider")
+                ),
                 "seed": result.get("seed"),
                 "last_error": result.get("last_error"),
                 "failure": failure,
@@ -752,6 +759,7 @@ def generation_failure_report(state_path, queue_path):
             "attempt_seed": counts(
                 lambda value: {
                     "attempts": value["attempts"],
+                    "attempts_by_provider": value["attempts_by_provider"],
                     "seed": value["seed"],
                 }
             ),
@@ -841,7 +849,9 @@ def generation_failure_repair_plan(state_path, queue_path):
     }
 
 
-def _validate_failure_repair_selection(policy, selected_queue_ids, state, queue):
+def _validate_failure_repair_selection(
+    policy, selected_queue_ids, state, queue, *, provider
+):
     if policy.is_empty:
         return
     expected = set(policy.queue_ids)
@@ -907,16 +917,30 @@ def _validate_failure_repair_selection(policy, selected_queue_ids, state, queue)
             attempts = _nonnegative_int(
                 result.get("attempts", 0), f"State item {queue_id!r} attempts"
             )
+            provider_attempts = _provider_attempts(
+                result, attempts, default_provider=provider
+            ).get(provider, 0)
             if (
                 failure.get("kind") != "missed_eos_audio_limit"
-                or attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                or result.get("provider") != provider
+                or provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
             ):
                 raise BulkGenerationError(
                     f"Bounded seed repair no longer matches failure {queue_id!r}"
                 )
+        elif strategy == OFFLINE_FALLBACK_BACKEND:
+            carry = _offline_fallback_source(result)
+            if (
+                not isinstance(carry, dict)
+                or carry.get("mode") != "failed-outcome"
+                or carry.get("source_provider") == provider
+            ):
+                raise BulkGenerationError(
+                    f"Offline fallback lacks a different bound source backend for {queue_id!r}"
+                )
 
 
-def _failure_repair_document(policy, queue_id, text):
+def _failure_repair_document(policy, queue_id, text, *, existing=None):
     strategy = policy.strategy_for(queue_id)
     if strategy is None:
         return None
@@ -933,7 +957,30 @@ def _failure_repair_document(policy, queue_id, text):
                 "pause_ms": policy.segment_pause_ms,
             }
         )
+    elif strategy == OFFLINE_FALLBACK_BACKEND:
+        carry = _offline_fallback_source(existing)
+        if not isinstance(carry, dict) or carry.get("mode") != "failed-outcome":
+            raise BulkGenerationError(
+                f"Offline fallback lacks source failure provenance for {queue_id!r}"
+            )
+        document["source_failure"] = copy.deepcopy(carry)
     return document
+
+
+def _offline_fallback_source(result):
+    if not isinstance(result, dict):
+        return None
+    carry = result.get("carry_forward")
+    if isinstance(carry, dict) and carry.get("mode") == "failed-outcome":
+        return carry
+    repair = result.get("failure_repair")
+    if (
+        isinstance(repair, dict)
+        and repair.get("strategy") == OFFLINE_FALLBACK_BACKEND
+        and isinstance(repair.get("source_failure"), dict)
+    ):
+        return repair["source_failure"]
+    return None
 
 
 def run_bulk_generation(
@@ -1089,6 +1136,7 @@ def run_bulk_generation(
             selected_queue_ids,
             state,
             queue,
+            provider=provider,
         )
         if state["schema"] == STATE_SCHEMA:
             registry = state.setdefault("synthesis_controls", {})
@@ -1168,7 +1216,7 @@ def run_bulk_generation(
             existing = state["items"].get(queue_id, {})
             repair_strategy = repair_policy.strategy_for(queue_id)
             repair_document = _failure_repair_document(
-                repair_policy, queue_id, item.text
+                repair_policy, queue_id, item.text, existing=existing
             )
             if existing.get("status") in {"generated", "approved"}:
                 _validate_success_item(
@@ -1224,18 +1272,24 @@ def run_bulk_generation(
             if destination.exists():
                 _archive_interrupted_artifact(output_directory, destination)
             attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
+            attempts_by_provider = _provider_attempts(
+                existing, attempts, default_provider=provider
+            )
+            provider_attempts = attempts_by_provider.get(provider, 0)
             run_attempts = 0
             attempt_limit = retries + 1
             if repair_strategy == BOUNDED_SEED_RETRY:
                 attempt_limit = min(
                     attempt_limit,
-                    MAX_BOUNDED_TOTAL_ATTEMPTS - attempts,
+                    MAX_BOUNDED_TOTAL_ATTEMPTS - provider_attempts,
                 )
             last_error = str(existing.get("last_error") or "") or None
             while run_attempts < attempt_limit:
                 attempts += 1
+                provider_attempts += 1
+                attempts_by_provider[provider] = provider_attempts
                 run_attempts += 1
-                attempt_seed = seed + attempts - 1
+                attempt_seed = seed + provider_attempts - 1
                 attempt_repair = None
                 if repair_document is not None:
                     attempt_repair = copy.deepcopy(repair_document)
@@ -1268,6 +1322,8 @@ def run_bulk_generation(
                     attempt=run_attempts,
                     attempt_limit=attempt_limit,
                     total_attempts=attempts,
+                    provider_attempt=provider_attempts,
+                    attempts_by_provider=attempts_by_provider,
                     seed=attempt_seed,
                     started_at=started_at,
                     last_error=last_error,
@@ -1323,6 +1379,9 @@ def run_bulk_generation(
                         "status": "generated",
                         "review_status": "pending_review",
                         "attempts": attempts,
+                        "attempts_by_provider": dict(
+                            sorted(attempts_by_provider.items())
+                        ),
                         "path": relative.as_posix(),
                         "line_id": item.line_id,
                         "text_sha256": item.text_sha256,
@@ -1381,6 +1440,9 @@ def run_bulk_generation(
                     state["items"][queue_id] = {
                         "status": "failed",
                         "attempts": attempts,
+                        "attempts_by_provider": dict(
+                            sorted(attempts_by_provider.items())
+                        ),
                         "seed": attempt_seed,
                         "last_error": last_error,
                         "failure": _failure_record(
@@ -1578,6 +1640,8 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "speech_quality",
             "carry_forward",
             "failure_repair",
+            "attempts",
+            "attempts_by_provider",
         ):
             if field in result:
                 entry[field] = result[field]
@@ -1935,7 +1999,10 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             raise BulkGenerationError(
                 f"Generation state item {queue_id!r} has invalid {status!r}/{review!r} status"
             )
-        _nonnegative_int(result.get("attempts", 0), f"Item {queue_id!r} attempts")
+        total_attempts = _nonnegative_int(
+            result.get("attempts", 0), f"Item {queue_id!r} attempts"
+        )
+        _provider_attempts(result, total_attempts)
         if status == "failed":
             if "failure" in result:
                 _validate_failure_record(result["failure"], queue_id)
@@ -2243,6 +2310,72 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
                 _nonnegative_int(
                     repair[field], f"State item {queue_id!r} repair {field}"
                 )
+    elif strategy == OFFLINE_FALLBACK_BACKEND:
+        if set(repair) != {"schema_version", "strategy", "source_failure"}:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} offline fallback repair is malformed"
+            )
+        source = repair.get("source_failure")
+        required = {
+            "mode",
+            "source_workspace_id",
+            "source_state_sha256",
+            "source_item_sha256",
+            "character",
+            "source_provider",
+            "source_model",
+            "source_generation_profile",
+            "source_attempts",
+            "source_seed",
+            "source_failure_kind",
+            "source_voice_reference",
+        }
+        if not isinstance(source, dict) or set(source) != required:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} offline fallback source is malformed"
+            )
+        if (
+            source.get("mode") != "failed-outcome"
+            or source.get("source_provider") == result.get("provider")
+            or source.get("source_failure_kind") != "missed_eos_audio_limit"
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} offline fallback source is inconsistent"
+            )
+        _required_sha256(
+            source.get("source_state_sha256"),
+            f"State item {queue_id!r} source state SHA-256",
+        )
+        _required_sha256(
+            source.get("source_item_sha256"),
+            f"State item {queue_id!r} source item SHA-256",
+        )
+        _required_text(
+            source.get("source_model"), f"State item {queue_id!r} source model"
+        )
+        _required_text(
+            source.get("source_generation_profile"),
+            f"State item {queue_id!r} source generation profile",
+        )
+        _nonnegative_int(
+            source.get("source_attempts"),
+            f"State item {queue_id!r} source attempts",
+        )
+        _integer(source.get("source_seed"), f"State item {queue_id!r} source seed")
+        voice = source.get("source_voice_reference")
+        if (
+            not isinstance(voice, dict)
+            or set(voice) != {"character", "speaker", "aliases", "references"}
+            or not isinstance(voice.get("references"), list)
+            or not voice["references"]
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} source voice reference is malformed"
+            )
+        for reference in voice["references"]:
+            _required_sha256(
+                reference, f"State item {queue_id!r} source reference SHA-256"
+            )
     elif set(repair) != {"schema_version", "strategy"}:
         raise BulkGenerationError(
             f"State item {queue_id!r} bounded seed repair is malformed"
@@ -2279,7 +2412,7 @@ def _validate_active_attempt(active, queue_by_id):
     }:
         raise BulkGenerationError(f"Active attempt phase is invalid: {phase!r}")
     integers = {}
-    for field in ("attempt", "attempt_limit", "total_attempts"):
+    for field in ("attempt", "attempt_limit", "total_attempts", "provider_attempt"):
         if field in active:
             integers[field] = _nonnegative_int(active[field], f"Active attempt {field}")
             if integers[field] < 1:
@@ -2298,6 +2431,19 @@ def _validate_active_attempt(active, queue_by_id):
         raise BulkGenerationError("Active cumulative attempts are inconsistent")
     if "seed" in active:
         _integer(active["seed"], "Active attempt seed")
+    if "attempts_by_provider" in active:
+        provider_attempts = _provider_attempts(
+            active,
+            integers.get("total_attempts", 0),
+            default_provider=active.get("provider"),
+        )
+        provider = active.get("provider")
+        if (
+            isinstance(provider, str)
+            and "provider_attempt" in integers
+            and provider_attempts.get(provider) != integers["provider_attempt"]
+        ):
+            raise BulkGenerationError("Active provider attempt counter is inconsistent")
     for field in ("started_at", "updated_at"):
         if field in active and (
             not isinstance(active[field], str) or not active[field].strip()
@@ -2311,12 +2457,15 @@ def _validate_active_attempt(active, queue_by_id):
         active_result = {
             "requested_voice_character": active.get("requested_voice_character"),
             "voice_character": active.get("synthesis_voice_character"),
+            "provider": active.get("provider"),
         }
         for field in (
             "synthesis_configuration",
             "synthesis_fallback",
             "narrator_character",
             "failure_repair",
+            "attempts",
+            "attempts_by_provider",
         ):
             if field in active:
                 active_result[field] = active[field]
@@ -2563,6 +2712,8 @@ def _write_active(
     attempt,
     attempt_limit,
     total_attempts,
+    provider_attempt,
+    attempts_by_provider,
     seed,
     started_at,
     last_error,
@@ -2582,6 +2733,8 @@ def _write_active(
         "attempt": attempt,
         "attempt_limit": attempt_limit,
         "total_attempts": total_attempts,
+        "provider_attempt": provider_attempt,
+        "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
         "seed": seed,
         "provider": provider,
         "model": model,
@@ -2922,6 +3075,30 @@ def _nonnegative_int(value, label):
     if value < 0:
         raise BulkGenerationError(f"{label} cannot be negative")
     return value
+
+
+def _provider_attempts(result, total_attempts, *, default_provider=None):
+    """Return validated per-provider counts, deriving old state losslessly."""
+    value = result.get("attempts_by_provider")
+    if value is None:
+        previous = result.get("provider") or default_provider
+        if total_attempts and isinstance(previous, str) and previous.strip():
+            return {previous: total_attempts}
+        return {}
+    if not isinstance(value, dict):
+        raise BulkGenerationError("Attempts by provider must be an object")
+    canonical = {}
+    for provider, count in value.items():
+        if not isinstance(provider, str) or not provider.strip():
+            raise BulkGenerationError(
+                "Attempts by provider keys must be non-empty text"
+            )
+        canonical[provider] = _nonnegative_int(
+            count, f"Attempts for provider {provider!r}"
+        )
+    if sum(canonical.values()) > total_attempts:
+        raise BulkGenerationError("Attempts by provider exceed cumulative attempts")
+    return canonical
 
 
 def _nonnegative_optional_int(value, label):

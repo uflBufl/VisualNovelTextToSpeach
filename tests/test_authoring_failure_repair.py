@@ -5,6 +5,7 @@ import numpy as np
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
+    OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
@@ -27,13 +28,16 @@ from vntts.synthesis import (
 class AuthoringFailureRepairTest(unittest.TestCase):
     def test_policy_is_canonical_exact_and_round_trips(self):
         policy = FailureRepairPolicy(
-            ("line:b", "line:a"), ("line:c",), 200, ("line:d",)
+            ("line:b", "line:a"), ("line:c",), 200, ("line:d",), ("line:e",)
         )
 
-        self.assertEqual(policy.queue_ids, ("line:a", "line:b", "line:c", "line:d"))
+        self.assertEqual(
+            policy.queue_ids, ("line:a", "line:b", "line:c", "line:d", "line:e")
+        )
         self.assertEqual(policy.strategy_for("line:a"), SENTENCE_BOUNDARY_SEGMENTATION)
         self.assertEqual(policy.strategy_for("line:c"), EDGE_SILENCE_TRIM)
         self.assertEqual(policy.strategy_for("line:d"), BOUNDED_SEED_RETRY)
+        self.assertEqual(policy.strategy_for("line:e"), OFFLINE_FALLBACK_BACKEND)
         self.assertEqual(
             FailureRepairPolicy.from_document(policy.to_document()), policy
         )
@@ -48,6 +52,7 @@ class AuthoringFailureRepairTest(unittest.TestCase):
         legacy = policy.to_document()
         legacy["schema_version"] = 1
         legacy.pop("bounded_seed_retry_queue_ids")
+        legacy.pop("offline_fallback_queue_ids")
         self.assertEqual(
             FailureRepairPolicy.from_document(legacy).bounded_seed_retry_queue_ids,
             (),

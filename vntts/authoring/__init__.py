@@ -27,7 +27,9 @@ from vntts.authoring.delivery import (
     apply_delivery_policy,
 )
 from vntts.authoring.failure_repair import (
+    BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
+    OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     EdgeSilenceTrim,
     FailureRepairPolicy,
@@ -113,6 +115,7 @@ from vntts.authoring.workbench import (
 
 __all__ = [
     "AudioQuality",
+    "BOUNDED_SEED_RETRY",
     "BulkGenerationError",
     "BulkGenerationResult",
     "BLOCK_MISSING_VOICE",
@@ -138,6 +141,7 @@ __all__ = [
     "ModelBenchmarkError",
     "ModelListeningError",
     "ModelVariant",
+    "OFFLINE_FALLBACK_BACKEND",
     "MISSING_VOICE_POLICY_VERSION",
     "MissingVoicePolicy",
     "MissingVoicePolicyError",
