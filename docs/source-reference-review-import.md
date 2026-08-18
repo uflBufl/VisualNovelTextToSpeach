@@ -58,6 +58,7 @@ uv run vntts-reference-review create \
   --plan /new/source-reference-plan \
   --evaluation /new/source-reference-evaluation \
   --state /mutable/evaluation-run/generation-state.json \
+  --portrait-directory /prepared/exact-game-portraits \
   --output /new/source-reference-quality-review
 
 uv run vntts-reference-review ui \
@@ -67,11 +68,20 @@ uv run vntts-reference-review ui \
 Each card represents one exact `(character, portrait, source_bank)` cluster. It
 contains the original reference, every checksum-valid generated sample, the
 number of story lines affected and the typed reason for every excluded result.
-The reviewer must finish the original and every available generated sample
-before choosing `Accept reference`, `Reject reference`, or `Need another
-sample`. A card without a generated sample cannot be accepted. Decisions are
+The UI exposes `Accept reference`, `Reject reference`, and `Need another
+sample` immediately so a broken playback backend cannot trap the review. It
+shows advisory progress for the original and generated samples instead of
+disabling authority controls. A card without a generated sample cannot be
+accepted. Decisions are
 serialized through an exclusive lock and copied audio is revalidated whenever
 the review is loaded or played.
+
+When `--portrait-directory` is supplied, a card copies the exact PNG whose
+filename matches its story portrait identity and binds its bytes, dimensions
+and SHA-256 into the immutable review. The UI renders those pixels instead of
+showing an opaque portrait identifier. A card whose exact asset is absent uses
+an explicit `Exact game portrait is not installed` placeholder; it never
+substitutes a similarly named or web-sourced image.
 
 `vntts-listen` remains the generic blind model-comparison tool. It now supports
 `Neither acceptable`, but it is not the authority for source-reference
@@ -99,7 +109,7 @@ session is preserved as historical, non-authoritative evidence and must not be
 completed or used to choose source references. The six cross-character trials
 were a workflow-design error, not missing human work.
 
-The replacement quality review was published at
+The first replacement quality review was published at
 `authoring/source-reference-quality-reviews/character-story-20260818`. Its
 initial `review.json` SHA-256 is
 `5766f51cac1545cb0bf476cc51b1354f516c2e3ec071b2775b8462328ca002cd`.
@@ -109,6 +119,13 @@ lines, 3 generated, 1 excluded), Dobharchú portrait `534703` (11, 1, 3),
 Poacher portrait `505601` (4, 2, 2), and Aderyn's Father portrait `534604`
 (1, 3, 1). The historical blind session remains at `1/9` and is not binding
 authority.
+
+That session predates embedded portrait images and remains preserved at `0/4`.
+The portrait-enabled successor is published under a distinct directory so the
+original evidence is never overwritten. Exact installed game sprites exist for
+both Dobharchú cards (`534704`, `534703`) and Aderyn's Father (`534604`). The
+exact Poacher sprite `505601` was not found in the installed bundle inventory,
+so its card intentionally renders the missing-asset placeholder.
 
 After every cluster card has an explicit decision, publish the accepted set.
 The binding CLI verifies that the review is complete and belongs to the exact

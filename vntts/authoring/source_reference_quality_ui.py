@@ -6,7 +6,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QUrl
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QUrl
+from PySide6.QtGui import QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +45,10 @@ class SourceReferenceQualityDialog(QDialog):
         self.setWindowTitle("Source-reference quality review")
         self.setMinimumSize(780, 540)
         self.progress = QLabel()
+        self.portrait_image = QLabel()
+        self.portrait_image.setAccessibleName("Exact game portrait")
+        self.portrait_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.portrait_image.setMinimumHeight(150)
         self.identity = QLabel()
         self.identity.setWordWrap(True)
         self.reference_details = QLabel()
@@ -82,6 +87,7 @@ class SourceReferenceQualityDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
+        layout.addWidget(self.portrait_image)
         layout.addWidget(self.identity)
         layout.addWidget(self.reference_details)
         layout.addWidget(self.generated, 1)
@@ -108,6 +114,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.completed_audio.clear()
         self.generated.clear()
         if self.current is None:
+            self.portrait_image.clear()
             self.identity.setText("Review complete")
             self.reference_details.clear()
             self.failures.clear()
@@ -120,12 +127,12 @@ class SourceReferenceQualityDialog(QDialog):
             self.play_generated.setEnabled(False)
             return
 
-        portrait = self.current.get("portrait") or "none"
         self.identity.setText(
-            f"Character: {self.current['character']} | Portrait: {portrait} | "
-            f"Media: {self.current['media_id']} | "
+            f"Character: {self.current['character']} | "
+            f"Original media: {self.current['media_id']} | "
             f"Affected story lines: {self.current['affected_queue_item_count']}"
         )
+        self._load_portrait()
         reference = self.current["reference"]
         self.reference_details.setText(
             "Original reference: "
@@ -152,7 +159,8 @@ class SourceReferenceQualityDialog(QDialog):
         )
         if self.generated.count():
             self.status.setText(
-                "Listen to the original and every generated sample before deciding."
+                "Decisions are available now. Listen to the original and generated "
+                "samples before choosing; playback progress is advisory."
             )
         else:
             self.status.setText(
@@ -162,6 +170,39 @@ class SourceReferenceQualityDialog(QDialog):
         self.play_reference.setEnabled(True)
         self._update_play_enabled()
         self._update_decision_enabled()
+
+    def _load_portrait(self):
+        record = self.current.get("portrait_image")
+        if record is None:
+            self.portrait_image.setPixmap(QPixmap())
+            self.portrait_image.setText("Exact game portrait is not installed")
+            return
+        path = (self.session_path.parent / record["image"]).resolve()
+        try:
+            path.relative_to(self.session_path.parent)
+            payload = path.read_bytes()
+        except (OSError, ValueError) as error:
+            self.portrait_image.setPixmap(QPixmap())
+            self.portrait_image.setText(f"Portrait unavailable: {error}")
+            return
+        if hashlib.sha256(payload).hexdigest() != record["image_sha256"]:
+            self.portrait_image.setPixmap(QPixmap())
+            self.portrait_image.setText("Portrait blocked: checksum changed")
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(payload, "PNG"):
+            self.portrait_image.setPixmap(QPixmap())
+            self.portrait_image.setText("Portrait blocked: invalid PNG")
+            return
+        self.portrait_image.setText("")
+        self.portrait_image.setPixmap(
+            pixmap.scaled(
+                204,
+                204,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
     def _update_play_enabled(self):
         self.play_generated.setEnabled(
@@ -179,15 +220,9 @@ class SourceReferenceQualityDialog(QDialog):
         if self.current is None:
             self._set_actions_enabled(False)
             return
-        reference_finished = "reference" in self.completed_audio
-        generated_tokens = {
-            sample["queue_id"] for sample in self.current["generated_samples"]
-        }
-        generated_finished = generated_tokens.issubset(self.completed_audio)
-        complete_evidence = reference_finished and generated_finished
-        self.accept.setEnabled(complete_evidence and bool(generated_tokens))
-        self.reject.setEnabled(complete_evidence and bool(generated_tokens))
-        self.needs_sample.setEnabled(complete_evidence)
+        self.accept.setEnabled(bool(self.current["generated_samples"]))
+        self.reject.setEnabled(True)
+        self.needs_sample.setEnabled(True)
 
     def _play_reference(self):
         if self.current is not None:
@@ -237,7 +272,16 @@ class SourceReferenceQualityDialog(QDialog):
             and self._playing_token is not None
         ):
             self.completed_audio.add(self._playing_token)
-            self.status.setText("Finished checksum-verified audio.")
+            generated_tokens = {
+                sample["queue_id"] for sample in self.current["generated_samples"]
+            }
+            generated_finished = len(generated_tokens & self.completed_audio)
+            original = "yes" if "reference" in self.completed_audio else "no"
+            self.status.setText(
+                "Finished checksum-verified audio. "
+                f"Listened: original {original}; generated "
+                f"{generated_finished}/{len(generated_tokens)}."
+            )
             self._update_decision_enabled()
 
     def _playback_error(self, _error, message):
@@ -259,7 +303,7 @@ class SourceReferenceQualityDialog(QDialog):
             "reject": self.reject,
             "needs_sample": self.needs_sample,
         }[decision].isEnabled():
-            self.status.setText("Listen to all available evidence before deciding.")
+            self.status.setText("This decision is unavailable for the current card.")
             return
         try:
             record_source_reference_quality_decision(

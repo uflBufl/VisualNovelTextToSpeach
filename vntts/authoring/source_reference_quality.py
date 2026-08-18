@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import tempfile
 import uuid
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,13 +64,24 @@ class SourceReferenceQualityResult:
 
 
 def publish_source_reference_quality_review(
-    plan_directory, evaluation_directory, state_path, output
+    plan_directory,
+    evaluation_directory,
+    state_path,
+    output,
+    *,
+    portrait_directory=None,
 ):
     """Publish a self-contained review card for every exact reference variant."""
     plan_directory = Path(plan_directory).expanduser().resolve()
     evaluation_directory = Path(evaluation_directory).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     output = Path(output).expanduser().resolve()
+    if portrait_directory is not None:
+        portrait_directory = Path(portrait_directory).expanduser().resolve()
+        if not portrait_directory.is_dir():
+            raise SourceReferenceQualityError(
+                f"Portrait directory is missing: {portrait_directory}"
+            )
     if output.exists() or output.is_symlink():
         raise SourceReferenceQualityError(f"Quality review output exists: {output}")
 
@@ -188,6 +201,14 @@ def publish_source_reference_quality_review(
                 source, source_sha256, staging / reference_relative
             )
             reference_record["audio"] = reference_relative.as_posix()
+
+            portrait_image = _copy_optional_portrait(
+                portrait_directory,
+                cluster.get("portrait"),
+                variant_id,
+                staging,
+                snapshots,
+            )
 
             queue_ids = [
                 _required_text(
@@ -312,6 +333,7 @@ def publish_source_reference_quality_review(
                     "cluster_id": cluster["cluster_id"],
                     "character": cluster["character"],
                     "portrait": cluster["portrait"],
+                    "portrait_image": portrait_image,
                     "source_bank": cluster["source_bank"],
                     "media_id": reference["media_id"],
                     "affected_queue_item_count": len(cluster["queue_items"]),
@@ -403,6 +425,9 @@ def load_source_reference_quality_review(path):
             raise SourceReferenceQualityError(
                 f"Quality variant {variant_id} portrait is invalid"
             )
+        portrait_image = card.get("portrait_image")
+        if portrait_image is not None:
+            _validate_portrait_record(path.parent, portrait_image, variant_id)
         _positive_integer(
             card.get("affected_queue_item_count"),
             f"quality variant {variant_id} affected count",
@@ -549,6 +574,7 @@ def create_parser():
     create.add_argument("--evaluation", type=Path, required=True)
     create.add_argument("--state", type=Path, required=True)
     create.add_argument("--output", type=Path, required=True)
+    create.add_argument("--portrait-directory", type=Path)
     for command in ("status", "next", "ui"):
         child = subparsers.add_parser(command)
         child.add_argument("--session", type=Path, required=True)
@@ -565,7 +591,11 @@ def main(argv=None):
     try:
         if options.command == "create":
             result = publish_source_reference_quality_review(
-                options.plan, options.evaluation, options.state, options.output
+                options.plan,
+                options.evaluation,
+                options.state,
+                options.output,
+                portrait_directory=options.portrait_directory,
             )
             return cli_success(
                 f"Created source-reference quality review: {result.session}"
@@ -639,6 +669,120 @@ def _copy_audio(source, digest, destination):
         "sample_count": info.sample_count,
         "duration_seconds": round(info.duration_seconds, 6),
     }
+
+
+def _copy_optional_portrait(root, portrait, variant_id, staging, snapshots):
+    if root is None or portrait is None:
+        return None
+    portrait = _required_text(portrait, f"variant {variant_id} portrait")
+    if "\\" in portrait:
+        raise SourceReferenceQualityError("Portrait identity must be a filename")
+    identity = PurePosixPath(portrait)
+    if len(identity.parts) != 1 or identity.name in {"", ".", ".."}:
+        raise SourceReferenceQualityError("Portrait identity must be a filename")
+    filename = identity.name
+    if not filename.lower().endswith(".png"):
+        filename = f"{filename}.png"
+    source = (root / filename).resolve()
+    try:
+        source.relative_to(root)
+    except ValueError as error:
+        raise SourceReferenceQualityError("Portrait image leaves its root") from error
+    if not source.exists():
+        return None
+    if not source.is_file():
+        raise SourceReferenceQualityError(f"Portrait image is not a file: {source}")
+    try:
+        payload = source.read_bytes()
+    except OSError as error:
+        raise SourceReferenceQualityError(
+            f"Unable to read portrait image {source}: {error}"
+        ) from error
+    digest = hashlib.sha256(payload).hexdigest()
+    width, height = _probe_png(payload, f"portrait image {filename}")
+    relative = Path("portraits") / f"{variant_id}.png"
+    destination = staging / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        raise SourceReferenceQualityError(
+            f"Portrait image changed while copied: {source}"
+        )
+    snapshots.append((source, digest))
+    return {
+        "image": relative.as_posix(),
+        "image_sha256": digest,
+        "width": width,
+        "height": height,
+    }
+
+
+def _validate_portrait_record(root, value, label):
+    if not isinstance(value, dict):
+        raise SourceReferenceQualityError(f"Quality portrait {label} must be an object")
+    path = _contained_file(root, value.get("image"), f"quality portrait {label}")
+    digest = _required_sha256(
+        value.get("image_sha256"), f"quality portrait {label} hash"
+    )
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise SourceReferenceQualityError(
+            f"Unable to read quality portrait {label}: {error}"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise SourceReferenceQualityError(f"Quality portrait changed: {label}")
+    width, height = _probe_png(payload, f"quality portrait {label}")
+    if value.get("width") != width or value.get("height") != height:
+        raise SourceReferenceQualityError(f"Quality portrait metadata changed: {label}")
+    return path
+
+
+def _probe_png(payload, label):
+    if not isinstance(payload, bytes) or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise SourceReferenceQualityError(f"{label.title()} is not a PNG")
+    offset = 8
+    width = height = None
+    idat_parts = []
+    saw_iend = False
+    while offset < len(payload):
+        if len(payload) - offset < 12:
+            raise SourceReferenceQualityError(f"{label.title()} is truncated")
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        kind = payload[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(payload):
+            raise SourceReferenceQualityError(f"{label.title()} is truncated")
+        data = payload[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
+        if zlib.crc32(kind + data) & 0xFFFFFFFF != expected_crc:
+            raise SourceReferenceQualityError(f"{label.title()} has an invalid CRC")
+        if offset == 8:
+            if kind != b"IHDR" or length != 13:
+                raise SourceReferenceQualityError(f"{label.title()} has no valid IHDR")
+            width, height = struct.unpack(">II", data[:8])
+            if width < 1 or height < 1:
+                raise SourceReferenceQualityError(
+                    f"{label.title()} has invalid dimensions"
+                )
+        elif kind == b"IDAT":
+            idat_parts.append(data)
+        elif kind == b"IEND":
+            if length != 0 or chunk_end != len(payload):
+                raise SourceReferenceQualityError(f"{label.title()} has invalid IEND")
+            saw_iend = True
+        offset = chunk_end
+    if width is None or not idat_parts or not saw_iend:
+        raise SourceReferenceQualityError(f"{label.title()} is incomplete")
+    try:
+        decoded = zlib.decompress(b"".join(idat_parts))
+    except zlib.error as error:
+        raise SourceReferenceQualityError(
+            f"{label.title()} has invalid image data"
+        ) from error
+    if not decoded:
+        raise SourceReferenceQualityError(f"{label.title()} has empty image data")
+    return width, height
 
 
 def _validate_audio_record(root, value, label):

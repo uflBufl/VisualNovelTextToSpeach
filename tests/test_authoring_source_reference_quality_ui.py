@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import struct
 import unittest
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -45,10 +47,35 @@ def _write_audio(root, name, value):
     }
 
 
+def _write_png(root, name):
+    def chunk(kind, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    payload = b"\x89PNG\r\n\x1a\n"
+    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+    rows = b"\x00" + b"\x7f\x30\x10\xff" * 2
+    payload += chunk(b"IDAT", zlib.compress(rows * 2))
+    payload += chunk(b"IEND", b"")
+    path = root / name
+    path.write_bytes(payload)
+    return {
+        "image": name,
+        "image_sha256": hashlib.sha256(payload).hexdigest(),
+        "width": 2,
+        "height": 2,
+    }
+
+
 def write_quality_session(root):
     reference = _write_audio(root, "reference.wav", 0.1)
     generated_one = _write_audio(root, "generated-one.wav", 0.2)
     generated_two = _write_audio(root, "generated-two.wav", 0.3)
+    portrait = _write_png(root, "portrait.png")
     now = datetime.now(timezone.utc).isoformat()
     samples = []
     for index, audio in enumerate((generated_one, generated_two), start=1):
@@ -81,6 +108,7 @@ def write_quality_session(root):
                         "cluster_id": "cluster-a",
                         "character": "Dobharchu",
                         "portrait": "534704",
+                        "portrait_image": portrait,
                         "source_bank": "hero.bnk",
                         "media_id": 123,
                         "affected_queue_item_count": 37,
@@ -104,15 +132,18 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_decision_unlocks_only_after_original_and_every_generated_sample(self):
+    def test_decisions_are_immediately_available_and_playback_is_advisory(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
             dialog = SourceReferenceQualityDialog(session)
 
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertTrue(dialog.accept.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.needs_sample.isEnabled())
+            self.assertFalse(dialog.portrait_image.pixmap().isNull())
+            self.assertNotIn("534704", dialog.identity.text())
             dialog._playing_token = "reference"
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.assertFalse(dialog.accept.isEnabled())
             for sample in dialog.current["generated_samples"]:
                 dialog._playing_token = sample["queue_id"]
                 dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
@@ -137,6 +168,19 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close()
 
         self.assertIn("checksum changed", message)
+
+    def test_missing_exact_portrait_uses_truthful_placeholder(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            document = json.loads(session.read_text(encoding="utf-8"))
+            document["variants"][0]["portrait_image"] = None
+            session.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+            dialog = SourceReferenceQualityDialog(session)
+
+            message = dialog.portrait_image.text()
+            dialog.close()
+
+        self.assertEqual(message, "Exact game portrait is not installed")
 
 
 if __name__ == "__main__":

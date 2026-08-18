@@ -1,6 +1,8 @@
 import hashlib
 import json
+import struct
 import unittest
+import zlib
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -91,6 +93,23 @@ class EvaluationRenderer:
         pass
 
 
+def write_test_png(path, *, red):
+    def chunk(kind, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    payload = b"\x89PNG\r\n\x1a\n"
+    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+    row = b"\x00" + bytes((red, 40, 20, 255)) * 2
+    payload += chunk(b"IDAT", zlib.compress(row * 2))
+    payload += chunk(b"IEND", b"")
+    path.write_bytes(payload)
+
+
 def candidate_key(character, portrait, bank, media_id, reference_sha256):
     identity = json.dumps(
         [character, portrait, bank, media_id, reference_sha256],
@@ -101,7 +120,7 @@ def candidate_key(character, portrait, bank, media_id, reference_sha256):
 
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
-    def publish_quality_fixture(self, root):
+    def publish_quality_fixture(self, root, *, portrait_directory=None):
         report, review, story = self.write_inputs(root)
         plan = import_source_reference_review(report, review, story, root / "plan")
         evaluation = publish_source_reference_evaluation(
@@ -120,6 +139,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             evaluation.directory,
             generation.state,
             root / "quality",
+            portrait_directory=portrait_directory,
         )
         return plan, evaluation, generation, quality
 
@@ -544,6 +564,29 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         self.assertTrue(all(card["reference"]["audio"] for card in session["variants"]))
         self.assertTrue(all(card["generated_samples"] for card in session["variants"]))
+
+    def test_quality_review_copies_and_validates_available_portraits(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            portraits = root / "portraits"
+            portraits.mkdir()
+            write_test_png(portraits / "adult.png", red=120)
+            write_test_png(portraits / "young.png", red=200)
+            _plan, _evaluation, _generation, result = self.publish_quality_fixture(
+                root, portrait_directory=portraits
+            )
+            session = load_source_reference_quality_review(result.session)
+
+            copied = [card["portrait_image"] for card in session["variants"]]
+            self.assertTrue(all(record["width"] == 2 for record in copied))
+            copied[0]["width"] = 99
+            (result.session).write_text(
+                json.dumps(session, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                SourceReferenceQualityError, "portrait metadata changed"
+            ):
+                load_source_reference_quality_review(result.session)
 
     def test_quality_review_rejects_tampered_audio_and_concurrent_decision(self):
         with TemporaryDirectory() as directory:
