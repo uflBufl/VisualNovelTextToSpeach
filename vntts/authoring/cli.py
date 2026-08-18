@@ -73,6 +73,7 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
 )
+from vntts.authoring.source_reference_quality import SourceReferenceQualityError
 from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
@@ -429,7 +430,12 @@ def create_parser():
     reference_bindings.add_argument("--plan", type=Path, required=True)
     reference_bindings.add_argument("--voice-manifest", type=Path, required=True)
     reference_bindings.add_argument("--narrator-character", required=True)
-    reference_bindings.add_argument("--variant", action="append", required=True)
+    reference_bindings.add_argument(
+        "--quality-review",
+        type=Path,
+        required=True,
+        help="Completed cluster-specific review.json authorizing accepted variants",
+    )
     reference_bindings.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
@@ -863,8 +869,9 @@ def main(argv=None):
                 arguments.plan,
                 arguments.voice_manifest,
                 arguments.narrator_character,
-                arguments.variant,
+                None,
                 arguments.output,
+                quality_review=arguments.quality_review,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
@@ -951,6 +958,7 @@ def main(argv=None):
         ListeningImportError,
         ReferenceSelectionError,
         SourceReferenceReviewError,
+        SourceReferenceQualityError,
         SourceReferenceBindingError,
         StoryIndexError,
         VoiceGenerationQueueError,

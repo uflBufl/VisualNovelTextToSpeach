@@ -488,14 +488,17 @@ evaluation corpus. It does not edit a manifest or authorize generation. See
 [variant-aware source-reference import](docs/source-reference-review-import.md).
 The same workflow publishes non-overwriting fixed-corpus inputs with
 `vntts-pregenerate build-reference-evaluation`; rendering output is kept in a
-separate mutable directory until blind source/result review is complete.
-Checksum-valid results can be converted to strict reports with
-`vntts-pregenerate build-reference-listening-reports` and opened through the
-existing `vntts-listen` blind workbench. After manual review,
-`vntts-pregenerate build-reference-bindings` publishes a new self-contained
-partial manifest that maps only explicitly chosen variants to their exact queue
-IDs. Generation state and final packs preserve and verify that mapping; no
-existing manifest or workspace is rewritten.
+separate mutable directory until source/result review is complete.
+`vntts-reference-review create` builds one checksum-bound card per exact
+character/portrait/bank cluster, including its original reference, all valid
+generated samples and every excluded failure reason. Its UI records `Accept`,
+`Reject`, or `Need another sample` without comparing unrelated characters.
+After all cards are decided, `vntts-pregenerate build-reference-bindings`
+accepts that exact completed review and publishes a new self-contained partial
+manifest that maps only accepted variants to their exact queue IDs. Generation
+state and final packs preserve and verify that mapping; no existing manifest or
+workspace is rewritten. Generic `vntts-listen` comparisons also expose
+`Neither acceptable`, but they are not source-reference authority.
 
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with

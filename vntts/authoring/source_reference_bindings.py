@@ -33,6 +33,11 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         raise SourceReferenceBindingError(
             "Source-reference bindings require the exact plan SHA-256"
         )
+    quality_review_sha256 = value.get("source_reference_quality_review_sha256")
+    if quality_review_sha256 is not None and not _is_sha256(quality_review_sha256):
+        raise SourceReferenceBindingError(
+            "Source-reference bindings quality-review SHA-256 is invalid"
+        )
     variants = value.get("selected_variants")
     if not isinstance(variants, list) or not variants:
         raise SourceReferenceBindingError(

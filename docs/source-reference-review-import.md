@@ -50,27 +50,33 @@ or rendered WAVs inside the immutable evaluation input directory. Source-match
 audio can then be compared blindly against its exact original, while fixed-text
 outputs compare cadence and pronunciation across variants.
 
-After the bounded generation run, publish strict listening reports from the
-exact evaluation and generation state:
+After the bounded generation run, publish a self-contained cluster-specific
+quality review from the exact evaluation and generation state:
 
 ```bash
-uv run vntts-pregenerate build-reference-listening-reports \
+uv run vntts-reference-review create \
+  --plan /new/source-reference-plan \
   --evaluation /new/source-reference-evaluation \
   --state /mutable/evaluation-run/generation-state.json \
-  --output /new/source-reference-listening-reports
+  --output /new/source-reference-quality-review
 
-uv run vntts-listen start-reports \
-  --reports /new/source-reference-listening-reports/*.json \
-  --output /new/source-reference-listening-session \
-  --seed 0
+uv run vntts-reference-review ui \
+  --session /new/source-reference-quality-review/review.json
 ```
 
-The report publisher includes only checksum-valid generated outcomes. A
-successful source-match render is paired with its exact original reference;
-successful fixed sentences are paired across all variants that produced the
-same text. Failed or limited renders remain visible in generation state and do
-not become listening audio. Model identities are stored only in the private
-0600 blind key; the public session exposes randomized A/B aliases.
+Each card represents one exact `(character, portrait, source_bank)` cluster. It
+contains the original reference, every checksum-valid generated sample, the
+number of story lines affected and the typed reason for every excluded result.
+The reviewer must finish the original and every available generated sample
+before choosing `Accept reference`, `Reject reference`, or `Need another
+sample`. A card without a generated sample cannot be accepted. Decisions are
+serialized through an exclusive lock and copied audio is revalidated whenever
+the review is loaded or played.
+
+`vntts-listen` remains the generic blind model-comparison tool. It now supports
+`Neither acceptable`, but it is not the authority for source-reference
+selection: fixed-text comparisons between different character clusters answer
+which voice is preferred, not whether either voice belongs to its character.
 
 ## Verified Character Story evaluation (2026-08-18)
 
@@ -86,32 +92,34 @@ review decisions, bulk workspace changes, or manifest approvals were made. The
 state SHA-256 is
 `9df9dee7a47515b5332633aac90fb46b4cc8ed207d5086b68694657835a3ebad`.
 
-The resulting listening session has nine trials: three exact original versus
-generated source-match pairs and six same-text comparisons between successful
-variants. It starts at 0/9 and remains a manual gate. Its public session SHA-256
-is `6218f26672df477dbc55fb5ff336cf9236b902351336b66d1437a342e28b126e`;
-the private blind key is mode 0600 and checksum-bound by the public session.
+The first blind listening session contained nine trials: three exact original
+versus generated source-match pairs and six same-text comparisons between
+different character clusters. The reviewer completed one trial. That `1/9`
+session is preserved as historical, non-authoritative evidence and must not be
+completed or used to choose source references. The six cross-character trials
+were a workflow-design error, not missing human work.
 
-After the blind session is complete, use its revealed results to select at most
-one winning variant per portrait cluster. Publication is deliberately explicit;
-there is no score-to-winner policy:
+After every cluster card has an explicit decision, publish the accepted set.
+The binding CLI verifies that the review is complete and belongs to the exact
+plan; direct variant IDs are not accepted at this boundary:
 
 ```bash
 uv run vntts-pregenerate build-reference-bindings \
   --plan /new/source-reference-plan \
   --voice-manifest /path/to/base/voice-manifest.json \
   --narrator-character Centurion \
-  --variant CLUSTER-ID-anchor-1 \
+  --quality-review /new/source-reference-quality-review/review.json \
   --output /new/source-reference-bindings
 ```
 
-Repeat `--variant` for independent clusters. The command publishes a new,
-self-contained partial voice manifest; it never edits the base manifest or the
-decision plan. Every selected variant is bound to the exact story-derived queue
-IDs from its cluster. Bulk generation records the effective synthetic voice,
-binding-map checksum and source queue ID in each result. Resume and final-pack
-publication reject a changed map, an unselected manifest voice, or state whose
-effective voice no longer agrees with that exact binding.
+The command publishes a new, self-contained partial voice manifest; it never
+edits the base manifest, decision plan or review. Every accepted variant is
+bound to the exact story-derived queue IDs from its cluster. Rejected and
+`needs_sample` clusters remain missing-reference preflight outcomes. Bulk
+generation records the effective synthetic voice, binding-map checksum and
+source queue ID in each result. Resume and final-pack publication reject a
+changed map, an unselected manifest voice, or state whose effective voice no
+longer agrees with that exact binding.
 
 Use the published `voice-manifest.json` when creating a new config-addressed
 workspace. A partial manifest intentionally leaves unrelated queue lines in the

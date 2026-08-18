@@ -382,12 +382,51 @@ def publish_source_reference_bindings(
     narrator_character,
     selected_variant_ids,
     output,
+    *,
+    quality_review=None,
 ):
     """Publish a partial manifest with explicit queue-to-variant bindings."""
     plan_directory = Path(plan_directory).expanduser().resolve()
     plan = load_source_reference_plan(plan_directory)
     plan_path = plan_directory / "plan.json"
     plan_sha256 = sha256_file(plan_path)
+    quality_review_path = None
+    quality_review_sha256 = None
+    if quality_review is not None:
+        if selected_variant_ids is not None:
+            raise SourceReferenceReviewError(
+                "Quality-reviewed bindings cannot also accept variant IDs"
+            )
+        from vntts.authoring.source_reference_quality import (
+            SourceReferenceQualityError,
+            accepted_source_reference_variants,
+            load_source_reference_quality_review,
+        )
+
+        quality_review_path = Path(quality_review).expanduser().resolve()
+        try:
+            quality_review_payload = quality_review_path.read_bytes()
+            quality_review_document = load_source_reference_quality_review(
+                quality_review_path
+            )
+            if quality_review_path.read_bytes() != quality_review_payload:
+                raise SourceReferenceReviewError(
+                    "Source-reference quality review changed while it was loaded"
+                )
+            if quality_review_document["source_reference_plan_sha256"] != plan_sha256:
+                raise SourceReferenceReviewError(
+                    "Quality review belongs to a different source-reference plan"
+                )
+            selected_variant_ids = accepted_source_reference_variants(
+                quality_review_document
+            )
+        except (OSError, SourceReferenceQualityError) as error:
+            raise SourceReferenceReviewError(str(error)) from error
+        if not selected_variant_ids:
+            raise SourceReferenceReviewError(
+                "Completed quality review accepts no source-reference variants"
+            )
+        quality_review_sha256 = hashlib.sha256(quality_review_payload).hexdigest()
     base_voice_manifest = Path(base_voice_manifest).expanduser().resolve()
     try:
         base_payload = base_voice_manifest.read_bytes()
@@ -537,6 +576,8 @@ def publish_source_reference_bindings(
                 queue_overrides
             ),
         }
+        if quality_review_sha256 is not None:
+            bindings["source_reference_quality_review_sha256"] = quality_review_sha256
         manifest = {
             "version": 2,
             "game": base_document.get("game"),
@@ -556,6 +597,13 @@ def publish_source_reference_bindings(
             )
         for source, digest in source_snapshots:
             _assert_source_unchanged(source, digest, f"voice reference {source.name}")
+        if (
+            quality_review_path is not None
+            and sha256_file(quality_review_path) != quality_review_sha256
+        ):
+            raise SourceReferenceReviewError(
+                "Source-reference quality review changed during binding publication"
+            )
         _rename_directory_no_replace(staging, output)
         return SourceReferenceBindingsResult(
             output, len(selected_variants), len(queue_overrides)

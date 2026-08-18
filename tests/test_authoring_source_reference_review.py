@@ -28,6 +28,14 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.authoring.source_reference_quality import (
+    SourceReferenceQualityError,
+    accepted_source_reference_variants,
+    load_source_reference_quality_review,
+    publish_source_reference_quality_review,
+    quality_review_progress,
+    record_source_reference_quality_decision,
+)
 from vntts.authoring.source_reference_review import (
     REFERENCE_PLAN_SCHEMA,
     SourceReferenceReviewError,
@@ -93,6 +101,28 @@ def candidate_key(character, portrait, bank, media_id, reference_sha256):
 
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
+    def publish_quality_fixture(self, root):
+        report, review, story = self.write_inputs(root)
+        plan = import_source_reference_review(report, review, story, root / "plan")
+        evaluation = publish_source_reference_evaluation(
+            plan.directory, root / "evaluation"
+        )
+        generation = run_bulk_generation(
+            evaluation.directory / "queue.jsonl",
+            root / "generation",
+            EvaluationRenderer(),
+            provider="synthetic",
+            model="synthetic-v1",
+            generation_profile="stable",
+        )
+        quality = publish_source_reference_quality_review(
+            plan.directory,
+            evaluation.directory,
+            generation.state,
+            root / "quality",
+        )
+        return plan, evaluation, generation, quality
+
     def write_inputs(self, root):
         root = Path(root)
         references = root / "references"
@@ -492,6 +522,109 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["blind_trials"], 5)
+
+    def test_publishes_cluster_quality_cards_and_records_distinct_decisions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            session = load_source_reference_quality_review(result.session)
+            first, second = session["variants"]
+            record_source_reference_quality_decision(
+                result.session, first["variant_id"], "accept"
+            )
+            updated = record_source_reference_quality_decision(
+                result.session, second["variant_id"], "needs_sample"
+            )
+
+        self.assertEqual(result.variants, 2)
+        self.assertEqual(result.generated_samples, 8)
+        self.assertEqual(quality_review_progress(updated), (2, 2))
+        self.assertEqual(
+            accepted_source_reference_variants(updated), (first["variant_id"],)
+        )
+        self.assertTrue(all(card["reference"]["audio"] for card in session["variants"]))
+        self.assertTrue(all(card["generated_samples"] for card in session["variants"]))
+
+    def test_quality_review_rejects_tampered_audio_and_concurrent_decision(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            session = load_source_reference_quality_review(result.session)
+            variant = session["variants"][0]
+            lock = result.session.with_name(f".{result.session.name}.lock")
+            lock.write_text("other-reviewer", encoding="utf-8")
+            with self.assertRaisesRegex(
+                SourceReferenceQualityError, "Another source-reference decision"
+            ):
+                record_source_reference_quality_decision(
+                    result.session, variant["variant_id"], "accept"
+                )
+            lock.unlink()
+            audio = result.directory / variant["generated_samples"][0]["audio"]
+            audio.write_bytes(b"tampered")
+
+            with self.assertRaisesRegex(SourceReferenceQualityError, "changed"):
+                load_source_reference_quality_review(result.session)
+
+    def test_binding_cli_requires_completed_quality_review(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            manifest = self.write_base_voice_manifest(root)
+            session = load_source_reference_quality_review(result.session)
+            for card in session["variants"]:
+                record_source_reference_quality_decision(
+                    result.session, card["variant_id"], "accept"
+                )
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "build-reference-bindings",
+                        "--plan",
+                        str(plan.directory),
+                        "--voice-manifest",
+                        str(manifest),
+                        "--narrator-character",
+                        "Centurion",
+                        "--quality-review",
+                        str(result.session),
+                        "--output",
+                        str(root / "bindings"),
+                    ]
+                )
+            payload = json.loads(stdout.getvalue())
+            manifest = json.loads(
+                (root / "bindings/voice-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["selected_variants"], 2)
+        self.assertEqual(
+            len(
+                manifest["vntts.authoring.source_reference_bindings"][
+                    "source_reference_quality_review_sha256"
+                ]
+            ),
+            64,
+        )
+
+    def test_binding_publication_rejects_incomplete_quality_review(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            manifest = self.write_base_voice_manifest(root)
+
+            with self.assertRaisesRegex(SourceReferenceReviewError, "incomplete"):
+                publish_source_reference_bindings(
+                    plan.directory,
+                    manifest,
+                    "Centurion",
+                    None,
+                    root / "bindings",
+                    quality_review=result.session,
+                )
+            self.assertFalse((root / "bindings").exists())
 
     def test_binding_manifest_routes_exact_queue_ids_with_provenance(self):
         with TemporaryDirectory() as directory:
