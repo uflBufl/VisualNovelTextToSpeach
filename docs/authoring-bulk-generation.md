@@ -130,6 +130,19 @@ hashes and the output directory identity; a changed reference or directory swap
 therefore fails instead of silently changing synthesis provenance. The
 role-bound narrator selection is part of the control inventory.
 
+Failure repairs add two exact-ID-only controls:
+
+- `--sentence-segment-failed QUEUE_ID` renders only safe complete-sentence
+  segments with successive seeds and a bounded pause before concatenation;
+- `--trim-edge-silence-failed QUEUE_ID` removes only excess measured leading or
+  trailing silence before the normal quality gate.
+
+The flags are workspace configuration, synthesis-control provenance and state
+provenance, not ad-hoc transforms. Their set must exactly match `--queue-id`,
+the current state must still contain a typed matching failure, and every
+repaired artifact remains pending manual review. Use
+`failure-repair-plan` first; it is a read-only selector and never runs a model.
+
 The headless projection and safety contract are documented in
 [authoring-workspaces.md](authoring-workspaces.md). The Qt workbench projects
 that attempt into a live elapsed-time display without persisting derived time.

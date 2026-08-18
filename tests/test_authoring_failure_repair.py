@@ -3,12 +3,134 @@ import unittest
 import numpy as np
 
 from vntts.authoring.failure_repair import (
+    EDGE_SILENCE_TRIM,
+    SENTENCE_BOUNDARY_SEGMENTATION,
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+    render_sentence_segments,
     safe_sentence_segments,
     trim_excess_edge_silence,
+)
+from vntts.synthesis import (
+    SynthesisChunk,
+    SynthesisChunkStream,
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisRequest,
+    SynthesisResult,
+    SynthesisTiming,
 )
 
 
 class AuthoringFailureRepairTest(unittest.TestCase):
+    def test_policy_is_canonical_exact_and_round_trips(self):
+        policy = FailureRepairPolicy(("line:b", "line:a"), ("line:c",), 200)
+
+        self.assertEqual(policy.queue_ids, ("line:a", "line:b", "line:c"))
+        self.assertEqual(policy.strategy_for("line:a"), SENTENCE_BOUNDARY_SEGMENTATION)
+        self.assertEqual(policy.strategy_for("line:c"), EDGE_SILENCE_TRIM)
+        self.assertEqual(
+            FailureRepairPolicy.from_document(policy.to_document()), policy
+        )
+        with self.assertRaisesRegex(FailureRepairPolicyError, "two"):
+            FailureRepairPolicy(("line:a",), ("line:a",))
+        with self.assertRaisesRegex(FailureRepairPolicyError, "requires"):
+            FailureRepairPolicy(segment_pause_ms=200)
+        malformed = policy.to_document()
+        malformed["sentence_segment_queue_ids"] = "line:a"
+        with self.assertRaisesRegex(FailureRepairPolicyError, "JSON lists"):
+            FailureRepairPolicy.from_document(malformed)
+
+    def test_sentence_segments_use_distinct_seeds_and_bounded_pause(self):
+        requests = []
+
+        def render(request):
+            requests.append(request)
+            pcm = np.full(100, len(requests), dtype=np.float32)
+
+            def produce():
+                yield SynthesisChunk(pcm, 1_000, 0, 1.0)
+                return SynthesisResult(
+                    pcm,
+                    1_000,
+                    SynthesisCompletion.COMPLETE,
+                    SynthesisLimits(10, 1.0),
+                    SynthesisTiming(1.0, 2.0),
+                    SynthesisDiagnostics(
+                        "synthetic",
+                        "fresh-generation",
+                        request.generation_profile,
+                        request.seed,
+                        1,
+                        len(pcm),
+                    ),
+                )
+
+            return SynthesisChunkStream(produce())
+
+        request = SynthesisRequest("Hero", "Combined", seed=7)
+        result = render_sentence_segments(
+            render,
+            request,
+            ("First complete sentence.", "Second complete sentence."),
+            pause_ms=180,
+        )
+
+        self.assertEqual(
+            [value.text for value in requests],
+            [
+                "First complete sentence.",
+                "Second complete sentence.",
+            ],
+        )
+        self.assertEqual([value.seed for value in requests], [7, 8])
+        self.assertEqual(len(result.pcm), 380)
+        self.assertTrue(np.all(result.pcm[100:280] == 0))
+        self.assertEqual(result.diagnostics.seed, 7)
+        self.assertEqual(result.diagnostics.sample_count, 380)
+
+    def test_sentence_segments_reject_inner_seed_drift_and_total_limit(self):
+        def rendered(request, *, sample_count=100, seed=None):
+            pcm = np.ones(sample_count, dtype=np.float32) * 0.2
+
+            def produce():
+                yield SynthesisChunk(pcm, 1_000, 0, 1.0)
+                return SynthesisResult(
+                    pcm,
+                    1_000,
+                    SynthesisCompletion.COMPLETE,
+                    SynthesisLimits(10, 20.0),
+                    SynthesisTiming(1.0, 2.0),
+                    SynthesisDiagnostics(
+                        "synthetic",
+                        "fresh-generation",
+                        request.generation_profile,
+                        request.seed if seed is None else seed,
+                        1,
+                        len(pcm),
+                    ),
+                )
+
+            return SynthesisChunkStream(produce())
+
+        request = SynthesisRequest("Hero", "Combined", seed=7)
+        with self.assertRaisesRegex(ValueError, "diagnostics"):
+            render_sentence_segments(
+                lambda value: rendered(value, seed=999),
+                request,
+                ("First complete sentence.", "Second complete sentence."),
+                pause_ms=180,
+            )
+        limited = render_sentence_segments(
+            lambda value: rendered(value, sample_count=11_000),
+            request,
+            ("First complete sentence.", "Second complete sentence."),
+            pause_ms=0,
+        )
+        self.assertIs(limited.completion, SynthesisCompletion.LIMITED)
+        self.assertEqual(limited.limits.max_audio_seconds, 20.0)
+
     def test_sentence_split_requires_complete_substantial_boundaries(self):
         self.assertEqual(
             safe_sentence_segments(

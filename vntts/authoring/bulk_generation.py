@@ -43,7 +43,15 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.failure_repair import safe_sentence_segments
+from vntts.authoring.failure_repair import (
+    EDGE_SILENCE_TRIM,
+    SENTENCE_BOUNDARY_SEGMENTATION,
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+    render_sentence_segments,
+    safe_sentence_segments,
+    trim_excess_edge_silence,
+)
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -785,7 +793,7 @@ def generation_failure_repair_plan(state_path, queue_path):
                 <= MAX_INTERNAL_SILENCE_SECONDS
             )
             if edge_only:
-                action = "edge_silence_trim_review"
+                action = "edge_silence_trim"
                 reason = "only measured boundary silence exceeds the speech gate"
             else:
                 action = "reference_comparison"
@@ -831,6 +839,90 @@ def generation_failure_repair_plan(state_path, queue_path):
     }
 
 
+def _validate_failure_repair_selection(policy, selected_queue_ids, state, queue):
+    if policy.is_empty:
+        return
+    expected = set(policy.queue_ids)
+    if selected_queue_ids != expected:
+        raise BulkGenerationError("Failure-repair selection changed unexpectedly")
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    for queue_id in policy.queue_ids:
+        result = state["items"].get(queue_id)
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            raise BulkGenerationError(
+                f"Failure repair requires a current failed outcome for {queue_id!r}"
+            )
+        if not isinstance(result.get("failure"), dict):
+            raise BulkGenerationError(
+                f"Failure repair requires typed failure provenance for {queue_id!r}"
+            )
+        item = queue_by_id[queue_id]
+        failure = normalized_failure_record(result, text=item.text)
+        strategy = policy.strategy_for(queue_id)
+        if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            if (
+                failure.get("kind") != "missed_eos_audio_limit"
+                or len(safe_sentence_segments(item.text)) < 2
+            ):
+                raise BulkGenerationError(
+                    f"Sentence repair no longer matches failure {queue_id!r}"
+                )
+        elif strategy == EDGE_SILENCE_TRIM:
+            quality = failure.get("speech_quality")
+            if not isinstance(quality, dict):
+                raise BulkGenerationError(
+                    f"Edge-silence repair requires typed speech metrics for {queue_id!r}"
+                )
+            for field in (
+                "leading_silence_seconds",
+                "trailing_silence_seconds",
+                "longest_internal_silence_seconds",
+            ):
+                value = quality.get(field)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not np.isfinite(value)
+                    or value < 0
+                ):
+                    raise BulkGenerationError(
+                        f"Edge-silence repair metrics are invalid for {queue_id!r}"
+                    )
+            edge_exceeded = (
+                quality.get("leading_silence_seconds", 0) > MAX_LEADING_SILENCE_SECONDS
+                or quality.get("trailing_silence_seconds", 0)
+                > MAX_TRAILING_SILENCE_SECONDS
+            )
+            if (
+                not edge_exceeded
+                or quality.get("longest_internal_silence_seconds", 0)
+                > MAX_INTERNAL_SILENCE_SECONDS
+            ):
+                raise BulkGenerationError(
+                    f"Edge-silence repair no longer matches failure {queue_id!r}"
+                )
+
+
+def _failure_repair_document(policy, queue_id, text):
+    strategy = policy.strategy_for(queue_id)
+    if strategy is None:
+        return None
+    document = {"schema_version": 1, "strategy": strategy}
+    if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+        segments = safe_sentence_segments(text)
+        document.update(
+            {
+                "segments": list(segments),
+                "segment_text_sha256": [
+                    hashlib.sha256(value.encode("utf-8")).hexdigest()
+                    for value in segments
+                ],
+                "pause_ms": policy.segment_pause_ms,
+            }
+        )
+    return document
+
+
 def run_bulk_generation(
     queue_path,
     output_directory,
@@ -856,6 +948,7 @@ def run_bulk_generation(
     synthesis_character_overrides=None,
     missing_voice_policy=None,
     narrator_character=None,
+    failure_repair_policy=None,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -869,6 +962,14 @@ def run_bulk_generation(
         synthesis_character_overrides,
         narrator_character=narrator_character,
     )
+    try:
+        repair_policy = (
+            failure_repair_policy
+            if isinstance(failure_repair_policy, FailureRepairPolicy)
+            else FailureRepairPolicy.from_document(failure_repair_policy)
+        )
+    except FailureRepairPolicyError as error:
+        raise BulkGenerationError(str(error)) from error
     if text_transform is not None and not callable(text_transform):
         raise BulkGenerationError("Text transform must be callable")
     if text_transform is not None:
@@ -915,6 +1016,12 @@ def run_bulk_generation(
                 "Selected queue IDs are absent from the bound queue: "
                 + ", ".join(sorted(unknown_queue_ids))
             )
+    if not repair_policy.is_empty and selected_queue_ids != set(
+        repair_policy.queue_ids
+    ):
+        raise BulkGenerationError(
+            "Failure repair requires an exact --queue-id selection matching its policy"
+        )
     if (
         regenerate_existing
         and selected_queue_ids is None
@@ -933,6 +1040,7 @@ def run_bulk_generation(
     synthesis_configuration = {
         "missing_voice_policy": policy.to_document(),
         "synthesis_character_overrides": dict(sorted(character_overrides.items())),
+        "failure_repair_policy": repair_policy.to_document(),
     }
     provenance_sha256 = _canonical_sha256(
         {
@@ -963,6 +1071,12 @@ def run_bulk_generation(
             output_directory, process_checker or process_is_alive
         )
         state = _load_or_create_state(state_path, output_directory, queue, queue_sha256)
+        _validate_failure_repair_selection(
+            repair_policy,
+            selected_queue_ids,
+            state,
+            queue,
+        )
         if state["schema"] == STATE_SCHEMA:
             registry = state.setdefault("synthesis_controls", {})
             existing_controls = registry.get(provenance_sha256)
@@ -1039,6 +1153,10 @@ def run_bulk_generation(
         for item in candidates:
             queue_id = item.queue_id
             existing = state["items"].get(queue_id, {})
+            repair_strategy = repair_policy.strategy_for(queue_id)
+            repair_document = _failure_repair_document(
+                repair_policy, queue_id, item.text
+            )
             if existing.get("status") in {"generated", "approved"}:
                 _validate_success_item(
                     queue_id,
@@ -1099,6 +1217,14 @@ def run_bulk_generation(
                 attempts += 1
                 run_attempts += 1
                 attempt_seed = seed + attempts - 1
+                attempt_repair = None
+                if repair_document is not None:
+                    attempt_repair = copy.deepcopy(repair_document)
+                    if repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+                        attempt_repair["planned_segment_seeds"] = [
+                            attempt_seed + index
+                            for index in range(len(attempt_repair["segments"]))
+                        ]
                 started_at = _now()
                 partial = destination.with_suffix(".partial.wav")
                 if partial.exists():
@@ -1118,6 +1244,7 @@ def run_bulk_generation(
                     synthesis_configuration=synthesis_configuration,
                     synthesis_voice_character=voice,
                     synthesis_fallback=synthesis_fallback,
+                    failure_repair=attempt_repair,
                     phase="generating",
                     attempt=run_attempts,
                     attempt_limit=retries + 1,
@@ -1135,7 +1262,15 @@ def run_bulk_generation(
                     cache_policy=SynthesisCachePolicy.BYPASS,
                 )
                 try:
-                    rendered = render(request).collect()
+                    if repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+                        rendered = render_sentence_segments(
+                            render,
+                            request,
+                            safe_sentence_segments(synthesis_text),
+                            pause_ms=repair_policy.segment_pause_ms,
+                        )
+                    else:
+                        rendered = render(request).collect()
                     _validate_render_result(rendered, request, provider)
                     _assert_control_files_unchanged(controls)
                     if workspace_output_identity is not None:
@@ -1144,11 +1279,18 @@ def run_bulk_generation(
                         )
                     lease.assert_owned()
                     _write_active_phase(state_path, state, "validating")
-                    write_pcm16_wav(
-                        partial,
-                        _generated_mono_pcm(rendered.pcm),
-                        rendered.sample_rate,
-                    )
+                    output_pcm = _generated_mono_pcm(rendered.pcm)
+                    if repair_strategy == EDGE_SILENCE_TRIM:
+                        trimmed = trim_excess_edge_silence(
+                            output_pcm, rendered.sample_rate
+                        )
+                        output_pcm = trimmed.pcm
+                        attempt_repair = {
+                            **attempt_repair,
+                            "leading_trimmed_samples": trimmed.leading_trimmed_samples,
+                            "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
+                        }
+                    write_pcm16_wav(partial, output_pcm, rendered.sample_rate)
                     quality = inspect_generated_wav(partial)
                     speech_quality = inspect_generated_speech(partial)
                     file_sha256 = sha256_file(partial)
@@ -1191,6 +1333,8 @@ def run_bulk_generation(
                         state["items"][queue_id]["narrator_character"] = (
                             narrator_character
                         )
+                    if attempt_repair is not None:
+                        state["items"][queue_id]["failure_repair"] = attempt_repair
                     state["active"] = None
                     atomic_write_json(state_path, state, sort_keys=True)
                     generated += 1
@@ -1251,6 +1395,8 @@ def run_bulk_generation(
                         state["items"][queue_id]["narrator_character"] = (
                             narrator_character
                         )
+                    if attempt_repair is not None:
+                        state["items"][queue_id]["failure_repair"] = attempt_repair
                     if run_attempts <= retries and not is_cancelled:
                         _write_active_phase(
                             state_path, state, "retrying", last_error=last_error
@@ -1412,6 +1558,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "narrator_character",
             "speech_quality",
             "carry_forward",
+            "failure_repair",
         ):
             if field in result:
                 entry[field] = result[field]
@@ -1778,6 +1925,11 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
                 queue_id,
                 None if queue_by_id is None else queue_by_id[queue_id],
             )
+            _validate_failure_repair_record(
+                result,
+                queue_id,
+                None if queue_by_id is None else queue_by_id[queue_id],
+            )
             continue
         queue_item = None if queue_by_id is None else queue_by_id[queue_id]
         _validate_success_item(
@@ -1787,6 +1939,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             queue_item,
             state_schema=state["schema"],
         )
+        _validate_failure_repair_record(result, queue_id, queue_item)
     active = state.get("active")
     if active is not None and not isinstance(active, dict):
         raise BulkGenerationError(
@@ -1933,9 +2086,14 @@ def _validate_synthesis_configuration(result, queue_id):
     configuration = result.get("synthesis_configuration")
     if configuration is None:
         return None
-    if not isinstance(configuration, dict) or set(configuration) != {
+    legacy_fields = {
         "missing_voice_policy",
         "synthesis_character_overrides",
+    }
+    current_fields = legacy_fields | {"failure_repair_policy"}
+    if not isinstance(configuration, dict) or frozenset(configuration) not in {
+        frozenset(legacy_fields),
+        frozenset(current_fields),
     }:
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis configuration is malformed"
@@ -1945,6 +2103,12 @@ def _validate_synthesis_configuration(result, queue_id):
             configuration.get("missing_voice_policy")
         )
     except MissingVoicePolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+    try:
+        repair_policy = FailureRepairPolicy.from_document(
+            configuration.get("failure_repair_policy")
+        )
+    except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
     overrides = configuration.get("synthesis_character_overrides")
     if not isinstance(overrides, dict):
@@ -1973,7 +2137,93 @@ def _validate_synthesis_configuration(result, queue_id):
     return {
         "missing_voice_policy": policy.to_document(),
         "synthesis_character_overrides": canonical,
+        "failure_repair_policy": repair_policy.to_document(),
     }
+
+
+def _validate_failure_repair_record(result, queue_id, queue_item):
+    repair = result.get("failure_repair")
+    if repair is None:
+        return
+    if not isinstance(repair, dict) or repair.get("schema_version") != 1:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} failure repair is malformed"
+        )
+    configuration = _validate_synthesis_configuration(result, queue_id)
+    if configuration is None:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} failure repair lacks synthesis configuration"
+        )
+    try:
+        policy = FailureRepairPolicy.from_document(
+            configuration["failure_repair_policy"]
+        )
+    except FailureRepairPolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+    strategy = policy.strategy_for(queue_id)
+    if strategy is None or repair.get("strategy") != strategy:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} failure repair is unauthorized"
+        )
+    if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+        if set(repair) != {
+            "schema_version",
+            "strategy",
+            "segments",
+            "segment_text_sha256",
+            "planned_segment_seeds",
+            "pause_ms",
+        }:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} sentence repair is malformed"
+            )
+        if queue_item is not None:
+            expected = safe_sentence_segments(queue_item.text)
+            if repair.get("segments") != list(expected):
+                raise BulkGenerationError(
+                    f"State item {queue_id!r} sentence repair text changed"
+                )
+            expected_hashes = [
+                hashlib.sha256(value.encode("utf-8")).hexdigest() for value in expected
+            ]
+            if repair.get("segment_text_sha256") != expected_hashes:
+                raise BulkGenerationError(
+                    f"State item {queue_id!r} sentence repair hashes changed"
+                )
+        if repair.get("pause_ms") != policy.segment_pause_ms:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} sentence repair pause conflicts"
+            )
+        seeds = repair.get("planned_segment_seeds")
+        if not isinstance(seeds, list) or len(seeds) != len(repair.get("segments", [])):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} sentence repair seeds are malformed"
+            )
+        for value in seeds:
+            _integer(value, f"State item {queue_id!r} sentence repair seed")
+        outer_seed = result.get("seed")
+        if outer_seed is not None and seeds != [
+            outer_seed + index for index in range(len(seeds))
+        ]:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} sentence repair seeds conflict"
+            )
+    else:
+        allowed = {
+            "schema_version",
+            "strategy",
+            "leading_trimmed_samples",
+            "trailing_trimmed_samples",
+        }
+        if not set(repair).issubset(allowed):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} edge repair is malformed"
+            )
+        for field in ("leading_trimmed_samples", "trailing_trimmed_samples"):
+            if field in repair:
+                _nonnegative_int(
+                    repair[field], f"State item {queue_id!r} repair {field}"
+                )
 
 
 def _validate_active_attempt(active, queue_by_id):
@@ -2043,10 +2293,13 @@ def _validate_active_attempt(active, queue_by_id):
             "synthesis_configuration",
             "synthesis_fallback",
             "narrator_character",
+            "failure_repair",
         ):
             if field in active:
                 active_result[field] = active[field]
         _validate_synthesis_identity(active_result, queue_id, queue_item)
+        active_result["seed"] = active.get("seed")
+        _validate_failure_repair_record(active_result, queue_id, queue_item)
 
 
 def _validate_synthesis_controls(state):
@@ -2253,6 +2506,7 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             "text_transform",
             "synthesis_provenance_sha256",
             "synthesis_configuration",
+            "failure_repair",
         ):
             if field in active:
                 interrupted_result[field] = active[field]
@@ -2281,6 +2535,7 @@ def _write_active(
     synthesis_configuration,
     synthesis_voice_character,
     synthesis_fallback,
+    failure_repair,
     phase,
     attempt,
     attempt_limit,
@@ -2322,6 +2577,8 @@ def _write_active(
     if synthesis_fallback is not None:
         state["active"]["synthesis_fallback"] = synthesis_fallback
         state["active"]["narrator_character"] = synthesis_fallback["narrator_character"]
+    if failure_repair is not None:
+        state["active"]["failure_repair"] = failure_repair
     atomic_write_json(state_path, state, sort_keys=True)
 
 

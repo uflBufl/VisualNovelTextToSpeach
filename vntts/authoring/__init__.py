@@ -27,7 +27,12 @@ from vntts.authoring.delivery import (
     apply_delivery_policy,
 )
 from vntts.authoring.failure_repair import (
+    EDGE_SILENCE_TRIM,
+    SENTENCE_BOUNDARY_SEGMENTATION,
     EdgeSilenceTrim,
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+    render_sentence_segments,
     safe_sentence_segments,
     trim_excess_edge_silence,
 )
@@ -111,6 +116,8 @@ __all__ = [
     "DeliveryAnnotationError",
     "DeliveryPolicyApplication",
     "EdgeSilenceTrim",
+    "FailureRepairPolicy",
+    "FailureRepairPolicyError",
     "FinalGamePackError",
     "FinalGamePackResult",
     "SpeechQuality",
@@ -129,6 +136,8 @@ __all__ = [
     "MissingVoicePolicyError",
     "NARRATOR_ALL_UNRESOLVED",
     "NARRATOR_ROLES",
+    "EDGE_SILENCE_TRIM",
+    "SENTENCE_BOUNDARY_SEGMENTATION",
     "GenerationQueueBuildError",
     "GenerationQueuePlan",
     "GenerationQueueSummary",
@@ -169,6 +178,7 @@ __all__ = [
     "normalize_short_trailing_ellipsis",
     "record_trial_preference",
     "review_generation_item",
+    "render_sentence_segments",
     "run_bulk_generation",
     "safe_sentence_segments",
     "immutable_history_timestamps",

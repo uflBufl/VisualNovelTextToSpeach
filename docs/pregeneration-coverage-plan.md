@@ -167,6 +167,39 @@ manual diagnosis. Every recommendation carries the exact queue ID and current
 state/queue hashes, so later execution can require a fresh authority snapshot
 instead of mass retrying a stale cohort.
 
+Two conservative actions now have an executable, config-addressed path. Create
+a new workspace with repeated `--sentence-segment-failed QUEUE_ID` and/or
+`--trim-edge-silence-failed QUEUE_ID`. The generated child command carries the
+same exact queue IDs. Before any render, bulk generation requires the selected
+ID set to equal the repair policy, reloads authoritative state, requires a
+current typed `failed` outcome and verifies that its failure kind and metrics
+still match the requested strategy. Historical string-only failures remain
+planning evidence and must first produce a typed current failure; they are not
+silently authorized.
+
+Sentence repair uses only complete, substantial sentence boundaries. Each
+segment is an independent typed render with a deterministic successive seed;
+complete results are concatenated with a bounded 180 ms pause. The original
+queue text, every segment and segment text SHA-256, planned segment seeds,
+pause, provider controls and outer attempt/seed remain in state and the approved manifest. Edge repair is
+available only for a typed speech-silence failure whose excessive silence is
+strictly leading and/or trailing, never internal. It retains 80 ms boundary
+padding, then runs the ordinary WAV and speech-quality gates. Both paths refuse
+an obsolete cohort and never publish a limited, cancelled or still-invalid
+result.
+
+Example workspace creation for one sentence repair:
+
+```bash
+uv run vntts-pregenerate create-workspace IMPORT_DIRECTORY \
+  --story-index STORY_INDEX.jsonl \
+  --voice-manifest VOICES/manifest.json \
+  --narrator-character Centurion \
+  --backend moss-tts --model MODEL_DIRECTORY \
+  --generation-profile stable \
+  --sentence-segment-failed QUEUE_ID
+```
+
 The read-only 2026-08-18 plan for the Character Story snapshot reconciles all
 211 failures into 58 conservative sentence-boundary segmentation candidates,
 26 bounded seed retries, 83 exhausted primary items for an offline fallback backend and 44

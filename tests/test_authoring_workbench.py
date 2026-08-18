@@ -30,6 +30,7 @@ import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.workbench import (
@@ -1255,6 +1256,19 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 narrator_character="Rhiannon",
                 missing_voice_policy=fallback_policy,
             )
+            repair_policy = FailureRepairPolicy((rhiannon.queue_id,))
+            repair = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="moss-v1.5",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=repair_policy,
+            )
+            repair_command = generation_command(repair.directory, retries=0)
             fallback_summary = inspect_workspace(fallback.directory)
             fallback_readiness = inspect_generation_readiness(fallback.directory)
             fallback_command = generation_command(fallback.directory)
@@ -1331,6 +1345,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
         self.assertEqual(summary.runtime_status, AuthoringRuntimeStatus.NEEDS_ATTENTION)
         self.assertNotEqual(created.directory, fallback.directory)
+        self.assertNotEqual(created.directory, repair.directory)
+        self.assertEqual(
+            repair_command[repair_command.index("--sentence-segment-failed") + 1],
+            rhiannon.queue_id,
+        )
+        self.assertEqual(
+            repair_command[repair_command.index("--queue-id") + 1],
+            rhiannon.queue_id,
+        )
         self.assertEqual(fallback_summary.missing_voice, 0)
         self.assertEqual(fallback_readiness.ready, 2)
         self.assertEqual(

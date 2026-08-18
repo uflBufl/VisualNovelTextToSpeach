@@ -30,6 +30,7 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.synthesis import (
     SynthesisChunk,
@@ -43,8 +44,8 @@ from vntts.synthesis import (
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
-def queue_item(name="one", *, action="generate", character="Hero"):
-    text = f"Exact text for {name}."
+def queue_item(name="one", *, action="generate", character="Hero", text=None):
+    text = text or f"Exact text for {name}."
     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return {
         "record_type": "generation_item",
@@ -338,6 +339,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             {
                 "missing_voice_policy": policy.to_document(),
                 "synthesis_character_overrides": {"poacheri": "Narrator"},
+                "failure_repair_policy": FailureRepairPolicy().to_document(),
             },
         )
         self.assertEqual(
@@ -1260,6 +1262,106 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(failure["kind"], "speech_silence")
         self.assertGreater(failure["speech_quality"]["leading_silence_seconds"], 0.8)
         self.assertIn("leading silence", failure["silence_failures"][0])
+
+    def test_exact_failed_sentence_repair_renders_segments_with_distinct_seeds(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+            )
+            renderer = SyntheticRenderer()
+            policy = FailureRepairPolicy((item["queue_id"],))
+
+            repaired = self.run_generation(
+                queue,
+                output,
+                renderer,
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(repaired.state, queue)
+            result = state["items"][item["queue_id"]]
+            review_generation_item(repaired.state, item["queue_id"], "approved")
+            manifest = json.loads(repaired.manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(repaired.generated, 1)
+        self.assertEqual(
+            [request.text for request in renderer.requests],
+            ["The gate is already open.", "We should leave before dawn."],
+        )
+        self.assertEqual([request.seed for request in renderer.requests], [1, 2])
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(result["seed"], 1)
+        self.assertEqual(
+            result["failure_repair"]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(result["failure_repair"]["pause_ms"], 180)
+        self.assertEqual(result["failure_repair"]["planned_segment_seeds"], [1, 2])
+        self.assertEqual(
+            manifest["entries"][0]["failure_repair"], result["failure_repair"]
+        )
+
+    def test_exact_edge_silence_repair_trims_before_quality_gate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            pcm = np.concatenate(
+                (np.zeros(16_000 * 2, dtype=np.float32), audio_samples())
+            )
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(pcm=pcm),
+                retries=0,
+            )
+            policy = FailureRepairPolicy((), (item["queue_id"],))
+
+            repaired = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(pcm=pcm),
+                retries=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(repaired.state, queue)
+            result = state["items"][item["queue_id"]]
+
+        self.assertEqual(repaired.generated, 1)
+        self.assertGreater(result["failure_repair"]["leading_trimmed_samples"], 0)
+        self.assertLessEqual(result["speech_quality"]["leading_silence_seconds"], 0.08)
+
+    def test_repair_policy_requires_exact_current_failed_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            policy = FailureRepairPolicy((item["queue_id"],))
+
+            with self.assertRaisesRegex(BulkGenerationError, "exact --queue-id"):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    failure_repair_policy=policy,
+                )
+
+        self.assertFalse(output.exists())
 
     def test_short_ellipsis_transform_and_sfx_filter_are_recorded(self):
         with TemporaryDirectory() as directory:

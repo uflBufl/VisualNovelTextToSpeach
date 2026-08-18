@@ -30,6 +30,15 @@ selected digest are retained, and the workspace never claims they are the same.
 Selected files are copied into application data, so resume does not depend on
 mutable extractor paths.
 
+A bounded failure-repair policy is also part of this identity. It contains only
+exact queue IDs authorized for safe sentence-boundary segmentation or edge-only
+silence trimming. Changing an ID, strategy or sentence pause creates a new
+workspace. `generation_command()` automatically emits the identical queue-ID
+selection and refuses a caller-supplied mismatch. The child revalidates that
+every selected item is still a current typed failure in the matching cohort
+before rendering, so a stale repair workspace cannot regenerate unrelated or
+already-reviewed work.
+
 ## Carrying reviewed character outcomes into a new narrator workspace
 
 `create_resume_workspace()` accepts the explicit pair

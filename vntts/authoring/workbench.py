@@ -51,6 +51,10 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
     sha256_control_path,
 )
+from vntts.authoring.failure_repair import (
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+)
 from vntts.authoring.game_pack import (
     FinalGamePackError,
     _rename_directory_no_replace,
@@ -327,6 +331,7 @@ def create_resume_workspace(
     model=None,
     generation_profile=None,
     missing_voice_policy=None,
+    failure_repair_policy=None,
     carry_forward_from=None,
     carry_forward_characters=None,
 ):
@@ -422,11 +427,20 @@ def create_resume_workspace(
             )
         except MissingVoicePolicyError as error:
             raise AuthoringWorkbenchError(str(error)) from error
+        try:
+            repair_policy = (
+                failure_repair_policy
+                if isinstance(failure_repair_policy, FailureRepairPolicy)
+                else FailureRepairPolicy.from_document(failure_repair_policy)
+            )
+        except FailureRepairPolicyError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
         run_config = {
             "backend": _optional_text(backend),
             "model": _optional_text(model),
             "generation_profile": _optional_text(generation_profile),
             "missing_voice_policy": policy.to_document(),
+            "failure_repair_policy": repair_policy.to_document(),
         }
         seed_state = _preserve_seed_generation_state(staging, state_artifact)
         carry_forward = _carry_forward_review_outcomes(
@@ -1202,6 +1216,14 @@ def generation_command(
     configured_model = run_config.get("model")
     configured_profile = run_config.get("generation_profile")
     policy = _workspace_missing_voice_policy(workspace)
+    repair_policy = _workspace_failure_repair_policy(workspace)
+    if not repair_policy.is_empty:
+        if queue_ids is None:
+            queue_ids = repair_policy.queue_ids
+        elif set(queue_ids) != set(repair_policy.queue_ids):
+            raise AuthoringWorkbenchError(
+                "Generation queue IDs differ from workspace failure-repair policy"
+            )
     if configured_backend is None:
         raise AuthoringWorkbenchError(
             "Create a config-addressed workspace with a generation backend"
@@ -1271,6 +1293,12 @@ def generation_command(
             command.extend(("--narrator-fallback-role", role))
     elif policy.mode == NARRATOR_ALL_UNRESOLVED:
         command.append("--narrator-fallback-all")
+    for queue_id in repair_policy.sentence_segment_queue_ids:
+        command.extend(("--sentence-segment-failed", queue_id))
+    for queue_id in repair_policy.edge_silence_queue_ids:
+        command.extend(("--trim-edge-silence-failed", queue_id))
+    if repair_policy.segment_pause_ms != 180:
+        command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
     if queue_ids is not None:
         for queue_id in queue_ids:
             command.extend(("--queue-id", _required_text(queue_id, "Queue ID")))
@@ -1290,6 +1318,7 @@ def generation_control_bindings(
     generation_profile,
     narrator_character,
     missing_voice_policy=None,
+    failure_repair_policy=None,
 ):
     directory, workspace = _load_workspace(workspace_directory)
     expected_queue = (directory / "queue.jsonl").resolve()
@@ -1315,11 +1344,20 @@ def generation_control_bindings(
         )
     except MissingVoicePolicyError as error:
         raise AuthoringWorkbenchError(str(error)) from error
+    try:
+        repair_policy = (
+            failure_repair_policy
+            if isinstance(failure_repair_policy, FailureRepairPolicy)
+            else FailureRepairPolicy.from_document(failure_repair_policy)
+        )
+    except FailureRepairPolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
     expected = {
         "backend": backend,
         "model": model,
         "generation_profile": generation_profile,
         "missing_voice_policy": policy.to_document(),
+        "failure_repair_policy": repair_policy.to_document(),
     }
     if _workspace_run_config_with_policy(run_config) != expected:
         raise AuthoringWorkbenchError("Generation run config differs from workspace")
@@ -2298,9 +2336,14 @@ def _workspace_run_config_with_policy(run_config):
     if not isinstance(run_config, dict):
         raise AuthoringWorkbenchError("Workspace run configuration is malformed")
     legacy_fields = {"backend", "model", "generation_profile"}
-    current_fields = legacy_fields | {"missing_voice_policy"}
+    fallback_fields = legacy_fields | {"missing_voice_policy"}
+    current_fields = fallback_fields | {"failure_repair_policy"}
     fields = frozenset(run_config)
-    if fields not in {frozenset(legacy_fields), frozenset(current_fields)}:
+    if fields not in {
+        frozenset(legacy_fields),
+        frozenset(fallback_fields),
+        frozenset(current_fields),
+    }:
         raise AuthoringWorkbenchError("Workspace run configuration is malformed")
     try:
         policy = MissingVoicePolicy.from_document(
@@ -2308,11 +2351,18 @@ def _workspace_run_config_with_policy(run_config):
         )
     except MissingVoicePolicyError as error:
         raise AuthoringWorkbenchError(str(error)) from error
+    try:
+        repair_policy = FailureRepairPolicy.from_document(
+            run_config.get("failure_repair_policy")
+        )
+    except FailureRepairPolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
     return {
         "backend": run_config.get("backend"),
         "model": run_config.get("model"),
         "generation_profile": run_config.get("generation_profile"),
         "missing_voice_policy": policy.to_document(),
+        "failure_repair_policy": repair_policy.to_document(),
     }
 
 
@@ -2320,6 +2370,14 @@ def _workspace_missing_voice_policy(workspace):
     return MissingVoicePolicy.from_document(
         _workspace_run_config_with_policy(workspace.get("run_config"))[
             "missing_voice_policy"
+        ]
+    )
+
+
+def _workspace_failure_repair_policy(workspace):
+    return FailureRepairPolicy.from_document(
+        _workspace_run_config_with_policy(workspace.get("run_config"))[
+            "failure_repair_policy"
         ]
     )
 

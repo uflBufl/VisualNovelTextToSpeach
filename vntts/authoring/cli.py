@@ -32,6 +32,10 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.authoring.failure_repair import (
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+)
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
@@ -146,6 +150,36 @@ def _add_missing_voice_policy_arguments(parser):
     )
 
 
+def _generation_failure_repair_policy(arguments):
+    try:
+        return FailureRepairPolicy(
+            tuple(arguments.sentence_segment_failed or ()),
+            tuple(arguments.trim_edge_silence_failed or ()),
+            arguments.segment_pause_ms,
+        )
+    except FailureRepairPolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+
+
+def _add_failure_repair_arguments(parser):
+    parser.add_argument(
+        "--sentence-segment-failed",
+        action="append",
+        help="Repair this exact current missed-EOS failure at safe sentence boundaries",
+    )
+    parser.add_argument(
+        "--trim-edge-silence-failed",
+        action="append",
+        help="Repair this exact current edge-only silence failure before validation",
+    )
+    parser.add_argument(
+        "--segment-pause-ms",
+        type=int,
+        default=180,
+        help="Bounded silence inserted only between authorized sentence segments",
+    )
+
+
 def create_parser():
     parser = argparse.ArgumentParser(
         description="VNTTS offline pregeneration authoring"
@@ -237,6 +271,7 @@ def create_parser():
         "--carry-forward-character", action="append", dest="carry_forward_characters"
     )
     _add_missing_voice_policy_arguments(workspace)
+    _add_failure_repair_arguments(workspace)
     generate = subparsers.add_parser(
         "generate", help="Resume typed device-independent generation from a queue"
     )
@@ -261,6 +296,7 @@ def create_parser():
     )
     generate.add_argument("--generation-profile")
     _add_missing_voice_policy_arguments(generate)
+    _add_failure_repair_arguments(generate)
     generate.add_argument("--limit", type=int)
     generate.add_argument("--retries", type=int, default=2)
     generate.add_argument("--seed", type=int, default=0)
@@ -391,6 +427,7 @@ def main(argv=None):
             return 0
         if arguments.command == "create-workspace":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
+            failure_repair_policy = _generation_failure_repair_policy(arguments)
             result = create_resume_workspace(
                 arguments.import_directory,
                 arguments.workspaces_root,
@@ -401,6 +438,7 @@ def main(argv=None):
                 model=arguments.model,
                 generation_profile=arguments.generation_profile,
                 missing_voice_policy=missing_voice_policy,
+                failure_repair_policy=failure_repair_policy,
                 carry_forward_from=arguments.carry_forward_from,
                 carry_forward_characters=arguments.carry_forward_characters,
             )
@@ -410,6 +448,7 @@ def main(argv=None):
                         "directory": str(result.directory),
                         "created": result.created,
                         "missing_voice_policy": missing_voice_policy.to_document(),
+                        "failure_repair_policy": failure_repair_policy.to_document(),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -419,6 +458,7 @@ def main(argv=None):
             return 0
         if arguments.command == "generate":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
+            failure_repair_policy = _generation_failure_repair_policy(arguments)
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
             expected_workspace_controls = None
             workspace_output_identity = None
@@ -434,6 +474,7 @@ def main(argv=None):
                         generation_profile=arguments.generation_profile,
                         narrator_character=arguments.narrator_character,
                         missing_voice_policy=missing_voice_policy,
+                        failure_repair_policy=failure_repair_policy,
                     )
                     workspace_output_identity = generation_output_identity(
                         arguments.workspace
@@ -586,6 +627,7 @@ def main(argv=None):
                         synthesis_character_overrides=synthesis_character_overrides,
                         missing_voice_policy=missing_voice_policy.to_document(),
                         narrator_character=arguments.narrator_character,
+                        failure_repair_policy=failure_repair_policy.to_document(),
                     )
                 finally:
                     stop = getattr(backend, "stop", None)
