@@ -21,6 +21,7 @@ from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
+    generation_failure_report,
     generation_review_authority,
     load_generation_state,
     publish_generated_manifest,
@@ -184,9 +185,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             output = root / "output"
             first_renderer = SyntheticRenderer()
             self.run_generation(queue, output, first_renderer, seed=0)
-            first_state = load_generation_state(
-                output / "generation-state.json", queue
-            )
+            first_state = load_generation_state(output / "generation-state.json", queue)
             first_item = first_state["items"][item["queue_id"]]
             first_sha256 = first_item["file_sha256"]
 
@@ -403,6 +402,70 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         self.assertIn("chunk_count=1", failure)
                         self.assertIn("max_audio_seconds=180.0", failure)
                         self.assertIn("max_tokens=256", failure)
+                        typed = failed_state["items"][item["queue_id"]]["failure"]
+                        self.assertEqual(typed["kind"], "missed_eos_audio_limit")
+                        self.assertEqual(typed["render"]["sample_count"], 4000)
+                        self.assertEqual(typed["text_features"]["word_count"], 4)
+                    else:
+                        self.assertEqual(
+                            failed_state["items"][item["queue_id"]]["failure"]["kind"],
+                            "cancelled",
+                        )
+
+    def test_failure_report_reconciles_typed_and_legacy_cohorts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            limited_item = queue_item("limited", character="Narrator")
+            silence_item = queue_item("silence", character="Rhiannon")
+            queue = write_queue(root / "queue.jsonl", [limited_item, silence_item])
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                include_queue_ids=[limited_item["queue_id"]],
+            )
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state["items"][silence_item["queue_id"]] = {
+                "status": "failed",
+                "attempts": 3,
+                "seed": 2,
+                "last_error": "MOSS output failed speech quality: 3.20s internal silence",
+                "provider": "moss-tts",
+                "model": "moss-local",
+                "generation_profile": "stable",
+                "synthesis_provenance_sha256": "a" * 64,
+                "updated_at": "2026-08-18T00:00:00+00:00",
+            }
+            atomic_write_json(result.state, state, sort_keys=True)
+
+            report = generation_failure_report(result.state, queue)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = authoring_main(
+                    [
+                        "failure-report",
+                        "--state",
+                        str(result.state),
+                        "--queue",
+                        str(queue),
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue()), report)
+        self.assertEqual(report["failure_count"], 2)
+        self.assertEqual(
+            {entry["value"]: entry["count"] for entry in report["cohorts"]["kind"]},
+            {"missed_eos_audio_limit": 1, "speech_silence": 1},
+        )
+        legacy = next(
+            record
+            for record in report["records"]
+            if record["queue_id"] == silence_item["queue_id"]
+        )
+        self.assertTrue(legacy["failure"]["inferred_from_legacy_error"])
+        self.assertEqual(legacy["requested_voice_character"], "Rhiannon")
 
     def test_stereo_renderer_is_downmixed_without_doubling_wav_duration(self):
         with TemporaryDirectory() as directory:
@@ -1019,6 +1082,10 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertEqual(result.generated, 0)
         self.assertIn("leading silence", state["items"][item["queue_id"]]["last_error"])
+        failure = state["items"][item["queue_id"]]["failure"]
+        self.assertEqual(failure["kind"], "speech_silence")
+        self.assertGreater(failure["speech_quality"]["leading_silence_seconds"], 0.8)
+        self.assertIn("leading silence", failure["silence_failures"][0])
 
     def test_short_ellipsis_transform_and_sfx_filter_are_recorded(self):
         with TemporaryDirectory() as directory:

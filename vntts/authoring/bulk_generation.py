@@ -76,6 +76,33 @@ class BulkGenerationProvenanceError(BulkGenerationError):
     """Typed render diagnostics contradict declared synthesis provenance."""
 
 
+class IncompleteSynthesisError(BulkGenerationError):
+    """A typed renderer stopped without producing a publishable completion."""
+
+    def __init__(self, result):
+        self.result = result
+        super().__init__(
+            "Typed render completed as "
+            f"{result.completion.value} "
+            f"(sample_count={result.diagnostics.sample_count}, "
+            f"chunk_count={result.diagnostics.chunk_count}, "
+            f"max_audio_seconds={result.limits.max_audio_seconds}, "
+            f"max_tokens={result.limits.max_tokens}); WAV was not published"
+        )
+
+
+class SpeechSilenceValidationError(BulkGenerationError):
+    """Generated speech contains unsafe silence spans."""
+
+    def __init__(self, quality, failures):
+        self.quality = quality
+        self.failures = tuple(failures)
+        super().__init__(
+            "Generated WAV failed speech-silence validation: "
+            + ", ".join(self.failures)
+        )
+
+
 @dataclass(frozen=True)
 class AudioQuality:
     duration_seconds: float
@@ -131,6 +158,16 @@ class ReviewCommit:
     review_status: str
     updated_at: str
     authority: ReviewAuthority
+
+
+FAILURE_KINDS = {
+    "missed_eos_audio_limit",
+    "speech_silence",
+    "reference_unavailable",
+    "backend_error",
+    "cancelled",
+    "interrupted",
+}
 
 
 def generation_review_authority(state_path, queue_id):
@@ -362,9 +399,7 @@ def inspect_generated_speech(path):
     if quality.silence_ratio > MAX_SILENCE_RATIO:
         failures.append(f"{quality.silence_ratio:.0%} silent frames")
     if failures:
-        raise BulkGenerationError(
-            "Generated WAV failed speech-silence validation: " + ", ".join(failures)
-        )
+        raise SpeechSilenceValidationError(quality, failures)
     return quality
 
 
@@ -382,6 +417,99 @@ def normalize_short_trailing_ellipsis(text):
     return str(text) if match is None else match.group("spoken") + "."
 
 
+def _text_failure_features(text):
+    value = str(text or "")
+    return {
+        "character_count": len(value),
+        "word_count": len(re.findall(r"\b[\w'’]+\b", value)),
+        "comma_count": value.count(","),
+        "ellipsis_count": value.count("...") + value.count("…"),
+        "sentence_boundary_count": sum(value.count(mark) for mark in ".!?"),
+    }
+
+
+def _failure_kind(error, completion=None):
+    if completion is SynthesisCompletion.CANCELLED:
+        return "cancelled"
+    if isinstance(error, IncompleteSynthesisError):
+        return (
+            "cancelled"
+            if error.result.completion is SynthesisCompletion.CANCELLED
+            else "missed_eos_audio_limit"
+        )
+    if isinstance(error, SpeechSilenceValidationError):
+        return "speech_silence"
+    value = str(error or "").casefold()
+    if "interrupted" in value:
+        return "interrupted"
+    if "reference" in value and (
+        "missing" in value or "unavailable" in value or "no reference" in value
+    ):
+        return "reference_unavailable"
+    if "limited" in value or " limit" in value or "before eos" in value:
+        return "missed_eos_audio_limit"
+    if "silence" in value:
+        return "speech_silence"
+    return "backend_error"
+
+
+def _failure_record(error, *, text, completion=None):
+    record = {
+        "schema_version": 1,
+        "kind": _failure_kind(error, completion),
+        "error_type": error.__class__.__name__,
+        "text_features": _text_failure_features(text),
+    }
+    result = error.result if isinstance(error, IncompleteSynthesisError) else None
+    if result is not None:
+        sample_count = result.diagnostics.sample_count
+        max_audio_seconds = result.limits.max_audio_seconds
+        utilization = None
+        if (
+            isinstance(sample_count, int)
+            and not isinstance(sample_count, bool)
+            and isinstance(result.sample_rate, int)
+            and not isinstance(result.sample_rate, bool)
+            and result.sample_rate > 0
+            and isinstance(max_audio_seconds, (int, float))
+            and not isinstance(max_audio_seconds, bool)
+            and max_audio_seconds > 0
+        ):
+            utilization = round(
+                sample_count / result.sample_rate / max_audio_seconds,
+                6,
+            )
+        record["completion"] = result.completion.value
+        record["render"] = {
+            "sample_count": sample_count,
+            "chunk_count": result.diagnostics.chunk_count,
+            "max_audio_seconds": max_audio_seconds,
+            "max_tokens": result.limits.max_tokens,
+            "audio_limit_utilization": utilization,
+        }
+    elif completion is not None:
+        record["completion"] = completion.value
+    if isinstance(error, SpeechSilenceValidationError):
+        record["speech_quality"] = asdict(error.quality)
+        record["silence_failures"] = list(error.failures)
+    return record
+
+
+def normalized_failure_record(item, *, text=""):
+    """Return a typed failure record, inferring legacy string-only outcomes."""
+    stored = item.get("failure") if isinstance(item, dict) else None
+    if isinstance(stored, dict) and stored.get("kind") in FAILURE_KINDS:
+        return copy.deepcopy(stored)
+    error = str(item.get("last_error") or "Unknown generation failure")
+    return {
+        "schema_version": 1,
+        "kind": _failure_kind(error),
+        "error_type": "LegacyStringFailure",
+        "text_features": _text_failure_features(text),
+        "inferred_from_legacy_error": True,
+    }
+
+
 def load_generation_state(state_path, queue_path=None):
     """Load either VNTTS-owned or preserved legacy state and verify its files."""
     state_path = Path(state_path).expanduser().resolve()
@@ -397,6 +525,101 @@ def load_generation_state(state_path, queue_path=None):
         queue_sha256 = sha256_file(queue_path)
     _validate_state_document(state, state_path.parent, queue, queue_sha256)
     return state
+
+
+def generation_failure_report(state_path, queue_path):
+    """Project current and legacy failures into stable, actionable cohorts."""
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    state = load_generation_state(state_path, queue_path)
+    try:
+        queue = VoiceGenerationQueue.load(queue_path)
+    except VoiceGenerationQueueError as error:
+        raise BulkGenerationError(str(error)) from error
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    records = []
+    for queue_id, result in state["items"].items():
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            continue
+        item = queue_by_id[queue_id]
+        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+        failure = normalized_failure_record(result, text=item.text)
+        records.append(
+            {
+                "queue_id": queue_id,
+                "line_id": item.line_id,
+                "speaker": item.speaker,
+                "requested_voice_character": result.get(
+                    "requested_voice_character", requested
+                ),
+                "synthesis_voice_character": result.get("voice_character", requested),
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "generation_profile": result.get("generation_profile"),
+                "synthesis_control_digest": result.get("synthesis_provenance_sha256"),
+                "attempts": result.get("attempts", 0),
+                "seed": result.get("seed"),
+                "last_error": result.get("last_error"),
+                "failure": failure,
+            }
+        )
+    records.sort(key=lambda value: value["queue_id"])
+
+    def counts(key):
+        grouped = {}
+        for record in records:
+            value = key(record)
+            serialized = json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            grouped.setdefault(serialized, {"value": value, "count": 0})["count"] += 1
+        return sorted(
+            grouped.values(),
+            key=lambda value: (
+                -value["count"],
+                json.dumps(value["value"], sort_keys=True),
+            ),
+        )
+
+    return {
+        "schema": "vntts.authoring-generation-failure-report",
+        "schema_version": 1,
+        "state": str(state_path),
+        "state_sha256": sha256_file(state_path),
+        "queue": str(queue_path),
+        "queue_sha256": state["queue_sha256"],
+        "failure_count": len(records),
+        "cohorts": {
+            "kind": counts(lambda value: value["failure"]["kind"]),
+            "role": counts(
+                lambda value: {
+                    "speaker": value["speaker"],
+                    "requested_voice_character": value["requested_voice_character"],
+                    "synthesis_voice_character": value["synthesis_voice_character"],
+                }
+            ),
+            "backend": counts(
+                lambda value: {
+                    "provider": value["provider"],
+                    "model": value["model"],
+                    "generation_profile": value["generation_profile"],
+                }
+            ),
+            "synthesis_control": counts(
+                lambda value: value["synthesis_control_digest"]
+            ),
+            "attempt_seed": counts(
+                lambda value: {
+                    "attempts": value["attempts"],
+                    "seed": value["seed"],
+                }
+            ),
+            "text_shape": counts(lambda value: value["failure"]["text_features"]),
+            "limit_utilization": counts(lambda value: value["failure"].get("render")),
+            "silence": counts(lambda value: value["failure"].get("speech_quality")),
+        },
+        "records": records,
+    }
 
 
 def run_bulk_generation(
@@ -475,7 +698,11 @@ def run_bulk_generation(
                 "Selected queue IDs are absent from the bound queue: "
                 + ", ".join(sorted(unknown_queue_ids))
             )
-    if regenerate_existing and selected_queue_ids is None and include_characters is None:
+    if (
+        regenerate_existing
+        and selected_queue_ids is None
+        and include_characters is None
+    ):
         raise BulkGenerationError(
             "Regenerating existing outcomes requires explicit queue IDs or characters"
         )
@@ -734,15 +961,32 @@ def run_bulk_generation(
                         if "rendered" in locals()
                         else None
                     )
+                    is_cancelled = (
+                        completion is SynthesisCompletion.CANCELLED
+                        or request.cancellation_requested()
+                    )
                     last_error = str(error) or error.__class__.__name__
                     state["items"][queue_id] = {
                         "status": "failed",
                         "attempts": attempts,
                         "seed": attempt_seed,
                         "last_error": last_error,
+                        "failure": _failure_record(
+                            error,
+                            text=synthesis_text,
+                            completion=(
+                                SynthesisCompletion.CANCELLED
+                                if is_cancelled
+                                else completion
+                            ),
+                        ),
                         "provider": provider,
                         "model": model,
                         "generation_profile": generation_profile,
+                        "requested_voice_character": synthesis_character_for_line(
+                            item.speaker, item.voice_character
+                        ),
+                        "voice_character": voice,
                         "prompt_sha256": prompt_sha256,
                         "prompt_applied": False,
                         "queue_annotations_sha256": queue_annotations_sha256,
@@ -751,10 +995,6 @@ def run_bulk_generation(
                         "synthesis_provenance_sha256": provenance_sha256,
                         "updated_at": _now(),
                     }
-                    is_cancelled = (
-                        completion is SynthesisCompletion.CANCELLED
-                        or request.cancellation_requested()
-                    )
                     if run_attempts <= retries and not is_cancelled:
                         _write_active_phase(
                             state_path, state, "retrying", last_error=last_error
@@ -1270,6 +1510,8 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             )
         _nonnegative_int(result.get("attempts", 0), f"Item {queue_id!r} attempts")
         if status == "failed":
+            if "failure" in result:
+                _validate_failure_record(result["failure"], queue_id)
             continue
         queue_item = None if queue_by_id is None else queue_by_id[queue_id]
         _validate_success_item(
@@ -1286,6 +1528,37 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         )
     if isinstance(active, dict):
         _validate_active_attempt(active, queue_by_id)
+
+
+def _validate_failure_record(failure, queue_id):
+    if not isinstance(failure, dict) or failure.get("schema_version") != 1:
+        raise BulkGenerationError(f"State item {queue_id!r} typed failure is invalid")
+    if failure.get("kind") not in FAILURE_KINDS:
+        raise BulkGenerationError(f"State item {queue_id!r} failure kind is invalid")
+    _required_text(
+        failure.get("error_type"), f"State item {queue_id!r} failure error_type"
+    )
+    features = failure.get("text_features")
+    expected_features = {
+        "character_count",
+        "word_count",
+        "comma_count",
+        "ellipsis_count",
+        "sentence_boundary_count",
+    }
+    if not isinstance(features, dict) or set(features) != expected_features:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} failure text features are invalid"
+        )
+    for name, value in features.items():
+        _nonnegative_int(value, f"State item {queue_id!r} failure {name}")
+    completion = failure.get("completion")
+    if completion is not None and completion not in {
+        value.value for value in SynthesisCompletion
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} failure completion is invalid"
+        )
 
 
 def _validate_active_attempt(active, queue_by_id):
@@ -1528,6 +1801,12 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             "attempts": attempts,
             "seed": active.get("seed"),
             "last_error": "Interrupted generation attempt",
+            "failure": {
+                "schema_version": 1,
+                "kind": "interrupted",
+                "error_type": "InterruptedGenerationAttempt",
+                "text_features": _text_failure_features(active.get("text") or ""),
+            },
             "updated_at": _now(),
         }
     state["active"] = None
@@ -1596,14 +1875,7 @@ def _write_active_phase(state_path, state, phase, *, last_error=None):
 
 def _validate_render_result(result, request, provider):
     if result.completion is not SynthesisCompletion.COMPLETE:
-        raise BulkGenerationError(
-            "Typed render completed as "
-            f"{result.completion.value} "
-            f"(sample_count={result.diagnostics.sample_count}, "
-            f"chunk_count={result.diagnostics.chunk_count}, "
-            f"max_audio_seconds={result.limits.max_audio_seconds}, "
-            f"max_tokens={result.limits.max_tokens}); WAV was not published"
-        )
+        raise IncompleteSynthesisError(result)
     if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
         raise BulkGenerationError("Typed render returned an invalid sample rate")
     if (

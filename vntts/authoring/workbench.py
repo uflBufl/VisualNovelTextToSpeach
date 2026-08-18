@@ -44,6 +44,7 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     load_review_audio_bytes,
     normalize_short_trailing_ellipsis,
+    normalized_failure_record,
     process_is_alive,
     process_started_at,
     publish_generated_manifest,
@@ -162,6 +163,16 @@ class ReviewItem:
 
 def generation_failure_category(error):
     """Collapse volatile backend diagnostics into actionable failure cohorts."""
+    if isinstance(error, dict):
+        kind = normalized_failure_record(error).get("kind")
+        return {
+            "missed_eos_audio_limit": "audio limit / missed EOS",
+            "speech_silence": "speech silence",
+            "reference_unavailable": "reference unavailable",
+            "cancelled": "cancelled",
+            "interrupted": "interrupted",
+            "backend_error": "other generation failure",
+        }[kind]
     value = str(error or "").casefold()
     if "limited" in value or " limit" in value:
         return "audio limit / missed EOS"
@@ -744,9 +755,7 @@ def list_review_items(workspace_directory):
                 peak=peak,
                 technical_flags=technical_flags,
                 failure_category=(
-                    generation_failure_category(result.get("last_error"))
-                    if status == "failed"
-                    else None
+                    generation_failure_category(result) if status == "failed" else None
                 ),
             )
         )

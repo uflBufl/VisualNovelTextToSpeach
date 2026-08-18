@@ -25,11 +25,6 @@ Follow the evidence-backed order and invariants in
       and show source role and synthesis voice separately in review. Do not
       prepend speaker names to canonical story WAVs; evaluate a separate
       optional `announce speaker on change` accessibility route instead.
-- [ ] Replace error-string-only failure handling with persisted typed cohorts
-      and a report grouped by role, backend/model/profile, reference digest,
-      attempt/seed, text length/punctuation, limit utilization and silence
-      measurements. Reconcile the current 211 failures as 167
-      audio-limit/missed-EOS and 44 speech-silence outcomes before retrying.
 - [ ] Implement bounded cohort-specific prevention: evidence-based text
       normalization, safe sentence-boundary segmentation/concatenation for
       suitable long lines, limited seed diversification, reference comparison,

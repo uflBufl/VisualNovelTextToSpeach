@@ -114,9 +114,29 @@ The current 167 limit and 44 silence failures need separate treatment:
   before synthesis so non-speech or incomplete text does not consume retries.
 - When bounded MOSS repairs still fail, render the exact cohort offline with
   Pocket TTS using the chosen role or Narrator reference. Record the different
-  provider/model and nullable provider-specific seed semantics per item. A
-  Pocket artifact must pass the same WAV, silence, checksum and manual-review
-  gates as a MOSS artifact.
+provider/model and nullable provider-specific seed semantics per item. A
+Pocket artifact must pass the same WAV, silence, checksum and manual-review
+gates as a MOSS artifact.
+
+Current VNTTS generation writes a versioned `failure` record for every new
+failed attempt. It includes the stable kind, exact text-shape features and, when
+available, typed completion limits/utilization or measured silence spans. The
+read-only report also projects historical string-only states into the same
+taxonomy without rewriting their authoritative bytes:
+
+```bash
+uv run vntts-pregenerate failure-report \
+  --state WORKSPACE/generated-audio/generation-state.json \
+  --queue WORKSPACE/queue.jsonl > failure-report.json
+```
+
+The report groups records by kind, source/effective role, backend/model/profile,
+synthesis-control digest, attempt/seed, text shape, limit utilization and
+silence measurements. Against the current Character Story snapshot it
+reconciles all 211 failures exactly as 167 `missed_eos_audio_limit` and 44
+`speech_silence`: 186 Narrator, 16 Rhiannon and nine unattributed-source lines
+whose established effective voice is Narrator. This classification is a retry
+planning input, not permission to regenerate a whole low-yield cohort.
 
 A fallback backend chain is part of immutable workspace configuration. It must
 not mutate an existing MOSS-only workspace in place. Either create a new
@@ -151,4 +171,3 @@ Centurion pregenerated tracks; it supplies Pocket only when an approved track
 is absent or ineligible. Named roles remain blocked until mapped or explicitly
 included in a Narrator fallback policy. Exact `???` continues to use the
 project's established Narrator rule.
-
