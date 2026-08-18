@@ -171,6 +171,29 @@ A new config-addressed Centurion/MOSS workspace was then created as
 missing-reference cohort reduced from 237 to 184. No generation, review, or
 final-pack publication ran during this transition.
 
+The expanded Character Story plan `character-story-20260818-v3` then added the
+reviewed Aderyn/Rhiannon age groups and Mrs. Owen. Its immutable plan SHA-256 is
+`26874659250fed238994f684f126b9a1737619af71db4768e758f1fa54945c01`.
+The bounded evaluation attempted 28 fixed items once: 12 WAVs were published
+and 16 typed failures retained without retry. The reviewer completed all seven
+cluster cards, accepted six, and selected `needs_sample` for Mrs. Owen; the
+final review SHA-256 is
+`274092861821df51fbe13184cabc8b9fce413b2290b3693dbe8f3a4753377ae3`.
+
+Bindings v4 publish those six variants for 73 exact queue IDs and explicitly
+include the three checksum-bound base Rhiannon references. The manifest
+SHA-256 is
+`0483ed213c4001e70b436a01dccec599f753aab35dd09326f1fa46cd9ab56a3e`.
+Creating workspace `resume-395a5e5eec0327a3a793b66d-682adf71694cc2d4`
+carried 15 terminal Rhiannon decisions: ten approved and five rejected, with
+14 legacy review-only records and one fully provenance-matched outcome. Exact
+recreation returned `created=false`. Read-only inspection reports 592 queue
+items, 183 generated awaiting review, 140 failed, 83 pending and 164
+missing-reference lines; the earlier bindings workspace had 184 missing lines.
+The source import, reviewed workspace, plan and quality-review inventories were
+byte-identical before and after. No generation, new review decision or final
+pack publication ran.
+
 Use the published `voice-manifest.json` when creating a new config-addressed
 workspace. A partial manifest intentionally leaves unrelated queue lines in the
 missing-reference preflight cohort; exact selected collection/queue retries can

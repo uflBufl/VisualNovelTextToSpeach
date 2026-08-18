@@ -10,22 +10,18 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Finish the checksum-bound Character Story audition for the remaining
-      Aderyn/Rhiannon age variants, Mrs. Owen and Hotelier, then create a new
-      config-addressed workspace and re-run
-      preflight. The accepted Aderyn's Father, Dobharchú and Poacher bindings
-      cover 53 exact queue IDs and reduced the current missing-reference cohort
-      from 237 to 184 lines.
-      Aderyn is Rhiannon in childhood. Media `477089679` is accepted as the
-      child-voice anchor for exact portrait `533706`; keep the source speaker
-      `Aderyn` and do not automatically flatten other ages/portraits into adult
-      Rhiannon or this child variant. Keep `hero3146` and `npcnoname326`
-      portrait groups separate until their age-appropriate reuse is reviewed;
-      the crying-only media `369040295` and `172299031` are rejected. Mrs.
-      Owen's technically passing clip remains uncertain because its speech was
-      not intelligible to the reviewer, and Hotelier has no minimum-duration pass.
-      Do not merge `Poacher I`, `Poacher II` or Glyndŵr or treat
-      configured-unavailable audio as installed.
+- [ ] Acquire a new intelligible Mrs. Owen reference and a Hotelier reference
+      that passes the minimum-duration gate, then repeat only their exact
+      cluster evaluation and quality review. The expanded review is complete
+      `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal
+      Rhiannon decisions were carried into the new config-addressed workspace,
+      and preflight reduced missing references from 184 to 164 lines. Mrs.
+      Owen remains `needs_sample`; Hotelier has no technical pass. Keep 41
+      lower-priority unreviewed candidates pending rather than promoting them
+      automatically. Preserve Aderyn as source identity, keep adult and child
+      portrait groups separate, retain crying-only rejects, and do not merge
+      `Poacher I`, `Poacher II` or Glyndŵr or treat configured-unavailable
+      audio as installed.
 - [ ] Manually audition reference candidates for the exact typed
       `reference_comparison` failure cohorts, then publish each chosen ordering
       with `select-reference` and generate only its explicit queue IDs. Objective

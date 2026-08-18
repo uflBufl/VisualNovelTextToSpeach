@@ -62,6 +62,13 @@ is forbidden in the selected character set. Only terminal approved or rejected
 review outcomes are eligible; pending review, failed generation and active
 attempts remain untouched.
 
+When the target uses a partial source-reference manifest, it must explicitly
+include every carried full-outcome character and its exact references. Build
+that manifest with `build-reference-bindings` and repeated
+`--include-base-character CHARACTER` options. Review-only legacy records can be
+preserved from identical seed WAVs, but a full outcome fails closed if the
+target manifest omits or changes the selected character references.
+
 Two evidence paths are supported:
 
 - `review-only` applies an approval or rejection when the target seed contains
