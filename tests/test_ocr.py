@@ -116,6 +116,15 @@ class RecognizedDialogTest(unittest.TestCase):
             "Protocols, are you?",
         )
 
+    def test_numbered_npc_is_detected_from_text_line_structure(self):
+        character, text = parse_recognized_dialog(
+            "Policeman 2\nYou need to leave this area now.\n",
+            self.registry,
+        )
+
+        self.assertEqual(character, "Policeman 2")
+        self.assertEqual(text, "You need to leave this area now.")
+
     def test_unknown_multiword_speaker_is_detected_from_ocr_geometry(self):
         data = {
             "text": [

@@ -64,6 +64,19 @@ class DialogTest(unittest.TestCase):
         self.assertFalse(is_probable_character_name("Chapter One."))
         self.assertFalse(is_probable_character_name("A" * 41))
 
+    def test_character_name_accepts_numeric_and_numbered_npc_names(self):
+        for name in ("6", "37", "Policeman 1", "Policeman 2", "POLICEMAN 37"):
+            with self.subTest(name=name):
+                self.assertTrue(is_probable_character_name(name))
+
+        self.assertFalse(is_probable_character_name("policeman 1"))
+
+    def test_parse_dialog_recognizes_numeric_character_name(self):
+        self.assertEqual(
+            parse_dialog("37\n\nYou should not be here."),
+            ("37", "You should not be here."),
+        )
+
     def test_speak_dialog_ignores_empty_text(self):
         for text in ["", " ", "\n\n"]:
             with self.subTest(text=text):

@@ -9,7 +9,7 @@ def is_empty(text):
 
 def is_name_word(word):
     return all(
-        character.isalpha() or character in NAME_PUNCTUATION for character in word
+        character.isalnum() or character in NAME_PUNCTUATION for character in word
     )
 
 
@@ -25,7 +25,7 @@ def is_probable_character_name(text):
     if any(not is_name_word(word) for word in words):
         return False
 
-    return candidate.istitle() or candidate.isupper()
+    return candidate.istitle() or candidate.isupper() or candidate.isdecimal()
 
 
 def join_dialog_lines(lines):
