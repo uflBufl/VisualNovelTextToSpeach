@@ -234,6 +234,32 @@ def create_carry_source_workspace(root):
     return fixture, imported, source
 
 
+def downgrade_workspace_run_config_to_legacy(directory):
+    directory = Path(directory)
+    workspace_path = directory / "workspace.json"
+    workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+    run_config = workspace["run_config"]
+    run_config.pop("missing_voice_policy")
+    run_config.pop("failure_repair_policy")
+    fingerprint = workbench_module._workspace_config_fingerprint(
+        workspace["source"]["import_id"],
+        workspace.get("story_index"),
+        workspace.get("voice_manifest"),
+        workspace["narrator_character"],
+        run_config,
+        workspace.get("carry_forward"),
+    )
+    workspace["config_fingerprint"] = fingerprint
+    workspace["workspace_id"] = (
+        f"resume-{workspace['source']['import_id'].removeprefix('legacy-')}-"
+        f"{fingerprint[:16]}"
+    )
+    workspace_path.write_text(json.dumps(workspace, sort_keys=True), encoding="utf-8")
+    legacy_directory = directory.with_name(workspace["workspace_id"])
+    directory.rename(legacy_directory)
+    return legacy_directory
+
+
 def write_carry_target_manifest(root, *, rhiannon_payloads=None):
     target = root / "target-voices"
     target.mkdir()
@@ -396,8 +422,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, imported, source = create_carry_source_workspace(root)
-            source_state = source.directory / "generated-audio/generation-state.json"
             review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
+            source_state = source_directory / "generated-audio/generation-state.json"
             source_state_sha256 = sha256_file(source_state)
             target_manifest = write_carry_target_manifest(root)
 
@@ -410,7 +439,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 model="model with spaces",
                 generation_profile="stable",
                 narrator_character="Paper Heron",
-                carry_forward_from=source.directory,
+                carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
             repeated = create_resume_workspace(
@@ -422,7 +451,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 model="model with spaces",
                 generation_profile="stable",
                 narrator_character="Paper Heron",
-                carry_forward_from=source.directory,
+                carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
             state = json.loads(
@@ -444,7 +473,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertTrue(carried.created)
         self.assertFalse(repeated.created)
         self.assertEqual(carried.directory, repeated.directory)
-        self.assertNotEqual(carried.directory, source.directory)
+        self.assertNotEqual(carried.directory, source_directory)
         self.assertEqual(
             (result["status"], result["review_status"]), ("approved", "approved")
         )
@@ -644,6 +673,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             source_audio = audio.read_bytes()
             target_manifest = write_carry_target_manifest(root)
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
 
             carried = create_resume_workspace(
                 imported,
@@ -654,7 +686,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 model="model with spaces",
                 generation_profile="stable",
                 narrator_character="Paper Heron",
-                carry_forward_from=source.directory,
+                carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
             target_state = json.loads(

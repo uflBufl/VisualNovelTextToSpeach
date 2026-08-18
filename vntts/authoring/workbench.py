@@ -1483,14 +1483,16 @@ def _carry_forward_review_outcomes(
             "Carry-forward source and target queues are not byte-identical"
         )
     source_run_config = source_document.get("run_config")
-    cross_backend = source_run_config != run_config
+    source_run_config_normalized = _workspace_run_config_with_policy(source_run_config)
+    target_run_config_normalized = _workspace_run_config_with_policy(run_config)
+    cross_backend = source_run_config_normalized != target_run_config_normalized
     if cross_backend and not failed_selected:
         raise AuthoringWorkbenchError(
             "Carry-forward source and target model configuration differs"
         )
     if failed_selected and (
         run_config.get("backend") != "pocket-tts"
-        or source_run_config.get("backend") == run_config.get("backend")
+        or source_run_config_normalized.get("backend") == run_config.get("backend")
         or run_config.get("model") not in {None, "pocket-tts"}
         or run_config.get("generation_profile") not in {None, "default"}
     ):
@@ -1561,7 +1563,7 @@ def _carry_forward_review_outcomes(
                 result,
                 character,
                 source_document,
-                source_run_config,
+                source_run_config_normalized,
                 source_provenance,
                 source_registry,
                 target_registry,
@@ -1637,14 +1639,15 @@ def _carry_forward_review_outcomes(
             or not isinstance(attempts, int)
             or isinstance(attempts, bool)
             or attempts < 3
-            or result.get("provider") != source_run_config.get("backend")
+            or result.get("provider") != source_run_config_normalized.get("backend")
             or (
-                source_run_config.get("model") is not None
-                and source_model != source_run_config.get("model")
+                source_run_config_normalized.get("model") is not None
+                and source_model != source_run_config_normalized.get("model")
             )
             or (
-                source_run_config.get("generation_profile") is not None
-                and source_profile != source_run_config.get("generation_profile")
+                source_run_config_normalized.get("generation_profile") is not None
+                and source_profile
+                != source_run_config_normalized.get("generation_profile")
             )
         ):
             raise AuthoringWorkbenchError(
@@ -1781,7 +1784,9 @@ def _validate_full_carry_forward_item(
         raise AuthoringWorkbenchError(
             f"Carry-forward voice references differ for {character!r}"
         )
-    if source_document.get("run_config") != run_config:
+    if _workspace_run_config_with_policy(
+        source_document.get("run_config")
+    ) != _workspace_run_config_with_policy(run_config):
         raise AuthoringWorkbenchError("Carry-forward run configuration changed")
 
 
