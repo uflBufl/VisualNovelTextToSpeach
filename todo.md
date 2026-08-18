@@ -29,11 +29,6 @@ Follow the evidence-backed order and invariants in
       source-audio candidates, invalidate review on changed WAV hashes, review
       every technical flag plus a stratified clean sample, and expand review
       whenever that sample finds a substantive cohort defect.
-- [ ] Evaluate an optional live accessibility route that announces a speaker
-      only when the visible speaker changes. Keep it disabled by default,
-      independently voiced/provenanced and outside canonical pregenerated story
-      WAVs; test that it does not duplicate nameplates, announcements or
-      auto-advance events.
 
 ## Live mode
 

@@ -614,6 +614,15 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(settings.auto_advance_delay_ms, 250)
         dialog.deleteLater()
 
+    def test_settings_expose_disabled_by_default_speaker_announcements(self):
+        dialog = SettingsDialog(AppSettings(announce_speaker_changes=True))
+
+        self.assertTrue(dialog.announce_speaker_changes.isChecked())
+        dialog.announce_speaker_changes.setChecked(False)
+
+        self.assertFalse(dialog.settings().announce_speaker_changes)
+        dialog.deleteLater()
+
     def test_settings_control_startup_voice_warmup(self):
         dialog = SettingsDialog(AppSettings(warm_up_voices=True))
 

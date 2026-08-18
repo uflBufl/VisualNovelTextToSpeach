@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 22
+settings_schema_version = 23
 
 audio_source_policies = {
     "live-tts-only",
@@ -67,6 +67,7 @@ class AppSettings:
     live_idle_flush_ms: int = 400
     live_min_chunk_characters: int = 20
     auto_advance_enabled: bool = False
+    announce_speaker_changes: bool = False
     auto_advance_key: str = "space"
     auto_advance_delay_ms: int = 350
     ocr_minimum_confidence: int = 60
@@ -151,6 +152,7 @@ class AppSettings:
             "keep_running_on_close",
             "compact_controls",
             "auto_advance_enabled",
+            "announce_speaker_changes",
             "force_live_narrator",
         )
 

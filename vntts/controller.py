@@ -2,7 +2,7 @@
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from threading import Event, Lock
 from time import monotonic
@@ -132,6 +132,13 @@ def create_dialog_read_scheduler(
             return True
 
     return schedule_dialog_read
+
+
+@dataclass(frozen=True)
+class PreparedLiveChunkRoutes:
+    dialogue: object
+    speaker_announcement: LiveTTSRoute | None = None
+    announced_speaker: str | None = None
 
 
 def read_live_snapshot(
@@ -265,6 +272,8 @@ class AppController:
         self.game_focused = True
         self.diagnostic_lock = Lock()
         self.voice_prime_lock = Lock()
+        self.speaker_announcement_lock = Lock()
+        self.last_visible_speaker_key = None
         self.primed_voice_keys = set()
         self.reported_unknown_speakers = set()
         self.pending_unknown_speakers = set()
@@ -519,6 +528,8 @@ class AppController:
                 self.next_live_narrator_fallback_names
             )
             self.narrator_fallback_names.update(self.next_live_narrator_fallback_names)
+            with self.speaker_announcement_lock:
+                self.last_visible_speaker_key = None
         running = self.live_reader.toggle()
         if running:
             self.next_live_narrator_fallback_names.clear()
@@ -964,6 +975,8 @@ class AppController:
             self.live_reader.wait()
 
         self.settings = settings
+        with self.speaker_announcement_lock:
+            self.last_visible_speaker_key = None
         self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
             self.settings.story_index
         )
@@ -1511,6 +1524,16 @@ class AppController:
                 )
             else:
                 raise TypeError("Speech backend does not implement prepare_playback()")
+            try:
+                announcement, announced_speaker = self._prepare_speaker_announcement(
+                    chunk, prepared
+                )
+            except Exception as error:
+                announcement, announced_speaker = None, None
+                self.error_handler(error)
+                self.status_handler(
+                    "Speaker announcement could not be prepared; continuing dialogue"
+                )
             self.last_audio_source_description = self._describe_audio_source(prepared)
             trace = self._build_audio_route_trace(chunk, prepared)
             self.last_audio_route_trace = trace
@@ -1519,7 +1542,15 @@ class AppController:
             except Exception as error:
                 self.error_handler(error)
             self._record_pipeline_route(chunk, trace)
-            return prepared
+            return (
+                PreparedLiveChunkRoutes(
+                    prepared,
+                    speaker_announcement=announcement,
+                    announced_speaker=announced_speaker,
+                )
+                if announcement is not None
+                else prepared
+            )
         finally:
             self._refresh_diagnostic_metrics(
                 prepared
@@ -1538,6 +1569,20 @@ class AppController:
             )
 
     def _play_live_chunk(self, chunk, audio):
+        if isinstance(audio, PreparedLiveChunkRoutes):
+            if audio.speaker_announcement is not None:
+                try:
+                    self._play_speaker_announcement(
+                        chunk,
+                        audio.speaker_announcement,
+                        audio.announced_speaker,
+                    )
+                except Exception as error:
+                    self.error_handler(error)
+                    self.status_handler(
+                        "Speaker announcement failed; continuing dialogue"
+                    )
+            audio = audio.dialogue
         source = self._describe_audio_source(audio)
         self.last_audio_source_description = source
         self.status_handler(f"Audio source for {chunk.character}: {source}")
@@ -1663,16 +1708,7 @@ class AppController:
                     "MOSS stopped at the dialogue safety limit; the line was not "
                     "cached. Auto advance remains safe after playback completes."
                 )
-            jobs, changed = self.live_speech_backpressure.observe_playback(
-                underflowed=underflowed,
-            )
-            self.live_reader.max_speech_jobs = jobs
-            if changed:
-                self.status_handler(
-                    "Audio underrun detected; live speech prefetch disabled temporarily"
-                    if underflowed
-                    else "Audio playback stable; live speech prefetch restored"
-                )
+            self._observe_live_playback_backpressure(underflowed)
             first_audio_ms = outcome.first_audio_ms
             if isinstance(first_audio_ms, (int, float)) and not isinstance(
                 first_audio_ms, bool
@@ -1683,6 +1719,127 @@ class AppController:
             return result
         finally:
             self._refresh_diagnostic_metrics(outcome, source)
+
+    def _prepare_speaker_announcement(self, chunk, dialogue_route):
+        if not self.settings.announce_speaker_changes or chunk.ordinal not in {None, 1}:
+            return None, None
+        visible_speaker = str(chunk.character or "Narrator").strip() or "Narrator"
+        announcement_speaker = (
+            "Narrator" if is_unattributed_speaker(visible_speaker) else visible_speaker
+        )
+        speaker_key = normalize_character_name(announcement_speaker) or "narrator"
+        with self.speaker_announcement_lock:
+            if speaker_key == self.last_visible_speaker_key:
+                return None, None
+            if isinstance(
+                dialogue_route,
+                (SourceAudioRoute, PreparedSourceAudioPassThrough),
+            ):
+                self.last_visible_speaker_key = speaker_key
+                return None, None
+            backend = getattr(self.speech_backend, "live_backend", self.speech_backend)
+            prepare = getattr(type(backend), "prepare_playback", None)
+            if not callable(prepare):
+                raise TypeError(
+                    "Live backend does not implement typed speaker announcements"
+                )
+            prepared = prepare(backend, "Narrator", f"{announcement_speaker}.")
+            if not isinstance(prepared, PreparedPlayback):
+                raise TypeError("Live backend returned an untyped speaker announcement")
+            self.last_visible_speaker_key = speaker_key
+        payload = prepared.payload
+        trace = AudioRouteTrace(
+            chunk.generation,
+            "live-accessibility-announcement",
+            "speaker-change",
+            "setting-enabled",
+            self._voice_reference_identifier("Narrator", payload),
+            None,
+            "speaker-announcement-v1",
+            chunk_id=f"{chunk.chunk_id or chunk.generation}:speaker-announcement",
+            chunk_ordinal=0,
+            chunk_characters=len(announcement_speaker) + 1,
+        )
+        try:
+            self.route_trace_handler(trace)
+            trace_fields = trace.support_fields()
+            trace_fields.pop("generation", None)
+            self.pipeline_event_handler(
+                "speaker-announcement-route",
+                chunk.generation,
+                monotonic(),
+                **trace_fields,
+            )
+        except Exception as error:
+            self.error_handler(error)
+        return (
+            LiveTTSRoute(
+                prepared,
+                trace,
+                prepared.synthesis_ms,
+                prepared.first_audio_ms,
+                prepared.cache_source,
+            ),
+            announcement_speaker,
+        )
+
+    def _play_speaker_announcement(self, chunk, route, announced_speaker):
+        backend = getattr(self.speech_backend, "live_backend", self.speech_backend)
+        play = getattr(type(backend), "play_prepared", None)
+        if not callable(play):
+            raise TypeError("Live backend cannot play a typed speaker announcement")
+        self.status_handler(f"Announcing speaker: {announced_speaker}")
+        outcome = play(
+            backend,
+            route.prepared,
+            playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
+        )
+        if not isinstance(outcome, PlaybackOutcome):
+            raise TypeError("Live backend returned an untyped announcement outcome")
+        outcome = replace(
+            outcome,
+            audio_source="live-accessibility-announcement",
+        )
+        try:
+            self.pipeline_event_handler(
+                "speaker-announcement-outcome",
+                chunk.generation,
+                monotonic(),
+                outcome=outcome.status.value,
+                underflowed=outcome.underflowed,
+                generation_limited=outcome.generation_limited,
+                synthesis_ms=outcome.synthesis_ms,
+                playback_ms=outcome.playback_ms,
+                first_audio_ms=outcome.first_audio_ms,
+                cache_source=outcome.cache_source,
+                effective_source=outcome.audio_source,
+                announced_speaker=announced_speaker,
+                chunk_id=route.trace.chunk_id,
+                chunk_ordinal=route.trace.chunk_ordinal,
+                chunk_characters=route.trace.chunk_characters,
+            )
+        except Exception as error:
+            self.error_handler(error)
+        self._observe_live_playback_backpressure(outcome.underflowed)
+        if outcome.status is PlaybackStatus.FAILED:
+            self.error_handler(
+                AudioPlaybackError(
+                    outcome.error or "Speaker announcement playback failed"
+                )
+            )
+        return outcome
+
+    def _observe_live_playback_backpressure(self, underflowed):
+        jobs, changed = self.live_speech_backpressure.observe_playback(
+            underflowed=underflowed,
+        )
+        self.live_reader.max_speech_jobs = jobs
+        if changed:
+            self.status_handler(
+                "Audio underrun detected; live speech prefetch disabled temporarily"
+                if underflowed
+                else "Audio playback stable; live speech prefetch restored"
+            )
 
     def _describe_audio_source(self, prepared):
         if isinstance(prepared, LiveFallbackRoute):

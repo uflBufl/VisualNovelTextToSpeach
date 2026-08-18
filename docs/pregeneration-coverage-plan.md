@@ -93,12 +93,14 @@ and effective `Character` separately, while its header identifies the selected
 Narrator character. Old workspaces without this field read as `block` and are
 never broadened in place.
 
-Canonical generated speech should contain only the story text. Automatically
-prepending phrases such as "Poacher I says" changes the script, duplicates the
-visible nameplate and makes ordinary dialogue unnatural. If spoken speaker
-identification is needed for accessibility, implement it as a separate,
-optional `announce speaker on change` route with its own provenance and
-acceptance test; do not bake it into canonical story WAVs.
+Canonical generated speech contains only the story text. Automatically
+prepending phrases such as "Poacher I says" would change the script, duplicate
+the visible nameplate and make ordinary dialogue unnatural. Optional spoken
+speaker identification is therefore a separate, disabled-by-default live route.
+It announces only a changed visible speaker with the configured Narrator voice,
+records independent route/outcome provenance, and stays outside canonical story
+WAVs and review authority. It never creates an auto-advance action, and original
+game-audio routes skip it rather than overlaying speech.
 
 ## Failure cohorts and preventive generation
 

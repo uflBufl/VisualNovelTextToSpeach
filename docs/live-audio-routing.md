@@ -1,9 +1,9 @@
 # Typed live audio routing
 
 Live dialogue routing is a two-phase contract. `prepare_route()` returns one
-immutable decision: `SourceAudioRoute`, `GeneratedAudioRoute`, or
-`LiveTTSRoute`. Each decision binds its exact payload, line identity,
-preflight state, fallback reason, source trace, and preparation timing. A later
+immutable decision: `SourceAudioRoute`, `GeneratedAudioRoute`,
+`LiveFallbackRoute`, or `LiveTTSRoute`. Each decision binds its exact payload,
+line identity, preflight state, fallback reason, source trace, and preparation timing. A later
 `play_route()` returns a route-local `PlaybackOutcome`; controller correctness
 does not depend on mutable backend `last_*` fields. The outcome keeps the
 decision's effective source, synthesis and first-audio timing, cache source,
@@ -41,6 +41,19 @@ suppression timeline records are keyed by chunk ID. Duplicate reports for the
 same stage/chunk merge, while multiple chunks in one OCR generation remain
 distinct. Live synthesis continues to use the backend's existing cache policy;
 source and generated routes bypass live synthesis caches.
+
+Speaker-change announcements are an optional accessibility layer above this
+selector and are disabled by default. For the first chunk after a visible
+speaker changes, the controller prepares a separate Narrator `LiveTTSRoute`
+whose trace source is `live-accessibility-announcement` and whose artifact state
+is `speaker-announcement-v1`. The announcement is played before the already
+selected dialogue route, has its own route/outcome timeline stages, and is never
+stored as generated story audio. It does not seal the dialogue or dispatch auto
+advance; the one canonical dialogue chunk remains the only completion
+considered by the reader. Consecutive lines from the same speaker and later
+chunks in one dialogue do not repeat it. Original game-audio routes skip the
+announcement to avoid talking over audio that the game has already started.
+Unattributed `???` labels use the spoken name Narrator.
 
 `GeneratedAudioFallbackBackend` is an internal route selector/player, not an
 exported backend API. All repository callers use `prepare_route()` and

@@ -209,6 +209,16 @@ generated-first audio policy, verified pregenerated tracks keep priority and
 the selected voice handles only live fallback. Enable the separate force-live
 checkbox only when every Narrator line should bypass pregenerated tracks.
 
+The optional **Speaker announcements** setting is disabled by default. When
+enabled, the Narrator voice says the visible speaker name once before the first
+spoken chunk after that name changes. The announcement is a separate typed live
+route: it is never written into canonical story WAVs, never replaces the
+dialogue route, and never creates its own auto-advance action. Repeated chunks
+and consecutive lines by the same visible speaker are not announced again.
+Declared original game-audio pass-through is not overlaid because that audio is
+already playing when VNTTS observes the line. Exact `???` is announced as
+Narrator rather than pronouncing punctuation.
+
 When auto advance is enabled, original game audio is selected only if the story
 index supplies completion duration. A source line without trustworthy timing
 falls through to generated or live speech so unattended reading cannot pause

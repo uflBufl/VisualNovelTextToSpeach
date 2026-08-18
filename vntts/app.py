@@ -282,6 +282,10 @@ class SettingsDialog(QDialog):
         self.speech_rate.setValue(settings.speech_rate_percent)
         self.auto_advance = QCheckBox("Advance after the spoken dialogue finishes")
         self.auto_advance.setChecked(settings.auto_advance_enabled)
+        self.announce_speaker_changes = QCheckBox(
+            "Announce the speaker when the visible name changes"
+        )
+        self.announce_speaker_changes.setChecked(settings.announce_speaker_changes)
         self.auto_advance_key = QComboBox()
         self.auto_advance_key.addItem("Space", "space")
         self.auto_advance_key.addItem("Enter", "enter")
@@ -363,6 +367,7 @@ class SettingsDialog(QDialog):
         playback_form.addRow("Output volume", self.output_volume)
         playback_form.addRow("Speaking speed", self.speech_rate)
         playback_form.addRow("Auto advance", self.auto_advance)
+        playback_form.addRow("Speaker announcements", self.announce_speaker_changes)
         playback_form.addRow("Advance key", self.auto_advance_key)
         playback_form.addRow("Advance delay", self.auto_advance_delay)
 
@@ -630,6 +635,7 @@ class SettingsDialog(QDialog):
                 "output_volume_percent": self.output_volume.value(),
                 "speech_rate_percent": self.speech_rate.value(),
                 "auto_advance_enabled": self.auto_advance.isChecked(),
+                "announce_speaker_changes": self.announce_speaker_changes.isChecked(),
                 "auto_advance_key": self.auto_advance_key.currentData(),
                 "auto_advance_delay_ms": self.auto_advance_delay.value(),
                 "warm_up_voices": self.warm_up_voices.isChecked(),

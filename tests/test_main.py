@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.controller import PreparedLiveChunkRoutes
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -85,6 +86,52 @@ class StubTypedPlaybackBackend:
 
     def play_route(self, _route, *, playback_guard=None):
         return self.play_prepared(None, playback_guard=playback_guard)
+
+
+class RecordingAnnouncementBackend:
+    name = "typed-announcement"
+
+    def __init__(self, outcomes=None):
+        self.prepare_calls = []
+        self.play_calls = []
+        self.outcomes = list(outcomes or ())
+
+    def prepare_playback(self, character, text):
+        self.prepare_calls.append((character, text))
+        return PreparedPlayback(
+            SimpleNamespace(
+                voice_key=character.casefold(),
+                character=character,
+                text=text,
+            ),
+            2.0,
+            None,
+            "fresh-generation",
+            "live:typed-announcement",
+        )
+
+    def play_prepared(self, prepared, *, playback_guard=None):
+        self.play_calls.append((prepared.payload.character, prepared.payload.text))
+        if playback_guard is not None and not playback_guard():
+            return PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            4.0,
+            first_audio_ms=1.0,
+            audio_source="live:typed-announcement",
+        )
+
+
+class FailingAnnouncementPrepareBackend(RecordingAnnouncementBackend):
+    def prepare_playback(self, character, text):
+        if character == "Narrator":
+            raise RuntimeError("announcement preparation crashed")
+        return super().prepare_playback(character, text)
 
 
 def stub_route_trace(source, line_id=None):
@@ -2450,6 +2497,187 @@ class MainTest(unittest.TestCase):
             timeline_events[1][3]["voice_reference_id"],
             "voice:rhiannon-v2:reference-1",
         )
+
+    def test_speaker_change_announcement_is_separate_live_audio_and_not_repeated(self):
+        statuses = []
+        timeline = []
+        backend = RecordingAnnouncementBackend()
+        registry = CharacterVoiceRegistry([CharacterVoice("Rhiannon", "rhiannon-v2")])
+        controller = AppController(
+            AppSettings(
+                audio_source_policy="live-tts-only",
+                announce_speaker_changes=True,
+            ),
+            status_handler=statuses.append,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                timeline.append((stage, generation, details))
+            ),
+        )
+        controller.voice_router = Mock(registry=registry, narrator_speaker="Centurion")
+        controller.speech_backend = backend
+        controller.live_reader = Mock(max_speech_jobs=2)
+        controller.live_reader.wait_until_playable.return_value = True
+
+        first = SpeechChunk(1, "Rhiannon", "First line.", ordinal=1)
+        prepared = controller._prepare_live_chunk(first)
+        result = controller._play_live_chunk(first, prepared)
+        same_speaker = controller._prepare_live_chunk(
+            SpeechChunk(2, "Rhiannon", "Second line.", ordinal=1)
+        )
+        changed_speaker = controller._prepare_live_chunk(
+            SpeechChunk(3, "Hotelier", "Welcome.", ordinal=1)
+        )
+
+        self.assertIsInstance(prepared, PreparedLiveChunkRoutes)
+        self.assertTrue(result)
+        self.assertNotIsInstance(same_speaker, PreparedLiveChunkRoutes)
+        self.assertIsInstance(changed_speaker, PreparedLiveChunkRoutes)
+        self.assertEqual(
+            backend.prepare_calls,
+            [
+                ("Rhiannon", "First line."),
+                ("Narrator", "Rhiannon."),
+                ("Rhiannon", "Second line."),
+                ("Hotelier", "Welcome."),
+                ("Narrator", "Hotelier."),
+            ],
+        )
+        self.assertEqual(
+            backend.play_calls,
+            [("Narrator", "Rhiannon."), ("Rhiannon", "First line.")],
+        )
+        self.assertEqual(
+            [event[0] for event in timeline].count("speaker-announcement-route"),
+            2,
+        )
+        self.assertEqual(
+            [event[0] for event in timeline].count("speaker-announcement-outcome"),
+            1,
+        )
+        self.assertEqual(
+            [event[0] for event in timeline].count("playback-outcome"),
+            1,
+        )
+        self.assertIn("Announcing speaker: Rhiannon", statuses)
+
+    def test_speaker_announcement_skips_game_audio_and_maps_unknown_to_narrator(self):
+        backend = RecordingAnnouncementBackend()
+        controller = AppController(
+            AppSettings(announce_speaker_changes=True),
+            tts_factory=Mock(),
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+        source = SourceAudioRoute(
+            PreparedSourceAudioPassThrough("game:1", "a" * 64, "voice-1", 1.0),
+            stub_route_trace("game-source", "game:1"),
+        )
+
+        announcement, speaker = controller._prepare_speaker_announcement(
+            SpeechChunk(1, "Rhiannon", "Original line.", ordinal=1), source
+        )
+        same_speaker, _same_label = controller._prepare_speaker_announcement(
+            SpeechChunk(2, "Rhiannon", "Generated line.", ordinal=1),
+            backend.prepare_playback("Rhiannon", "Generated line."),
+        )
+        narrator_announcement, narrator = controller._prepare_speaker_announcement(
+            SpeechChunk(3, "???", "Unknown line.", ordinal=1),
+            backend.prepare_playback("???", "Unknown line."),
+        )
+
+        self.assertIsNone(announcement)
+        self.assertIsNone(speaker)
+        self.assertIsNone(same_speaker)
+        self.assertIsNotNone(narrator_announcement)
+        self.assertEqual(narrator, "Narrator")
+        self.assertEqual(backend.prepare_calls[-1], ("Narrator", "Narrator."))
+
+    def test_failed_speaker_announcement_does_not_skip_dialogue(self):
+        errors = []
+        backend = RecordingAnnouncementBackend(
+            outcomes=[
+                PlaybackOutcome(
+                    PlaybackStatus.FAILED,
+                    None,
+                    error="announcement device failed",
+                ),
+                PlaybackOutcome(PlaybackStatus.COMPLETED, 4.0),
+            ]
+        )
+        controller = AppController(
+            AppSettings(announce_speaker_changes=True),
+            error_handler=errors.append,
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+        controller.live_reader = Mock(max_speech_jobs=2)
+        controller.live_reader.wait_until_playable.return_value = True
+        chunk = SpeechChunk(1, "Rhiannon", "Line.", ordinal=1)
+
+        prepared = controller._prepare_live_chunk(chunk)
+        result = controller._play_live_chunk(chunk, prepared)
+
+        self.assertTrue(result)
+        self.assertEqual(len(backend.play_calls), 2)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], AudioPlaybackError)
+
+    def test_speaker_announcement_exception_does_not_skip_dialogue(self):
+        errors = []
+        statuses = []
+        backend = RecordingAnnouncementBackend(
+            outcomes=[
+                RuntimeError("announcement output crashed"),
+                PlaybackOutcome(PlaybackStatus.COMPLETED, 4.0),
+            ]
+        )
+        controller = AppController(
+            AppSettings(announce_speaker_changes=True),
+            status_handler=statuses.append,
+            error_handler=errors.append,
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+        controller.live_reader = Mock(max_speech_jobs=2)
+        controller.live_reader.wait_until_playable.return_value = True
+        chunk = SpeechChunk(1, "Rhiannon", "Line.", ordinal=1)
+
+        prepared = controller._prepare_live_chunk(chunk)
+        result = controller._play_live_chunk(chunk, prepared)
+
+        self.assertTrue(result)
+        self.assertEqual(len(backend.play_calls), 2)
+        self.assertEqual(str(errors[0]), "announcement output crashed")
+        self.assertIn("continuing dialogue", statuses[-2])
+
+    def test_speaker_announcement_prepare_exception_keeps_dialogue_route(self):
+        errors = []
+        statuses = []
+        backend = FailingAnnouncementPrepareBackend()
+        controller = AppController(
+            AppSettings(announce_speaker_changes=True),
+            status_handler=statuses.append,
+            error_handler=errors.append,
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+
+        prepared = controller._prepare_live_chunk(
+            SpeechChunk(1, "Rhiannon", "Line.", ordinal=1)
+        )
+
+        self.assertIsInstance(prepared, PreparedPlayback)
+        self.assertEqual(prepared.payload.text, "Line.")
+        self.assertEqual(str(errors[0]), "announcement preparation crashed")
+        self.assertIn("continuing dialogue", statuses[-1])
 
     def test_live_prepare_keeps_two_chunk_scoped_voice_resolution_events(self):
         registry = CharacterVoiceRegistry(
