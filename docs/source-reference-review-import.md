@@ -73,3 +73,23 @@ successful fixed sentences are paired across all variants that produced the
 same text. Failed or limited renders remain visible in generation state and do
 not become listening audio. Model identities are stored only in the private
 0600 blind key; the public session exposes randomized A/B aliases.
+
+## Verified Character Story evaluation (2026-08-18)
+
+The first real plan contains four accepted variants: Dobharchú portraits
+`534704` and `534703`, Poacher `505601`, and Aderyn's Father `534604`. Their
+exact affected-line counts are 37, 11, 4, and 1. The immutable plan SHA-256 is
+`23f84370ef520d819843f3485760b4cfc66cd06d88475beaa8f9e03637450142`.
+
+The bounded MOSS run attempted 16 items once with seed 0. Nine checksum-valid
+WAVs were published; five renders ended at the typed audio limit and two failed
+the speech-silence gate, so no WAV was published for those seven. No retries,
+review decisions, bulk workspace changes, or manifest approvals were made. The
+state SHA-256 is
+`9df9dee7a47515b5332633aac90fb46b4cc8ed207d5086b68694657835a3ebad`.
+
+The resulting listening session has nine trials: three exact original versus
+generated source-match pairs and six same-text comparisons between successful
+variants. It starts at 0/9 and remains a manual gate. Its public session SHA-256
+is `6218f26672df477dbc55fb5ff336cf9236b902351336b66d1437a342e28b126e`;
+the private blind key is mode 0600 and checksum-bound by the public session.

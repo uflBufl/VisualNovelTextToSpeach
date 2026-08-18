@@ -16,12 +16,13 @@ Follow the evidence-backed order and invariants in
       clusters, accepted WAVs, rejected/uncertain/invalidated evidence and exact
       story-derived queue IDs without mutating manifests or existing workspaces.
 
-- [ ] Render the published fixed evaluation corpus for every accepted reference
-      variant and provide blind source/result A/B review. The immutable input
-      publisher already emits one source-match plus three shared sentences per
-      variant, ordered by affected queue-line count. Source-audio technical
-      acceptance must not imply generated cadence, pronunciation or
-      speaker-similarity approval.
+- [ ] Complete the 9-trial checksum-bound blind review for the four accepted
+      reference variants. The bounded fixed-corpus run published 9 of 16 WAVs;
+      five typed audio-limit and two speech-silence failures remain excluded.
+      The session contains three exact original/generated source-match trials
+      and six same-text cross-variant trials. Source-audio technical acceptance
+      must not imply generated cadence, pronunciation or speaker-similarity
+      approval.
 
 - [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
       and Hotelier, then create a new config-addressed workspace and re-run
