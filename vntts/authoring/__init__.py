@@ -104,10 +104,12 @@ from vntts.authoring.reference_selection import (
     validate_reference_selection_provenance,
 )
 from vntts.authoring.source_reference_review import (
+    SourceReferenceEvaluationResult,
     SourceReferencePlanResult,
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_evaluation,
 )
 from vntts.authoring.workbench import (
     CollectionSelection,
@@ -210,7 +212,9 @@ __all__ = [
     "select_representative_items",
     "select_voice_reference",
     "SourceReferencePlanResult",
+    "SourceReferenceEvaluationResult",
     "SourceReferenceReviewError",
+    "publish_source_reference_evaluation",
     "workspace_voice_snapshot",
     "trim_excess_edge_silence",
     "validate_reference_selection_provenance",

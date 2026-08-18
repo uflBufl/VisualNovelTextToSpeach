@@ -72,6 +72,7 @@ from vntts.authoring.reference_selection import (
 from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
+    publish_source_reference_evaluation,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -402,6 +403,12 @@ def create_parser():
     import_reference_review.add_argument("--review", type=Path, required=True)
     import_reference_review.add_argument("--story-index", type=Path, required=True)
     import_reference_review.add_argument("--output", type=Path, required=True)
+    reference_evaluation = subparsers.add_parser(
+        "build-reference-evaluation",
+        help="Publish fixed-corpus inputs for accepted source-reference variants",
+    )
+    reference_evaluation.add_argument("--plan", type=Path, required=True)
+    reference_evaluation.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -799,6 +806,12 @@ def main(argv=None):
                 arguments.review,
                 arguments.story_index,
                 arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "build-reference-evaluation":
+            result = publish_source_reference_evaluation(
+                arguments.plan, arguments.output
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0

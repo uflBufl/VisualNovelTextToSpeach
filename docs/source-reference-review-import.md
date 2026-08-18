@@ -33,3 +33,21 @@ quality review on that fixed corpus. The plan deliberately does not mutate a
 voice manifest, create a workspace or authorize bulk generation. The remaining
 integration must bind a chosen cluster to its exact queue IDs and preserve that
 binding in config-addressed synthesis controls.
+
+Publish the evaluation inputs separately so the immutable decision plan stays
+read-only:
+
+```bash
+uv run vntts-pregenerate build-reference-evaluation \
+  --plan /new/source-reference-plan \
+  --output /new/source-reference-evaluation
+```
+
+The evaluation directory contains a synthetic voice manifest with exactly one
+accepted source WAV per variant, a generation queue with one source-matching
+transcript and three fixed sentences per variant, and `comparison.json` binding
+all paths and SHA-256 values. Variants are ordered by the number of affected
+queue lines. Generate into a separate output directory; do not put mutable state
+or rendered WAVs inside the immutable evaluation input directory. Source-match
+audio can then be compared blindly against its exact original, while fixed-text
+outputs compare cadence and pronunciation across variants.

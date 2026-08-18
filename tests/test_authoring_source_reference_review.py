@@ -7,10 +7,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from vntts_artifacts import (
+    VoiceGenerationQueue,
     expected_voice_generation_queue_id,
     write_story_index_document,
 )
 from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.source_reference_review import (
@@ -18,6 +20,7 @@ from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_evaluation,
 )
 
 
@@ -255,6 +258,86 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["accepted_clusters"], 2)
         self.assertEqual(payload["mapped_queue_items"], 2)
+
+    def test_publishes_fixed_corpus_inputs_for_every_accepted_variant(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            plan = import_source_reference_review(report, review, story, root / "plan")
+
+            result = publish_source_reference_evaluation(
+                plan.directory, root / "evaluation"
+            )
+            queue = VoiceGenerationQueue.load(result.directory / "queue.jsonl")
+            _manifest, voices = load_voice_manifest(
+                result.directory / "voice-manifest.json", allow_legacy=False
+            )
+            comparison = json.loads(
+                (result.directory / "comparison.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result.variants, 2)
+        self.assertEqual(result.queue_items, 8)
+        self.assertEqual(len(queue.items), 8)
+        self.assertEqual(len(voices), 2)
+        self.assertEqual(
+            {
+                item.text
+                for item in queue.items
+                if item.document["evaluation_kind"] == "source-match"
+            },
+            {"Source transcript 1", "Source transcript 2"},
+        )
+        self.assertEqual(
+            [item["affected_queue_item_count"] for item in comparison["variants"]],
+            [1, 1],
+        )
+        self.assertTrue(
+            all(item["manual_blind_review_required"] for item in comparison["variants"])
+        )
+
+    def test_evaluation_refuses_overwrite_and_tampered_plan_reference(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            plan = import_source_reference_review(report, review, story, root / "plan")
+            output = root / "evaluation"
+            publish_source_reference_evaluation(plan.directory, output)
+
+            with self.assertRaisesRegex(SourceReferenceReviewError, "output exists"):
+                publish_source_reference_evaluation(plan.directory, output)
+
+            document = json.loads((plan.directory / "plan.json").read_text())
+            reference = document["clusters"][0]["references"][0]["path"]
+            (plan.directory / reference).write_bytes(b"changed")
+            with self.assertRaisesRegex(SourceReferenceReviewError, "changed"):
+                publish_source_reference_evaluation(
+                    plan.directory, root / "unsafe-evaluation"
+                )
+
+    def test_cli_builds_reference_evaluation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            plan = import_source_reference_review(report, review, story, root / "plan")
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "build-reference-evaluation",
+                        "--plan",
+                        str(plan.directory),
+                        "--output",
+                        str(root / "evaluation"),
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["variants"], 2)
+        self.assertEqual(payload["queue_items"], 8)
 
 
 if __name__ == "__main__":

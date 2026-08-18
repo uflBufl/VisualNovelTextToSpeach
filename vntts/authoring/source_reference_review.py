@@ -10,11 +10,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from vntts_artifacts import expected_voice_generation_queue_id
+from vntts_artifacts import (
+    VoiceGenerationQueue,
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
-from vntts_artifacts.voice_manifest import normalize_character_name
+from vntts_artifacts.voice_manifest import (
+    load_voice_manifest,
+    normalize_character_name,
+    write_voice_manifest,
+)
 
 from vntts.authoring.game_pack import _rename_directory_no_replace
 
@@ -24,6 +32,8 @@ SOURCE_REVIEW_SCHEMA = "r1999.story-voice-reference-review"
 SOURCE_REVIEW_VERSIONS = frozenset({1, 2})
 REFERENCE_PLAN_SCHEMA = "vntts.authoring-source-reference-plan"
 REFERENCE_PLAN_VERSION = 1
+REFERENCE_EVALUATION_SCHEMA = "vntts.authoring-source-reference-evaluation"
+REFERENCE_EVALUATION_VERSION = 1
 REFERENCE_DECISIONS = frozenset({"accept", "reject", "uncertain"})
 FIXED_EVALUATION_CORPUS = (
     "I knew this path would be difficult, but I chose it anyway.",
@@ -51,6 +61,20 @@ class SourceReferencePlanResult:
             "accepted_candidates": self.accepted_candidates,
             "mapped_queue_items": self.mapped_queue_items,
             "pending_candidates": self.pending_candidates,
+        }
+
+
+@dataclass(frozen=True)
+class SourceReferenceEvaluationResult:
+    directory: Path
+    variants: int
+    queue_items: int
+
+    def to_dict(self):
+        return {
+            "directory": str(self.directory),
+            "variants": self.variants,
+            "queue_items": self.queue_items,
         }
 
 
@@ -153,6 +177,7 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
                         "candidate_evidence_sha256": candidate["evidence_sha256"],
                         "media_id": candidate["media_id"],
                         "source_reference": candidate["reference_relative"],
+                        "source_transcripts": list(candidate["transcripts"]),
                     }
                 )
                 copied_sources.append(candidate)
@@ -306,6 +331,186 @@ def load_source_reference_plan(directory):
     return plan
 
 
+def publish_source_reference_evaluation(plan_directory, output):
+    """Publish self-contained fixed-corpus inputs for every accepted anchor."""
+    plan_directory = Path(plan_directory).expanduser().resolve()
+    plan = load_source_reference_plan(plan_directory)
+    plan_path = plan_directory / "plan.json"
+    plan_sha256 = sha256_file(plan_path)
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise SourceReferenceReviewError(
+            f"Source-reference evaluation output exists: {output}"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+    ).resolve()
+    try:
+        voices = []
+        items = []
+        variants = []
+        source_snapshots = []
+        clusters = sorted(
+            plan["clusters"],
+            key=lambda cluster: (-len(cluster["queue_items"]), cluster["cluster_id"]),
+        )
+        for cluster in clusters:
+            for reference_index, reference in enumerate(cluster["references"], start=1):
+                variant_id = f"{cluster['cluster_id']}-anchor-{reference_index}"
+                evaluation_character = (
+                    f"Source reference {cluster['character']} {variant_id}"
+                )
+                source = _contained_file(plan_directory, reference["path"])
+                relative = (
+                    Path("references")
+                    / variant_id
+                    / f"source-{reference['media_id']}.wav"
+                )
+                destination = staging / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                payload = source.read_bytes()
+                if hashlib.sha256(payload).hexdigest() != reference["sha256"]:
+                    raise SourceReferenceReviewError(
+                        f"Source-reference plan changed during evaluation: {reference['path']}"
+                    )
+                destination.write_bytes(payload)
+                source_snapshots.append((source, reference["sha256"]))
+                voices.append(
+                    {
+                        "character": evaluation_character,
+                        "speaker": f"source-reference:{variant_id}",
+                        "references": [relative.as_posix()],
+                    }
+                )
+                source_transcripts = reference.get("source_transcripts")
+                if (
+                    not isinstance(source_transcripts, list)
+                    or not source_transcripts
+                    or any(
+                        not isinstance(text, str) or not text.strip()
+                        for text in source_transcripts
+                    )
+                ):
+                    raise SourceReferenceReviewError(
+                        f"Source-reference anchor has no exact transcript: {variant_id}"
+                    )
+                evaluation_texts = [
+                    ("source-match", source_transcripts[0]),
+                    *(
+                        (f"fixed-{index}", text)
+                        for index, text in enumerate(FIXED_EVALUATION_CORPUS, start=1)
+                    ),
+                ]
+                queue_ids = {}
+                for evaluation_kind, text in evaluation_texts:
+                    text_hash = hashlib.sha256(text.encode()).hexdigest()
+                    line_id = f"source-reference:{variant_id}:{evaluation_kind}"
+                    queue_id = expected_voice_generation_queue_id(line_id, text_hash)
+                    queue_ids[evaluation_kind] = queue_id
+                    items.append(
+                        {
+                            "record_type": "generation_item",
+                            "queue_id": queue_id,
+                            "line_id": line_id,
+                            "text": text,
+                            "text_sha256": text_hash,
+                            "speaker": cluster["character"],
+                            "voice_character": evaluation_character,
+                            "source_audio_status": "absent",
+                            "source_audio_reason": "source_reference_evaluation",
+                            "source_kind": "authoring_evaluation",
+                            "action": "generate",
+                            "state": "pending",
+                            "reference_cluster_id": cluster["cluster_id"],
+                            "reference_candidate_key": reference["candidate_key"],
+                            "evaluation_kind": evaluation_kind,
+                        }
+                    )
+                variants.append(
+                    {
+                        "variant_id": variant_id,
+                        "character": cluster["character"],
+                        "portrait": cluster["portrait"],
+                        "source_bank": cluster["source_bank"],
+                        "media_id": reference["media_id"],
+                        "source_audio": relative.as_posix(),
+                        "source_audio_sha256": reference["sha256"],
+                        "source_match_queue_id": queue_ids["source-match"],
+                        "fixed_queue_ids": [
+                            queue_ids[f"fixed-{index}"]
+                            for index in range(1, len(FIXED_EVALUATION_CORPUS) + 1)
+                        ],
+                        "affected_queue_item_count": len(cluster["queue_items"]),
+                        "manual_blind_review_required": True,
+                    }
+                )
+        manifest_path = staging / "voice-manifest.json"
+        write_voice_manifest(
+            manifest_path,
+            {
+                "version": 2,
+                "game": "Source reference evaluation",
+                "language": "en",
+                "voices": voices,
+                "vntts.authoring.source_reference_plan_sha256": plan_sha256,
+            },
+        )
+        queue_path = staging / "queue.jsonl"
+        write_voice_generation_queue(
+            queue_path,
+            {
+                "game": "Source reference evaluation",
+                "language": "en",
+                "source_reference_plan_sha256": plan_sha256,
+                "variant_count": len(variants),
+            },
+            items,
+        )
+        comparison = {
+            "schema": REFERENCE_EVALUATION_SCHEMA,
+            "schema_version": REFERENCE_EVALUATION_VERSION,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "source_reference_plan": str(plan_directory),
+            "source_reference_plan_sha256": plan_sha256,
+            "voice_manifest": manifest_path.name,
+            "voice_manifest_sha256": sha256_file(manifest_path),
+            "queue": queue_path.name,
+            "queue_sha256": sha256_file(queue_path),
+            "variants": variants,
+            "review_policy": (
+                "Source-match trials compare original and generated audio blindly. "
+                "Fixed-corpus trials compare accepted anchors under identical text. "
+                "No result authorizes bulk generation until manually approved."
+            ),
+        }
+        atomic_write_json(staging / "comparison.json", comparison)
+        load_voice_manifest(manifest_path)
+        VoiceGenerationQueue.load(queue_path)
+        if sha256_file(plan_path) != plan_sha256:
+            raise SourceReferenceReviewError(
+                "Source-reference plan changed during evaluation publication"
+            )
+        for source, expected_sha256 in source_snapshots:
+            _assert_source_unchanged(
+                source,
+                expected_sha256,
+                f"source-reference plan artifact {source.name}",
+            )
+        for variant in variants:
+            source = staging / variant["source_audio"]
+            if sha256_file(source) != variant["source_audio_sha256"]:
+                raise SourceReferenceReviewError(
+                    f"Evaluation reference changed before publication: {source}"
+                )
+        _rename_directory_no_replace(staging, output)
+        return SourceReferenceEvaluationResult(output, len(variants), len(items))
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+
 def _load_candidates(report_path, report):
     values = report.get("candidates")
     if not isinstance(values, list) or not values:
@@ -361,6 +566,7 @@ def _load_candidates(report_path, report):
             "reference_path": reference_path,
             "reference_payload": payload,
             "reference_sha256": reference_sha256,
+            "transcripts": _candidate_transcripts(value, index),
         }
     return candidates
 
@@ -455,6 +661,22 @@ def _candidate_key(character, portrait, bank, media_id, reference_sha256):
         separators=(",", ":"),
     )
     return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _candidate_transcripts(value, index):
+    source_lines = value.get("source_lines")
+    if not isinstance(source_lines, list) or not source_lines:
+        raise SourceReferenceReviewError(f"Candidate {index} source lines are missing")
+    transcripts = []
+    for line_index, line in enumerate(source_lines):
+        if not isinstance(line, dict):
+            raise SourceReferenceReviewError(
+                f"Candidate {index} source line {line_index} is invalid"
+            )
+        transcripts.append(
+            _text(line.get("text"), f"candidate {index} source transcript")
+        )
+    return tuple(transcripts)
 
 
 def _cluster_id(character, portrait, bank):

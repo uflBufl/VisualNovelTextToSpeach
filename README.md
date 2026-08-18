@@ -486,6 +486,9 @@ The plan copies accepted WAVs, keeps character/portrait/bank clusters separate,
 maps each cluster to exact story-derived queue IDs and includes a fixed
 evaluation corpus. It does not edit a manifest or authorize generation. See
 [variant-aware source-reference import](docs/source-reference-review-import.md).
+The same workflow publishes non-overwriting fixed-corpus inputs with
+`vntts-pregenerate build-reference-evaluation`; rendering output is kept in a
+separate mutable directory until blind source/result review is complete.
 
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with
