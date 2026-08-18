@@ -184,9 +184,7 @@ def plan_generation_queue(
             record.speaker, record.voice_character
         )
         entry = voice_index.get(normalize_character_name(requested_character))
-        voice_character = (
-            entry.character if entry is not None else requested_character
-        )
+        voice_character = entry.character if entry is not None else requested_character
         if action == "generate":
             if entry is not None and reference_availability[entry]:
                 ready += 1

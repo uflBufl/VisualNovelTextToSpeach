@@ -70,15 +70,29 @@ class FakeRenderBackend:
 class AuthoringModelBenchmarkTest(unittest.TestCase):
     def test_selects_emotion_buckets_round_robin_and_skips_review(self):
         items = [
-            {"queue_id": "warm-1", "action": "generate", "emotion": {"primary": "warm"}},
-            {"queue_id": "warm-2", "action": "generate", "emotion": {"primary": "warm"}},
-            {"queue_id": "angry", "action": "generate", "emotion": {"primary": "angry"}},
+            {
+                "queue_id": "warm-1",
+                "action": "generate",
+                "emotion": {"primary": "warm"},
+            },
+            {
+                "queue_id": "warm-2",
+                "action": "generate",
+                "emotion": {"primary": "warm"},
+            },
+            {
+                "queue_id": "angry",
+                "action": "generate",
+                "emotion": {"primary": "angry"},
+            },
             {"queue_id": "manual", "action": "manual_review"},
         ]
 
         selected = select_representative_items(items, 3)
 
-        self.assertEqual([item["queue_id"] for item in selected], ["angry", "warm-1", "warm-2"])
+        self.assertEqual(
+            [item["queue_id"] for item in selected], ["angry", "warm-1", "warm-2"]
+        )
 
     def test_builds_generic_corpus_from_shared_queue_without_game_ids(self):
         with TemporaryDirectory() as directory:
@@ -189,8 +203,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                         load_model_variants(path)
 
     def test_limited_render_is_not_published_as_benchmark_sample(self):
-        with TemporaryDirectory() as directory, self.assertRaisesRegex(
-            ModelBenchmarkError, "limited"
+        with (
+            TemporaryDirectory() as directory,
+            self.assertRaisesRegex(ModelBenchmarkError, "limited"),
         ):
             benchmark_renderer(
                 ModelVariant("fake/limited", "fake"),
@@ -230,7 +245,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(aggregate["sample_count"], 1)
         self.assertEqual(len(aggregate["reports"]), 2)
         self.assertTrue(all(len(backend.requests) == 1 for backend in backends))
-        self.assertTrue(all(backend.requests[0].text == " Same line. " for backend in backends))
+        self.assertTrue(
+            all(backend.requests[0].text == " Same line. " for backend in backends)
+        )
 
     def test_strict_corpus_preserves_identity_and_rejects_drift_or_duplicates(self):
         with TemporaryDirectory() as directory:
@@ -281,7 +298,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                                 "line_id": "line-one",
                                 "character": "Voice",
                                 "text": text,
-                                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                                "text_sha256": hashlib.sha256(
+                                    text.encode()
+                                ).hexdigest(),
                             }
                         ],
                     }
@@ -290,10 +309,14 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             )
             for variants, pattern in (
                 ((ModelVariant("..", "fake"), ModelVariant("safe", "fake")), "safe"),
-                ((ModelVariant("Model", "fake"), ModelVariant("model", "fake")), "collide"),
+                (
+                    (ModelVariant("Model", "fake"), ModelVariant("model", "fake")),
+                    "collide",
+                ),
             ):
-                with self.subTest(pattern=pattern), self.assertRaisesRegex(
-                    ModelBenchmarkError, pattern
+                with (
+                    self.subTest(pattern=pattern),
+                    self.assertRaisesRegex(ModelBenchmarkError, pattern),
                 ):
                     benchmark_model_variants(
                         corpus,
@@ -331,8 +354,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
                 return SynthesisChunkStream(produce())
 
-        with TemporaryDirectory() as directory, self.assertRaisesRegex(
-            ModelBenchmarkError, "different request"
+        with (
+            TemporaryDirectory() as directory,
+            self.assertRaisesRegex(ModelBenchmarkError, "different request"),
         ):
             benchmark_renderer(
                 ModelVariant("fake/wrong", "fake"),

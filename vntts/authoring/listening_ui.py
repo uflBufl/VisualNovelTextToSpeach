@@ -231,11 +231,23 @@ class ModelListeningDialog(QDialog):
                 f"Unblinded aggregate report: {report_path}. Current leader: {leader}. "
                 "Production selection still requires manual approval."
             )
-            for widget in (self.play_a, self.play_b, self.skip_back, self.seek, self.skip_forward):
+            for widget in (
+                self.play_a,
+                self.play_b,
+                self.skip_back,
+                self.seek,
+                self.skip_forward,
+            ):
                 widget.setEnabled(False)
             return
         self.set_playback_indicator("ready")
-        for widget in (self.play_a, self.play_b, self.skip_back, self.seek, self.skip_forward):
+        for widget in (
+            self.play_a,
+            self.play_b,
+            self.skip_back,
+            self.seek,
+            self.skip_forward,
+        ):
             widget.setEnabled(True)
         self.dialogue.setPlainText(
             f"{self.current_trial.get('line_id') or self.current_trial['queue_id']}\n\n"
@@ -266,7 +278,10 @@ class ModelListeningDialog(QDialog):
         self.status.setText(f"Playing anonymous sample {side.upper()}{mode}.")
 
     def playback_state_changed(self, state):
-        if state == QMediaPlayer.PlaybackState.PlayingState and self.active_side is not None:
+        if (
+            state == QMediaPlayer.PlaybackState.PlayingState
+            and self.active_side is not None
+        ):
             self.set_playback_indicator("playing", self.active_side)
             self.started_sides.add(self.active_side)
             if self.started_sides == {"a", "b"}:
@@ -287,7 +302,9 @@ class ModelListeningDialog(QDialog):
         return f"{seconds // 60}:{seconds % 60:02d}"
 
     def update_time_label(self, position, duration):
-        self.time.setText(f"{self.format_time(position)} / {self.format_time(duration)}")
+        self.time.setText(
+            f"{self.format_time(position)} / {self.format_time(duration)}"
+        )
 
     def duration_changed(self, duration):
         self.seek.setRange(0, max(0, int(duration)))

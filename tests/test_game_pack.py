@@ -94,9 +94,7 @@ def write_synthetic_game_pack(root, *, include_generated=True):
         pack_path,
         {
             "game": {"id": "synthetic-game", "version": "1.0"},
-            "producers": [
-                {"name": "synthetic-extractor", "version": "0.6.0"}
-            ],
+            "producers": [{"name": "synthetic-extractor", "version": "0.6.0"}],
             "created_at": "2026-08-16T12:05:00Z",
         },
         components,
@@ -123,9 +121,9 @@ class GamePackImportTest(unittest.TestCase):
                     generated_audio_manifest="stale-generated.json",
                 )
             )
-            line = ChapterVoicePreloader.load_optional(settings.story_index).resolve_exact(
-                "Ada", text
-            )
+            line = ChapterVoicePreloader.load_optional(
+                settings.story_index
+            ).resolve_exact("Ada", text)
             voice = CharacterVoiceRegistry.from_file(settings.voice_manifest).resolve(
                 "Ada"
             )

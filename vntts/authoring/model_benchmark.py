@@ -48,7 +48,11 @@ class ModelVariant:
 
 def select_representative_items(items, sample_size=24):
     """Round-robin generation-ready records by delivery/emotion label."""
-    if isinstance(sample_size, bool) or not isinstance(sample_size, int) or sample_size < 1:
+    if (
+        isinstance(sample_size, bool)
+        or not isinstance(sample_size, int)
+        or sample_size < 1
+    ):
         raise ModelBenchmarkError("Benchmark sample size must be positive")
     buckets = defaultdict(list)
     for item in items:
@@ -80,7 +84,9 @@ def build_benchmark_corpus(queue_path, output_path, *, sample_size=24, name=None
         raise ModelBenchmarkError("Generation queue has no generation-ready samples")
     samples = []
     for item in selected:
-        character = str(item.get("voice_character") or item.get("speaker") or "Narrator")
+        character = str(
+            item.get("voice_character") or item.get("speaker") or "Narrator"
+        )
         samples.append(
             {
                 "id": str(item["queue_id"]),
@@ -109,7 +115,9 @@ def load_benchmark_corpus(path):
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ModelBenchmarkError(f"Unable to read benchmark corpus {path}: {error}") from error
+        raise ModelBenchmarkError(
+            f"Unable to read benchmark corpus {path}: {error}"
+        ) from error
     if not isinstance(document, dict) or (
         document.get("schema") != CORPUS_SCHEMA
         or document.get("schema_version") != SCHEMA_VERSION
@@ -122,15 +130,17 @@ def load_benchmark_corpus(path):
     seen_ids = set()
     for index, sample in enumerate(raw_samples, start=1):
         if not isinstance(sample, dict):
-            raise ModelBenchmarkError(f"Benchmark corpus sample {index} must be an object")
+            raise ModelBenchmarkError(
+                f"Benchmark corpus sample {index} must be an object"
+            )
         sample_id = _required_text(sample.get("id"), f"sample {index} id")
         line_id = _required_text(sample.get("line_id"), f"sample {index} line_id")
-        character = _required_text(
-            sample.get("character"), f"sample {index} character"
-        )
+        character = _required_text(sample.get("character"), f"sample {index} character")
         text = sample.get("text")
         if not isinstance(text, str) or not text:
-            raise ModelBenchmarkError(f"Benchmark corpus sample {index} text is invalid")
+            raise ModelBenchmarkError(
+                f"Benchmark corpus sample {index} text is invalid"
+            )
         text_hash = _required_sha256(
             sample.get("text_sha256"), f"sample {index} text_sha256"
         )
@@ -139,7 +149,9 @@ def load_benchmark_corpus(path):
                 f"Benchmark corpus sample {index} text_sha256 does not match exact text"
             )
         if sample_id in seen_ids:
-            raise ModelBenchmarkError(f"Duplicate benchmark corpus sample ID: {sample_id!r}")
+            raise ModelBenchmarkError(
+                f"Duplicate benchmark corpus sample ID: {sample_id!r}"
+            )
         seen_ids.add(sample_id)
         samples.append(
             {
@@ -280,9 +292,7 @@ def benchmark_model_variants(
                     model_output,
                     seed=seed,
                 )
-                reports.append(
-                    str(model_output / "report.json")
-                )
+                reports.append(str(model_output / "report.json"))
             finally:
                 stop = getattr(backend, "stop", None)
                 if callable(stop):
@@ -304,9 +314,13 @@ def load_model_variants(path):
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ModelBenchmarkError(f"Unable to read model variants {path}: {error}") from error
+        raise ModelBenchmarkError(
+            f"Unable to read model variants {path}: {error}"
+        ) from error
     if not isinstance(document, list) or len(document) < 2:
-        raise ModelBenchmarkError("Model variants must be a list with at least two entries")
+        raise ModelBenchmarkError(
+            "Model variants must be a list with at least two entries"
+        )
     variants = []
     for index, item in enumerate(document):
         if not isinstance(item, dict) or not all(
@@ -315,9 +329,7 @@ def load_model_variants(path):
         ):
             raise ModelBenchmarkError(f"Model variant {index} is invalid")
         voice = item.get("voice")
-        if "voice" in item and (
-            not isinstance(voice, str) or not voice.strip()
-        ):
+        if "voice" in item and (not isinstance(voice, str) or not voice.strip()):
             raise ModelBenchmarkError(
                 f"Model variant {index} voice must be non-empty text"
             )
@@ -372,7 +384,9 @@ def _sha256_file(path):
 
 
 def create_parser():
-    parser = argparse.ArgumentParser(description="Benchmark typed TTS renderers on one corpus")
+    parser = argparse.ArgumentParser(
+        description="Benchmark typed TTS renderers on one corpus"
+    )
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--queue", type=Path)
     parser.add_argument("--sample-size", type=int, default=24)

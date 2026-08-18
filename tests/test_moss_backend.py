@@ -434,9 +434,7 @@ class MossTTSBackendTest(unittest.TestCase):
             moss_generation_limits("Wait for me now.")[1], 5.166666666666666
         )
         self.assertEqual(
-            moss_generation_limits(
-                "The poachers shove her forward, and they set off."
-            ),
+            moss_generation_limits("The poachers shove her forward, and they set off."),
             (850, 8.5),
         )
         self.assertEqual(moss_generation_limits("word " * 100), (2000, 20.0))

@@ -107,7 +107,9 @@ class SynthesisChunkStream(Iterator[SynthesisChunk]):
     @property
     def result(self) -> SynthesisResult:
         if self._result is None:
-            raise RuntimeError("Synthesis result is available only after stream exhaustion")
+            raise RuntimeError(
+                "Synthesis result is available only after stream exhaustion"
+            )
         return self._result
 
     def collect(self) -> SynthesisResult:

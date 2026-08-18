@@ -33,9 +33,7 @@ LEGACY_KEY_SCHEMA = "r1999.model-listening-key"
 LEGACY_REPORT_SCHEMA = "r1999.model-listening-report"
 SCHEMA_VERSION = 1
 LEGACY_DIMENSIONS = ("timbre", "accent", "naturalness", "pronunciation")
-default_session_directory = (
-    get_local_data_directory() / "authoring" / "model-listening"
-)
+default_session_directory = get_local_data_directory() / "authoring" / "model-listening"
 
 
 class ModelListeningError(RuntimeError):
@@ -180,7 +178,9 @@ def _write_listening_session(
     pairs = []
     for item in corpus_items:
         queue_id = item["queue_id"]
-        available = [model_id for model_id in model_ids if queue_id in audio_by_model[model_id]]
+        available = [
+            model_id for model_id in model_ids if queue_id in audio_by_model[model_id]
+        ]
         for left, right in itertools.combinations(available, 2):
             pairs.append((item, left, right))
     if not pairs:
@@ -314,12 +314,17 @@ def load_listening_session(path):
                 )
         rating = trial.get("rating")
         if rating is not None and (
-            not isinstance(rating, dict) or rating.get("preference") not in {"a", "b", "tie"}
+            not isinstance(rating, dict)
+            or rating.get("preference") not in {"a", "b", "tie"}
         ):
-            raise ModelListeningError(f"Listening trial rating is invalid: {trial['trial_id']}")
+            raise ModelListeningError(
+                f"Listening trial rating is invalid: {trial['trial_id']}"
+            )
         audio = trial.get("audio")
         if not isinstance(audio, dict) or set(audio) != {"a", "b"}:
-            raise ModelListeningError(f"Listening trial audio is invalid: {trial['trial_id']}")
+            raise ModelListeningError(
+                f"Listening trial audio is invalid: {trial['trial_id']}"
+            )
         expected_hashes = trial.get("audio_sha256")
         if current_schema and (
             not isinstance(expected_hashes, dict) or set(expected_hashes) != {"a", "b"}
@@ -330,7 +335,9 @@ def load_listening_session(path):
         for side, relative in audio.items():
             candidate = _within(path.parent, relative, "listening trial audio")
             if not candidate.is_file():
-                raise ModelListeningError(f"Listening trial audio is missing: {candidate}")
+                raise ModelListeningError(
+                    f"Listening trial audio is missing: {candidate}"
+                )
             expected_hash = (
                 expected_hashes.get(side)
                 if isinstance(expected_hashes, dict)
@@ -345,10 +352,14 @@ def _load_blind_key(session_path, session):
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
     if key_path.is_file() and stat.S_IMODE(key_path.stat().st_mode) != 0o600:
         raise ModelListeningError("Listening session blind key mode must be 0600")
-    if not key_path.is_file() or sha256_file(key_path) != session.get("blind_key_sha256"):
+    if not key_path.is_file() or sha256_file(key_path) != session.get(
+        "blind_key_sha256"
+    ):
         raise ModelListeningError("Listening session blind key is missing or changed")
     expected_schema = (
-        LEGACY_KEY_SCHEMA if session.get("schema") == LEGACY_SESSION_SCHEMA else KEY_SCHEMA
+        LEGACY_KEY_SCHEMA
+        if session.get("schema") == LEGACY_SESSION_SCHEMA
+        else KEY_SCHEMA
     )
     key = _load_schema(key_path, {expected_schema}, "listening key")
     if key.get("source_kind") != session.get("source_kind") or key.get(
@@ -359,16 +370,16 @@ def _load_blind_key(session_path, session):
     assignments = key.get("assignments")
     if not isinstance(models, list) or not isinstance(assignments, list):
         raise ModelListeningError("Listening session blind key is invalid")
-    model_ids = [
-        model.get("model_id") for model in models if isinstance(model, dict)
-    ]
+    model_ids = [model.get("model_id") for model in models if isinstance(model, dict)]
     if len(model_ids) != len(models) or len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Listening session blind key models are invalid")
     assignment_ids = [
         item.get("trial_id") for item in assignments if isinstance(item, dict)
     ]
     trial_ids = [trial["trial_id"] for trial in session["trials"]]
-    if len(assignment_ids) != len(assignments) or sorted(assignment_ids) != sorted(trial_ids):
+    if len(assignment_ids) != len(assignments) or sorted(assignment_ids) != sorted(
+        trial_ids
+    ):
         raise ModelListeningError("Listening session blind assignments are incomplete")
     for assignment in assignments:
         trial = next(
@@ -380,7 +391,9 @@ def _load_blind_key(session_path, session):
         for side in ("a", "b"):
             value = assignment.get(side)
             if not isinstance(value, dict) or value.get("model_id") not in model_ids:
-                raise ModelListeningError("Listening session blind assignment is invalid")
+                raise ModelListeningError(
+                    "Listening session blind assignment is invalid"
+                )
             if session.get("schema") == SESSION_SCHEMA:
                 expected_hash = value.get("audio_sha256")
                 if not _is_sha256(expected_hash):
@@ -389,7 +402,9 @@ def _load_blind_key(session_path, session):
                     )
                 source = Path(str(value.get("source") or "")).expanduser()
                 if source.is_file():
-                    _verify_pcm_audio(source.resolve(), expected_hash, "blind source audio")
+                    _verify_pcm_audio(
+                        source.resolve(), expected_hash, "blind source audio"
+                    )
                 if trial["audio_sha256"].get(side) != expected_hash:
                     raise ModelListeningError(
                         "Listening session alias and assignment hashes disagree"
@@ -407,12 +422,16 @@ def _load_blind_key(session_path, session):
                     )
             sides.append(value["model_id"])
         if sides[0] == sides[1]:
-            raise ModelListeningError("Listening trial cannot compare a model with itself")
+            raise ModelListeningError(
+                "Listening trial cannot compare a model with itself"
+            )
     return key
 
 
 def next_pending_trial(session):
-    return next((trial for trial in session["trials"] if trial.get("rating") is None), None)
+    return next(
+        (trial for trial in session["trials"] if trial.get("rating") is None), None
+    )
 
 
 def listening_progress(session):
@@ -433,7 +452,9 @@ def record_trial_preference(
     session_path = Path(session_path).expanduser().resolve()
     session = load_listening_session(session_path)
     _load_blind_key(session_path, session)
-    trial = next((item for item in session["trials"] if item.get("trial_id") == trial_id), None)
+    trial = next(
+        (item for item in session["trials"] if item.get("trial_id") == trial_id), None
+    )
     if trial is None:
         raise ModelListeningError(f"Unknown listening trial: {trial_id}")
     if trial.get("rating") is not None and not overwrite:
@@ -532,7 +553,9 @@ def _report_fields(session, key):
         side_models = {side: assignment[side]["model_id"] for side in ("a", "b")}
         for model_id in side_models.values():
             if model_id not in stats:
-                raise ModelListeningError(f"Blind key references unknown model {model_id!r}")
+                raise ModelListeningError(
+                    f"Blind key references unknown model {model_id!r}"
+                )
             stats[model_id]["reviewed_trials"] += 1
         preferred = rating["preference"]
         if preferred == "tie":
@@ -571,7 +594,11 @@ def _report_fields(session, key):
         )
     models.sort(
         key=lambda item: (
-            -(item["preference"]["rate"] if item["preference"]["rate"] is not None else -1),
+            -(
+                item["preference"]["rate"]
+                if item["preference"]["rate"] is not None
+                else -1
+            ),
             -item["preference"]["wins"],
             item["model_id"],
         )
@@ -619,15 +646,18 @@ def _load_model_report(path):
         if not isinstance(sample_id, str) or not sample_id.strip():
             raise ModelListeningError(f"Model report sample {index} id is invalid")
         if sample_id in seen_ids:
-            raise ModelListeningError(f"Duplicate model report sample ID: {sample_id!r}")
+            raise ModelListeningError(
+                f"Duplicate model report sample ID: {sample_id!r}"
+            )
         seen_ids.add(sample_id)
         if not isinstance(line_id, str) or not line_id.strip():
             raise ModelListeningError(f"Model report sample {index} line_id is invalid")
         if not isinstance(text, str) or not text:
             raise ModelListeningError(f"Model report sample {index} text is invalid")
-        if not _is_sha256(text_hash) or hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest() != text_hash:
+        if (
+            not _is_sha256(text_hash)
+            or hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash
+        ):
             raise ModelListeningError(
                 f"Model report sample {index} text_sha256 does not match exact text"
             )
@@ -668,7 +698,9 @@ def _verify_pcm_audio(path, expected_hash, label):
     try:
         _probe_supported_wav(path)
     except (OSError, ValueError, struct.error) as error:
-        raise ModelListeningError(f"{label.title()} is not a supported WAV: {path}") from error
+        raise ModelListeningError(
+            f"{label.title()} is not a supported WAV: {path}"
+        ) from error
     if expected_hash is not None and (
         not _is_sha256(expected_hash) or sha256_file(path) != expected_hash
     ):
@@ -679,7 +711,11 @@ def _probe_supported_wav(path):
     """Validate the PCM16 or legacy float32 WAV envelope without decoding."""
     with Path(path).open("rb") as stream:
         header = stream.read(12)
-        if len(header) != 12 or header[:4] not in {b"RIFF", b"RF64"} or header[8:] != b"WAVE":
+        if (
+            len(header) != 12
+            or header[:4] not in {b"RIFF", b"RF64"}
+            or header[8:] != b"WAVE"
+        ):
             raise ValueError("missing RIFF/WAVE header")
         format_fields = None
         data_size = None
@@ -698,11 +734,18 @@ def _probe_supported_wav(path):
                 data_size = chunk_size
         if format_fields is None or not data_size:
             raise ValueError("missing WAV format or audio data")
-        format_tag, channels, sample_rate, _byte_rate, _block_align, bits = format_fields
-        if channels not in {1, 2} or sample_rate <= 0 or (format_tag, bits) not in {
-            (1, 16),
-            (3, 32),
-        }:
+        format_tag, channels, sample_rate, _byte_rate, _block_align, bits = (
+            format_fields
+        )
+        if (
+            channels not in {1, 2}
+            or sample_rate <= 0
+            or (format_tag, bits)
+            not in {
+                (1, 16),
+                (3, 32),
+            }
+        ):
             raise ValueError("unsupported WAV encoding")
 
 
@@ -764,7 +807,10 @@ def _within(root, value, label):
 
 def _load_schema(path, schemas, description):
     value = _load_json(path, description)
-    if value.get("schema") not in schemas or value.get("schema_version") != SCHEMA_VERSION:
+    if (
+        value.get("schema") not in schemas
+        or value.get("schema_version") != SCHEMA_VERSION
+    ):
         raise ModelListeningError(f"Unsupported {description} schema")
     return value
 
@@ -773,7 +819,9 @@ def _load_json(path, description):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ModelListeningError(f"Unable to read {description} {path}: {error}") from error
+        raise ModelListeningError(
+            f"Unable to read {description} {path}: {error}"
+        ) from error
     if not isinstance(value, dict):
         raise ModelListeningError(f"{description.title()} must be a JSON object")
     return value
@@ -843,8 +891,12 @@ def main(argv=None):
                 report_path=Path(options.session).resolve().with_name("report.json"),
             )
             completed, total = listening_progress(updated)
-            return cli_success(f"Saved {options.trial_id}; progress: {completed}/{total}")
-        output = options.output or Path(options.session).resolve().with_name("report.json")
+            return cli_success(
+                f"Saved {options.trial_id}; progress: {completed}/{total}"
+            )
+        output = options.output or Path(options.session).resolve().with_name(
+            "report.json"
+        )
         report = aggregate_listening_report(options.session, output)
         return cli_success(
             f"Listening report: {output} ({report['completed_trials']} completed, "

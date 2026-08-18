@@ -92,8 +92,12 @@ class AuthoringListeningTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             reports = write_model_reports(root)
-            first = create_listening_session_from_reports(reports, root / "first", seed=17)
-            second = create_listening_session_from_reports(reports, root / "second", seed=17)
+            first = create_listening_session_from_reports(
+                reports, root / "first", seed=17
+            )
+            second = create_listening_session_from_reports(
+                reports, root / "second", seed=17
+            )
             first_session = load_listening_session(first)
             second_session = load_listening_session(second)
             public = first.read_text(encoding="utf-8")
@@ -163,7 +167,10 @@ class AuthoringListeningTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelListeningError, "already rated"):
                 record_trial_preference(session_path, first_trial["trial_id"], "tie")
             record_trial_preference(
-                session_path, first_trial["trial_id"], first_trial["rating"]["preference"], overwrite=True
+                session_path,
+                first_trial["trial_id"],
+                first_trial["rating"]["preference"],
+                overwrite=True,
             )
             report = aggregate_listening_report(
                 session_path, session_path.with_name("report.json")
@@ -187,13 +194,17 @@ class AuthoringListeningTest(unittest.TestCase):
                 imported / "report.json",
                 *sorted((imported / "audio").glob("*.wav")),
             ]
-            before = {path.relative_to(imported): sha256_file(path) for path in protected}
+            before = {
+                path.relative_to(imported): sha256_file(path) for path in protected
+            }
             for name in ("source-a.wav", "source-b.wav", "source-report.json"):
                 (root / name).unlink()
 
             session = load_listening_session(session_path)
             report = ensure_listening_report(session_path)
-            after = {path.relative_to(imported): sha256_file(path) for path in protected}
+            after = {
+                path.relative_to(imported): sha256_file(path) for path in protected
+            }
 
         self.assertEqual(listening_progress(session), (1, 1))
         self.assertIsNone(next_pending_trial(session))
@@ -208,13 +219,16 @@ class AuthoringListeningTest(unittest.TestCase):
             session = json.loads(session_path.read_text(encoding="utf-8"))
             session["trials"][0]["rating"] = None
             session["completed_count"] = 0
-            session_path.write_text(json.dumps(session, sort_keys=True), encoding="utf-8")
+            session_path.write_text(
+                json.dumps(session, sort_keys=True), encoding="utf-8"
+            )
             (source / "report.json").unlink()
             imported = import_listening_session(source, root / "app-data").destination
             imported_session = imported / "session.json"
             key_hash = sha256_file(imported / ".blind-key.json")
             audio_hashes = {
-                path.name: sha256_file(path) for path in (imported / "audio").glob("*.wav")
+                path.name: sha256_file(path)
+                for path in (imported / "audio").glob("*.wav")
             }
             for name in ("source-a.wav", "source-b.wav", "source-report.json"):
                 (root / name).unlink()
@@ -226,7 +240,8 @@ class AuthoringListeningTest(unittest.TestCase):
             )
             preserved_key_hash = sha256_file(imported / ".blind-key.json")
             preserved_audio_hashes = {
-                path.name: sha256_file(path) for path in (imported / "audio").glob("*.wav")
+                path.name: sha256_file(path)
+                for path in (imported / "audio").glob("*.wav")
             }
 
         self.assertTrue(report["complete"])
@@ -249,7 +264,9 @@ class AuthoringListeningTest(unittest.TestCase):
                         session["completed_count"] = 1
                     else:
                         session["trials"][0]["audio"]["a"] = "../escape.wav"
-                    session_path.write_text(json.dumps(session, sort_keys=True), encoding="utf-8")
+                    session_path.write_text(
+                        json.dumps(session, sort_keys=True), encoding="utf-8"
+                    )
 
                 with self.assertRaises(ModelListeningError):
                     if mutation == "key":
@@ -275,7 +292,9 @@ class AuthoringListeningTest(unittest.TestCase):
                 else:
                     audio = Path(document["samples"][0]["audio"])
                     if mutation == "checksum":
-                        write_pcm16_wav(audio, np.full(800, 0.3, dtype=np.float32), 16_000)
+                        write_pcm16_wav(
+                            audio, np.full(800, 0.3, dtype=np.float32), 16_000
+                        )
                     else:
                         audio.write_bytes(b"not a wave")
                         document["samples"][0]["audio_sha256"] = sha256_file(audio)
@@ -351,9 +370,12 @@ class AuthoringListeningTest(unittest.TestCase):
                     raise OSError("synthetic report failure")
                 return original_write(path, value, **kwargs)
 
-            with patch.object(
-                listening_module, "atomic_write_json", side_effect=fail_report
-            ), self.assertRaisesRegex(ModelListeningError, "Preference was saved"):
+            with (
+                patch.object(
+                    listening_module, "atomic_write_json", side_effect=fail_report
+                ),
+                self.assertRaisesRegex(ModelListeningError, "Preference was saved"),
+            ):
                 record_trial_preference(
                     session_path, trial_id, "a", report_path=report_path
                 )

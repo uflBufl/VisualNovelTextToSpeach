@@ -137,7 +137,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         self.assertEqual(plan.summary.ready, 1)
         self.assertEqual(plan.summary.missing_reference, 0)
 
-    def test_collection_preflight_applies_canonical_policy_and_preserves_extensions(self):
+    def test_collection_preflight_applies_canonical_policy_and_preserves_extensions(
+        self,
+    ):
         records = [
             story_record("line-1", "absent"),
             story_record("line-2", "available"),
@@ -201,7 +203,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         )
         self.assertEqual(queue.items[0].voice_character, "Ada")
         self.assertEqual(queue.items[0].document["emotion"], {"primary": "quiet"})
-        self.assertEqual(queue.items[0].document["prompt_adapters"], {"generic": "Speak softly."})
+        self.assertEqual(
+            queue.items[0].document["prompt_adapters"], {"generic": "Speak softly."}
+        )
         self.assertEqual(queue.items[0].document["context"], {"scene": "observatory"})
         self.assertEqual(queue.items[-1].action, "generate")
         self.assertEqual(
@@ -224,7 +228,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             story_path, manifest_path = write_inputs(
                 root, [story_record("line-1", "unknown")]
             )
-            with self.assertRaisesRegex(VoiceGenerationQueueError, "explicit unknown_action"):
+            with self.assertRaisesRegex(
+                VoiceGenerationQueueError, "explicit unknown_action"
+            ):
                 inspect_generation_queue(story_path, manifest_path)
             resolved = inspect_generation_queue(
                 story_path,
@@ -295,7 +301,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             built = json.loads(build_stdout.getvalue())
             self.assertEqual(preflight["summary"], built["summary"])
             self.assertEqual(built["output"], str(output.resolve()))
-            self.assertEqual(VoiceGenerationQueue.load(output).items[0].action, "generate")
+            self.assertEqual(
+                VoiceGenerationQueue.load(output).items[0].action, "generate"
+            )
 
     def test_voice_manifest_must_use_current_validated_contract(self):
         with TemporaryDirectory() as directory:
@@ -340,9 +348,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                     )
 
                 self.assertFalse(output.exists())
-                self.assertRegex(
-                    errors.getvalue(), "POSIX-relative|manifest directory"
-                )
+                self.assertRegex(errors.getvalue(), "POSIX-relative|manifest directory")
 
     def test_symlinked_voice_reference_cannot_leave_manifest_directory(self):
         with TemporaryDirectory() as directory:
@@ -386,9 +392,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             queue.metadata["source_voice_manifest_entries_sha256"],
             r"^[0-9a-f]{64}$",
         )
-        self.assertRegex(
-            queue.metadata["source_story_index_sha256"], r"^[0-9a-f]{64}$"
-        )
+        self.assertRegex(queue.metadata["source_story_index_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(
             queue.metadata["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$"
         )
