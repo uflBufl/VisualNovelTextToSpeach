@@ -22,12 +22,19 @@ Follow the evidence-backed order and invariants in
       portrait groups separate, retain crying-only rejects, and do not merge
       `Poacher I`, `Poacher II` or Glyndŵr or treat configured-unavailable
       audio as installed.
-- [ ] Manually audition reference candidates for the exact typed
-      `reference_comparison` failure cohorts, then publish each chosen ordering
-      with `select-reference` and generate only its explicit queue IDs. Objective
-      `reference-report` metrics cannot decide speaker identity, background
-      contamination or pronunciation. Keep the 20-second ceiling and do not
-      mass retry a low-yield cohort.
+- [ ] Review the 55 technically valid source-bound Character Story WAVs using
+      every technical-attention item plus a stratified clean sample from each
+      of the six exact reference variants. Expand a variant's review if the
+      sample finds a substantive voice, pronunciation, pacing or contamination
+      defect. Generation made no approval; the approved manifest remains the
+      ten carried Rhiannon entries.
+- [ ] Repair the remaining 18 source-bound failures without broad retries:
+      run the 12 exact sentence-boundary candidates with checksum-bound segment
+      provenance, move the four three-attempt missed-EOS items to the configured
+      offline fallback backend, and manually audition alternatives for the two
+      exact `reference_comparison` silence failures before `select-reference`.
+      Objective metrics cannot decide speaker identity, background
+      contamination or pronunciation. Keep the 20-second ceiling.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

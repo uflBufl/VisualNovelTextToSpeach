@@ -194,6 +194,20 @@ The source import, reviewed workspace, plan and quality-review inventories were
 byte-identical before and after. No generation, new review decision or final
 pack publication ran.
 
+A later controlled pass selected exactly the 73 bound queue IDs. Every item
+received one seed-0 attempt; 44 passed all WAV and speech gates. The read-only
+repair plan authorized one seed-1 attempt for 15 short missed-EOS failures,
+recovering eight, then one final seed-2 attempt for the remaining seven,
+recovering three. The final source-bound cohort is therefore 55 generated WAVs
+awaiting review and 18 typed failures. The remaining actions are 12
+sentence-boundary repairs, four exhausted-primary offline fallbacks and two
+human reference comparisons. The authoritative state SHA-256 is
+`f3e2641f5e23307cefbe30ae48179f11c00abfebcd79351e156f3ad3cf19c2c7`.
+All 323 non-carried seed records and all 15 carried Rhiannon records remained
+unchanged; the approved-only manifest still has ten entries. No partial WAV,
+active attempt or lease remained, and no new approval or final publication was
+made.
+
 Use the published `voice-manifest.json` when creating a new config-addressed
 workspace. A partial manifest intentionally leaves unrelated queue lines in the
 missing-reference preflight cohort; exact selected collection/queue retries can

@@ -85,6 +85,16 @@ three base Rhiannon references and carried all 15 terminal Rhiannon decisions
 missing-reference cohort from 184 to 164 lines. Forty-one lower-priority source
 candidates remain unreviewed evidence, not implicit voice authority.
 
+The first exact-ID generation pass attempted all 73 bound items with seed 0 and
+no automatic retry. It produced 44 technically valid WAVs. A bounded second
+seed recovered eight of 15 eligible missed-EOS failures, and the third and
+final seed recovered three of the remaining seven. The final cohort has 55
+generated items awaiting review and 18 failures: 12 safe sentence-boundary
+repair candidates, four exhausted-primary offline-fallback candidates and two
+silence failures requiring reference comparison. No result was approved by
+generation, and the ten carried approved Rhiannon entries remain the complete
+approved manifest.
+
 ## Coverage order
 
 Pregeneration follows a fixed order so a fallback cannot hide recoverable game
