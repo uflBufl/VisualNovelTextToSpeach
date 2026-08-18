@@ -5,12 +5,57 @@ sections after their implementation has been verified and committed.
 
 ## Offline authoring and application responsibility split
 
-### P1 - Preserve existing generation work
+### P0 - Maximize pregenerated coverage without losing speaker identity
 
+Follow the evidence-backed order and invariants in
+[`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
+
+- [ ] Recover game-owned references for the current missing roles before using
+      a fallback. Import and audit the installed same-speaker candidates for
+      Aderyn, Dobharchú, Mrs. Owen, Hotelier, Poacher and Aderyn's Father,
+      preserving exact bank/media hashes and keeping Aderyn's distinct
+      portrait/bank variants separate until auditioned. This can potentially
+      cover 214 of the current 237 missing-reference lines. Re-audit `Poacher
+      I`, `Poacher II` and Glyndŵr without merging similarly named roles or
+      treating configured-unavailable audio as installed.
+- [ ] Add a versioned, explicit pregeneration missing-voice policy whose default
+      is `block` and whose opt-in fallback can map an exact role list or all
+      still-unresolved roles to Narrator. Preserve source speaker/character,
+      record effective `Narrator -> Centurion` synthesis and all control hashes,
+      and show source role and synthesis voice separately in review. Do not
+      prepend speaker names to canonical story WAVs; evaluate a separate
+      optional `announce speaker on change` accessibility route instead.
+- [ ] Separate the selected Narrator fallback voice from force-live routing.
+      With `prefer-generated`, approved Centurion WAVs must play first and
+      Pocket/Centurion must handle only absent, pending, rejected, failed or
+      invalid Narrator artifacts. A saved Centurion choice must not bypass all
+      pregenerated Narrator tracks.
+- [ ] Replace error-string-only failure handling with persisted typed cohorts
+      and a report grouped by role, backend/model/profile, reference digest,
+      attempt/seed, text length/punctuation, limit utilization and silence
+      measurements. Reconcile the current 211 failures as 167
+      audio-limit/missed-EOS and 44 speech-silence outcomes before retrying.
+- [ ] Implement bounded cohort-specific prevention: evidence-based text
+      normalization, safe sentence-boundary segmentation/concatenation for
+      suitable long lines, limited seed diversification, reference comparison,
+      and edge-silence handling. Keep the 20-second ceiling, never split inside
+      a phrase, and do not reintroduce token-level duration control or mass
+      retry a low-yield cohort.
+- [ ] Add an immutable offline fallback-backend contract so exact cohorts that
+      still fail MOSS can be pregenerated with Pocket TTS. Bind provider/model,
+      provider-specific seed semantics, references and output hashes per item;
+      carry forward unchanged terminal decisions without mutating the existing
+      MOSS workspace. Apply the same WAV, silence and review gates to Pocket.
+- [ ] Add an explicit terminal `live_fallback` route decision after source
+      discovery and offline fallback generation are exhausted. Final hybrid
+      publication must distinguish approved source/generated audio from a
+      deliberate Pocket fallback; pending review and raw failed state remain
+      nonterminal.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
-      `moss-tts-local-transformer-v1.5-mlx` model after their voice references
-      are available. Preserve source-audio candidates instead of replacing them
-      with generated speech.
+      primary model and fallback policy after references are ready. Preserve
+      source-audio candidates, invalidate review on changed WAV hashes, review
+      every technical flag plus a stratified clean sample, and expand review
+      whenever that sample finds a substantive cohort defect.
 
 ## Live mode
 
@@ -21,20 +66,12 @@ sections after their implementation has been verified and committed.
       and 44 characters of the first three 94, 24, and 69-character lines;
       each fragment now resolves as one unique incomplete story prefix and must
       remain pending until the full line or a verified generated route is ready.
-- [ ] Validate the explicit Narrator voice dialog: selecting a candidate must
-      bypass pregenerated narrator tracks with the chosen live voice, while
-      "Use pregenerated narrator tracks when available" must remove that
-      override and restore artifact routing. The manual presentation decision
-      selected Centurion; retain Paper Heron as an ordinary character voice.
-  - [ ] Manually review the 118 current Centurion Narrator WAVs, retaining all
-        proven Rhiannon outcomes. Start with the 27 rows in the workbench's
-        `Technical attention` filter, then expose the resulting approved-only
-        manifest for the Character Story generated-audio routing acceptance
-        run. The 195 failed Narrator items classify as 161 bounded
-        missed-EOS/audio-limit and 34 speech-silence outcomes; 96 already failed
-        under the current controls, and a diagnostic retry of the 24 shortest
-        legacy failures completed only three. Do not raise the bounded audio
-        cap or mass-retry the other 99 legacy failures blindly.
+- [ ] Validate the split Narrator controls in a real Character Story run:
+      approved pregenerated Centurion tracks take precedence, while Pocket uses
+      Centurion only as the missing/failed live fallback. Retain Paper Heron as
+      an ordinary character voice. The current approved-only manifest has 69
+      entries; the 61 remaining clean Narrator WAVs need the risk-based review
+      policy above rather than another unconditional listen-all gate.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the
