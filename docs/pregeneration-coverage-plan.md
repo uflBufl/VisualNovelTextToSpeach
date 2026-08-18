@@ -48,6 +48,27 @@ in the current story index. Glyndŵr's one line points only to
 configured-unavailable audio. These 23 lines are the current evidence boundary
 for an explicit fallback rather than an inferred character voice.
 
+The first listening pass on 2026-08-18 selected three exact references:
+
+- Aderyn's Father media `209566863` from `npcnoname324`, reference SHA-256
+  `a967cb0a5909dc6e46fbb97565e38e3d0018435a2cf829284709630ed67947a6`;
+- Dobharchú media `951691760` from `npcnoname323`, reference SHA-256
+  `130c9242bcd322ba71cf64ce6125cb7fcc91dcae3cdacbfd08fc4c5f3e40bc82`;
+  media `875779076` remains a valid but shorter reserve; and
+- Poacher media `289048377` from `npcnoname325`, reference SHA-256
+  `42c1ccbf0fb3e784d4c0414c37a9690c7fdf0d22cb244614a669beeb96548f0e`.
+
+Their source hashes and normalized reference hashes exactly match the audition
+report, and the new manifest entries cover 55 lines in the current 592-item
+Character Story queue. The existing workspace remains immutable; generation
+must use a new config-addressed workspace containing the updated manifest.
+Aderyn crying-only media `369040295` and `172299031` are rejected. The reviewer
+heard the `hero3146` and `npcnoname326` Aderyn groups as different voice
+presentations, possibly different ages, so they must not be collapsed into one
+character-level reference. Mrs. Owen media `599773947` remains uncertain: its
+voice sounded usable, but the speech was not intelligible enough to approve as
+a cloning reference.
+
 ## Coverage order
 
 Pregeneration follows a fixed order so a fallback cannot hide recoverable game

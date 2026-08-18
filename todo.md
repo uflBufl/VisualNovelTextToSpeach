@@ -10,16 +10,16 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Listen to and decide the checksum-bound Character Story audition set,
-      then import only accepted references for Aderyn, Dobharchú, Mrs. Owen,
-      Hotelier, Poacher and Aderyn's Father and re-run workspace preflight. The
-      extractor-side source/index/bank/media audit is complete: 53 candidates
-      across 19 portrait/bank groups, 12 objective technical passes and two
-      transcript conflicts. Preserve Aderyn variants and the anomalous Mrs.
-      Owen group; Hotelier has no minimum-duration pass. Do not merge `Poacher
-      I`, `Poacher II` or Glyndŵr or treat configured-unavailable audio as
-      installed. Accepted candidates can potentially cover 214 of the current
-      237 missing-reference lines.
+- [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
+      and Hotelier, then create a new config-addressed workspace and re-run
+      preflight. Aderyn's Father, Dobharchú and Poacher are imported from the
+      exact user-selected media and cover 55 of the current 237 blocked lines.
+      Keep Aderyn's `hero3146` and `npcnoname326` portrait groups separate; the
+      crying-only media `369040295` and `172299031` are rejected. Mrs. Owen's
+      technically passing clip remains uncertain because its speech was not
+      intelligible to the reviewer, and Hotelier has no minimum-duration pass.
+      Do not merge `Poacher I`, `Poacher II` or Glyndŵr or treat
+      configured-unavailable audio as installed.
 - [ ] Manually audition reference candidates for the exact typed
       `reference_comparison` failure cohorts, then publish each chosen ordering
       with `select-reference` and generate only its explicit queue IDs. Objective
