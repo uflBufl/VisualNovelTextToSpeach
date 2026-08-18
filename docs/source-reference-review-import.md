@@ -121,8 +121,12 @@ Poacher portrait `505601` (4, 2, 2), and Aderyn's Father portrait `534604`
 authority.
 
 That session predates embedded portrait images and remains preserved at `0/4`.
-The portrait-enabled successor is published under a distinct directory so the
-original evidence is never overwritten. Exact installed game sprites exist for
+The portrait-enabled successor is published at
+`authoring/source-reference-quality-reviews/character-story-20260818-portraits`
+with initial `review.json` SHA-256
+`bc28f87548fcf2a3e7db9644f0f0fdaacb94ef5a28710699046e3bd335d32d53`.
+It starts at `0/4` under a distinct directory, so the original evidence was not
+overwritten. Exact installed game sprites exist for
 both Dobharchú cards (`534704`, `534703`) and Aderyn's Father (`534604`). The
 exact Poacher sprite `505601` was not found in the installed bundle inventory,
 so its card intentionally renders the missing-asset placeholder.
