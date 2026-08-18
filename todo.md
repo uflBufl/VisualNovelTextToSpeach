@@ -10,15 +10,20 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
-      and Hotelier, then create a new config-addressed workspace and re-run
+- [ ] Finish the checksum-bound Character Story audition for the remaining
+      Aderyn/Rhiannon age variants, Mrs. Owen and Hotelier, then create a new
+      config-addressed workspace and re-run
       preflight. The accepted Aderyn's Father, Dobharchú and Poacher bindings
       cover 53 exact queue IDs and reduced the current missing-reference cohort
       from 237 to 184 lines.
-      Keep Aderyn's `hero3146` and `npcnoname326` portrait groups separate; the
-      crying-only media `369040295` and `172299031` are rejected. Mrs. Owen's
-      technically passing clip remains uncertain because its speech was not
-      intelligible to the reviewer, and Hotelier has no minimum-duration pass.
+      Aderyn is Rhiannon in childhood. Media `477089679` is accepted as the
+      child-voice anchor for exact portrait `533706`; keep the source speaker
+      `Aderyn` and do not automatically flatten other ages/portraits into adult
+      Rhiannon or this child variant. Keep `hero3146` and `npcnoname326`
+      portrait groups separate until their age-appropriate reuse is reviewed;
+      the crying-only media `369040295` and `172299031` are rejected. Mrs.
+      Owen's technically passing clip remains uncertain because its speech was
+      not intelligible to the reviewer, and Hotelier has no minimum-duration pass.
       Do not merge `Poacher I`, `Poacher II` or Glyndŵr or treat
       configured-unavailable audio as installed.
 - [ ] Manually audition reference candidates for the exact typed

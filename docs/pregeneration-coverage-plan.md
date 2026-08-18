@@ -62,12 +62,17 @@ Their source hashes and normalized reference hashes exactly match the audition
 report, and the new manifest entries cover 55 lines in the current 592-item
 Character Story queue. The existing workspace remains immutable; generation
 must use a new config-addressed workspace containing the updated manifest.
-Aderyn crying-only media `369040295` and `172299031` are rejected. The reviewer
-heard the `hero3146` and `npcnoname326` Aderyn groups as different voice
-presentations, possibly different ages, so they must not be collapsed into one
-character-level reference. Mrs. Owen media `599773947` remains uncertain: its
-voice sounded usable, but the speech was not intelligible enough to approve as
-a cloning reference.
+Aderyn is Rhiannon in childhood. The source name `Aderyn` remains authoritative
+provenance rather than being rewritten to the adult display name. The reviewer
+accepted media `477089679` (reference SHA-256
+`49a0a42bc2cbac573ab0a0518e54edfb8c59709f76feb64f5cc41e7fd99e42b8`) as the
+child-voice anchor for exact portrait `533706`. This does not authorize using
+adult Rhiannon references for Aderyn or applying the child anchor to every
+other age/portrait group. The `hero3146` and `npcnoname326` groups remain
+variant-separated until listening establishes an age-appropriate reuse policy.
+Aderyn crying-only media `369040295` and `172299031` are rejected. Mrs. Owen
+media `599773947` remains uncertain: its voice sounded usable, but the speech
+was not intelligible enough to approve as a cloning reference.
 
 ## Coverage order
 
