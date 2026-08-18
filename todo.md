@@ -10,6 +10,17 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
+- [ ] Consume the extractor's versioned checksum-bound reference-review
+      document without flattening portrait/bank variants. Map accepted anchors
+      to exact queue IDs and synthesis controls, create a new config-addressed
+      workspace, and preserve rejected/uncertain decisions across unchanged
+      report and WAV hashes.
+
+- [ ] Generate one fixed evaluation corpus for every accepted reference or
+      approved portrait cluster and provide blind source/result A/B review.
+      Rank by affected queue-line count. Source-audio technical acceptance must
+      not imply generated cadence, pronunciation or speaker-similarity approval.
+
 - [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
       and Hotelier, then create a new config-addressed workspace and re-run
       preflight. Aderyn's Father, Dobharchú and Poacher are imported from the

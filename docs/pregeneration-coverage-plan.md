@@ -91,6 +91,21 @@ audio or a missed extraction path:
    explicit live-fallback decision for genuinely unresolved lines rather than
    pretending a failed render is complete.
 
+## Semi-automatic reference selection
+
+The source-reference review contract is defined in the extractor's
+`docs/reference-audition-automation.md`. Automation should eliminate repetitive
+listening, not guess identity. The extractor can reject non-speech, align local
+ASR to the exact transcript, estimate contamination and speaker count, cluster
+embeddings within exact portrait/bank groups and rank groups by coverage. A
+human still approves the first anchor for every ambiguous group.
+
+VNTTS then consumes checksum-bound decisions, keeps portrait variants separate
+and synthesizes one fixed evaluation corpus per accepted anchor. Blind
+source/result comparison is the second gate. Only candidates passing both the
+source and generated-quality gates may enter a new config-addressed workspace;
+changed WAV or decision hashes invalidate only affected controls.
+
 ## Explicit unknown-role Narrator policy
 
 The default missing-voice policy is `block`. A config-addressed workspace may
