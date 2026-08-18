@@ -36,12 +36,17 @@ of the nine blocked roles:
 | Poacher | 4 | `activityvoc_story_npcnoname325_beiai.bnk` |
 | Aderyn's Father | 1 | `activityvoc_story_npcnoname324_beiai.bnk` |
 
-Those candidates cover 214 blocked lines if their bank/media hashes, speaker
-identity, portrait grouping and listening checks pass. `Poacher I` (13 lines)
-and `Poacher II` (nine lines) have no exact installed same-speaker route in the
-current story index. Glyndŵr's one line points only to configured-unavailable
-audio. These 23 lines are the current evidence boundary for an explicit
-fallback rather than an inferred character voice.
+The extractor-side audit is complete and checksum-bound: 53 candidate WAVs
+across 19 portrait/bank groups, with 12 objective technical passes and two
+reused-media transcript conflicts. This is deliberately not a manifest-ready
+result. Aderyn spans distinct portrait/bank groups, one Mrs. Owen group is
+anomalous, and Hotelier has no candidate meeting the minimum-duration gate.
+Only a listening decision may promote a candidate into the VNTTS voice
+manifest. Accepted candidates can cover 214 blocked lines. `Poacher I` (13
+lines) and `Poacher II` (nine lines) have no exact installed same-speaker route
+in the current story index. Glyndŵr's one line points only to
+configured-unavailable audio. These 23 lines are the current evidence boundary
+for an explicit fallback rather than an inferred character voice.
 
 ## Coverage order
 

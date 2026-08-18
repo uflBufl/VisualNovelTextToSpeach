@@ -10,14 +10,16 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Recover game-owned references for the current missing roles before using
-      a fallback. Import and audit the installed same-speaker candidates for
-      Aderyn, Dobharchú, Mrs. Owen, Hotelier, Poacher and Aderyn's Father,
-      preserving exact bank/media hashes and keeping Aderyn's distinct
-      portrait/bank variants separate until auditioned. This can potentially
-      cover 214 of the current 237 missing-reference lines. Re-audit `Poacher
-      I`, `Poacher II` and Glyndŵr without merging similarly named roles or
-      treating configured-unavailable audio as installed.
+- [ ] Listen to and decide the checksum-bound Character Story audition set,
+      then import only accepted references for Aderyn, Dobharchú, Mrs. Owen,
+      Hotelier, Poacher and Aderyn's Father and re-run workspace preflight. The
+      extractor-side source/index/bank/media audit is complete: 53 candidates
+      across 19 portrait/bank groups, 12 objective technical passes and two
+      transcript conflicts. Preserve Aderyn variants and the anomalous Mrs.
+      Owen group; Hotelier has no minimum-duration pass. Do not merge `Poacher
+      I`, `Poacher II` or Glyndŵr or treat configured-unavailable audio as
+      installed. Accepted candidates can potentially cover 214 of the current
+      237 missing-reference lines.
 - [ ] Manually audition reference candidates for the exact typed
       `reference_comparison` failure cohorts, then publish each chosen ordering
       with `select-reference` and generate only its explicit queue IDs. Objective
