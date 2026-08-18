@@ -1363,6 +1363,59 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertFalse(output.exists())
 
+    def test_bounded_seed_repair_never_exceeds_three_total_attempts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+            )
+            renderer = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED, SynthesisCompletion.LIMITED]
+            )
+            policy = FailureRepairPolicy(
+                bounded_seed_retry_queue_ids=(item["queue_id"],)
+            )
+
+            repaired = self.run_generation(
+                queue,
+                output,
+                renderer,
+                retries=20,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(repaired.state, queue)
+            result = state["items"][item["queue_id"]]
+            before = repaired.state.read_bytes()
+            with self.assertRaisesRegex(BulkGenerationError, "no longer matches"):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    retries=0,
+                    seed=0,
+                    include_queue_ids=[item["queue_id"]],
+                    failure_repair_policy=policy,
+                )
+            after = repaired.state.read_bytes()
+            wavs = list((output / "audio").rglob("*.wav"))
+
+        self.assertEqual([request.seed for request in renderer.requests], [1, 2])
+        self.assertEqual(result["attempts"], 3)
+        self.assertEqual(result["seed"], 2)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_repair"]["strategy"], "bounded_seed_retry")
+        self.assertEqual(before, after)
+        self.assertEqual(wavs, [])
+
     def test_short_ellipsis_transform_and_sfx_filter_are_recorded(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

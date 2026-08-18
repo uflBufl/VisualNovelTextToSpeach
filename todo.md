@@ -18,13 +18,13 @@ Follow the evidence-backed order and invariants in
       cover 214 of the current 237 missing-reference lines. Re-audit `Poacher
       I`, `Poacher II` and Glyndŵr without merging similarly named roles or
       treating configured-unavailable audio as installed.
-- [ ] Finish the remaining bounded cohort-specific prevention: limited seed
-      diversification and immutable reference comparison/selection. Keep the
-      20-second ceiling, use only exact fresh queue IDs from the versioned
-      `failure-repair-plan`, and do not reintroduce token-level duration control
-      or mass retry a low-yield cohort. Safe sentence-boundary repair and
-      edge-only silence repair are already exact-ID, config-addressed executor
-      policies; run them only on a current matching typed failure.
+- [ ] Finish immutable reference comparison/selection for typed failed cohorts.
+      Keep the 20-second ceiling, use only exact fresh queue IDs from the
+      versioned `failure-repair-plan`, and do not reintroduce token-level
+      duration control or mass retry a low-yield cohort. Safe sentence-boundary,
+      edge-only silence and maximum-three-attempt seed policies are already
+      exact-ID, config-addressed executor controls; run them only on a current
+      matching typed failure.
 - [ ] Add an immutable offline fallback-backend contract so exact cohorts that
       still fail MOSS can be pregenerated with Pocket TTS. Bind provider/model,
       provider-specific seed semantics, references and output hashes per item;

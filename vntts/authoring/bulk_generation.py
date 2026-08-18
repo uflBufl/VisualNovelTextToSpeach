@@ -44,7 +44,9 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.failure_repair import (
+    BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
+    MAX_BOUNDED_TOTAL_ATTEMPTS,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
@@ -901,6 +903,17 @@ def _validate_failure_repair_selection(policy, selected_queue_ids, state, queue)
                 raise BulkGenerationError(
                     f"Edge-silence repair no longer matches failure {queue_id!r}"
                 )
+        elif strategy == BOUNDED_SEED_RETRY:
+            attempts = _nonnegative_int(
+                result.get("attempts", 0), f"State item {queue_id!r} attempts"
+            )
+            if (
+                failure.get("kind") != "missed_eos_audio_limit"
+                or attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+            ):
+                raise BulkGenerationError(
+                    f"Bounded seed repair no longer matches failure {queue_id!r}"
+                )
 
 
 def _failure_repair_document(policy, queue_id, text):
@@ -1212,8 +1225,14 @@ def run_bulk_generation(
                 _archive_interrupted_artifact(output_directory, destination)
             attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
             run_attempts = 0
+            attempt_limit = retries + 1
+            if repair_strategy == BOUNDED_SEED_RETRY:
+                attempt_limit = min(
+                    attempt_limit,
+                    MAX_BOUNDED_TOTAL_ATTEMPTS - attempts,
+                )
             last_error = str(existing.get("last_error") or "") or None
-            while run_attempts <= retries:
+            while run_attempts < attempt_limit:
                 attempts += 1
                 run_attempts += 1
                 attempt_seed = seed + attempts - 1
@@ -1247,7 +1266,7 @@ def run_bulk_generation(
                     failure_repair=attempt_repair,
                     phase="generating",
                     attempt=run_attempts,
-                    attempt_limit=retries + 1,
+                    attempt_limit=attempt_limit,
                     total_attempts=attempts,
                     seed=attempt_seed,
                     started_at=started_at,
@@ -1397,7 +1416,7 @@ def run_bulk_generation(
                         )
                     if attempt_repair is not None:
                         state["items"][queue_id]["failure_repair"] = attempt_repair
-                    if run_attempts <= retries and not is_cancelled:
+                    if run_attempts < attempt_limit and not is_cancelled:
                         _write_active_phase(
                             state_path, state, "retrying", last_error=last_error
                         )
@@ -1407,7 +1426,7 @@ def run_bulk_generation(
                     if is_cancelled:
                         cancelled = True
                         break
-                    if run_attempts > retries:
+                    if run_attempts >= attempt_limit:
                         break
                 finally:
                     if "rendered" in locals():
@@ -2208,7 +2227,7 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             raise BulkGenerationError(
                 f"State item {queue_id!r} sentence repair seeds conflict"
             )
-    else:
+    elif strategy == EDGE_SILENCE_TRIM:
         allowed = {
             "schema_version",
             "strategy",
@@ -2224,6 +2243,10 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
                 _nonnegative_int(
                     repair[field], f"State item {queue_id!r} repair {field}"
                 )
+    elif set(repair) != {"schema_version", "strategy"}:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} bounded seed repair is malformed"
+        )
 
 
 def _validate_active_attempt(active, queue_by_id):

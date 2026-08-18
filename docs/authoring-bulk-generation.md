@@ -136,6 +136,8 @@ Failure repairs add two exact-ID-only controls:
   segments with successive seeds and a bounded pause before concatenation;
 - `--trim-edge-silence-failed QUEUE_ID` removes only excess measured leading or
   trailing silence before the normal quality gate.
+- `--bounded-seed-failed QUEUE_ID` permits only a current typed missed-EOS
+  failure and never exceeds three cumulative attempts for that item.
 
 The flags are workspace configuration, synthesis-control provenance and state
 provenance, not ad-hoc transforms. Their set must exactly match `--queue-id`,

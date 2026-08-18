@@ -167,15 +167,16 @@ manual diagnosis. Every recommendation carries the exact queue ID and current
 state/queue hashes, so later execution can require a fresh authority snapshot
 instead of mass retrying a stale cohort.
 
-Two conservative actions now have an executable, config-addressed path. Create
+Three conservative actions now have an executable, config-addressed path. Create
 a new workspace with repeated `--sentence-segment-failed QUEUE_ID` and/or
-`--trim-edge-silence-failed QUEUE_ID`. The generated child command carries the
-same exact queue IDs. Before any render, bulk generation requires the selected
-ID set to equal the repair policy, reloads authoritative state, requires a
-current typed `failed` outcome and verifies that its failure kind and metrics
-still match the requested strategy. Historical string-only failures remain
-planning evidence and must first produce a typed current failure; they are not
-silently authorized.
+`--trim-edge-silence-failed QUEUE_ID`, or
+`--bounded-seed-failed QUEUE_ID`. The generated child command carries the same
+exact queue IDs. Before any render, bulk generation requires the selected ID
+set to equal the repair policy, reloads authoritative state, requires a current
+typed `failed` outcome and verifies that its failure kind and metrics still
+match the requested strategy. Historical string-only failures remain planning
+evidence and must first produce a typed current failure; they are not silently
+authorized.
 
 Sentence repair uses only complete, substantial sentence boundaries. Each
 segment is an independent typed render with a deterministic successive seed;
@@ -184,9 +185,15 @@ queue text, every segment and segment text SHA-256, planned segment seeds,
 pause, provider controls and outer attempt/seed remain in state and the approved manifest. Edge repair is
 available only for a typed speech-silence failure whose excessive silence is
 strictly leading and/or trailing, never internal. It retains 80 ms boundary
-padding, then runs the ordinary WAV and speech-quality gates. Both paths refuse
+padding, then runs the ordinary WAV and speech-quality gates. All three paths refuse
 an obsolete cohort and never publish a limited, cancelled or still-invalid
 result.
+
+Bounded seed repair is available only for a typed missed-EOS/audio-limit
+failure with fewer than three cumulative attempts. It uses the existing
+deterministic cumulative seed rule and clamps the run to at most three total
+attempts even if a caller supplies a larger `--retries` value. Reopening the
+policy after the third failed attempt is rejected without changing state.
 
 Example workspace creation for one sentence repair:
 

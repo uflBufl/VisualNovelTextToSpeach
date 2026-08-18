@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from vntts.authoring.failure_repair import (
+    BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
@@ -25,22 +26,32 @@ from vntts.synthesis import (
 
 class AuthoringFailureRepairTest(unittest.TestCase):
     def test_policy_is_canonical_exact_and_round_trips(self):
-        policy = FailureRepairPolicy(("line:b", "line:a"), ("line:c",), 200)
+        policy = FailureRepairPolicy(
+            ("line:b", "line:a"), ("line:c",), 200, ("line:d",)
+        )
 
-        self.assertEqual(policy.queue_ids, ("line:a", "line:b", "line:c"))
+        self.assertEqual(policy.queue_ids, ("line:a", "line:b", "line:c", "line:d"))
         self.assertEqual(policy.strategy_for("line:a"), SENTENCE_BOUNDARY_SEGMENTATION)
         self.assertEqual(policy.strategy_for("line:c"), EDGE_SILENCE_TRIM)
+        self.assertEqual(policy.strategy_for("line:d"), BOUNDED_SEED_RETRY)
         self.assertEqual(
             FailureRepairPolicy.from_document(policy.to_document()), policy
         )
         with self.assertRaisesRegex(FailureRepairPolicyError, "two"):
-            FailureRepairPolicy(("line:a",), ("line:a",))
+            FailureRepairPolicy(("line:a",), (), 180, ("line:a",))
         with self.assertRaisesRegex(FailureRepairPolicyError, "requires"):
             FailureRepairPolicy(segment_pause_ms=200)
         malformed = policy.to_document()
         malformed["sentence_segment_queue_ids"] = "line:a"
         with self.assertRaisesRegex(FailureRepairPolicyError, "JSON lists"):
             FailureRepairPolicy.from_document(malformed)
+        legacy = policy.to_document()
+        legacy["schema_version"] = 1
+        legacy.pop("bounded_seed_retry_queue_ids")
+        self.assertEqual(
+            FailureRepairPolicy.from_document(legacy).bounded_seed_retry_queue_ids,
+            (),
+        )
 
     def test_sentence_segments_use_distinct_seeds_and_bounded_pause(self):
         requests = []

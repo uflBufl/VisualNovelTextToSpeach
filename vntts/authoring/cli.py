@@ -156,6 +156,7 @@ def _generation_failure_repair_policy(arguments):
             tuple(arguments.sentence_segment_failed or ()),
             tuple(arguments.trim_edge_silence_failed or ()),
             arguments.segment_pause_ms,
+            tuple(arguments.bounded_seed_failed or ()),
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
@@ -171,6 +172,11 @@ def _add_failure_repair_arguments(parser):
         "--trim-edge-silence-failed",
         action="append",
         help="Repair this exact current edge-only silence failure before validation",
+    )
+    parser.add_argument(
+        "--bounded-seed-failed",
+        action="append",
+        help="Retry this exact current missed-EOS failure up to three total attempts",
     )
     parser.add_argument(
         "--segment-pause-ms",

@@ -1297,6 +1297,8 @@ def generation_command(
         command.extend(("--sentence-segment-failed", queue_id))
     for queue_id in repair_policy.edge_silence_queue_ids:
         command.extend(("--trim-edge-silence-failed", queue_id))
+    for queue_id in repair_policy.bounded_seed_retry_queue_ids:
+        command.extend(("--bounded-seed-failed", queue_id))
     if repair_policy.segment_pause_ms != 180:
         command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
     if queue_ids is not None:
