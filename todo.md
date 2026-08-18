@@ -10,20 +10,11 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Complete the published cluster-specific review for the four accepted
-      reference variants. The bounded fixed-corpus run published 9 of 16 WAVs;
-      five typed audio-limit and two speech-silence failures must remain visible
-      rather than becoming listening audio. Source-audio technical acceptance
-      must not imply generated cadence, pronunciation or speaker-similarity
-      approval. After the four explicit decisions, publish only accepted
-      variants with `build-reference-bindings`, then create a new
-      config-addressed workspace. Exact queue-ID binding is already implemented;
-      it intentionally cannot choose a reference without the listening decision.
-
 - [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
       and Hotelier, then create a new config-addressed workspace and re-run
-      preflight. Aderyn's Father, Dobharchú and Poacher are imported from the
-      exact user-selected media and cover 55 of the current 237 blocked lines.
+      preflight. The accepted Aderyn's Father, Dobharchú and Poacher bindings
+      cover 53 exact queue IDs and reduced the current missing-reference cohort
+      from 237 to 184 lines.
       Keep Aderyn's `hero3146` and `npcnoname326` portrait groups separate; the
       crying-only media `369040295` and `172299031` are rejected. Mrs. Owen's
       technically passing clip remains uncertain because its speech was not

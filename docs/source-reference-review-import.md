@@ -153,6 +153,17 @@ source queue ID in each result. Resume and final-pack publication reject a
 changed map, an unselected manifest voice, or state whose effective voice no
 longer agrees with that exact binding.
 
+The real portrait-enabled review was completed `4/4` with all four variants
+accepted. `build-reference-bindings` published 53 exact queue-ID bindings under
+`authoring/source-reference-bindings/character-story-20260818`; its manifest
+SHA-256 is
+`736808a315774bb84e2978df4c0cd75d5eb75cd4ce5d7942670439e880e30085`.
+A new config-addressed Centurion/MOSS workspace was then created as
+`resume-395a5e5eec0327a3a793b66d-ed29576f1b91239b`. Read-only inspection reported
+592 queue items, 197 generated pending review, 141 failed, zero approved and a
+missing-reference cohort reduced from 237 to 184. No generation, review, or
+final-pack publication ran during this transition.
+
 Use the published `voice-manifest.json` when creating a new config-addressed
 workspace. A partial manifest intentionally leaves unrelated queue lines in the
 missing-reference preflight cohort; exact selected collection/queue retries can
