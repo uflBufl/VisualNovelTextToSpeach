@@ -73,6 +73,7 @@ from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
     publish_source_reference_evaluation,
+    publish_source_reference_listening_reports,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -409,6 +410,13 @@ def create_parser():
     )
     reference_evaluation.add_argument("--plan", type=Path, required=True)
     reference_evaluation.add_argument("--output", type=Path, required=True)
+    reference_listening = subparsers.add_parser(
+        "build-reference-listening-reports",
+        help="Publish strict reports for blind source and generated evaluation",
+    )
+    reference_listening.add_argument("--evaluation", type=Path, required=True)
+    reference_listening.add_argument("--state", type=Path, required=True)
+    reference_listening.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -812,6 +820,12 @@ def main(argv=None):
         if arguments.command == "build-reference-evaluation":
             result = publish_source_reference_evaluation(
                 arguments.plan, arguments.output
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "build-reference-listening-reports":
+            result = publish_source_reference_listening_reports(
+                arguments.evaluation, arguments.state, arguments.output
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0

@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 
 from vntts_artifacts import (
     VoiceGenerationQueue,
+    VoiceGenerationQueueError,
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
@@ -19,12 +20,19 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
 
+from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.listening import (
+    ModelListeningError,
+    create_listening_session_from_reports,
+    load_listening_session,
+)
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSION = 1
@@ -75,6 +83,22 @@ class SourceReferenceEvaluationResult:
             "directory": str(self.directory),
             "variants": self.variants,
             "queue_items": self.queue_items,
+        }
+
+
+@dataclass(frozen=True)
+class SourceReferenceListeningReportsResult:
+    directory: Path
+    reports: int
+    samples: int
+    blind_trials: int
+
+    def to_dict(self):
+        return {
+            "directory": str(self.directory),
+            "reports": self.reports,
+            "samples": self.samples,
+            "blind_trials": self.blind_trials,
         }
 
 
@@ -509,6 +533,323 @@ def publish_source_reference_evaluation(plan_directory, output):
         if staging.exists():
             shutil.rmtree(staging)
         raise
+
+
+def publish_source_reference_listening_reports(
+    evaluation_directory, state_path, output
+):
+    """Publish strict reports for blind original/generated and variant review."""
+    evaluation_directory = Path(evaluation_directory).expanduser().resolve()
+    comparison_path, comparison_payload, comparison = _read_json(
+        evaluation_directory / "comparison.json", "source-reference evaluation"
+    )
+    if (
+        comparison.get("schema") != REFERENCE_EVALUATION_SCHEMA
+        or comparison.get("schema_version") != REFERENCE_EVALUATION_VERSION
+    ):
+        raise SourceReferenceReviewError(
+            "Unsupported source-reference evaluation schema"
+        )
+    queue_path = _contained_file(
+        evaluation_directory,
+        _text(comparison.get("queue"), "Evaluation queue path"),
+    )
+    manifest_path = _contained_file(
+        evaluation_directory,
+        _text(comparison.get("voice_manifest"), "Evaluation manifest path"),
+    )
+    queue_sha256 = _sha256(comparison.get("queue_sha256"), "Evaluation queue hash")
+    manifest_sha256 = _sha256(
+        comparison.get("voice_manifest_sha256"), "Evaluation manifest hash"
+    )
+    if sha256_file(queue_path) != queue_sha256:
+        raise SourceReferenceReviewError("Evaluation queue changed")
+    if sha256_file(manifest_path) != manifest_sha256:
+        raise SourceReferenceReviewError("Evaluation voice manifest changed")
+    try:
+        queue = VoiceGenerationQueue.load(queue_path)
+        _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        state = load_generation_state(state_path, queue_path)
+    except (
+        BulkGenerationError,
+        VoiceGenerationQueueError,
+        VoiceManifestError,
+    ) as error:
+        raise SourceReferenceReviewError(str(error)) from error
+    comparison_sha256 = hashlib.sha256(comparison_payload).hexdigest()
+    state_path = Path(state_path).expanduser().resolve()
+    state_sha256 = sha256_file(state_path)
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise SourceReferenceReviewError(
+            f"Source-reference listening reports output exists: {output}"
+        )
+
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    voices_by_character = {voice.character: voice for voice in voices}
+    variants = comparison.get("variants")
+    if not isinstance(variants, list) or not variants:
+        raise SourceReferenceReviewError("Evaluation variants must be a non-empty list")
+    originals = []
+    generated_reports = []
+    checked_audio = []
+    seen_variants = set()
+    for variant_index, variant in enumerate(variants):
+        if not isinstance(variant, dict):
+            raise SourceReferenceReviewError(
+                f"Evaluation variant {variant_index} must be an object"
+            )
+        variant_id = _text(
+            variant.get("variant_id"), f"evaluation variant {variant_index} ID"
+        )
+        if variant_id in seen_variants:
+            raise SourceReferenceReviewError(
+                f"Duplicate evaluation variant: {variant_id}"
+            )
+        seen_variants.add(variant_id)
+        source_relative = _text(
+            variant.get("source_audio"), f"variant {variant_id} source"
+        )
+        source = _contained_file(
+            evaluation_directory,
+            source_relative,
+        )
+        source_sha256 = _sha256(
+            variant.get("source_audio_sha256"), f"variant {variant_id} source hash"
+        )
+        if sha256_file(source) != source_sha256:
+            raise SourceReferenceReviewError(
+                f"Evaluation source audio changed: {variant_id}"
+            )
+        checked_audio.append((source, source_sha256))
+        character = _text(
+            variant.get("character"), f"evaluation variant {variant_id} character"
+        )
+        evaluation_character = f"Source reference {character} {variant_id}"
+        voice = voices_by_character.get(evaluation_character)
+        if voice is None or voice.references != (source_relative,):
+            raise SourceReferenceReviewError(
+                f"Evaluation variant voice binding changed: {variant_id}"
+            )
+        cluster_id, separator, anchor = variant_id.rpartition("-anchor-")
+        if not separator or not cluster_id or not anchor.isdigit():
+            raise SourceReferenceReviewError(
+                f"Evaluation variant ID is invalid: {variant_id}"
+            )
+        queue_ids = [
+            _text(
+                variant.get("source_match_queue_id"),
+                f"variant {variant_id} source-match queue ID",
+            )
+        ]
+        fixed_queue_ids = variant.get("fixed_queue_ids")
+        if not isinstance(fixed_queue_ids, list):
+            raise SourceReferenceReviewError(
+                f"Variant {variant_id} fixed queue IDs must be a list"
+            )
+        queue_ids.extend(
+            _text(value, f"variant {variant_id} fixed queue ID")
+            for value in fixed_queue_ids
+        )
+        if len(queue_ids) != len(set(queue_ids)):
+            raise SourceReferenceReviewError(
+                f"Variant {variant_id} evaluation queue IDs are duplicated"
+            )
+        samples = []
+        report_provider = None
+        report_model = None
+        for position, queue_id in enumerate(queue_ids):
+            item = queue_by_id.get(queue_id)
+            if item is None:
+                raise SourceReferenceReviewError(
+                    f"Variant {variant_id} queue ID is missing: {queue_id}"
+                )
+            expected_kind = "source-match" if position == 0 else f"fixed-{position}"
+            if (
+                item.speaker != character
+                or item.voice_character != evaluation_character
+                or item.document.get("reference_cluster_id") != cluster_id
+                or item.document.get("evaluation_kind") != expected_kind
+            ):
+                raise SourceReferenceReviewError(
+                    f"Variant {variant_id} queue binding changed: {queue_id}"
+                )
+            result = state["items"].get(queue_id)
+            if not isinstance(result, dict) or result.get("status") not in {
+                "generated",
+                "approved",
+            }:
+                continue
+            relative_audio = _text(
+                result.get("path"), f"generated result {queue_id} path"
+            )
+            audio = _contained_file(state_path.parent, relative_audio)
+            audio_sha256 = _sha256(
+                result.get("file_sha256"), f"generated result {queue_id} hash"
+            )
+            if sha256_file(audio) != audio_sha256:
+                raise SourceReferenceReviewError(
+                    f"Generated evaluation audio changed: {queue_id}"
+                )
+            checked_audio.append((audio, audio_sha256))
+            sample_id = (
+                f"source-match:{variant_id}" if position == 0 else f"fixed-{position}"
+            )
+            sample = {
+                "id": sample_id,
+                "line_id": item.line_id,
+                "character": character,
+                "text": item.text,
+                "text_sha256": item.text_sha256,
+                "audio": str(audio),
+                "audio_sha256": audio_sha256,
+                "variant_id": variant_id,
+                "evaluation_kind": item.document.get("evaluation_kind"),
+            }
+            samples.append(sample)
+            provider = _text(
+                result.get("provider"), f"generated result {queue_id} provider"
+            )
+            model = _text(result.get("model"), f"generated result {queue_id} model")
+            if report_provider is None:
+                report_provider = provider
+                report_model = model
+            elif (report_provider, report_model) != (provider, model):
+                raise SourceReferenceReviewError(
+                    f"Variant {variant_id} mixes generation backends or models"
+                )
+            if position == 0:
+                originals.append(
+                    {
+                        **sample,
+                        "audio": str(source),
+                        "audio_sha256": source_sha256,
+                    }
+                )
+        if samples:
+            generated_reports.append(
+                {
+                    "variant_id": variant_id,
+                    "samples": samples,
+                    "provider": report_provider,
+                    "model": report_model,
+                    "affected_queue_item_count": variant.get(
+                        "affected_queue_item_count"
+                    ),
+                }
+            )
+    if not originals:
+        raise SourceReferenceReviewError(
+            "No successful source-match result is available for blind review"
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+    ).resolve()
+    try:
+        reports = []
+        original_report = staging / "original-source.json"
+        atomic_write_json(
+            original_report,
+            _model_report(
+                "original-source",
+                "original-game-audio",
+                "checksum-bound accepted source WAV",
+                originals,
+                comparison_path=comparison_path,
+                comparison_sha256=comparison_sha256,
+                state_path=state_path,
+                state_sha256=state_sha256,
+            ),
+        )
+        reports.append(original_report)
+        for index, report in enumerate(generated_reports, start=1):
+            path = staging / f"generated-{index:02d}.json"
+            atomic_write_json(
+                path,
+                _model_report(
+                    f"generated:{report['variant_id']}",
+                    report["provider"],
+                    report["model"],
+                    report["samples"],
+                    comparison_path=comparison_path,
+                    comparison_sha256=comparison_sha256,
+                    state_path=state_path,
+                    state_sha256=state_sha256,
+                    affected_queue_item_count=report["affected_queue_item_count"],
+                ),
+            )
+            reports.append(path)
+        validation = staging / ".validation-session"
+        try:
+            session_path = create_listening_session_from_reports(
+                reports, validation, seed=0
+            )
+        except ModelListeningError as error:
+            raise SourceReferenceReviewError(str(error)) from error
+        blind_trials = load_listening_session(session_path)["trial_count"]
+        shutil.rmtree(validation)
+        if sha256_file(queue_path) != queue_sha256:
+            raise SourceReferenceReviewError(
+                "Evaluation queue changed during report publication"
+            )
+        if sha256_file(comparison_path) != comparison_sha256:
+            raise SourceReferenceReviewError(
+                "Evaluation comparison changed during report publication"
+            )
+        if sha256_file(manifest_path) != manifest_sha256:
+            raise SourceReferenceReviewError(
+                "Evaluation voice manifest changed during report publication"
+            )
+        if sha256_file(state_path) != state_sha256:
+            raise SourceReferenceReviewError(
+                "Evaluation generation state changed during report publication"
+            )
+        for audio, expected_sha256 in checked_audio:
+            _assert_source_unchanged(
+                audio, expected_sha256, f"evaluation audio {audio.name}"
+            )
+        _rename_directory_no_replace(staging, output)
+        return SourceReferenceListeningReportsResult(
+            output,
+            len(reports),
+            sum(len(report["samples"]) for report in generated_reports)
+            + len(originals),
+            blind_trials,
+        )
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+
+def _model_report(
+    model_id,
+    backend,
+    model,
+    samples,
+    *,
+    comparison_path,
+    comparison_sha256,
+    state_path,
+    state_sha256,
+    affected_queue_item_count=None,
+):
+    return {
+        "schema": "vntts.voice-model-report",
+        "schema_version": 1,
+        "model_id": model_id,
+        "provider": backend,
+        "backend": backend,
+        "model": model,
+        "samples": samples,
+        "source_reference_evaluation": str(comparison_path),
+        "source_reference_evaluation_sha256": comparison_sha256,
+        "generation_state": str(state_path),
+        "generation_state_sha256": state_sha256,
+        "affected_queue_item_count": affected_queue_item_count,
+    }
 
 
 def _load_candidates(report_path, report):

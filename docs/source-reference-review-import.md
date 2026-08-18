@@ -51,3 +51,25 @@ queue lines. Generate into a separate output directory; do not put mutable state
 or rendered WAVs inside the immutable evaluation input directory. Source-match
 audio can then be compared blindly against its exact original, while fixed-text
 outputs compare cadence and pronunciation across variants.
+
+After the bounded generation run, publish strict listening reports from the
+exact evaluation and generation state:
+
+```bash
+uv run vntts-pregenerate build-reference-listening-reports \
+  --evaluation /new/source-reference-evaluation \
+  --state /mutable/evaluation-run/generation-state.json \
+  --output /new/source-reference-listening-reports
+
+uv run vntts-listen start-reports \
+  --reports /new/source-reference-listening-reports/*.json \
+  --output /new/source-reference-listening-session \
+  --seed 0
+```
+
+The report publisher includes only checksum-valid generated outcomes. A
+successful source-match render is paired with its exact original reference;
+successful fixed sentences are paired across all variants that produced the
+same text. Failed or limited renders remain visible in generation state and do
+not become listening audio. Model identities are stored only in the private
+0600 blind key; the public session exposes randomized A/B aliases.

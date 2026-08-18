@@ -6,22 +6,70 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
 from vntts_artifacts import (
     VoiceGenerationQueue,
     expected_voice_generation_queue_id,
     write_story_index_document,
 )
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
+from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.listening import (
+    create_listening_session_from_reports,
+    load_listening_session,
+)
 from vntts.authoring.source_reference_review import (
     REFERENCE_PLAN_SCHEMA,
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
     publish_source_reference_evaluation,
+    publish_source_reference_listening_reports,
 )
+from vntts.synthesis import (
+    SynthesisChunk,
+    SynthesisChunkStream,
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisResult,
+    SynthesisTiming,
+)
+
+
+class EvaluationRenderer:
+    name = "synthetic"
+    model_name = "synthetic-v1"
+
+    def render(self, request):
+        pcm = np.sin(np.linspace(0, 20, 4_000, dtype=np.float32)) * 0.2
+
+        def produce():
+            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=16_000,
+                completion=SynthesisCompletion.COMPLETE,
+                limits=SynthesisLimits(256, 180.0),
+                timing=SynthesisTiming(1.0, 2.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=len(pcm),
+                ),
+            )
+
+        return SynthesisChunkStream(produce())
+
+    def stop(self):
+        pass
 
 
 def candidate_key(character, portrait, bank, media_id, reference_sha256):
@@ -49,7 +97,8 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             start=1,
         ):
             reference = references / f"{index}.wav"
-            reference.write_bytes(f"RIFF exact reference {index}".encode())
+            values = np.sin(np.linspace(0, 20 + index, 4_000, dtype=np.float32)) * 0.2
+            write_pcm16_wav(reference, values, 16_000)
             reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
             candidate = {
                 "character": "Hero",
@@ -338,6 +387,77 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["variants"], 2)
         self.assertEqual(payload["queue_items"], 8)
+
+    def test_publishes_reports_and_creates_final_blind_session(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            plan = import_source_reference_review(report, review, story, root / "plan")
+            evaluation = publish_source_reference_evaluation(
+                plan.directory, root / "evaluation"
+            )
+            generation = run_bulk_generation(
+                evaluation.directory / "queue.jsonl",
+                root / "generation",
+                EvaluationRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+
+            reports = publish_source_reference_listening_reports(
+                evaluation.directory, generation.state, root / "reports"
+            )
+            session_path = create_listening_session_from_reports(
+                sorted(reports.directory.glob("*.json")), root / "session", seed=9
+            )
+            session = load_listening_session(session_path)
+            public_session = session_path.read_text(encoding="utf-8")
+
+        self.assertEqual(reports.reports, 3)
+        self.assertEqual(reports.samples, 10)
+        self.assertEqual(reports.blind_trials, 5)
+        self.assertEqual(session["trial_count"], 5)
+        self.assertNotIn("generated:", public_session)
+
+    def test_listening_report_cli_refuses_to_replace_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            plan = import_source_reference_review(report, review, story, root / "plan")
+            evaluation = publish_source_reference_evaluation(
+                plan.directory, root / "evaluation"
+            )
+            generation = run_bulk_generation(
+                evaluation.directory / "queue.jsonl",
+                root / "generation",
+                EvaluationRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            output = root / "reports"
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "build-reference-listening-reports",
+                        "--evaluation",
+                        str(evaluation.directory),
+                        "--state",
+                        str(generation.state),
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            with self.assertRaisesRegex(SourceReferenceReviewError, "output exists"):
+                publish_source_reference_listening_reports(
+                    evaluation.directory, generation.state, output
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["blind_trials"], 5)
 
 
 if __name__ == "__main__":

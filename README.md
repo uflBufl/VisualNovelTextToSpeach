@@ -489,6 +489,9 @@ evaluation corpus. It does not edit a manifest or authorize generation. See
 The same workflow publishes non-overwriting fixed-corpus inputs with
 `vntts-pregenerate build-reference-evaluation`; rendering output is kept in a
 separate mutable directory until blind source/result review is complete.
+Checksum-valid results can be converted to strict reports with
+`vntts-pregenerate build-reference-listening-reports` and opened through the
+existing `vntts-listen` blind workbench.
 
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with
