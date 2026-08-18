@@ -168,8 +168,8 @@ state/queue hashes, so later execution can require a fresh authority snapshot
 instead of mass retrying a stale cohort.
 
 The read-only 2026-08-18 plan for the Character Story snapshot reconciles all
-211 failures into 71 sentence-boundary segmentation candidates, 22 bounded
-seed retries, 74 exhausted primary items for an offline fallback backend and 44
+211 failures into 58 conservative sentence-boundary segmentation candidates,
+26 bounded seed retries, 83 exhausted primary items for an offline fallback backend and 44
 reference-comparison cases. Its state SHA-256 is the same
 `10ad11119a57fda8ffccf37f31e1a949ee03d4bbd1092c99d867c36be866b875` as the
 source failure report. These counts are selection evidence only; no generation

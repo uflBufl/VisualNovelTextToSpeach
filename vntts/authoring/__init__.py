@@ -26,6 +26,11 @@ from vntts.authoring.delivery import (
     annotate_delivery,
     apply_delivery_policy,
 )
+from vntts.authoring.failure_repair import (
+    EdgeSilenceTrim,
+    safe_sentence_segments,
+    trim_excess_edge_silence,
+)
 from vntts.authoring.game_pack import (
     FinalGamePackError,
     FinalGamePackResult,
@@ -105,6 +110,7 @@ __all__ = [
     "PRESERVE_DELIVERY_POLICY",
     "DeliveryAnnotationError",
     "DeliveryPolicyApplication",
+    "EdgeSilenceTrim",
     "FinalGamePackError",
     "FinalGamePackResult",
     "SpeechQuality",
@@ -164,8 +170,10 @@ __all__ = [
     "record_trial_preference",
     "review_generation_item",
     "run_bulk_generation",
+    "safe_sentence_segments",
     "immutable_history_timestamps",
     "sha256_control_path",
     "select_representative_items",
     "workspace_voice_snapshot",
+    "trim_excess_edge_silence",
 ]

@@ -43,6 +43,7 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.failure_repair import safe_sentence_segments
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -678,6 +679,7 @@ def generation_failure_report(state_path, queue_path):
                 "queue_id": queue_id,
                 "line_id": item.line_id,
                 "speaker": item.speaker,
+                "text": item.text,
                 "requested_voice_character": result.get(
                     "requested_voice_character", requested
                 ),
@@ -758,10 +760,9 @@ def generation_failure_repair_plan(state_path, queue_path):
     for record in report["records"]:
         failure = record["failure"]
         kind = failure["kind"]
-        features = failure["text_features"]
         attempts = record["attempts"]
         if kind == "missed_eos_audio_limit":
-            if features["sentence_boundary_count"] >= 2:
+            if len(safe_sentence_segments(record["text"])) >= 2:
                 action = "sentence_boundary_segmentation"
                 reason = "multiple complete sentence boundaries"
             elif attempts < 3:
