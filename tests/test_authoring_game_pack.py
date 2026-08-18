@@ -28,6 +28,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.game_pack import import_game_pack
 from vntts.synthesis import (
     SynthesisChunk,
@@ -95,12 +96,17 @@ def prepare_authoring_fixture(
     bind_sources=True,
     legacy_narrator=False,
     narrator_selection_character=None,
+    named_narrator_fallback=None,
 ):
     root.mkdir(parents=True, exist_ok=True)
     items = [queue_item(name) for name in names]
     if legacy_narrator:
         for item in items:
             item["speaker"] = "???"
+    if named_narrator_fallback is not None:
+        for item in items:
+            item["speaker"] = named_narrator_fallback
+            item["voice_character"] = named_narrator_fallback
     story = root / "inputs" / "story-index.jsonl"
     write_story_index_document(
         story,
@@ -159,9 +165,7 @@ def prepare_authoring_fixture(
         "voice_reference:0001": reference,
     }
     if narrator_selection_character is not None:
-        control_files[f"narrator_selection:{narrator_selection_character}"] = (
-            reference
-        )
+        control_files[f"narrator_selection:{narrator_selection_character}"] = reference
     result = run_bulk_generation(
         queue,
         output,
@@ -170,6 +174,23 @@ def prepare_authoring_fixture(
         model="synthetic-v1",
         generation_profile="stable",
         control_files=control_files,
+        synthesis_character_overrides=(
+            None
+            if named_narrator_fallback is None
+            else {named_narrator_fallback: "Narrator"}
+        ),
+        missing_voice_policy=(
+            None
+            if named_narrator_fallback is None
+            else MissingVoicePolicy(
+                NARRATOR_ROLES, (named_narrator_fallback,)
+            ).to_document()
+        ),
+        narrator_character=(
+            narrator_selection_character
+            if named_narrator_fallback is not None
+            else None
+        ),
     )
     return {
         "items": items,
@@ -199,6 +220,37 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_named_missing_voice_fallback_survives_final_pack_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(
+                root / "named-fallback",
+                names=("one",),
+                named_narrator_fallback="Poacher I",
+                narrator_selection_character="Hero",
+            )
+            queue_id = fixture["items"][0]["queue_id"]
+            review_generation_item(fixture["state"], queue_id, "approved")
+
+            result = publish(fixture, root / "final-pack")
+            pack = load_game_pack(result.manifest)
+            generated = json.loads(
+                pack.generated_audio.path.read_text(encoding="utf-8")
+            )["entries"][0]
+
+        self.assertEqual(generated["requested_voice_character"], "Poacher I")
+        self.assertEqual(generated["speaker"], "Poacher I")
+        self.assertEqual(generated["voice_character"], "Narrator")
+        self.assertEqual(generated["narrator_character"], "Hero")
+        self.assertEqual(
+            generated["synthesis_fallback"]["kind"],
+            "missing_voice_to_narrator",
+        )
+        self.assertEqual(
+            pack.extensions["vntts.authoring"]["narrator_selection"]["character"],
+            "Hero",
+        )
+
     def test_legacy_unknown_speaker_requires_role_bound_narrator_provenance(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -250,9 +302,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 misbound["state"], misbound["items"][0]["queue_id"], "approved"
             )
-            with self.assertRaisesRegex(
-                FinalGamePackError, "not role-bound"
-            ):
+            with self.assertRaisesRegex(FinalGamePackError, "not role-bound"):
                 publish(misbound, root / "misbound-pack")
 
             self.assertFalse((root / "missing-pack").exists())

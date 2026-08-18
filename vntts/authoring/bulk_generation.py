@@ -37,7 +37,16 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    normalize_character_name,
+)
 
+from vntts.authoring.missing_voice_policy import (
+    MissingVoicePolicy,
+    MissingVoicePolicyError,
+)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -510,6 +519,126 @@ def normalized_failure_record(item, *, text=""):
     }
 
 
+def _generation_voice_overrides(
+    policy_document, synthesis_character_overrides, *, narrator_character
+):
+    try:
+        policy = (
+            policy_document
+            if isinstance(policy_document, MissingVoicePolicy)
+            else MissingVoicePolicy.from_document(policy_document)
+        )
+    except MissingVoicePolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+    if synthesis_character_overrides is None:
+        synthesis_character_overrides = {}
+    if not isinstance(synthesis_character_overrides, dict):
+        raise BulkGenerationError("Synthesis character overrides must be an object")
+    normalized = {}
+    source_names = {}
+    for requested, effective in synthesis_character_overrides.items():
+        requested = _required_text(requested, "Requested synthesis character")
+        effective = _required_text(effective, "Effective synthesis character")
+        key = normalize_character_name(requested)
+        if not key or key == "narrator":
+            raise BulkGenerationError(
+                "Narrator fallback overrides require a named non-Narrator role"
+            )
+        if normalize_character_name(effective) != "narrator":
+            raise BulkGenerationError(
+                "Missing-voice synthesis overrides may target only Narrator"
+            )
+        previous = source_names.get(key)
+        if previous is not None and previous != requested:
+            raise BulkGenerationError(
+                "Synthesis override roles collide after normalization: "
+                f"{previous!r}, {requested!r}"
+            )
+        if not policy.applies_to(requested):
+            raise BulkGenerationError(
+                f"Missing-voice policy does not authorize role {requested!r}"
+            )
+        source_names[key] = requested
+        normalized[key] = "Narrator"
+    if normalized:
+        _required_text(narrator_character, "Narrator character")
+    elif narrator_character is not None:
+        _required_text(narrator_character, "Narrator character")
+    return policy, normalized
+
+
+def _synthesis_fallback_document(
+    requested_voice, effective_voice, *, policy, narrator_character
+):
+    if normalize_character_name(requested_voice) == normalize_character_name(
+        effective_voice
+    ):
+        return None
+    if normalize_character_name(effective_voice) != "narrator":
+        raise BulkGenerationError("Only Narrator synthesis fallback is supported")
+    if not policy.applies_to(requested_voice):
+        raise BulkGenerationError(
+            f"Missing-voice policy does not authorize role {requested_voice!r}"
+        )
+    return {
+        "schema_version": 1,
+        "kind": "missing_voice_to_narrator",
+        "policy": policy.to_document(),
+        "source_voice_character": requested_voice,
+        "synthesis_voice_character": "Narrator",
+        "narrator_character": _required_text(narrator_character, "Narrator character"),
+    }
+
+
+def _assert_missing_voice_overrides_match_manifest(
+    controls, character_overrides, *, narrator_character
+):
+    if not character_overrides:
+        return
+    manifest_control = next(
+        (value for value in controls if value["role"] == "voice_manifest"), None
+    )
+    if manifest_control is None or manifest_control["kind"] != "file":
+        raise BulkGenerationError(
+            "Narrator fallback requires a bound voice_manifest control"
+        )
+    path = manifest_control["path"]
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Unable to read fallback voice manifest: {error}"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != manifest_control["sha256"]:
+        raise BulkGenerationSourceChangedError(
+            "Voice manifest changed while fallback roles were validated"
+        )
+    try:
+        with TemporaryDirectory(prefix="vntts-voice-manifest-") as directory:
+            snapshot = Path(directory) / "manifest.json"
+            snapshot.write_bytes(payload)
+            _manifest, entries = load_voice_manifest(snapshot)
+    except (OSError, VoiceManifestError) as error:
+        raise BulkGenerationError(str(error)) from error
+    indexed = {}
+    for entry in entries:
+        for name in (entry.character, entry.speaker, *entry.aliases):
+            key = normalize_character_name(name)
+            if key:
+                indexed[key] = entry
+    for requested in character_overrides:
+        entry = indexed.get(requested)
+        if entry is not None and entry.references:
+            raise BulkGenerationError(
+                f"Narrator fallback role {requested!r} still has configured references"
+            )
+    narrator = indexed.get(normalize_character_name(narrator_character))
+    if narrator is None or not narrator.references:
+        raise BulkGenerationError(
+            f"Narrator character {narrator_character!r} has no configured reference"
+        )
+
+
 def load_generation_state(state_path, queue_path=None):
     """Load either VNTTS-owned or preserved legacy state and verify its files."""
     state_path = Path(state_path).expanduser().resolve()
@@ -644,6 +773,9 @@ def run_bulk_generation(
     text_transform_id=None,
     process_checker=None,
     workspace_output_identity=None,
+    synthesis_character_overrides=None,
+    missing_voice_policy=None,
+    narrator_character=None,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -652,6 +784,11 @@ def run_bulk_generation(
     provider = _required_text(provider, "Provider")
     model = _required_text(model, "Model")
     generation_profile = _required_text(generation_profile, "Generation profile")
+    policy, character_overrides = _generation_voice_overrides(
+        missing_voice_policy,
+        synthesis_character_overrides,
+        narrator_character=narrator_character,
+    )
     if text_transform is not None and not callable(text_transform):
         raise BulkGenerationError("Text transform must be callable")
     if text_transform is not None:
@@ -707,13 +844,23 @@ def run_bulk_generation(
             "Regenerating existing outcomes requires explicit queue IDs or characters"
         )
     controls = _snapshot_control_files(control_files or {})
+    _assert_missing_voice_overrides_match_manifest(
+        controls,
+        character_overrides,
+        narrator_character=narrator_character,
+    )
     control_records = [_stored_control(value) for value in controls]
+    synthesis_configuration = {
+        "missing_voice_policy": policy.to_document(),
+        "synthesis_character_overrides": dict(sorted(character_overrides.items())),
+    }
     provenance_sha256 = _canonical_sha256(
         {
             "provider": provider,
             "model": model,
             "generation_profile": generation_profile,
             "text_transform": text_transform_id,
+            **synthesis_configuration,
             "controls": [
                 {"role": value["role"], "sha256": value["sha256"]} for value in controls
             ],
@@ -829,9 +976,18 @@ def run_bulk_generation(
                         f"decision for {queue_id!r}"
                     )
 
-            voice = _required_text(
+            requested_voice = _required_text(
                 synthesis_character_for_line(item.speaker, item.voice_character),
                 f"Queue item {queue_id!r} voice",
+            )
+            voice = character_overrides.get(
+                normalize_character_name(requested_voice), requested_voice
+            )
+            synthesis_fallback = _synthesis_fallback_document(
+                requested_voice,
+                voice,
+                policy=policy,
+                narrator_character=narrator_character,
             )
             queue_annotations_sha256 = _canonical_sha256(
                 item.document.get("prompt_adapters") or {}
@@ -879,6 +1035,9 @@ def run_bulk_generation(
                     synthesis_text_sha256=synthesis_text_sha256,
                     text_transform_id=text_transform_id,
                     synthesis_provenance_sha256=provenance_sha256,
+                    synthesis_configuration=synthesis_configuration,
+                    synthesis_voice_character=voice,
+                    synthesis_fallback=synthesis_fallback,
                     phase="generating",
                     attempt=run_attempts,
                     attempt_limit=retries + 1,
@@ -935,13 +1094,23 @@ def run_bulk_generation(
                         "synthesis_text_sha256": synthesis_text_sha256,
                         "text_transform": text_transform_id,
                         "synthesis_provenance_sha256": provenance_sha256,
+                        "synthesis_configuration": synthesis_configuration,
                         "seed": attempt_seed,
                         "generation_profile": generation_profile,
+                        "speaker": item.speaker,
+                        "requested_voice_character": requested_voice,
                         "voice_character": voice,
                         "quality": asdict(quality),
                         "speech_quality": asdict(speech_quality),
                         "updated_at": _now(),
                     }
+                    if synthesis_fallback is not None:
+                        state["items"][queue_id]["synthesis_fallback"] = (
+                            synthesis_fallback
+                        )
+                        state["items"][queue_id]["narrator_character"] = (
+                            narrator_character
+                        )
                     state["active"] = None
                     atomic_write_json(state_path, state, sort_keys=True)
                     generated += 1
@@ -983,9 +1152,8 @@ def run_bulk_generation(
                         "provider": provider,
                         "model": model,
                         "generation_profile": generation_profile,
-                        "requested_voice_character": synthesis_character_for_line(
-                            item.speaker, item.voice_character
-                        ),
+                        "speaker": item.speaker,
+                        "requested_voice_character": requested_voice,
                         "voice_character": voice,
                         "prompt_sha256": prompt_sha256,
                         "prompt_applied": False,
@@ -993,8 +1161,16 @@ def run_bulk_generation(
                         "synthesis_text_sha256": synthesis_text_sha256,
                         "text_transform": text_transform_id,
                         "synthesis_provenance_sha256": provenance_sha256,
+                        "synthesis_configuration": synthesis_configuration,
                         "updated_at": _now(),
                     }
+                    if synthesis_fallback is not None:
+                        state["items"][queue_id]["synthesis_fallback"] = (
+                            synthesis_fallback
+                        )
+                        state["items"][queue_id]["narrator_character"] = (
+                            narrator_character
+                        )
                     if run_attempts <= retries and not is_cancelled:
                         _write_active_phase(
                             state_path, state, "retrying", last_error=last_error
@@ -1146,9 +1322,14 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "prompt_applied",
             "queue_annotations_sha256",
             "synthesis_provenance_sha256",
+            "synthesis_configuration",
             "synthesis_text_sha256",
             "text_transform",
+            "speaker",
+            "requested_voice_character",
             "voice_character",
+            "synthesis_fallback",
+            "narrator_character",
             "speech_quality",
             "carry_forward",
         ):
@@ -1512,6 +1693,11 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         if status == "failed":
             if "failure" in result:
                 _validate_failure_record(result["failure"], queue_id)
+            _validate_synthesis_identity(
+                result,
+                queue_id,
+                None if queue_by_id is None else queue_by_id[queue_id],
+            )
             continue
         queue_item = None if queue_by_id is None else queue_by_id[queue_id]
         _validate_success_item(
@@ -1559,6 +1745,155 @@ def _validate_failure_record(failure, queue_id):
         raise BulkGenerationError(
             f"State item {queue_id!r} failure completion is invalid"
         )
+
+
+def _validate_synthesis_identity(result, queue_id, queue_item=None):
+    expected_requested = (
+        None
+        if queue_item is None
+        else synthesis_character_for_line(
+            queue_item.speaker, queue_item.voice_character
+        )
+    )
+    if queue_item is not None and "speaker" in result:
+        speaker = _required_text(
+            result.get("speaker"), f"State item {queue_id!r} speaker"
+        )
+        if speaker != queue_item.speaker:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} speaker does not match the queue"
+            )
+    requested = result.get("requested_voice_character")
+    effective = result.get("voice_character")
+    fallback = result.get("synthesis_fallback")
+    configuration = _validate_synthesis_configuration(result, queue_id)
+    if requested is not None:
+        requested = _required_text(
+            requested, f"State item {queue_id!r} requested_voice_character"
+        )
+        if expected_requested is not None and requested != expected_requested:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} requested voice does not match the queue"
+            )
+    if effective is not None:
+        effective = _required_text(
+            effective, f"State item {queue_id!r} voice_character"
+        )
+    changed = (
+        requested is not None
+        and effective is not None
+        and normalize_character_name(requested) != normalize_character_name(effective)
+    )
+    if fallback is None:
+        if changed:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} changed synthesis voice without provenance"
+            )
+        if "narrator_character" in result:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} has unbound narrator provenance"
+            )
+        return
+    if configuration is None:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} fallback lacks its synthesis configuration"
+        )
+    if not isinstance(fallback, dict) or set(fallback) != {
+        "schema_version",
+        "kind",
+        "policy",
+        "source_voice_character",
+        "synthesis_voice_character",
+        "narrator_character",
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis fallback is malformed"
+        )
+    if (
+        fallback.get("schema_version") != 1
+        or fallback.get("kind") != "missing_voice_to_narrator"
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis fallback is unsupported"
+        )
+    try:
+        policy = MissingVoicePolicy.from_document(fallback.get("policy"))
+    except MissingVoicePolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+    source = _required_text(
+        fallback.get("source_voice_character"),
+        f"State item {queue_id!r} fallback source voice",
+    )
+    synthesis = _required_text(
+        fallback.get("synthesis_voice_character"),
+        f"State item {queue_id!r} fallback synthesis voice",
+    )
+    narrator = _required_text(
+        fallback.get("narrator_character"),
+        f"State item {queue_id!r} fallback narrator character",
+    )
+    if (
+        requested != source
+        or effective != synthesis
+        or normalize_character_name(synthesis) != "narrator"
+        or not policy.applies_to(source)
+        or result.get("narrator_character") != narrator
+        or configuration["missing_voice_policy"] != policy.to_document()
+        or configuration["synthesis_character_overrides"].get(
+            normalize_character_name(source)
+        )
+        != "Narrator"
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis fallback provenance conflicts"
+        )
+
+
+def _validate_synthesis_configuration(result, queue_id):
+    configuration = result.get("synthesis_configuration")
+    if configuration is None:
+        return None
+    if not isinstance(configuration, dict) or set(configuration) != {
+        "missing_voice_policy",
+        "synthesis_character_overrides",
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis configuration is malformed"
+        )
+    try:
+        policy = MissingVoicePolicy.from_document(
+            configuration.get("missing_voice_policy")
+        )
+    except MissingVoicePolicyError as error:
+        raise BulkGenerationError(str(error)) from error
+    overrides = configuration.get("synthesis_character_overrides")
+    if not isinstance(overrides, dict):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis overrides are malformed"
+        )
+    canonical = {}
+    for source, effective in overrides.items():
+        source = _required_text(
+            source, f"State item {queue_id!r} synthesis override source"
+        )
+        key = normalize_character_name(source)
+        if key != source or key == "narrator":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} synthesis override source is not canonical"
+            )
+        if effective != "Narrator" or not policy.applies_to(source):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} synthesis override is unauthorized"
+            )
+        canonical[key] = "Narrator"
+    if canonical != overrides:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} synthesis overrides are inconsistent"
+        )
+    return {
+        "missing_voice_policy": policy.to_document(),
+        "synthesis_character_overrides": canonical,
+    }
 
 
 def _validate_active_attempt(active, queue_by_id):
@@ -1619,6 +1954,19 @@ def _validate_active_attempt(active, queue_by_id):
         active.get("last_error"), str
     ):
         raise BulkGenerationError("Active attempt last_error must be text or null")
+    if queue_item is not None:
+        active_result = {
+            "requested_voice_character": active.get("requested_voice_character"),
+            "voice_character": active.get("synthesis_voice_character"),
+        }
+        for field in (
+            "synthesis_configuration",
+            "synthesis_fallback",
+            "narrator_character",
+        ):
+            if field in active:
+                active_result[field] = active[field]
+        _validate_synthesis_identity(active_result, queue_id, queue_item)
 
 
 def _validate_synthesis_controls(state):
@@ -1719,6 +2067,7 @@ def _validate_success_item(
         result.get("prompt_sha256"), f"State item {queue_id!r} prompt_sha256"
     )
     _integer(result.get("seed"), f"State item {queue_id!r} seed")
+    _validate_synthesis_identity(result, queue_id, queue_item)
     if state_schema == STATE_SCHEMA:
         _required_text(
             result.get("generation_profile"),
@@ -1796,7 +2145,7 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             _nonnegative_int(existing.get("attempts", 0), "Attempts"),
             _nonnegative_int(active.get("total_attempts", 0), "Active attempts"),
         )
-        state["items"][queue_id] = {
+        interrupted_result = {
             "status": "failed",
             "attempts": attempts,
             "seed": active.get("seed"),
@@ -1809,6 +2158,29 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             },
             "updated_at": _now(),
         }
+        for field in (
+            "provider",
+            "model",
+            "generation_profile",
+            "requested_voice_character",
+            "synthesis_voice_character",
+            "synthesis_fallback",
+            "narrator_character",
+            "prompt_sha256",
+            "prompt_applied",
+            "queue_annotations_sha256",
+            "synthesis_text_sha256",
+            "text_transform",
+            "synthesis_provenance_sha256",
+            "synthesis_configuration",
+        ):
+            if field in active:
+                interrupted_result[field] = active[field]
+        if "synthesis_voice_character" in interrupted_result:
+            interrupted_result["voice_character"] = interrupted_result.pop(
+                "synthesis_voice_character"
+            )
+        state["items"][queue_id] = interrupted_result
     state["active"] = None
     atomic_write_json(state_path, state, sort_keys=True)
 
@@ -1826,6 +2198,9 @@ def _write_active(
     synthesis_text_sha256,
     text_transform_id,
     synthesis_provenance_sha256,
+    synthesis_configuration,
+    synthesis_voice_character,
+    synthesis_fallback,
     phase,
     attempt,
     attempt_limit,
@@ -1840,6 +2215,10 @@ def _write_active(
         "text_sha256": item.text_sha256,
         "speaker": item.speaker,
         "voice_character": item.voice_character,
+        "requested_voice_character": synthesis_character_for_line(
+            item.speaker, item.voice_character
+        ),
+        "synthesis_voice_character": synthesis_voice_character,
         "text": item.text,
         "phase": phase,
         "attempt": attempt,
@@ -1855,10 +2234,14 @@ def _write_active(
         "synthesis_text_sha256": synthesis_text_sha256,
         "text_transform": text_transform_id,
         "synthesis_provenance_sha256": synthesis_provenance_sha256,
+        "synthesis_configuration": synthesis_configuration,
         "started_at": started_at,
         "updated_at": _now(),
         "last_error": last_error,
     }
+    if synthesis_fallback is not None:
+        state["active"]["synthesis_fallback"] = synthesis_fallback
+        state["active"]["narrator_character"] = synthesis_fallback["narrator_character"]
     atomic_write_json(state_path, state, sort_keys=True)
 
 

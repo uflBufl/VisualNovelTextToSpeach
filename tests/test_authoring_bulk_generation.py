@@ -29,6 +29,7 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -280,6 +281,155 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(
             state["items"][item["queue_id"]]["voice_character"], "Narrator"
         )
+
+    def test_explicit_missing_voice_fallback_preserves_source_and_narrator_provenance(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(character="Poacher I")
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer()
+            policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
+            narrator_reference = root / "centurion.wav"
+            narrator_reference.write_bytes(b"bound narrator reference")
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Centurion",
+                                "speaker": "Centurion",
+                                "reference": "centurion.wav",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                renderer,
+                synthesis_character_overrides={"Poacher I": "Narrator"},
+                missing_voice_policy=policy.to_document(),
+                narrator_character="Centurion",
+                control_files={
+                    "voice_manifest": voice_manifest,
+                    "narrator_selection:Centurion": narrator_reference,
+                },
+            )
+            state = load_generation_state(result.state, queue)
+            generated = state["items"][item["queue_id"]]
+            review_generation_item(result.state, item["queue_id"], "approved")
+            manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
+            published = manifest["entries"][0]
+
+        self.assertEqual(renderer.requests[0].voice, "Narrator")
+        self.assertEqual(generated["requested_voice_character"], "Poacher I")
+        self.assertEqual(generated["voice_character"], "Narrator")
+        self.assertEqual(generated["narrator_character"], "Centurion")
+        self.assertEqual(
+            generated["synthesis_configuration"],
+            {
+                "missing_voice_policy": policy.to_document(),
+                "synthesis_character_overrides": {"poacheri": "Narrator"},
+            },
+        )
+        self.assertEqual(
+            generated["synthesis_fallback"],
+            {
+                "schema_version": 1,
+                "kind": "missing_voice_to_narrator",
+                "policy": policy.to_document(),
+                "source_voice_character": "Poacher I",
+                "synthesis_voice_character": "Narrator",
+                "narrator_character": "Centurion",
+            },
+        )
+        self.assertEqual(
+            published["synthesis_fallback"], generated["synthesis_fallback"]
+        )
+        self.assertEqual(published["requested_voice_character"], "Poacher I")
+        self.assertEqual(published["speaker"], "Poacher I")
+        self.assertEqual(published["voice_character"], "Narrator")
+        self.assertEqual(
+            published["synthesis_configuration"],
+            generated["synthesis_configuration"],
+        )
+
+    def test_missing_voice_override_must_be_authorized_before_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(
+                root / "queue.jsonl", [queue_item(character="Hotelier")]
+            )
+            output = root / "output"
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "does not authorize role 'Hotelier'"
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    synthesis_character_overrides={"Hotelier": "Narrator"},
+                    missing_voice_policy=MissingVoicePolicy().to_document(),
+                    narrator_character="Centurion",
+                )
+
+            self.assertFalse(output.exists())
+
+    def test_fallback_refuses_a_role_that_still_has_manifest_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(
+                root / "queue.jsonl", [queue_item(character="Hotelier")]
+            )
+            for name in ("hotelier.wav", "centurion.wav"):
+                (root / name).write_bytes(name.encode("utf-8"))
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Hotelier",
+                                "speaker": "Hotelier",
+                                "reference": "hotelier.wav",
+                            },
+                            {
+                                "character": "Centurion",
+                                "speaker": "Centurion",
+                                "reference": "centurion.wav",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "output"
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "still has configured references"
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    synthesis_character_overrides={"Hotelier": "Narrator"},
+                    missing_voice_policy=MissingVoicePolicy(
+                        NARRATOR_ROLES, ("Hotelier",)
+                    ).to_document(),
+                    narrator_character="Centurion",
+                    control_files={"voice_manifest": voice_manifest},
+                )
+
+            self.assertFalse(output.exists())
 
     def test_exact_queue_id_selection_validates_before_writes(self):
         with TemporaryDirectory() as directory:

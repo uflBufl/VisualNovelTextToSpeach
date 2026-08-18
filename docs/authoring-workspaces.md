@@ -202,6 +202,43 @@ blocked. A focused collection or retry may proceed only when its exact queue-ID
 selection is fully covered. This permits adding references incrementally without
 weakening control hashes, queue identity or final-pack provenance requirements.
 
+An author may instead create a distinct config-addressed workspace with a
+versioned missing-voice policy. The default policy is `block`. The two explicit
+alternatives authorize either an exact role list or every still-unresolved
+named role to use the workspace Narrator. For example:
+
+```python
+from vntts.authoring import MissingVoicePolicy, NARRATOR_ROLES
+from vntts.authoring.workbench import create_resume_workspace
+
+workspace = create_resume_workspace(
+    imported_history,
+    workspaces_root,
+    story_index=story_index,
+    voice_manifest=voice_manifest,
+    narrator_character="Centurion",
+    backend="moss-tts",
+    model=model,
+    generation_profile="stable",
+    missing_voice_policy=MissingVoicePolicy(
+        NARRATOR_ROLES,
+        ("Poacher I", "Poacher II", "Glyndŵr"),
+    ),
+)
+```
+
+The generated child command carries each exact role as
+`--narrator-fallback-role`; `--narrator-fallback-all` is the deliberately broad
+alternative. A fallback is used only when that requested role has no usable
+manifest reference and the selected Narrator reference is present. The policy
+is part of the workspace identity and synthesis-control digest, so changing it
+creates a different workspace. State and approved manifest records retain the
+requested role, effective `Narrator`, selected narrator character and complete
+policy document. The review table's `Speaker` column remains the story role and
+its `Character` column shows the effective synthesis role; the header names the
+selected Narrator character. Canonical audio contains only the original story
+text and never prepends a speaker announcement.
+
 ## Child-process trust boundary
 
 The generated command passes `--workspace` to a fresh

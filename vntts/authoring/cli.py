@@ -7,7 +7,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts_artifacts import StoryIndexError, VoiceGenerationQueueError
+from vntts_artifacts import (
+    StoryIndexError,
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+)
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
 from vntts.authoring.bulk_generation import (
@@ -41,6 +45,12 @@ from vntts.authoring.listening_import import (
     ListeningImportError,
     import_listening_session,
     inspect_listening_session,
+)
+from vntts.authoring.missing_voice_policy import (
+    NARRATOR_ALL_UNRESOLVED,
+    NARRATOR_ROLES,
+    MissingVoicePolicy,
+    MissingVoicePolicyError,
 )
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
@@ -95,6 +105,19 @@ def _vntts_version():
         return version("visual-novel-text-to-speech")
     except PackageNotFoundError:
         return "0.1.0"
+
+
+def _generation_missing_voice_policy(arguments):
+    try:
+        if arguments.narrator_fallback_all:
+            return MissingVoicePolicy(NARRATOR_ALL_UNRESOLVED)
+        if arguments.narrator_fallback_roles:
+            return MissingVoicePolicy(
+                NARRATOR_ROLES, tuple(arguments.narrator_fallback_roles)
+            )
+        return MissingVoicePolicy()
+    except MissingVoicePolicyError as error:
+        raise BulkGenerationError(str(error)) from error
 
 
 def create_parser():
@@ -190,6 +213,21 @@ def create_parser():
         help="Manifest character whose first reference voices queue Narrator lines",
     )
     generate.add_argument("--generation-profile")
+    fallback = generate.add_mutually_exclusive_group()
+    fallback.add_argument(
+        "--narrator-fallback-role",
+        action="append",
+        dest="narrator_fallback_roles",
+        help=(
+            "Use Narrator only when this exact requested role still has no "
+            "configured reference; repeat for multiple roles"
+        ),
+    )
+    fallback.add_argument(
+        "--narrator-fallback-all",
+        action="store_true",
+        help="Use Narrator for every still-unresolved named role in this exact queue",
+    )
     generate.add_argument("--limit", type=int)
     generate.add_argument("--retries", type=int, default=2)
     generate.add_argument("--seed", type=int, default=0)
@@ -313,6 +351,7 @@ def main(argv=None):
             )
             return 0
         if arguments.command == "generate":
+            missing_voice_policy = _generation_missing_voice_policy(arguments)
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
             expected_workspace_controls = None
             workspace_output_identity = None
@@ -333,6 +372,7 @@ def main(argv=None):
                         model=arguments.model,
                         generation_profile=arguments.generation_profile,
                         narrator_character=arguments.narrator_character,
+                        missing_voice_policy=missing_voice_policy,
                     )
                     workspace_output_identity = generation_output_identity(
                         arguments.workspace
@@ -342,6 +382,28 @@ def main(argv=None):
             registry, voice_manifest_sha256 = _load_stable_voice_registry(
                 voice_manifest
             )
+            try:
+                policy_queue = VoiceGenerationQueue.load(arguments.queue)
+            except VoiceGenerationQueueError as error:
+                raise BulkGenerationError(str(error)) from error
+            synthesis_character_overrides = {}
+            for item in policy_queue.items:
+                requested = synthesis_character_for_line(
+                    item.speaker, item.voice_character
+                )
+                voice = registry.resolve(requested)
+                if (
+                    requested != "Narrator"
+                    and (
+                        voice is None
+                        or not voice.references
+                        or any(
+                            not reference.is_file() for reference in voice.references
+                        )
+                    )
+                    and missing_voice_policy.applies_to(requested)
+                ):
+                    synthesis_character_overrides[requested] = "Narrator"
             if (
                 expected_workspace_controls is not None
                 and expected_workspace_controls.get(voice_manifest)
@@ -409,9 +471,10 @@ def main(argv=None):
             def ready_spoken_item(item):
                 if not is_spoken_queue_item(item):
                     return False
-                character = synthesis_character_for_line(
+                requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
                 )
+                character = synthesis_character_overrides.get(requested, requested)
                 if character == "Narrator":
                     return narrator_reference is not None
                 voice = registry.resolve(character)
@@ -459,6 +522,9 @@ def main(argv=None):
                             else None
                         ),
                         workspace_output_identity=workspace_output_identity,
+                        synthesis_character_overrides=synthesis_character_overrides,
+                        missing_voice_policy=missing_voice_policy.to_document(),
+                        narrator_character=arguments.narrator_character,
                     )
                 finally:
                     stop = getattr(backend, "stop", None)

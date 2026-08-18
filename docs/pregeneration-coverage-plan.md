@@ -67,10 +67,12 @@ audio or a missed extraction path:
 
 ## Explicit unknown-role Narrator policy
 
-The default missing-voice policy remains `block`. Authoring may offer an
-explicit `Narrator fallback` policy for all unresolved roles in a selected
-scope or, preferably, for an exact list of roles. It must never silently change
-the source identity. Each affected state and manifest record must retain:
+The default missing-voice policy is `block`. A config-addressed workspace may
+opt into `narrator_roles` for an exact list or
+`narrator_all_unresolved` for every still-unresolved named role. The CLI carries
+those choices as repeated `--narrator-fallback-role` values or the deliberately
+broad `--narrator-fallback-all` flag. Each affected state and manifest record
+retains:
 
 - original `speaker` and requested `voice_character`;
 - effective `synthesis_character=Narrator` and the selected narrator character;
@@ -81,6 +83,15 @@ the source identity. Each affected state and manifest record must retain:
 The workbench must display source role and effective synthesis voice
 separately. This makes `Poacher I -> Narrator -> Centurion` visible instead of
 claiming that Centurion is Poacher I.
+
+The policy document and exact requested-to-effective mapping are included in
+the synthesis-control digest. A changed policy creates a different immutable
+workspace. Generation fails closed if a requested override is not authorized,
+if it targets anything other than Narrator, or if the selected narrator has no
+bound reference. The workbench review table already presents source `Speaker`
+and effective `Character` separately, while its header identifies the selected
+Narrator character. Old workspaces without this field read as `block` and are
+never broadened in place.
 
 Canonical generated speech should contain only the story text. Automatically
 prepending phrases such as "Poacher I says" changes the script, duplicates the

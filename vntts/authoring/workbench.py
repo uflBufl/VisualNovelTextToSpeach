@@ -55,6 +55,12 @@ from vntts.authoring.game_pack import (
     FinalGamePackError,
     _rename_directory_no_replace,
 )
+from vntts.authoring.missing_voice_policy import (
+    NARRATOR_ALL_UNRESOLVED,
+    NARRATOR_ROLES,
+    MissingVoicePolicy,
+    MissingVoicePolicyError,
+)
 from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
@@ -320,6 +326,7 @@ def create_resume_workspace(
     backend=None,
     model=None,
     generation_profile=None,
+    missing_voice_policy=None,
     carry_forward_from=None,
     carry_forward_characters=None,
 ):
@@ -407,10 +414,19 @@ def create_resume_workspace(
             import_manifest=manifest,
             queue=queue_snapshot,
         )
+        try:
+            policy = (
+                missing_voice_policy
+                if isinstance(missing_voice_policy, MissingVoicePolicy)
+                else MissingVoicePolicy.from_document(missing_voice_policy)
+            )
+        except MissingVoicePolicyError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
         run_config = {
             "backend": _optional_text(backend),
             "model": _optional_text(model),
             "generation_profile": _optional_text(generation_profile),
+            "missing_voice_policy": policy.to_document(),
         }
         seed_state = _preserve_seed_generation_state(staging, state_artifact)
         carry_forward = _carry_forward_review_outcomes(
@@ -1185,6 +1201,7 @@ def generation_command(
     configured_backend = run_config.get("backend")
     configured_model = run_config.get("model")
     configured_profile = run_config.get("generation_profile")
+    policy = _workspace_missing_voice_policy(workspace)
     if configured_backend is None:
         raise AuthoringWorkbenchError(
             "Create a config-addressed workspace with a generation backend"
@@ -1249,6 +1266,11 @@ def generation_command(
         command.extend(("--model", str(model)))
     if generation_profile:
         command.extend(("--generation-profile", generation_profile))
+    if policy.mode == NARRATOR_ROLES:
+        for role in policy.roles:
+            command.extend(("--narrator-fallback-role", role))
+    elif policy.mode == NARRATOR_ALL_UNRESOLVED:
+        command.append("--narrator-fallback-all")
     if queue_ids is not None:
         for queue_id in queue_ids:
             command.extend(("--queue-id", _required_text(queue_id, "Queue ID")))
@@ -1267,6 +1289,7 @@ def generation_control_bindings(
     model,
     generation_profile,
     narrator_character,
+    missing_voice_policy=None,
 ):
     directory, workspace = _load_workspace(workspace_directory)
     expected_queue = (directory / "queue.jsonl").resolve()
@@ -1284,12 +1307,21 @@ def generation_control_bindings(
             "Generation voice manifest differs from workspace config"
         )
     run_config = workspace["run_config"]
+    try:
+        policy = (
+            missing_voice_policy
+            if isinstance(missing_voice_policy, MissingVoicePolicy)
+            else MissingVoicePolicy.from_document(missing_voice_policy)
+        )
+    except MissingVoicePolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
     expected = {
         "backend": backend,
         "model": model,
         "generation_profile": generation_profile,
+        "missing_voice_policy": policy.to_document(),
     }
-    if run_config != expected:
+    if _workspace_run_config_with_policy(run_config) != expected:
         raise AuthoringWorkbenchError("Generation run config differs from workspace")
     if narrator_character != workspace["narrator_character"]:
         raise AuthoringWorkbenchError(
@@ -1854,12 +1886,7 @@ def _load_workspace(workspace_directory):
         workspace.get("narrator_character"), "Workspace narrator character"
     )
     run_config = workspace.get("run_config")
-    if not isinstance(run_config, dict) or set(run_config) != {
-        "backend",
-        "model",
-        "generation_profile",
-    }:
-        raise AuthoringWorkbenchError("Workspace run configuration is malformed")
+    _workspace_run_config_with_policy(run_config)
     _validate_workspace_input_config(directory, workspace, snapshot)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
@@ -2267,6 +2294,36 @@ def _workspace_config_fingerprint(
     return hashlib.sha256(payload).hexdigest()
 
 
+def _workspace_run_config_with_policy(run_config):
+    if not isinstance(run_config, dict):
+        raise AuthoringWorkbenchError("Workspace run configuration is malformed")
+    legacy_fields = {"backend", "model", "generation_profile"}
+    current_fields = legacy_fields | {"missing_voice_policy"}
+    fields = frozenset(run_config)
+    if fields not in {frozenset(legacy_fields), frozenset(current_fields)}:
+        raise AuthoringWorkbenchError("Workspace run configuration is malformed")
+    try:
+        policy = MissingVoicePolicy.from_document(
+            run_config.get("missing_voice_policy")
+        )
+    except MissingVoicePolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return {
+        "backend": run_config.get("backend"),
+        "model": run_config.get("model"),
+        "generation_profile": run_config.get("generation_profile"),
+        "missing_voice_policy": policy.to_document(),
+    }
+
+
+def _workspace_missing_voice_policy(workspace):
+    return MissingVoicePolicy.from_document(
+        _workspace_run_config_with_policy(workspace.get("run_config"))[
+            "missing_voice_policy"
+        ]
+    )
+
+
 def _selected_voice_manifest(directory, workspace, selected=None):
     value = workspace.get("voice_manifest")
     if not isinstance(value, dict) or not isinstance(value.get("path"), str):
@@ -2410,6 +2467,13 @@ def _voice_readiness(workspace, spoken, completed_ids, manifest_path):
             f"Unable to load voice manifest: {error}"
         ) from error
     narrator = str(workspace.get("narrator_character") or "Narrator")
+    policy = _workspace_missing_voice_policy(workspace)
+    narrator_voice = registry.resolve(narrator)
+    narrator_ready = (
+        narrator_voice is not None
+        and bool(narrator_voice.references)
+        and all(reference.is_file() for reference in narrator_voice.references)
+    )
     missing = set()
     for item in spoken:
         if item.queue_id in completed_ids:
@@ -2421,11 +2485,14 @@ def _voice_readiness(workspace, spoken, completed_ids, manifest_path):
             narrator if requested_character == "Narrator" else requested_character
         )
         voice = registry.resolve(character or item.speaker or "")
-        if (
+        voice_missing = (
             voice is None
             or not voice.references
             or any(not reference.is_file() for reference in voice.references)
-        ):
+        )
+        if voice_missing and policy.applies_to(requested_character) and narrator_ready:
+            continue
+        if voice_missing:
             missing.add(item.queue_id)
     if missing:
         return missing, (

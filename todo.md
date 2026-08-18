@@ -18,13 +18,6 @@ Follow the evidence-backed order and invariants in
       cover 214 of the current 237 missing-reference lines. Re-audit `Poacher
       I`, `Poacher II` and Glyndŵr without merging similarly named roles or
       treating configured-unavailable audio as installed.
-- [ ] Add a versioned, explicit pregeneration missing-voice policy whose default
-      is `block` and whose opt-in fallback can map an exact role list or all
-      still-unresolved roles to Narrator. Preserve source speaker/character,
-      record effective `Narrator -> Centurion` synthesis and all control hashes,
-      and show source role and synthesis voice separately in review. Do not
-      prepend speaker names to canonical story WAVs; evaluate a separate
-      optional `announce speaker on change` accessibility route instead.
 - [ ] Implement bounded cohort-specific prevention: evidence-based text
       normalization, safe sentence-boundary segmentation/concatenation for
       suitable long lines, limited seed diversification, reference comparison,

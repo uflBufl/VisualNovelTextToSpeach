@@ -29,6 +29,7 @@ import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.legacy_import import import_legacy_job
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -1240,6 +1241,21 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Rhiannon",
             )
+            fallback_policy = MissingVoicePolicy(NARRATOR_ROLES, ("Uncovered",))
+            fallback = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="moss-v1.5",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                missing_voice_policy=fallback_policy,
+            )
+            fallback_summary = inspect_workspace(fallback.directory)
+            fallback_readiness = inspect_generation_readiness(fallback.directory)
+            fallback_command = generation_command(fallback.directory)
 
             summary = inspect_workspace(created.directory)
             covered = inspect_collection_selection(
@@ -1284,6 +1300,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
 
         self.assertEqual(summary.runtime_status, AuthoringRuntimeStatus.NEEDS_ATTENTION)
+        self.assertNotEqual(created.directory, fallback.directory)
+        self.assertEqual(fallback_summary.missing_voice, 0)
+        self.assertEqual(fallback_readiness.ready, 2)
+        self.assertEqual(
+            fallback_command[fallback_command.index("--narrator-fallback-role") + 1],
+            "Uncovered",
+        )
         self.assertEqual(summary.missing_voice, 1)
         self.assertEqual(covered.readiness.failed, 1)
         self.assertEqual(covered.readiness.ready, 1)

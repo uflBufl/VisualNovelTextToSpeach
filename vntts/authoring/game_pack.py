@@ -618,18 +618,20 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
             raise FinalGamePackError(
                 f"State item {queue_id!r} lacks its exact synthesis-control inventory"
             )
-        calculated = _canonical_sha256(
-            {
-                "provider": result.get("provider"),
-                "model": result.get("model"),
-                "generation_profile": result.get("generation_profile"),
-                "text_transform": result.get("text_transform"),
-                "controls": [
-                    {"role": control["role"], "sha256": control["sha256"]}
-                    for control in controls
-                ],
-            }
-        )
+        provenance_document = {
+            "provider": result.get("provider"),
+            "model": result.get("model"),
+            "generation_profile": result.get("generation_profile"),
+            "text_transform": result.get("text_transform"),
+            "controls": [
+                {"role": control["role"], "sha256": control["sha256"]}
+                for control in controls
+            ],
+        }
+        configuration = result.get("synthesis_configuration")
+        if configuration is not None:
+            provenance_document.update(configuration)
+        calculated = _canonical_sha256(provenance_document)
         if calculated != provenance:
             raise FinalGamePackError(
                 f"State item {queue_id!r} synthesis provenance is inconsistent"
@@ -655,8 +657,8 @@ def _verify_voice_control_provenance(state, queue, voice_manifest_path, voice_en
             for control in controls
             if str(control.get("role", "")).startswith("narrator_selection:")
         ]
-        effective_character = synthesis_character_for_line(
-            item.speaker, item.voice_character
+        effective_character = result.get("voice_character") or (
+            synthesis_character_for_line(item.speaker, item.voice_character)
         )
         if effective_character == "Narrator" and len(narrator_controls) != 1:
             raise FinalGamePackError(

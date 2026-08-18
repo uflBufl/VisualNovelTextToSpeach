@@ -431,6 +431,14 @@ approval/rejection and approved-only manifest publication. It dual-reads
 preserved legacy state while treating state, not a possibly stale manifest, as
 the review authority. See the
 [resumable bulk-generation contract](docs/authoring-bulk-generation.md).
+Missing character references remain blocked by default. A new
+config-addressed workspace can explicitly authorize exact roles with repeated
+`--narrator-fallback-role` flags, or deliberately authorize every unresolved
+named role with `--narrator-fallback-all`. State and approved manifests retain
+the source role, effective Narrator role, selected narrator character and
+versioned policy rather than claiming the fallback is the original speaker.
+See the [workspace contract](docs/authoring-workspaces.md) for the typed API and
+review behavior.
 
 After every selected queue item has a terminal approval or rejection, publish a
 portable final delivery with `vntts-pregenerate publish-pack`. Publication
