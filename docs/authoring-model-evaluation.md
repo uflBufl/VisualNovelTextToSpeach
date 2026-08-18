@@ -230,6 +230,14 @@ that persisted state explicitly and instructs the operator to regenerate the
 derived report; it never claims that the rating was rolled back. The workbench
 reloads that persisted session and advances to the next unrated trial (or the
 completed state), preventing a second click on the already-saved rating.
+
+`Neither acceptable` is a distinct verdict, not a tie. On disk it retains the
+wire-v1-compatible `preference: tie` value and adds
+`acceptability: neither`, so older readers can still open the session while
+current reports count one rejection for each side and award neither a win nor a
+tie. Use `No preference` only when both samples are acceptable and approximately
+equal. The CLI equivalent is `--preference neither`; the Qt shortcut is
+`Ctrl+Shift+N`.
 The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.

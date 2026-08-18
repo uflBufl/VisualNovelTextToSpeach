@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -121,7 +122,10 @@ class ModelListeningDialog(QDialog):
         self.seek_controls = seek_controls
 
         self.prefer_a = QPushButton("A is better")
-        self.tie = QPushButton("No preference")
+        self.tie = QPushButton("Both acceptable / no preference")
+        self.neither = QPushButton("Neither acceptable")
+        self.neither.setAccessibleName("Neither sample is acceptable")
+        self.neither.setShortcut(QKeySequence("Ctrl+Shift+N"))
         self.prefer_b = QPushButton("B is better")
         self.apply_side_button_style(self.prefer_a, "a")
         self.tie.setStyleSheet(
@@ -129,13 +133,20 @@ class ModelListeningDialog(QDialog):
             " font-weight: 700; padding: 6px; }"
             "QPushButton:disabled { background-color: #3f3f46; color: #a1a1aa; }"
         )
+        self.neither.setStyleSheet(
+            "QPushButton { background-color: #991b1b; color: white;"
+            " font-weight: 700; padding: 6px; }"
+            "QPushButton:disabled { background-color: #4c1d1d; color: #a1a1aa; }"
+        )
         self.apply_side_button_style(self.prefer_b, "b")
         self.prefer_a.clicked.connect(lambda: self.save_preference("a"))
         self.tie.clicked.connect(lambda: self.save_preference("tie"))
+        self.neither.clicked.connect(lambda: self.save_preference("neither"))
         self.prefer_b.clicked.connect(lambda: self.save_preference("b"))
         decisions = QHBoxLayout()
         decisions.addWidget(self.prefer_a)
         decisions.addWidget(self.tie)
+        decisions.addWidget(self.neither)
         decisions.addWidget(self.prefer_b)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -162,7 +173,7 @@ class ModelListeningDialog(QDialog):
         self.load_next_trial()
 
     def set_preference_buttons_enabled(self, enabled):
-        for button in (self.prefer_a, self.tie, self.prefer_b):
+        for button in (self.prefer_a, self.tie, self.neither, self.prefer_b):
             button.setEnabled(enabled)
 
     def apply_side_button_style(self, button, side, *, active=False):

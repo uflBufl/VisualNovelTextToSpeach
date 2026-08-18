@@ -316,6 +316,11 @@ def load_listening_session(path):
         if rating is not None and (
             not isinstance(rating, dict)
             or rating.get("preference") not in {"a", "b", "tie"}
+            or rating.get("acceptability") not in {None, "neither"}
+            or (
+                rating.get("acceptability") == "neither"
+                and rating.get("preference") != "tie"
+            )
         ):
             raise ModelListeningError(
                 f"Listening trial rating is invalid: {trial['trial_id']}"
@@ -447,8 +452,8 @@ def record_trial_preference(
     overwrite=False,
     report_path=None,
 ):
-    if preference not in {"a", "b", "tie"}:
-        raise ModelListeningError("Preference must be a, b, or tie")
+    if preference not in {"a", "b", "tie", "neither"}:
+        raise ModelListeningError("Preference must be a, b, tie, or neither")
     session_path = Path(session_path).expanduser().resolve()
     session = load_listening_session(session_path)
     _load_blind_key(session_path, session)
@@ -459,7 +464,12 @@ def record_trial_preference(
         raise ModelListeningError(f"Unknown listening trial: {trial_id}")
     if trial.get("rating") is not None and not overwrite:
         raise ModelListeningError(f"Listening trial is already rated: {trial_id}")
-    trial["rating"] = {"preference": preference, "reviewed_at": _utc_now()}
+    trial["rating"] = {
+        "preference": "tie" if preference == "neither" else preference,
+        "reviewed_at": _utc_now(),
+    }
+    if preference == "neither":
+        trial["rating"]["acceptability"] = "neither"
     session["completed_count"] = listening_progress(session)[0]
     session["updated_at"] = _utc_now()
     atomic_write_json(session_path, session, sort_keys=True)
@@ -527,6 +537,7 @@ def ensure_listening_report(session_path, output_path=None):
 
 
 def _report_fields(session, key):
+    supports_acceptability = session.get("schema") == SESSION_SCHEMA
     assignments = {item["trial_id"]: item for item in key["assignments"]}
     stats = {
         model["model_id"]: {
@@ -536,12 +547,19 @@ def _report_fields(session, key):
             "wins": 0,
             "losses": 0,
             "ties": 0,
+            "rejections": 0,
             "reviewed_trials": 0,
         }
         for model in key["models"]
     }
     pairwise = defaultdict(
-        lambda: {"trials": 0, "left_wins": 0, "right_wins": 0, "ties": 0}
+        lambda: {
+            "trials": 0,
+            "left_wins": 0,
+            "right_wins": 0,
+            "ties": 0,
+            "neither_acceptable": 0,
+        }
     )
     for trial in session["trials"]:
         rating = trial.get("rating")
@@ -558,7 +576,11 @@ def _report_fields(session, key):
                 )
             stats[model_id]["reviewed_trials"] += 1
         preferred = rating["preference"]
-        if preferred == "tie":
+        neither_acceptable = rating.get("acceptability") == "neither"
+        if neither_acceptable:
+            stats[side_models["a"]]["rejections"] += 1
+            stats[side_models["b"]]["rejections"] += 1
+        elif preferred == "tie":
             stats[side_models["a"]]["ties"] += 1
             stats[side_models["b"]]["ties"] += 1
         else:
@@ -567,7 +589,9 @@ def _report_fields(session, key):
         left, right = sorted(side_models.values())
         comparison = pairwise[(left, right)]
         comparison["trials"] += 1
-        if preferred == "tie":
+        if neither_acceptable:
+            comparison["neither_acceptable"] += 1
+        elif preferred == "tie":
             comparison["ties"] += 1
         elif side_models[preferred] == left:
             comparison["left_wins"] += 1
@@ -576,20 +600,23 @@ def _report_fields(session, key):
     models = []
     for value in stats.values():
         total = value["wins"] + value["losses"] + value["ties"]
+        preference = {
+            "wins": value["wins"],
+            "losses": value["losses"],
+            "ties": value["ties"],
+            "rate": round((value["wins"] + 0.5 * value["ties"]) / total, 4)
+            if total
+            else None,
+        }
+        if supports_acceptability:
+            preference["rejections"] = value["rejections"]
         models.append(
             {
                 "model_id": value["model_id"],
                 "provider": value["provider"],
                 "model": value["model"],
                 "reviewed_trials": value["reviewed_trials"],
-                "preference": {
-                    "wins": value["wins"],
-                    "losses": value["losses"],
-                    "ties": value["ties"],
-                    "rate": round((value["wins"] + 0.5 * value["ties"]) / total, 4)
-                    if total
-                    else None,
-                },
+                "preference": preference,
             }
         )
     models.sort(
@@ -613,7 +640,19 @@ def _report_fields(session, key):
         "manual_selection_required": True,
         "models": models,
         "pairwise": [
-            {"left_model": left, "right_model": right, **values}
+            {
+                "left_model": left,
+                "right_model": right,
+                **(
+                    values
+                    if supports_acceptability
+                    else {
+                        field: value
+                        for field, value in values.items()
+                        if field != "neither_acceptable"
+                    }
+                ),
+            }
             for (left, right), values in sorted(pairwise.items())
         ],
     }
@@ -850,7 +889,9 @@ def create_parser():
     score.add_argument(
         "--session", type=Path, default=default_session_directory / "session.json"
     )
-    score.add_argument("--preference", choices=("a", "b", "tie"), required=True)
+    score.add_argument(
+        "--preference", choices=("a", "b", "tie", "neither"), required=True
+    )
     score.add_argument("--overwrite", action="store_true")
     return parser
 

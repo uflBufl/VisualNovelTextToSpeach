@@ -23,6 +23,7 @@ from vntts.authoring.listening import (
     next_pending_trial,
     record_trial_preference,
 )
+from vntts.authoring.listening import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -181,6 +182,52 @@ class AuthoringListeningTest(unittest.TestCase):
         self.assertEqual(report["models"][0]["model_id"], "synthetic/one")
         self.assertEqual(report["models"][0]["preference"]["wins"], 2)
         self.assertEqual(report["pairwise"][0]["trials"], 2)
+
+    def test_neither_acceptable_is_not_counted_as_a_tie_or_win(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            trial = next_pending_trial(load_listening_session(session_path))
+            record_trial_preference(session_path, trial["trial_id"], "neither")
+            session = load_listening_session(session_path)
+            report = aggregate_listening_report(session_path)
+
+        self.assertEqual(session["trials"][0]["rating"]["preference"], "tie")
+        self.assertEqual(session["trials"][0]["rating"]["acceptability"], "neither")
+        self.assertEqual(
+            [model["preference"]["rejections"] for model in report["models"]],
+            [1, 1],
+        )
+        self.assertEqual(
+            [model["preference"]["ties"] for model in report["models"]], [0, 0]
+        )
+        self.assertIsNone(report["models"][0]["preference"]["rate"])
+        self.assertEqual(report["pairwise"][0]["neither_acceptable"], 1)
+
+    def test_cli_records_neither_acceptable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            trial = next_pending_trial(load_listening_session(session_path))
+
+            exit_code = listening_main(
+                [
+                    "score",
+                    trial["trial_id"],
+                    "--session",
+                    str(session_path),
+                    "--preference",
+                    "neither",
+                ]
+            )
+            rating = load_listening_session(session_path)["trials"][0]["rating"]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(rating["acceptability"], "neither")
 
     def test_legacy_import_load_and_current_report_are_hash_preserving(self):
         with TemporaryDirectory() as directory:
@@ -415,12 +462,26 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.play("b")
             dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
             self.assertTrue(dialog.prefer_a.isEnabled())
+            self.assertTrue(dialog.neither.isEnabled())
+            self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
             dialog.save_preference("a")
 
             self.assertEqual(load_listening_session(session)["completed_count"], 1)
             self.assertIsNone(dialog.current_trial)
             self.assertTrue(session.with_name("report.json").is_file())
             dialog.deleteLater()
+
+    def test_neither_acceptable_button_persists_distinct_verdict(self):
+        with TemporaryDirectory() as directory:
+            session, dialog = self.create_dialog(Path(directory))
+            dialog.started_sides = {"a", "b"}
+            dialog.set_preference_buttons_enabled(True)
+            dialog.neither.click()
+
+            rating = load_listening_session(session)["trials"][0]["rating"]
+
+        self.assertEqual(rating["preference"], "tie")
+        self.assertEqual(rating["acceptability"], "neither")
 
     def test_autoplays_a_then_b_and_tracks_controls(self):
         with TemporaryDirectory() as directory:

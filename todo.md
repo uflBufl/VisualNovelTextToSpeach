@@ -10,17 +10,25 @@ sections after their implementation has been verified and committed.
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Complete the 9-trial checksum-bound blind review for the four accepted
+- [ ] Replace the invalid nine-trial source-reference session with a
+      cluster-specific quality review. Preserve the historical `1/9` session as
+      non-authoritative evidence, but do not use its six cross-character
+      fixed-text comparisons to choose a voice. Present one card for each of the
+      four accepted character/portrait clusters with its exact original
+      reference, every checksum-valid generated sample, excluded failure
+      reasons and separate `Accept reference`, `Reject reference` and
+      `Need another sample` decisions. Only accepted clusters may feed
+      `build-reference-bindings`.
+
+- [ ] Complete the replacement cluster-specific review for the four accepted
       reference variants. The bounded fixed-corpus run published 9 of 16 WAVs;
-      five typed audio-limit and two speech-silence failures remain excluded.
-      The session contains three exact original/generated source-match trials
-      and six same-text cross-variant trials. Source-audio technical acceptance
+      five typed audio-limit and two speech-silence failures must remain visible
+      rather than becoming listening audio. Source-audio technical acceptance
       must not imply generated cadence, pronunciation or speaker-similarity
-      approval. After revealing the results, explicitly publish at most one
-      winning variant per portrait cluster with `build-reference-bindings`, then
-      create a new config-addressed workspace from that partial manifest. The
-      binding implementation already preserves exact queue IDs and provenance;
-      it intentionally cannot choose a winner without the listening decision.
+      approval. After the four explicit decisions, publish only accepted
+      variants with `build-reference-bindings`, then create a new
+      config-addressed workspace. Exact queue-ID binding is already implemented;
+      it intentionally cannot choose a reference without the listening decision.
 
 - [ ] Finish the checksum-bound Character Story audition for Aderyn, Mrs. Owen
       and Hotelier, then create a new config-addressed workspace and re-run
