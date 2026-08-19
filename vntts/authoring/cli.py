@@ -28,6 +28,10 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.cohort_review import (
+    CohortReviewError,
+    build_cohort_review_plan,
+)
 from vntts.authoring.delivery import (
     LEGACY_ENGLISH_POLICY,
     PRESERVE_DELIVERY_POLICY,
@@ -388,6 +392,17 @@ def create_parser():
     )
     repairs.add_argument("--state", type=Path, required=True)
     repairs.add_argument("--queue", type=Path, required=True)
+    cohort_review = subparsers.add_parser(
+        "cohort-review-plan",
+        help="Plan checksum-bound technical-attention and clean review samples",
+    )
+    cohort_review.add_argument("workspace", type=Path)
+    cohort_review.add_argument(
+        "--clean-samples-per-bucket",
+        type=int,
+        default=1,
+        help="Deterministic clean samples for each short/medium/long bucket",
+    )
     references = subparsers.add_parser(
         "reference-report",
         help="Inspect immutable objective metrics for one character's references",
@@ -832,6 +847,15 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "cohort-review-plan":
+            plan = build_cohort_review_plan(
+                arguments.workspace,
+                clean_samples_per_bucket=arguments.clean_samples_per_bucket,
+            )
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
         if arguments.command == "reference-report":
             print(
                 json.dumps(
@@ -963,6 +987,7 @@ def main(argv=None):
         AuthoringWorkbenchError,
         GenerationQueueBuildError,
         BulkGenerationError,
+        CohortReviewError,
         DeliveryAnnotationError,
         FinalGamePackError,
         LegacyAuthoringImportError,

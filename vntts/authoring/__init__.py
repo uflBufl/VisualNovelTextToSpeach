@@ -18,6 +18,13 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.cohort_review import (
+    COHORT_REVIEW_PLAN_SCHEMA,
+    COHORT_REVIEW_PLAN_VERSION,
+    CohortReviewError,
+    CohortReviewPlan,
+    build_cohort_review_plan,
+)
 from vntts.authoring.delivery import (
     DELIVERY_ANNOTATION_VERSION,
     LEGACY_ENGLISH_POLICY,
@@ -144,8 +151,12 @@ __all__ = [
     "BOUNDED_SEED_RETRY",
     "BulkGenerationError",
     "BulkGenerationResult",
+    "COHORT_REVIEW_PLAN_SCHEMA",
+    "COHORT_REVIEW_PLAN_VERSION",
     "BLOCK_MISSING_VOICE",
     "CollectionSelection",
+    "CohortReviewError",
+    "CohortReviewPlan",
     "DELIVERY_ANNOTATION_VERSION",
     "LEGACY_ENGLISH_POLICY",
     "PRESERVE_DELIVERY_POLICY",
@@ -193,6 +204,7 @@ __all__ = [
     "benchmark_model_variants",
     "benchmark_renderer",
     "build_benchmark_corpus",
+    "build_cohort_review_plan",
     "create_listening_session",
     "create_listening_session_from_reports",
     "discover_legacy_jobs",

@@ -454,6 +454,32 @@ projection ran in the background. Qt delivered 469 25-ms heartbeat callbacks
 with a maximum observed 0.300-second gap. The resulting default view contained
 the same 196 awaiting-review rows from 338 review outcomes.
 
+### Checksum-bound cohort review planning
+
+`vntts-pregenerate cohort-review-plan WORKSPACE` builds a read-only versioned
+review plan from the exact workspace configuration, queue, authoritative state
+and generated WAV hashes. It groups only pending-review items with identical
+effective voice, provider/model/profile, synthesis provenance, prompt,
+reference binding, repair strategy and seed. Every technical-attention item is
+sampled. Clean items are sampled deterministically from short (up to 6 words),
+medium (7-15) and long (16 or more) buckets; increasing
+`--clean-samples-per-bucket` produces a new plan identity.
+
+The plan contains every covered queue ID, line/text identity, WAV SHA-256,
+technical flags and sample membership. A state or seed change creates a new
+plan/cohort identity. Historical pending items without complete synthesis
+provenance are reported under `blocked_items`; the planner never guesses their
+profile or merges them into a current cohort. Terminal approvals and rejections
+are excluded rather than reviewed again.
+
+The first read-only run against the current Character Story workspace produced
+seven exact cohorts covering 17 bindable pending items and a 13-item sample;
+161 older pending items were explicitly blocked because their legacy outcomes
+lack complete control provenance. The source state SHA-256 remained
+`b55581341e07fa701ce5a839a251c78d45f1e0b6f361b69fdebff10e28480b03`.
+This planning document is not review authority yet: cohort decision recording,
+atomic per-item projection and workbench controls remain separate TODO gates.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

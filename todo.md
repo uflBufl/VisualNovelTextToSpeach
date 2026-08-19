@@ -48,17 +48,17 @@ Follow the evidence-backed order and invariants in
       metric. Review a deterministic short/medium/long sample per exact portrait
       variant and expand only when that sample finds another substantive defect.
 - [ ] Replace repeat-per-line approval with an explicit checksum-bound cohort
-      review contract. Define a cohort by the exact voice variant, ordered
-      reference hashes, backend/model/profile, synthesis policy and relevant
-      text-shape/technical flags. Require review of every attention item plus a
-      deterministic short/medium/long clean sample; then let the reviewer
-      choose `accept cohort`, `reject cohort`, or `expand sample`. A cohort
-      decision must project terminal per-item decisions with the sample queue
-      IDs, WAV hashes, policy version and reviewer decision in provenance, and
-      must invalidate on any changed control or WAV. Reuse an accepted voice
-      quality gate across later stories, but sample each newly generated cohort;
-      never silently carry approval across a changed reference/model/profile or
-      an unreviewed age/portrait variant.
+      review transaction. The read-only planner now defines exact cohorts,
+      checksum-binds every pending item/WAV, includes all technical-attention
+      items plus deterministic short/medium/long clean samples, changes identity
+      with seed/control/state changes and reports incomplete legacy provenance
+      separately. Add immutable decision recording for `accept cohort`, `reject
+      cohort`, or `expand sample`; atomically project terminal per-item decisions
+      with sample queue IDs, WAV hashes and policy version in provenance; add
+      workbench controls that never treat an unplayed sample as accepted. Reuse
+      an accepted voice quality gate across later stories, but sample each newly
+      generated cohort; never silently carry approval across a changed
+      reference/model/profile or an unreviewed age/portrait variant.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured
