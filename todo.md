@@ -52,13 +52,15 @@ Follow the evidence-backed order and invariants in
       checksum-binds every pending item/WAV, includes all technical-attention
       items plus deterministic short/medium/long clean samples, changes identity
       with seed/control/state changes and reports incomplete legacy provenance
-      separately. Add immutable decision recording for `accept cohort`, `reject
-      cohort`, or `expand sample`; atomically project terminal per-item decisions
-      with sample queue IDs, WAV hashes and policy version in provenance; add
-      workbench controls that never treat an unplayed sample as accepted. Reuse
-      an accepted voice quality gate across later stories, but sample each newly
-      generated cohort; never silently carry approval across a changed
-      reference/model/profile or an unreviewed age/portrait variant.
+      separately. Immutable no-replace decisions now bind `accept cohort`,
+      `reject cohort`, or `expand sample` to every reviewed sample and target WAV;
+      acceptance requires the complete sample, while rejection requires exact
+      listened evidence. Atomically project terminal per-item decisions with
+      decision/sample provenance; add workbench controls that obtain playback
+      attestation instead of trusting typed queue IDs. Reuse an accepted voice
+      quality gate across later stories, but sample each newly generated cohort;
+      never silently carry approval across a changed reference/model/profile or
+      an unreviewed age/portrait variant.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured

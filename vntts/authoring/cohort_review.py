@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.workbench import (
@@ -17,6 +20,8 @@ from vntts.authoring.workbench import (
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = 1
+COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
+COHORT_REVIEW_DECISION_VERSION = 1
 DEFAULT_CLEAN_SAMPLES_PER_BUCKET = 1
 MAX_CLEAN_SAMPLES_PER_BUCKET = 5
 WORD_PATTERN = re.compile(r"[\w’'-]+", flags=re.UNICODE)
@@ -31,6 +36,17 @@ class CohortReviewPlan:
     """One immutable planning document plus its canonical identity."""
 
     plan_id: str
+    document: dict
+
+    def to_dict(self):
+        return dict(self.document)
+
+
+@dataclass(frozen=True)
+class CohortReviewDecision:
+    """One immutable human decision over one exact cohort plan."""
+
+    decision_id: str
     document: dict
 
     def to_dict(self):
@@ -188,6 +204,306 @@ def build_cohort_review_plan(
     plan_id = _canonical_sha256(body)
     document = {**body, "plan_id": plan_id}
     return CohortReviewPlan(plan_id, document)
+
+
+def write_cohort_review_plan(plan, output_path):
+    """Publish one validated plan without replacing an existing document."""
+    document = _validated_plan_document(plan)
+    return _write_document_no_replace(output_path, document, "cohort review plan")
+
+
+def load_cohort_review_plan(path):
+    """Load and validate one exact cohort plan document."""
+    return CohortReviewPlan(
+        *_plan_identity_and_document(_load_document(path, "cohort review plan"))
+    )
+
+
+def build_cohort_review_decision(
+    plan,
+    cohort_id,
+    decision,
+    *,
+    reviewed_queue_ids,
+    next_clean_samples_per_bucket=None,
+):
+    """Bind a human decision to exact sampled and projected WAV identities."""
+    document = _validated_plan_document(plan)
+    cohort_id = _required_sha256(cohort_id, "Cohort ID")
+    if decision not in {"accepted", "rejected", "expand"}:
+        raise CohortReviewError("Cohort decision must be accepted, rejected, or expand")
+    cohort = next(
+        (value for value in document["cohorts"] if value.get("cohort_id") == cohort_id),
+        None,
+    )
+    if cohort is None:
+        raise CohortReviewError(f"Cohort does not exist in this plan: {cohort_id}")
+    if not isinstance(reviewed_queue_ids, (list, tuple)):
+        raise CohortReviewError("Reviewed queue IDs must be an ordered list")
+    reviewed = []
+    for queue_id in reviewed_queue_ids:
+        queue_id = _required_text(queue_id, "Reviewed queue ID")
+        if queue_id in reviewed:
+            raise CohortReviewError(f"Reviewed queue ID is duplicated: {queue_id}")
+        reviewed.append(queue_id)
+    sampled = cohort.get("sample_queue_ids")
+    if not isinstance(sampled, list) or not sampled:
+        raise CohortReviewError("Cohort has no review sample")
+    unexpected = sorted(set(reviewed) - set(sampled))
+    if unexpected:
+        raise CohortReviewError(
+            f"Reviewed queue IDs are outside the cohort sample: {unexpected}"
+        )
+    if decision in {"accepted", "expand"} and set(reviewed) != set(sampled):
+        missing = sorted(set(sampled) - set(reviewed))
+        raise CohortReviewError(
+            f"Every sampled WAV must be reviewed before {decision}: {missing}"
+        )
+    if decision == "rejected" and not reviewed:
+        raise CohortReviewError("A rejected cohort requires at least one reviewed WAV")
+    current_samples = document["policy"]["clean_samples_per_bucket"]
+    if decision == "expand":
+        if (
+            not isinstance(next_clean_samples_per_bucket, int)
+            or isinstance(next_clean_samples_per_bucket, bool)
+            or not current_samples
+            < next_clean_samples_per_bucket
+            <= MAX_CLEAN_SAMPLES_PER_BUCKET
+        ):
+            raise CohortReviewError(
+                "Expanded clean sample count must be a larger integer up to "
+                f"{MAX_CLEAN_SAMPLES_PER_BUCKET}"
+            )
+    elif next_clean_samples_per_bucket is not None:
+        raise CohortReviewError(
+            "Expanded clean sample count is valid only for an expand decision"
+        )
+    items = cohort.get("items")
+    if not isinstance(items, list):
+        raise CohortReviewError("Cohort items must be a list")
+    by_id = {value.get("queue_id"): value for value in items if isinstance(value, dict)}
+    if len(by_id) != len(items):
+        raise CohortReviewError("Cohort item queue IDs must be unique")
+    reviewed_evidence = [_decision_item(by_id[queue_id]) for queue_id in reviewed]
+    target_items = [_decision_item(value) for value in items]
+    body = {
+        "schema": COHORT_REVIEW_DECISION_SCHEMA,
+        "schema_version": COHORT_REVIEW_DECISION_VERSION,
+        "plan_id": document["plan_id"],
+        "cohort_id": cohort_id,
+        "decision": decision,
+        "plan_policy": {
+            "schema_version": document["policy"].get("schema_version"),
+            "clean_samples_per_bucket": current_samples,
+        },
+        "sample_queue_ids": list(sampled),
+        "reviewed_samples": reviewed_evidence,
+        "target_items": target_items,
+        "projection_review_status": (
+            "approved"
+            if decision == "accepted"
+            else "rejected"
+            if decision == "rejected"
+            else None
+        ),
+        "next_clean_samples_per_bucket": (
+            next_clean_samples_per_bucket if decision == "expand" else None
+        ),
+    }
+    decision_id = _canonical_sha256(body)
+    return CohortReviewDecision(decision_id, {**body, "decision_id": decision_id})
+
+
+def write_cohort_review_decision(decision, output_path):
+    """Publish one validated decision without replacing prior review evidence."""
+    if isinstance(decision, CohortReviewDecision):
+        document = decision.document
+    elif isinstance(decision, dict):
+        document = decision
+    else:
+        raise CohortReviewError("Cohort review decision must be a document")
+    _validated_decision_document(document)
+    return _write_document_no_replace(output_path, document, "cohort review decision")
+
+
+def _validated_plan_document(plan):
+    if isinstance(plan, CohortReviewPlan):
+        document = plan.document
+    elif isinstance(plan, dict):
+        document = plan
+    else:
+        raise CohortReviewError("Cohort review plan must be a document")
+    _plan_identity_and_document(document)
+    return document
+
+
+def _plan_identity_and_document(document):
+    if not isinstance(document, dict):
+        raise CohortReviewError("Cohort review plan must be an object")
+    if document.get("schema") != COHORT_REVIEW_PLAN_SCHEMA:
+        raise CohortReviewError("Cohort review plan schema is unsupported")
+    if document.get("schema_version") != COHORT_REVIEW_PLAN_VERSION:
+        raise CohortReviewError("Cohort review plan version is unsupported")
+    plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
+    actual = _canonical_sha256(
+        {key: value for key, value in document.items() if key != "plan_id"}
+    )
+    if actual != plan_id:
+        raise CohortReviewError("Cohort review plan identity is invalid")
+    cohorts = document.get("cohorts")
+    if not isinstance(cohorts, list):
+        raise CohortReviewError("Cohort review plan cohorts must be a list")
+    cohort_ids = []
+    for cohort in cohorts:
+        if not isinstance(cohort, dict):
+            raise CohortReviewError("Cohort review plan cohort must be an object")
+        cohort_ids.append(_required_sha256(cohort.get("cohort_id"), "Cohort ID"))
+    if len(set(cohort_ids)) != len(cohort_ids):
+        raise CohortReviewError("Cohort review plan cohort IDs must be unique")
+    policy = document.get("policy")
+    if not isinstance(policy, dict):
+        raise CohortReviewError("Cohort review plan policy must be an object")
+    if policy.get("schema_version") != COHORT_REVIEW_POLICY_VERSION:
+        raise CohortReviewError("Cohort review plan policy version is unsupported")
+    clean_samples = policy.get("clean_samples_per_bucket")
+    if (
+        not isinstance(clean_samples, int)
+        or isinstance(clean_samples, bool)
+        or not 1 <= clean_samples <= MAX_CLEAN_SAMPLES_PER_BUCKET
+    ):
+        raise CohortReviewError("Cohort review plan sample count is invalid")
+    return plan_id, document
+
+
+def _decision_item(item):
+    if not isinstance(item, dict):
+        raise CohortReviewError("Cohort decision item must be an object")
+    flags = item.get("technical_flags")
+    if not isinstance(flags, list) or any(
+        not isinstance(value, str) or not value for value in flags
+    ):
+        raise CohortReviewError("Decision technical flags must be a text list")
+    return {
+        "queue_id": _required_text(item.get("queue_id"), "Decision queue ID"),
+        "line_id": _required_text(item.get("line_id"), "Decision line ID"),
+        "text_sha256": _required_sha256(
+            item.get("text_sha256"), "Decision text sha256"
+        ),
+        "audio_sha256": _required_sha256(
+            item.get("audio_sha256"), "Decision audio sha256"
+        ),
+        "technical_flags": list(flags),
+    }
+
+
+def _validated_decision_document(document):
+    if not isinstance(document, dict):
+        raise CohortReviewError("Cohort review decision must be an object")
+    if document.get("schema") != COHORT_REVIEW_DECISION_SCHEMA:
+        raise CohortReviewError("Cohort review decision schema is unsupported")
+    if document.get("schema_version") != COHORT_REVIEW_DECISION_VERSION:
+        raise CohortReviewError("Cohort review decision version is unsupported")
+    claimed = _required_sha256(document.get("decision_id"), "Decision ID")
+    actual = _canonical_sha256(
+        {key: value for key, value in document.items() if key != "decision_id"}
+    )
+    if actual != claimed:
+        raise CohortReviewError("Cohort review decision identity is invalid")
+    _required_sha256(document.get("plan_id"), "Plan ID")
+    _required_sha256(document.get("cohort_id"), "Cohort ID")
+    decision = document.get("decision")
+    if decision not in {"accepted", "rejected", "expand"}:
+        raise CohortReviewError("Cohort review decision is unsupported")
+    policy = document.get("plan_policy")
+    if not isinstance(policy, dict) or policy.get("schema_version") != 1:
+        raise CohortReviewError("Cohort review decision policy is invalid")
+    current_samples = policy.get("clean_samples_per_bucket")
+    if (
+        not isinstance(current_samples, int)
+        or isinstance(current_samples, bool)
+        or not 1 <= current_samples <= MAX_CLEAN_SAMPLES_PER_BUCKET
+    ):
+        raise CohortReviewError("Cohort review decision sample count is invalid")
+    sampled = document.get("sample_queue_ids")
+    if (
+        not isinstance(sampled, list)
+        or not sampled
+        or any(not isinstance(value, str) or not value for value in sampled)
+        or len(set(sampled)) != len(sampled)
+    ):
+        raise CohortReviewError("Cohort review decision sample IDs are invalid")
+    reviewed = document.get("reviewed_samples")
+    targets = document.get("target_items")
+    if not isinstance(reviewed, list) or not isinstance(targets, list) or not targets:
+        raise CohortReviewError("Cohort review decision evidence is invalid")
+    reviewed_items = [_decision_item(value) for value in reviewed]
+    target_items = [_decision_item(value) for value in targets]
+    reviewed_ids = [value["queue_id"] for value in reviewed_items]
+    target_ids = [value["queue_id"] for value in target_items]
+    if len(set(reviewed_ids)) != len(reviewed_ids) or len(set(target_ids)) != len(
+        target_ids
+    ):
+        raise CohortReviewError("Cohort review decision item IDs must be unique")
+    if not set(sampled).issubset(target_ids) or not set(reviewed_ids).issubset(sampled):
+        raise CohortReviewError("Cohort review decision sample binding is invalid")
+    if decision in {"accepted", "expand"} and set(reviewed_ids) != set(sampled):
+        raise CohortReviewError("Cohort review decision is missing reviewed samples")
+    if decision == "rejected" and not reviewed_ids:
+        raise CohortReviewError("Rejected cohort decision has no reviewed evidence")
+    expected_projection = (
+        "approved"
+        if decision == "accepted"
+        else "rejected"
+        if decision == "rejected"
+        else None
+    )
+    if document.get("projection_review_status") != expected_projection:
+        raise CohortReviewError("Cohort review projection status is invalid")
+    next_samples = document.get("next_clean_samples_per_bucket")
+    if decision == "expand":
+        if (
+            not isinstance(next_samples, int)
+            or isinstance(next_samples, bool)
+            or not current_samples < next_samples <= MAX_CLEAN_SAMPLES_PER_BUCKET
+        ):
+            raise CohortReviewError("Expanded cohort sample count is invalid")
+    elif next_samples is not None:
+        raise CohortReviewError("Terminal cohort decision cannot expand its sample")
+    return document
+
+
+def _load_document(path, label):
+    path = Path(path).expanduser().resolve()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
+
+
+def _write_document_no_replace(output_path, document, label):
+    path = Path(output_path).expanduser().resolve()
+    payload = (
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except FileExistsError as error:
+        raise CohortReviewError(f"{label.title()} output exists: {path}") from error
+    except OSError as error:
+        raise CohortReviewError(f"Unable to publish {label} {path}: {error}") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path
 
 
 def _cohort_identity(workspace, result):

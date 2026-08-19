@@ -30,7 +30,11 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cohort_review import (
     CohortReviewError,
+    build_cohort_review_decision,
     build_cohort_review_plan,
+    load_cohort_review_plan,
+    write_cohort_review_decision,
+    write_cohort_review_plan,
 )
 from vntts.authoring.delivery import (
     LEGACY_ENGLISH_POLICY,
@@ -403,6 +407,26 @@ def create_parser():
         default=1,
         help="Deterministic clean samples for each short/medium/long bucket",
     )
+    cohort_review.add_argument(
+        "--output",
+        type=Path,
+        help="Publish the immutable plan without replacing an existing file",
+    )
+    cohort_decision = subparsers.add_parser(
+        "cohort-review-decision",
+        help="Record an immutable human decision over one exact cohort sample",
+    )
+    cohort_decision.add_argument("plan", type=Path)
+    cohort_decision.add_argument("cohort_id")
+    cohort_decision.add_argument("decision", choices=("accepted", "rejected", "expand"))
+    cohort_decision.add_argument(
+        "--reviewed-queue-id",
+        action="append",
+        default=[],
+        help="Exact sampled queue ID actually reviewed; repeat for each WAV",
+    )
+    cohort_decision.add_argument("--next-clean-samples-per-bucket", type=int)
+    cohort_decision.add_argument("--output", type=Path, required=True)
     references = subparsers.add_parser(
         "reference-report",
         help="Inspect immutable objective metrics for one character's references",
@@ -852,8 +876,25 @@ def main(argv=None):
                 arguments.workspace,
                 clean_samples_per_bucket=arguments.clean_samples_per_bucket,
             )
+            if arguments.output is not None:
+                write_cohort_review_plan(plan, arguments.output)
             print(
                 json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
+        if arguments.command == "cohort-review-decision":
+            decision = build_cohort_review_decision(
+                load_cohort_review_plan(arguments.plan),
+                arguments.cohort_id,
+                arguments.decision,
+                reviewed_queue_ids=arguments.reviewed_queue_id,
+                next_clean_samples_per_bucket=(arguments.next_clean_samples_per_bucket),
+            )
+            write_cohort_review_decision(decision, arguments.output)
+            print(
+                json.dumps(
+                    decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
             )
             return 0
         if arguments.command == "reference-report":

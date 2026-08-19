@@ -477,8 +477,20 @@ seven exact cohorts covering 17 bindable pending items and a 13-item sample;
 161 older pending items were explicitly blocked because their legacy outcomes
 lack complete control provenance. The source state SHA-256 remained
 `b55581341e07fa701ce5a839a251c78d45f1e0b6f361b69fdebff10e28480b03`.
-This planning document is not review authority yet: cohort decision recording,
-atomic per-item projection and workbench controls remain separate TODO gates.
+The planning document alone is not review authority; an immutable decision
+document records that authority, while atomic projection and workbench controls
+remain separate TODO gates.
+
+Publish a plan with `--output PLAN.json`, then use
+`vntts-pregenerate cohort-review-decision PLAN.json COHORT_ID DECISION` with one
+`--reviewed-queue-id` for every WAV actually heard. An `accepted` decision
+requires every sampled WAV; `rejected` requires at least one exact sampled WAV
+as evidence; `expand` requires the complete current sample and a larger bounded
+`--next-clean-samples-per-bucket`. The no-replace decision document binds the
+plan/cohort identity, every reviewed sample and every target line/text/WAV hash.
+It records human evidence only: it does not change generation state, approvals,
+the derived manifest or any real workspace. Atomic projection and UI playback
+attestation remain separate gates.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated

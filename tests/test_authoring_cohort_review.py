@@ -10,7 +10,11 @@ from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     CohortReviewError,
+    build_cohort_review_decision,
     build_cohort_review_plan,
+    load_cohort_review_plan,
+    write_cohort_review_decision,
+    write_cohort_review_plan,
 )
 
 
@@ -148,6 +152,151 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue()), expected)
+
+    def test_accept_requires_every_sample_and_binds_every_target_wav(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort = plan.document["cohorts"][0]
+
+            with self.assertRaisesRegex(CohortReviewError, "Every sampled WAV"):
+                build_cohort_review_decision(
+                    plan,
+                    cohort["cohort_id"],
+                    "accepted",
+                    reviewed_queue_ids=[],
+                )
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+
+        self.assertEqual(decision.document["projection_review_status"], "approved")
+        self.assertEqual(decision.document["reviewed_samples"][0]["queue_id"], queue_id)
+        self.assertEqual(decision.document["target_items"][0]["queue_id"], queue_id)
+        self.assertEqual(
+            decision.document["target_items"][0]["audio_sha256"],
+            cohort["items"][0]["audio_sha256"],
+        )
+
+    def test_reject_requires_reviewed_evidence_but_not_every_sample(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+
+            with self.assertRaisesRegex(CohortReviewError, "at least one"):
+                build_cohort_review_decision(
+                    plan, cohort_id, "rejected", reviewed_queue_ids=[]
+                )
+            decision = build_cohort_review_decision(
+                plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
+            )
+
+        self.assertEqual(decision.document["projection_review_status"], "rejected")
+
+    def test_expand_requires_complete_current_sample_and_larger_bound(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+
+            with self.assertRaisesRegex(CohortReviewError, "larger integer"):
+                build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    "expand",
+                    reviewed_queue_ids=[queue_id],
+                    next_clean_samples_per_bucket=1,
+                )
+            decision = build_cohort_review_decision(
+                plan,
+                cohort_id,
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                next_clean_samples_per_bucket=2,
+            )
+
+        self.assertIsNone(decision.document["projection_review_status"])
+        self.assertEqual(decision.document["next_clean_samples_per_bucket"], 2)
+
+    def test_plan_identity_tamper_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, _queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            document = build_cohort_review_plan(workspace).to_dict()
+            document["state_sha256"] = "0" * 64
+
+            with self.assertRaisesRegex(CohortReviewError, "identity is invalid"):
+                build_cohort_review_decision(
+                    document,
+                    document["cohorts"][0]["cohort_id"],
+                    "accepted",
+                    reviewed_queue_ids=document["cohorts"][0]["sample_queue_ids"],
+                )
+
+    def test_plan_and_decision_publish_without_replacement(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            plan_path = root / "review-plan.json"
+            write_cohort_review_plan(plan, plan_path)
+            loaded = load_cohort_review_plan(plan_path)
+            cohort_id = loaded.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                loaded, cohort_id, "accepted", reviewed_queue_ids=[queue_id]
+            )
+            decision_path = root / "decision.json"
+            write_cohort_review_decision(decision, decision_path)
+
+            with self.assertRaisesRegex(CohortReviewError, "output exists"):
+                write_cohort_review_plan(plan, plan_path)
+            with self.assertRaisesRegex(CohortReviewError, "output exists"):
+                write_cohort_review_decision(decision, decision_path)
+            self.assertEqual(
+                json.loads(decision_path.read_text(encoding="utf-8")),
+                decision.document,
+            )
+
+    def test_cli_records_exact_decision_from_published_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            plan_path = root / "review-plan.json"
+            decision_path = root / "decision.json"
+            write_cohort_review_plan(plan, plan_path)
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "cohort-review-decision",
+                        str(plan_path),
+                        cohort_id,
+                        "accepted",
+                        "--reviewed-queue-id",
+                        queue_id,
+                        "--output",
+                        str(decision_path),
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                json.loads(stdout.getvalue()),
+                json.loads(decision_path.read_text(encoding="utf-8")),
+            )
 
 
 if __name__ == "__main__":
