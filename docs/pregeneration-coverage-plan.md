@@ -95,6 +95,18 @@ silence failures requiring reference comparison. No result was approved by
 generation, and the ten carried approved Rhiannon entries remain the complete
 approved manifest.
 
+The first real-story Aderyn review refined the fixed-corpus result. Adult
+Aderyn is not rejected as a whole: two natural lines were approved, while four
+lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those
+four outputs are all below the existing 110-WPM technical-attention threshold,
+so pacing remains a review flag rather than an automatic generation failure.
+The child portrait variant sounded unacceptable on story text despite its
+previously acceptable source clip and fixed evaluation; one generated child
+line was rejected, one remains pending and one failed synthesis. A successor
+quality decision/binding must exclude or replace that child synthesis variant.
+The immutable v3 review and v4 binding remain preserved as the evidence that
+was actually used for this run.
+
 ## Coverage order
 
 Pregeneration follows a fixed order so a fallback cannot hide recoverable game

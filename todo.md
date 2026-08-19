@@ -19,15 +19,21 @@ Follow the evidence-backed order and invariants in
       Owen remains `needs_sample`; Hotelier has no technical pass. Keep 41
       lower-priority unreviewed candidates pending rather than promoting them
       automatically. Preserve Aderyn as source identity, keep adult and child
-      portrait groups separate, retain crying-only rejects, and do not merge
-      `Poacher I`, `Poacher II` or Glyndŵr or treat configured-unavailable
-      audio as installed.
-- [ ] Review the 55 technically valid source-bound Character Story WAVs using
+      portrait groups separate, retain crying-only rejects, and publish a new
+      immutable quality decision/binding that excludes or replaces the current
+      child variant: real-story synthesis sounded bad even though its source
+      clip passed the earlier fixed evaluation. Do not mutate the v3 review or
+      v4 binding. Do not merge `Poacher I`, `Poacher II` or Glyndŵr or treat
+      configured-unavailable audio as installed.
+- [ ] Finish review of the remaining technically valid source-bound Character
+      Story WAVs using
       every technical-attention item plus a stratified clean sample from each
       of the six exact reference variants. Expand a variant's review if the
       sample finds a substantive voice, pronunciation, pacing or contamination
-      defect. Generation made no approval; the approved manifest remains the
-      ten carried Rhiannon entries.
+      defect. The initial Aderyn pass approved two natural adult lines, rejected
+      four adult lines with pauses/slow pacing and rejected one child line.
+      Reject only listened artifacts; do not promote the remaining child output
+      or apply adult decisions across unrelated portrait variants.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured
