@@ -1,15 +1,18 @@
 import json
 import unittest
 from contextlib import redirect_stdout
+from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     CohortReviewError,
+    apply_cohort_review_decision,
     build_cohort_review_decision,
     build_cohort_review_plan,
     load_cohort_review_plan,
@@ -297,6 +300,173 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 json.loads(stdout.getvalue()),
                 json.loads(decision_path.read_text(encoding="utf-8")),
             )
+
+    def test_terminal_decision_projects_exact_state_and_manifest_provenance(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort = plan.document["cohorts"][0]
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+
+            result = apply_cohort_review_decision(workspace, plan, decision)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (state_path.parent / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result.queue_ids, (queue_id,))
+        self.assertEqual(result.review_status, "approved")
+        self.assertEqual(state["items"][queue_id]["status"], "approved")
+        self.assertEqual(state["items"][queue_id]["review_status"], "approved")
+        provenance = state["items"][queue_id]["cohort_review"]
+        self.assertEqual(provenance["decision_id"], decision.decision_id)
+        self.assertEqual(
+            provenance["target_audio_sha256"],
+            cohort["items"][0]["audio_sha256"],
+        )
+        self.assertEqual(len(manifest["entries"]), 1)
+        self.assertEqual(
+            manifest["entries"][0]["cohort_review"]["decision_id"],
+            decision.decision_id,
+        )
+
+    def test_changed_wav_blocks_projection_without_state_mutation(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort = plan.document["cohorts"][0]
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "rejected",
+                reviewed_queue_ids=[queue_id],
+            )
+            before = state_path.read_bytes()
+            state = json.loads(before.decode("utf-8"))
+            audio = state_path.parent / state["items"][queue_id]["path"]
+            audio.write_bytes(audio.read_bytes() + b"changed")
+
+            with self.assertRaisesRegex(CohortReviewError, "checksum mismatch"):
+                apply_cohort_review_decision(workspace, plan, decision)
+
+            self.assertEqual(state_path.read_bytes(), before)
+
+    def test_expand_decision_never_changes_generation_state(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                plan,
+                cohort_id,
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                next_clean_samples_per_bucket=2,
+            )
+            before = state_path.read_bytes()
+
+            with self.assertRaisesRegex(CohortReviewError, "cannot be applied"):
+                apply_cohort_review_decision(workspace, plan, decision)
+
+            self.assertEqual(state_path.read_bytes(), before)
+
+    def test_wav_change_during_staging_blocks_both_state_and_manifest(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort = plan.document["cohorts"][0]
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            audio = state_path.parent / state["items"][queue_id]["path"]
+            state_before = state_path.read_bytes()
+            manifest_path = state_path.parent / "manifest.json"
+            manifest_before = manifest_path.read_bytes()
+            from vntts.authoring import bulk_generation
+
+            original = bulk_generation._write_generated_manifest_from_state
+
+            def mutate_after_staging(*args, **kwargs):
+                original(*args, **kwargs)
+                audio.write_bytes(audio.read_bytes() + b"changed-during-staging")
+
+            with (
+                patch(
+                    "vntts.authoring.bulk_generation._write_generated_manifest_from_state",
+                    side_effect=mutate_after_staging,
+                ),
+                self.assertRaisesRegex(CohortReviewError, "authority changed"),
+            ):
+                apply_cohort_review_decision(workspace, plan, decision)
+
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertEqual(manifest_path.read_bytes(), manifest_before)
+
+    def test_recomputed_decision_cannot_forge_reviewed_wav_evidence(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
+            )
+            forged = deepcopy(decision.document)
+            forged["reviewed_samples"][0]["audio_sha256"] = "0" * 64
+            forged["decision_id"] = _canonical_sha256(
+                {key: value for key, value in forged.items() if key != "decision_id"}
+            )
+
+            with self.assertRaisesRegex(CohortReviewError, "evidence does not match"):
+                apply_cohort_review_decision(workspace, plan, forged)
+
+    def test_cli_applies_persisted_terminal_decision(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
+            )
+            plan_path = root / "plan.json"
+            decision_path = root / "decision.json"
+            write_cohort_review_plan(plan, plan_path)
+            write_cohort_review_decision(decision, decision_path)
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "cohort-review-apply",
+                        str(workspace),
+                        str(plan_path),
+                        str(decision_path),
+                    ]
+                )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["review_status"], "rejected")
+        self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
 
 
 if __name__ == "__main__":

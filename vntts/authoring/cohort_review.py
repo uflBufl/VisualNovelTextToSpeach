@@ -10,8 +10,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
+    ReviewAuthority,
+    _canonical_sha256,
+    _review_generation_cohort,
+)
 from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
     _load_workspace,
     inspect_workspace,
     list_review_items,
@@ -22,6 +28,8 @@ COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = 1
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
 COHORT_REVIEW_DECISION_VERSION = 1
+COHORT_REVIEW_PROVENANCE_SCHEMA = "vntts.authoring-cohort-review-provenance"
+COHORT_REVIEW_PROVENANCE_VERSION = 1
 DEFAULT_CLEAN_SAMPLES_PER_BUCKET = 1
 MAX_CLEAN_SAMPLES_PER_BUCKET = 5
 WORD_PATTERN = re.compile(r"[\w’'-]+", flags=re.UNICODE)
@@ -53,6 +61,22 @@ class CohortReviewDecision:
         return dict(self.document)
 
 
+@dataclass(frozen=True)
+class CohortReviewProjection:
+    """One committed cohort decision and its exact per-item results."""
+
+    decision_id: str
+    queue_ids: tuple[str, ...]
+    review_status: str
+
+    def to_dict(self):
+        return {
+            "decision_id": self.decision_id,
+            "queue_ids": list(self.queue_ids),
+            "review_status": self.review_status,
+        }
+
+
 def build_cohort_review_plan(
     workspace_directory,
     *,
@@ -68,8 +92,11 @@ def build_cohort_review_plan(
             "Clean samples per length bucket must be an integer from 1 to "
             f"{MAX_CLEAN_SAMPLES_PER_BUCKET}"
         )
-    directory, workspace = _load_workspace(workspace_directory)
-    summary = inspect_workspace(directory)
+    try:
+        directory, workspace = _load_workspace(workspace_directory)
+        summary = inspect_workspace(directory)
+    except AuthoringWorkbenchError as error:
+        raise CohortReviewError(str(error)) from error
     if summary.state is None:
         raise CohortReviewError("Workspace has no generation state to review")
     try:
@@ -82,7 +109,10 @@ def build_cohort_review_plan(
     if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
         raise CohortReviewError("Generation state items must be an object")
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    projected = list_review_items(directory)
+    try:
+        projected = list_review_items(directory)
+    except AuthoringWorkbenchError as error:
+        raise CohortReviewError(str(error)) from error
     try:
         final_state_sha256 = hashlib.sha256(summary.state.read_bytes()).hexdigest()
     except OSError as error:
@@ -324,6 +354,122 @@ def write_cohort_review_decision(decision, output_path):
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(document)
     return _write_document_no_replace(output_path, document, "cohort review decision")
+
+
+def load_cohort_review_decision(path):
+    """Load and validate one immutable cohort decision document."""
+    document = _load_document(path, "cohort review decision")
+    _validated_decision_document(document)
+    return CohortReviewDecision(document["decision_id"], document)
+
+
+def apply_cohort_review_decision(workspace_directory, plan, decision):
+    """Project one exact terminal cohort decision in one state transaction."""
+    plan_document = _validated_plan_document(plan)
+    if isinstance(decision, CohortReviewDecision):
+        decision_document = decision.document
+    elif isinstance(decision, dict):
+        decision_document = decision
+    else:
+        raise CohortReviewError("Cohort review decision must be a document")
+    _validated_decision_document(decision_document)
+    if decision_document["decision"] == "expand":
+        raise CohortReviewError(
+            "Expand decisions create a new plan and cannot be applied"
+        )
+    if decision_document["plan_id"] != plan_document["plan_id"]:
+        raise CohortReviewError("Cohort review decision belongs to a different plan")
+    current = build_cohort_review_plan(
+        workspace_directory,
+        clean_samples_per_bucket=plan_document["policy"]["clean_samples_per_bucket"],
+    )
+    if current.plan_id != plan_document["plan_id"]:
+        raise CohortReviewError(
+            "Workspace review authority changed after the cohort plan was published"
+        )
+    cohort = next(
+        (
+            value
+            for value in plan_document["cohorts"]
+            if value["cohort_id"] == decision_document["cohort_id"]
+        ),
+        None,
+    )
+    if cohort is None:
+        raise CohortReviewError("Cohort decision target is absent from its plan")
+    expected_targets = [_decision_item(value) for value in cohort["items"]]
+    if decision_document["target_items"] != expected_targets:
+        raise CohortReviewError(
+            "Cohort decision target identities do not match its plan"
+        )
+    if decision_document["sample_queue_ids"] != cohort["sample_queue_ids"]:
+        raise CohortReviewError("Cohort decision sample does not match its plan")
+    expected_policy = {
+        "schema_version": plan_document["policy"]["schema_version"],
+        "clean_samples_per_bucket": plan_document["policy"]["clean_samples_per_bucket"],
+    }
+    if decision_document["plan_policy"] != expected_policy:
+        raise CohortReviewError("Cohort decision policy does not match its plan")
+    target_by_id = {value["queue_id"]: value for value in expected_targets}
+    expected_reviewed = [
+        target_by_id[value["queue_id"]]
+        for value in decision_document["reviewed_samples"]
+    ]
+    if decision_document["reviewed_samples"] != expected_reviewed:
+        raise CohortReviewError("Cohort reviewed evidence does not match its plan")
+    try:
+        summary = inspect_workspace(workspace_directory)
+    except AuthoringWorkbenchError as error:
+        raise CohortReviewError(str(error)) from error
+    if summary.state is None:
+        raise CohortReviewError("Workspace has no generation state to review")
+    try:
+        state_payload = summary.state.read_bytes()
+        state = json.loads(state_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(
+            f"Unable to read generation state {summary.state}: {error}"
+        ) from error
+    if hashlib.sha256(state_payload).hexdigest() != plan_document["state_sha256"]:
+        raise CohortReviewError("Cohort review state changed before projection")
+    authorities = {}
+    for target in decision_document["target_items"]:
+        queue_id = target["queue_id"]
+        item = state.get("items", {}).get(queue_id)
+        if not isinstance(item, dict):
+            raise CohortReviewError(f"Cohort review item disappeared: {queue_id}")
+        authorities[queue_id] = ReviewAuthority(
+            queue_sha256=plan_document["queue_sha256"],
+            state_sha256=plan_document["state_sha256"],
+            item_sha256=_canonical_sha256(item),
+            audio_sha256=target["audio_sha256"],
+        )
+    provenance = {
+        "schema": COHORT_REVIEW_PROVENANCE_SCHEMA,
+        "schema_version": COHORT_REVIEW_PROVENANCE_VERSION,
+        "decision_id": decision_document["decision_id"],
+        "plan_id": decision_document["plan_id"],
+        "cohort_id": decision_document["cohort_id"],
+        "decision": decision_document["decision"],
+        "plan_policy": decision_document["plan_policy"],
+        "sample_queue_ids": decision_document["sample_queue_ids"],
+        "reviewed_samples": decision_document["reviewed_samples"],
+    }
+    try:
+        commits = _review_generation_cohort(
+            summary.state,
+            summary.queue,
+            authorities,
+            decision_document["projection_review_status"],
+            provenance=provenance,
+        )
+    except BulkGenerationError as error:
+        raise CohortReviewError(str(error)) from error
+    return CohortReviewProjection(
+        decision_document["decision_id"],
+        tuple(commit.queue_id for commit in commits),
+        decision_document["projection_review_status"],
+    )
 
 
 def _validated_plan_document(plan):

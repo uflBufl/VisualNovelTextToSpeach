@@ -1799,6 +1799,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "failure_repair",
             "attempts",
             "attempts_by_provider",
+            "cohort_review",
         ):
             if field in result:
                 entry[field] = result[field]
@@ -1842,6 +1843,137 @@ def review_generation_item(
             queue_path=queue_path,
             lease=lease,
         )
+
+
+def _review_generation_cohort(
+    state_path,
+    queue_path,
+    authorities,
+    decision,
+    *,
+    provenance,
+):
+    """Commit one exact cohort decision in a single state transaction."""
+    if decision not in {"approved", "rejected"}:
+        raise BulkGenerationError("Cohort review decision must be approved or rejected")
+    if not isinstance(authorities, dict) or not authorities:
+        raise BulkGenerationError("Cohort review authorities must be a non-empty map")
+    if not isinstance(provenance, dict):
+        raise BulkGenerationError("Cohort review provenance must be an object")
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    authority_values = list(authorities.values())
+    if any(not isinstance(value, ReviewAuthority) for value in authority_values):
+        raise BulkGenerationError("Cohort review authority snapshot is invalid")
+    if len({value.queue_sha256 for value in authority_values}) != 1:
+        raise BulkGenerationError("Cohort review queue authorities do not match")
+    if len({value.state_sha256 for value in authority_values}) != 1:
+        raise BulkGenerationError("Cohort review state authorities do not match")
+    with _GenerationLease(
+        state_path.parent,
+        authority_values[0].queue_sha256,
+        process_checker=process_is_alive,
+    ) as lease:
+        state = None
+        for queue_id, authority in authorities.items():
+            queue_id = _required_text(queue_id, "Cohort review queue ID")
+            snapshot, item, _audio = _assert_review_authority(
+                state_path, queue_id, authority, queue_path
+            )
+            if state is None:
+                state = snapshot
+            if (item.get("status"), item.get("review_status")) != (
+                "generated",
+                "pending_review",
+            ):
+                raise BulkGenerationError(
+                    f"Cohort item is no longer pending review: {queue_id}"
+                )
+        proposed = copy.deepcopy(state)
+        updated_at = _now()
+        for queue_id, authority in authorities.items():
+            proposed_item = proposed["items"][queue_id]
+            proposed_item["review_status"] = decision
+            proposed_item["status"] = (
+                "approved" if decision == "approved" else "generated"
+            )
+            proposed_item["updated_at"] = updated_at
+            proposed_item["cohort_review"] = {
+                **copy.deepcopy(provenance),
+                "target_audio_sha256": authority.audio_sha256,
+            }
+        manifest_path = state_path.parent / "manifest.json"
+        entries = _approved_manifest_entries(
+            proposed,
+            state_path.parent,
+            validate_files=False,
+        )
+        transaction_id = secrets.token_hex(16)
+        staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
+        staged_manifest = manifest_path.with_name(
+            f".{manifest_path.name}.{transaction_id}.tmp"
+        )
+        try:
+            atomic_write_json(staged_state, proposed, sort_keys=True)
+            _write_generated_manifest_from_state(
+                proposed,
+                state_path.parent,
+                staged_manifest,
+                entries=entries,
+                validate_files=False,
+            )
+            for queue_id, authority in authorities.items():
+                _assert_review_authority(state_path, queue_id, authority, queue_path)
+            validated = load_generation_state(state_path, queue_path)
+            if sha256_file(state_path) != authority_values[0].state_sha256:
+                raise BulkGenerationError(
+                    "Cohort review state changed before the final commit"
+                )
+            if validated.get("queue_sha256") != authority_values[0].queue_sha256:
+                raise BulkGenerationError(
+                    "Cohort review queue changed before the final commit"
+                )
+            lease.assert_owned()
+            try:
+                os.replace(staged_state, state_path)
+            except OSError as error:
+                raise BulkGenerationError(
+                    f"Unable to save cohort review decision: {error}"
+                ) from error
+            try:
+                lease.assert_owned()
+            except BulkGenerationError as error:
+                raise BulkGenerationError(
+                    "Cohort review decision was saved, but manifest rebuild was "
+                    f"blocked: {error}"
+                ) from error
+            try:
+                os.replace(staged_manifest, manifest_path)
+            except OSError as error:
+                raise BulkGenerationError(
+                    "Cohort review decision was saved, but manifest rebuild failed: "
+                    f"{error}"
+                ) from error
+        finally:
+            for staged in (staged_state, staged_manifest):
+                staged.unlink(missing_ok=True)
+        lease.mark_committed()
+    committed_state_sha256 = sha256_file(state_path)
+    return tuple(
+        ReviewCommit(
+            queue_id=queue_id,
+            status=proposed["items"][queue_id]["status"],
+            review_status=decision,
+            updated_at=updated_at,
+            authority=ReviewAuthority(
+                queue_sha256=proposed["queue_sha256"],
+                state_sha256=committed_state_sha256,
+                item_sha256=_canonical_sha256(proposed["items"][queue_id]),
+                audio_sha256=authority.audio_sha256,
+            ),
+        )
+        for queue_id, authority in authorities.items()
+    )
 
 
 def authorize_live_fallback(

@@ -489,8 +489,14 @@ as evidence; `expand` requires the complete current sample and a larger bounded
 `--next-clean-samples-per-bucket`. The no-replace decision document binds the
 plan/cohort identity, every reviewed sample and every target line/text/WAV hash.
 It records human evidence only: it does not change generation state, approvals,
-the derived manifest or any real workspace. Atomic projection and UI playback
-attestation remain separate gates.
+the derived manifest or any real workspace. After inspecting that immutable
+decision, `vntts-pregenerate cohort-review-apply WORKSPACE PLAN.json
+DECISION.json` recomputes the current plan, rejects any changed state, queue,
+item or WAV authority, and commits every target item in one leased state
+transaction. Approved-manifest projection retains the decision, sample and
+target-audio provenance. `expand` decisions cannot be applied. The workbench UI
+playback-attestation controls remain a separate gate; no command was applied to
+the real Character Story workspace during implementation or verification.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated

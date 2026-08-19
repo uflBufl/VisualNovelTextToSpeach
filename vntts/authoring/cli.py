@@ -30,8 +30,10 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cohort_review import (
     CohortReviewError,
+    apply_cohort_review_decision,
     build_cohort_review_decision,
     build_cohort_review_plan,
+    load_cohort_review_decision,
     load_cohort_review_plan,
     write_cohort_review_decision,
     write_cohort_review_plan,
@@ -427,6 +429,13 @@ def create_parser():
     )
     cohort_decision.add_argument("--next-clean-samples-per-bucket", type=int)
     cohort_decision.add_argument("--output", type=Path, required=True)
+    cohort_apply = subparsers.add_parser(
+        "cohort-review-apply",
+        help="Atomically project one recorded terminal cohort decision",
+    )
+    cohort_apply.add_argument("workspace", type=Path)
+    cohort_apply.add_argument("plan", type=Path)
+    cohort_apply.add_argument("decision", type=Path)
     references = subparsers.add_parser(
         "reference-report",
         help="Inspect immutable objective metrics for one character's references",
@@ -894,6 +903,18 @@ def main(argv=None):
             print(
                 json.dumps(
                     decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if arguments.command == "cohort-review-apply":
+            result = apply_cohort_review_decision(
+                arguments.workspace,
+                load_cohort_review_plan(arguments.plan),
+                load_cohort_review_decision(arguments.decision),
+            )
+            print(
+                json.dumps(
+                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
                 )
             )
             return 0

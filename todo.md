@@ -55,12 +55,14 @@ Follow the evidence-backed order and invariants in
       separately. Immutable no-replace decisions now bind `accept cohort`,
       `reject cohort`, or `expand sample` to every reviewed sample and target WAV;
       acceptance requires the complete sample, while rejection requires exact
-      listened evidence. Atomically project terminal per-item decisions with
-      decision/sample provenance; add workbench controls that obtain playback
-      attestation instead of trusting typed queue IDs. Reuse an accepted voice
-      quality gate across later stories, but sample each newly generated cohort;
-      never silently carry approval across a changed reference/model/profile or
-      an unreviewed age/portrait variant.
+      listened evidence. Terminal decisions now revalidate the current plan and
+      commit all target per-item decisions in one leased state transaction with
+      decision/sample/WAV provenance in state and the approved manifest. Add
+      workbench controls that obtain playback attestation instead of trusting
+      typed queue IDs, and expose safe sample expansion without applying it.
+      Reuse an accepted voice quality gate across later stories, but sample each
+      newly generated cohort; never silently carry approval across a changed
+      reference/model/profile or an unreviewed age/portrait variant.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured
