@@ -144,6 +144,18 @@ source/result comparison is the second gate. Only candidates passing both the
 source and generated-quality gates may enter a new config-addressed workspace;
 changed WAV or decision hashes invalidate only affected controls.
 
+Human review has two different lifetimes. Voice/reference acceptance is
+reusable across stories only while the exact age/portrait variant, ordered
+reference hashes and model/profile remain unchanged. Generated-WAV authority is
+line-specific, but it does not require listening to every clean line: every
+technical-attention item plus a deterministic short/medium/long sample can
+authorize an explicit cohort decision. That decision must retain the sampled
+queue IDs and WAV hashes and project terminal decisions to each covered item.
+A new story samples its new generated cohort; it does not repeat source-voice
+discovery or a full listen-all pass unless the sample exposes a defect. The
+current authoring state still lacks this cohort-decision transaction, so final
+publication otherwise continues to require individual terminal decisions.
+
 ## Explicit unknown-role Narrator policy
 
 The default missing-voice policy is `block`. A config-addressed workspace may

@@ -34,6 +34,18 @@ Follow the evidence-backed order and invariants in
       four adult lines with pauses/slow pacing and rejected one child line.
       Reject only listened artifacts; do not promote the remaining child output
       or apply adult decisions across unrelated portrait variants.
+- [ ] Replace repeat-per-line approval with an explicit checksum-bound cohort
+      review contract. Define a cohort by the exact voice variant, ordered
+      reference hashes, backend/model/profile, synthesis policy and relevant
+      text-shape/technical flags. Require review of every attention item plus a
+      deterministic short/medium/long clean sample; then let the reviewer
+      choose `accept cohort`, `reject cohort`, or `expand sample`. A cohort
+      decision must project terminal per-item decisions with the sample queue
+      IDs, WAV hashes, policy version and reviewer decision in provenance, and
+      must invalidate on any changed control or WAV. Reuse an accepted voice
+      quality gate across later stories, but sample each newly generated cohort;
+      never silently carry approval across a changed reference/model/profile or
+      an unreviewed age/portrait variant.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured
