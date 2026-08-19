@@ -15,6 +15,7 @@ from vntts.authoring.cohort_review import (
     apply_cohort_review_decision,
     build_cohort_review_decision,
     build_cohort_review_plan,
+    execute_cohort_review_decision,
     load_cohort_review_plan,
     write_cohort_review_decision,
     write_cohort_review_plan,
@@ -467,6 +468,26 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["review_status"], "rejected")
         self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
+
+    def test_workspace_evidence_directory_symlink_fails_before_projection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
+            )
+            outside = root / "outside"
+            outside.mkdir()
+            (workspace / "cohort-reviews").symlink_to(outside, target_is_directory=True)
+            before = state_path.read_bytes()
+
+            with self.assertRaisesRegex(CohortReviewError, "cannot be a symlink"):
+                execute_cohort_review_decision(workspace, plan, decision)
+
+            self.assertEqual(state_path.read_bytes(), before)
+            self.assertEqual(tuple(outside.iterdir()), ())
 
 
 if __name__ == "__main__":

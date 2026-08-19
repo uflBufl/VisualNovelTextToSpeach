@@ -1510,6 +1510,59 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog._review_playback_buffer.data().data(), expected)
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
 
+    def test_cohort_accept_requires_finished_exact_sample_playback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            queue_id = self.mark_fixture_pending_review(workspace)
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id].update(
+                {
+                    "generation_profile": "stable",
+                    "voice_character": "Rhiannon",
+                    "prompt_applied": False,
+                    "synthesis_provenance_sha256": "b" * 64,
+                }
+            )
+            atomic_write_json(state_path, state, sort_keys=True)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.player = Mock()
+
+            dialog.load_cohort_plan()
+            self.wait_for(lambda: not dialog._cohort_active)
+            self.assertEqual(dialog.cohort_choice.count(), 1)
+            self.assertFalse(dialog.cohort_accept.isEnabled())
+            self.assertFalse(dialog.cohort_reject.isEnabled())
+
+            dialog.play_next_cohort_sample()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog.stop_preview()
+            self.assertFalse(dialog.cohort_accept.isEnabled())
+            self.assertFalse(dialog.cohort_reject.isEnabled())
+
+            dialog.play_next_cohort_sample()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertTrue(dialog.cohort_accept.isEnabled())
+            self.assertTrue(dialog.cohort_reject.isEnabled())
+            self.assertIn("1/1 WAVs finished playback", dialog.cohort_progress.text())
+
+            with patch.object(
+                QMessageBox,
+                "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                dialog.decide_cohort("accepted")
+            self.wait_for(lambda: not dialog._cohort_active)
+            committed = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(committed["items"][queue_id]["review_status"], "approved")
+        self.assertEqual(
+            committed["items"][queue_id]["cohort_review"]["decision"],
+            "accepted",
+        )
+
     def test_review_playback_preparation_keeps_qt_heartbeat_responsive(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

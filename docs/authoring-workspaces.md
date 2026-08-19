@@ -478,8 +478,7 @@ seven exact cohorts covering 17 bindable pending items and a 13-item sample;
 lack complete control provenance. The source state SHA-256 remained
 `b55581341e07fa701ce5a839a251c78d45f1e0b6f361b69fdebff10e28480b03`.
 The planning document alone is not review authority; an immutable decision
-document records that authority, while atomic projection and workbench controls
-remain separate TODO gates.
+document records that authority before atomic projection.
 
 Publish a plan with `--output PLAN.json`, then use
 `vntts-pregenerate cohort-review-decision PLAN.json COHORT_ID DECISION` with one
@@ -494,9 +493,20 @@ decision, `vntts-pregenerate cohort-review-apply WORKSPACE PLAN.json
 DECISION.json` recomputes the current plan, rejects any changed state, queue,
 item or WAV authority, and commits every target item in one leased state
 transaction. Approved-manifest projection retains the decision, sample and
-target-audio provenance. `expand` decisions cannot be applied. The workbench UI
-playback-attestation controls remain a separate gate; no command was applied to
-the real Character Story workspace during implementation or verification.
+target-audio provenance. `expand` decisions cannot be applied.
+
+The workbench exposes the same flow under `Checksum-bound cohort review`.
+Planning and projection run off the Qt thread. `Play next cohort sample` selects
+the exact pending row, and only an actual `EndOfMedia` event for the captured
+WAV bytes counts as listened; Stop, playback error, selection change and stale
+hashes do not. `Accept cohort` remains disabled until every sample finishes,
+`Reject cohort` requires at least one finished sample, and `Expand sample`
+requires the complete current sample. The workbench writes idempotent immutable
+plan/decision evidence under the workspace `cohort-reviews/` directory before a
+terminal projection, asks for confirmation, and reloads authority afterwards.
+The controls never auto-apply anything on workbench open. No command or UI
+decision was applied to the real Character Story workspace during
+implementation or verification.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated

@@ -472,6 +472,51 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     )
 
 
+def execute_cohort_review_decision(workspace_directory, plan, decision):
+    """Persist exact evidence, then expand or project one cohort decision."""
+    plan_document = _validated_plan_document(plan)
+    if isinstance(decision, CohortReviewDecision):
+        decision_document = decision.document
+    elif isinstance(decision, dict):
+        decision_document = decision
+    else:
+        raise CohortReviewError("Cohort review decision must be a document")
+    _validated_decision_document(decision_document)
+    try:
+        workspace, _configuration = _load_workspace(workspace_directory)
+    except AuthoringWorkbenchError as error:
+        raise CohortReviewError(str(error)) from error
+    evidence_directory = workspace / "cohort-reviews"
+    if evidence_directory.is_symlink():
+        raise CohortReviewError("Cohort review evidence directory cannot be a symlink")
+    try:
+        evidence_directory.mkdir(exist_ok=True)
+    except OSError as error:
+        raise CohortReviewError(
+            f"Unable to create cohort review evidence directory: {error}"
+        ) from error
+    if evidence_directory.resolve() != workspace / "cohort-reviews":
+        raise CohortReviewError("Cohort review evidence leaves its workspace")
+    plan_path = evidence_directory / f"plan-{plan_document['plan_id']}.json"
+    decision_path = evidence_directory / (
+        f"decision-{decision_document['decision_id']}.json"
+    )
+    _write_or_validate_document(plan_path, plan_document, "cohort review plan")
+    _write_or_validate_document(
+        decision_path, decision_document, "cohort review decision"
+    )
+    if decision_document["decision"] == "expand":
+        return build_cohort_review_plan(
+            workspace,
+            clean_samples_per_bucket=decision_document["next_clean_samples_per_bucket"],
+        )
+    return apply_cohort_review_decision(
+        workspace,
+        CohortReviewPlan(plan_document["plan_id"], plan_document),
+        CohortReviewDecision(decision_document["decision_id"], decision_document),
+    )
+
+
 def _validated_plan_document(plan):
     if isinstance(plan, CohortReviewPlan):
         document = plan.document
@@ -650,6 +695,26 @@ def _write_document_no_replace(output_path, document, label):
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return path
+
+
+def _write_or_validate_document(path, document, label):
+    if path.is_symlink():
+        raise CohortReviewError(f"{label.title()} output cannot be a symlink: {path}")
+    if path.exists():
+        current = _load_document(path, label)
+        if current != document:
+            raise CohortReviewError(
+                f"Existing {label} does not match its immutable identity: {path}"
+            )
+        return path
+    try:
+        return _write_document_no_replace(path, document, label)
+    except CohortReviewError:
+        if not path.is_symlink() and path.is_file():
+            current = _load_document(path, label)
+            if current == document:
+                return path
+        raise
 
 
 def _cohort_identity(workspace, result):

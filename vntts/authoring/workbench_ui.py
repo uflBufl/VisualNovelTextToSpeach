@@ -59,6 +59,13 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.cohort_review import (
+    CohortReviewPlan,
+    CohortReviewProjection,
+    build_cohort_review_decision,
+    build_cohort_review_plan,
+    execute_cohort_review_decision,
+)
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -410,6 +417,28 @@ class _ReviewTask(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
+class _CohortTaskSignals(QObject):
+    finished = Signal(int, str, object, object)
+
+
+class _CohortTask(QRunnable):
+    def __init__(self, serial, operation, function, arguments, signals):
+        super().__init__()
+        self.serial = serial
+        self.operation = operation
+        self.function = function
+        self.arguments = arguments
+        self.signals = signals
+
+    def run(self):
+        try:
+            result = self.function(*self.arguments)
+        except Exception as error:
+            self.signals.finished.emit(self.serial, self.operation, None, error)
+        else:
+            self.signals.finished.emit(self.serial, self.operation, result, None)
+
+
 class AuthoringWorkbenchDialog(QDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
@@ -498,6 +527,15 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_thread_pool = review_thread_pool or QThreadPool(self)
         self._review_thread_pool.setMaxThreadCount(1)
         self._review_shortcuts = []
+        self._cohort_plan = None
+        self._cohort_played = set()
+        self._cohort_playback_target = None
+        self._cohort_active = False
+        self._cohort_serial = 0
+        self._cohort_signals = _CohortTaskSignals(self)
+        self._cohort_signals.finished.connect(self._cohort_task_finished)
+        self._cohort_thread_pool = QThreadPool(self)
+        self._cohort_thread_pool.setMaxThreadCount(1)
 
         self.setWindowTitle("VNTTS authoring workbench")
         self.resize(1_080, 720)
@@ -664,6 +702,16 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_action_reason = QLabel("Select an awaiting-review line")
         self.review_action_reason.setAccessibleName("Review action availability reason")
         self.review_action_reason.setWordWrap(True)
+        self.cohort_choice = QComboBox()
+        self.cohort_choice.setAccessibleName("Checksum-bound review cohort")
+        self.cohort_progress = QLabel("Cohort review: build a current sample")
+        self.cohort_progress.setAccessibleName("Cohort sample playback progress")
+        self.cohort_progress.setWordWrap(True)
+        self.cohort_load = QPushButton("Build cohort sample")
+        self.cohort_play_next = QPushButton("Play next cohort sample")
+        self.cohort_accept = QPushButton("Accept cohort")
+        self.cohort_reject = QPushButton("Reject cohort")
+        self.cohort_expand = QPushButton("Expand sample")
 
         self.review_table = QTableWidget(0, 8)
         self.review_table.setHorizontalHeaderLabels(
@@ -762,6 +810,31 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Reset authoring workbench layout",
                 "Restore review-first splitter sizes and collapse secondary details",
             ),
+            (
+                self.cohort_load,
+                "Build checksum-bound cohort sample",
+                "Plan exact technical-attention and clean sample WAVs in the background",
+            ),
+            (
+                self.cohort_play_next,
+                "Play next cohort sample",
+                "Select and replay the next exact unreviewed WAV in this cohort sample",
+            ),
+            (
+                self.cohort_accept,
+                "Accept selected cohort",
+                "Approve the exact cohort only after every sampled WAV finishes playback",
+            ),
+            (
+                self.cohort_reject,
+                "Reject selected cohort",
+                "Reject the exact cohort using at least one finished sampled WAV as evidence",
+            ),
+            (
+                self.cohort_expand,
+                "Expand selected cohort sample",
+                "Record the complete current sample and build a larger bounded sample",
+            ),
         ):
             self._accessible_button(button, name, description)
 
@@ -811,6 +884,21 @@ class AuthoringWorkbenchDialog(QDialog):
         review_layout.addWidget(self.review_table, 1)
         review_layout.addWidget(self.review_action_reason)
         review_layout.addLayout(review_actions)
+        cohort_actions = QHBoxLayout()
+        for widget in (
+            self.cohort_load,
+            self.cohort_play_next,
+            self.cohort_accept,
+            self.cohort_reject,
+            self.cohort_expand,
+        ):
+            cohort_actions.addWidget(widget)
+        self.cohort_section = DisclosureSection("Checksum-bound cohort review")
+        self.cohort_section.setAccessibleName("Checksum-bound cohort review controls")
+        self.cohort_section.content_layout.addWidget(self.cohort_choice)
+        self.cohort_section.content_layout.addWidget(self.cohort_progress)
+        self.cohort_section.content_layout.addLayout(cohort_actions)
+        review_layout.addWidget(self.cohort_section)
 
         self.generation_section = DisclosureSection("Generation scope and controls")
         self.generation_section.setAccessibleName(
@@ -870,6 +958,12 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reference_stop.clicked.connect(self.stop_preview)
         self.review_play.clicked.connect(self.play_selected_outcome)
         self.review_stop.clicked.connect(self.stop_preview)
+        self.cohort_load.clicked.connect(self.load_cohort_plan)
+        self.cohort_play_next.clicked.connect(self.play_next_cohort_sample)
+        self.cohort_accept.clicked.connect(lambda: self.decide_cohort("accepted"))
+        self.cohort_reject.clicked.connect(lambda: self.decide_cohort("rejected"))
+        self.cohort_expand.clicked.connect(lambda: self.decide_cohort("expand"))
+        self.cohort_choice.currentIndexChanged.connect(self._update_cohort_actions)
         self.reload_authority.clicked.connect(self.refresh)
         self.approve.clicked.connect(lambda: self.review_selected("approved"))
         self.reject.clicked.connect(lambda: self.review_selected("rejected"))
@@ -1039,6 +1133,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_controller = None
         self._current_reference_key = None
         self._selected_review_identity = None
+        self._cohort_plan = None
+        self._cohort_played.clear()
+        self._cohort_playback_target = None
+        self.cohort_choice.clear()
         self.status.setText(f"BLOCKED: {error}")
         self.status.setToolTip(str(error))
         self.review_table.setRowCount(0)
@@ -1073,6 +1171,10 @@ class AuthoringWorkbenchDialog(QDialog):
         )
 
     def _apply_projection(self, projection):
+        self._cohort_plan = None
+        self._cohort_played.clear()
+        self._cohort_playback_target = None
+        self.cohort_choice.clear()
         self.summary = projection.summary
         reviews = projection.reviews
         self._workspace = projection.workspace
@@ -1591,6 +1693,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
 
     def _media_error(self, _error, message=""):
+        self._cohort_playback_target = None
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW ERROR: " + (
@@ -1603,20 +1706,27 @@ class AuthoringWorkbenchDialog(QDialog):
     def _media_status_changed(self, status):
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
+        target = self._cohort_playback_target
+        self._cohort_playback_target = None
+        if target is not None and self._cohort_sample_matches(*target):
+            self._cohort_played.add(target[0])
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW FINISHED"
         if self.summary is not None:
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
+        self._update_cohort_actions()
 
     def stop_preview(self):
+        self._cohort_playback_target = None
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW STOPPED"
         if self.summary is not None:
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
+        self._update_cohort_actions()
 
     def _populate_reviews(self, reviews):
         reviews = tuple(reviews)
@@ -1753,6 +1863,212 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._update_review_actions(preserve_queue_id=True)
 
+    def load_cohort_plan(self):
+        if self._cohort_active:
+            return
+        self._start_cohort_task(
+            "plan",
+            build_cohort_review_plan,
+            self.workspace_directory,
+        )
+
+    def _start_cohort_task(self, operation, function, *arguments):
+        self._cohort_active = True
+        self._cohort_serial += 1
+        serial = self._cohort_serial
+        self.cohort_progress.setText(
+            f"Cohort review: {operation} is validating exact workspace authority"
+        )
+        self._update_cohort_actions()
+        self._cohort_thread_pool.start(
+            _CohortTask(
+                serial,
+                operation,
+                function,
+                arguments,
+                self._cohort_signals,
+            )
+        )
+
+    def _cohort_task_finished(self, serial, operation, result, error):
+        if serial != self._cohort_serial or not self._cohort_active:
+            return
+        self._cohort_active = False
+        if error is not None:
+            self.cohort_progress.setText(f"Cohort review blocked: {error}")
+            self._update_cohort_actions()
+            return
+        if isinstance(result, CohortReviewPlan):
+            self._cohort_plan = result
+            self._cohort_played.clear()
+            self._populate_cohort_choices()
+            self.cohort_progress.setText(
+                f"Cohort plan {result.plan_id[:12]} loaded; choose a cohort and play its sample"
+            )
+        elif isinstance(result, CohortReviewProjection):
+            self.cohort_progress.setText(
+                f"Cohort {result.review_status}: {len(result.queue_ids)} exact items saved"
+            )
+            self._cohort_plan = None
+            self._cohort_played.clear()
+            self.cohort_choice.clear()
+            QTimer.singleShot(0, self.refresh)
+        else:
+            self.cohort_progress.setText(
+                f"Cohort review blocked: unsupported {operation} result"
+            )
+        self._update_cohort_actions()
+
+    def _populate_cohort_choices(self):
+        selected = self.cohort_choice.currentData(256)
+        self.cohort_choice.blockSignals(True)
+        self.cohort_choice.clear()
+        if self._cohort_plan is not None:
+            for cohort in self._cohort_plan.document["cohorts"]:
+                identity = cohort["identity"]
+                label = (
+                    f"{identity['voice_character']} | seed {identity['seed']} | "
+                    f"{cohort['item_count']} items / "
+                    f"{len(cohort['sample_queue_ids'])} samples"
+                )
+                self.cohort_choice.addItem(label, cohort["cohort_id"])
+        if selected is not None:
+            index = self.cohort_choice.findData(selected, 256)
+            if index >= 0:
+                self.cohort_choice.setCurrentIndex(index)
+        self.cohort_choice.blockSignals(False)
+        self._update_cohort_actions()
+
+    def _selected_cohort(self):
+        if self._cohort_plan is None:
+            return None
+        cohort_id = self.cohort_choice.currentData(256)
+        return next(
+            (
+                cohort
+                for cohort in self._cohort_plan.document["cohorts"]
+                if cohort["cohort_id"] == cohort_id
+            ),
+            None,
+        )
+
+    def _cohort_sample_matches(self, queue_id, audio_sha256):
+        if self._cohort_plan is None:
+            return False
+        for cohort in self._cohort_plan.document["cohorts"]:
+            if queue_id not in cohort["sample_queue_ids"]:
+                continue
+            return any(
+                item["queue_id"] == queue_id and item["audio_sha256"] == audio_sha256
+                for item in cohort["items"]
+            )
+        return False
+
+    def _update_cohort_actions(self, *_arguments):
+        if not hasattr(self, "cohort_load"):
+            return
+        cohort = self._selected_cohort()
+        samples = () if cohort is None else tuple(cohort["sample_queue_ids"])
+        played = tuple(value for value in samples if value in self._cohort_played)
+        busy = (
+            self._cohort_active
+            or self._review_save_active
+            or self._projection_active
+            or self._playback_prepare_active
+        )
+        complete = bool(samples) and len(played) == len(samples)
+        self.cohort_load.setEnabled(not busy)
+        self.cohort_choice.setEnabled(not busy and self._cohort_plan is not None)
+        self.cohort_play_next.setEnabled(not busy and bool(set(samples) - set(played)))
+        self.cohort_accept.setEnabled(not busy and complete)
+        self.cohort_reject.setEnabled(not busy and bool(played))
+        current_count = (
+            0
+            if self._cohort_plan is None
+            else self._cohort_plan.document["policy"]["clean_samples_per_bucket"]
+        )
+        self.cohort_expand.setEnabled(not busy and complete and current_count < 5)
+        if cohort is not None and not self._cohort_active:
+            self.cohort_progress.setText(
+                f"Cohort sample: {len(played)}/{len(samples)} WAVs finished playback; "
+                f"{cohort['attention_count']} technical-attention items"
+            )
+
+    def play_next_cohort_sample(self):
+        cohort = self._selected_cohort()
+        if cohort is None:
+            return
+        queue_id = next(
+            (
+                value
+                for value in cohort["sample_queue_ids"]
+                if value not in self._cohort_played
+            ),
+            None,
+        )
+        if queue_id is None:
+            return
+        self.review_character.setCurrentText("All characters")
+        self.review_status.setCurrentText("Awaiting review")
+        self.review_collection.setCurrentText("All collections")
+        self.review_search.clear()
+        self.exclude_narrator.setChecked(False)
+        self._apply_review_filters()
+        row = self._row_for_queue_id(queue_id)
+        if row < 0:
+            self.cohort_progress.setText(
+                f"Cohort review blocked: sampled queue item is not reviewable: {queue_id}"
+            )
+            return
+        self.review_table.setCurrentCell(row, 0)
+        self.review_table.scrollToItem(self.review_table.item(row, 0))
+        self.play_selected_outcome()
+
+    def decide_cohort(self, decision):
+        if self._cohort_active or self._cohort_plan is None:
+            return
+        cohort = self._selected_cohort()
+        if cohort is None:
+            return
+        reviewed = [
+            value
+            for value in cohort["sample_queue_ids"]
+            if value in self._cohort_played
+        ]
+        next_count = None
+        if decision == "expand":
+            next_count = (
+                self._cohort_plan.document["policy"]["clean_samples_per_bucket"] + 1
+            )
+        try:
+            document = build_cohort_review_decision(
+                self._cohort_plan,
+                cohort["cohort_id"],
+                decision,
+                reviewed_queue_ids=reviewed,
+                next_clean_samples_per_bucket=next_count,
+            )
+        except Exception as error:
+            self.cohort_progress.setText(f"Cohort review blocked: {error}")
+            return
+        if decision in {"accepted", "rejected"}:
+            answer = QMessageBox.question(
+                self,
+                f"{decision.title()} exact cohort?",
+                f"This will save {decision} for {cohort['item_count']} exact WAVs. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._start_cohort_task(
+            decision,
+            execute_cohort_review_decision,
+            self.workspace_directory,
+            self._cohort_plan,
+            document,
+        )
+
     def _discard_review_playback_copy(self):
         self.player.stop()
         playback = self._review_playback_buffer
@@ -1858,6 +2174,7 @@ class AuthoringWorkbenchDialog(QDialog):
             if self._playback_prepare_active:
                 self._playback_prepare_serial += 1
                 self._playback_prepare_active = False
+            self._cohort_playback_target = None
             self._discard_review_playback_copy()
             self._preview_active = False
             self.media_outcome = None
@@ -1938,6 +2255,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 f"status {selected.review_status or selected.status} | "
                 f"{review_technical_summary(selected)}"
             )
+        self._update_cohort_actions()
 
     def play_selected_outcome(self):
         if self._playback_prepare_active:
@@ -2001,6 +2319,10 @@ class AuthoringWorkbenchDialog(QDialog):
             )
             return
         self._review_playback_buffer = playback
+        self._cohort_playback_target = (
+            current.queue_id,
+            selected.authority.audio_sha256,
+        )
         self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
         self.player.play()
         self._preview_active = True
@@ -2065,6 +2387,10 @@ class AuthoringWorkbenchDialog(QDialog):
         if result is None or queue_id is None or decision is None:
             self._fail_closed("Review worker returned no authoritative result")
             return
+        self._cohort_plan = None
+        self._cohort_played.clear()
+        self._cohort_playback_target = None
+        self.cohort_choice.clear()
         if isinstance(result, WorkspaceSummary):
             self.summary = result
             committed = None
@@ -2455,6 +2781,13 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_stop,
             self.approve,
             self.reject,
+            self.cohort_section.header,
+            self.cohort_choice,
+            self.cohort_load,
+            self.cohort_play_next,
+            self.cohort_accept,
+            self.cohort_reject,
+            self.cohort_expand,
             self.collection_tree,
             self.retry_failed,
             self.generate,
@@ -2478,6 +2811,12 @@ class AuthoringWorkbenchDialog(QDialog):
             QWidget.setTabOrder(first, second)
 
     def closeEvent(self, event: QCloseEvent):
+        if self._cohort_active:
+            self.cohort_progress.setText(
+                "Close deferred: wait for checksum-bound cohort review work to finish"
+            )
+            event.ignore()
+            return
         if self._review_save_active:
             self.review_action_reason.setText(
                 "Close deferred: wait for the authoritative review save to finish"

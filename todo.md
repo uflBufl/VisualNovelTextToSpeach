@@ -47,22 +47,15 @@ Follow the evidence-backed order and invariants in
       reviewer-observed inter-phrase pauses missed by the current zero-silence
       metric. Review a deterministic short/medium/long sample per exact portrait
       variant and expand only when that sample finds another substantive defect.
-- [ ] Replace repeat-per-line approval with an explicit checksum-bound cohort
-      review transaction. The read-only planner now defines exact cohorts,
-      checksum-binds every pending item/WAV, includes all technical-attention
-      items plus deterministic short/medium/long clean samples, changes identity
-      with seed/control/state changes and reports incomplete legacy provenance
-      separately. Immutable no-replace decisions now bind `accept cohort`,
-      `reject cohort`, or `expand sample` to every reviewed sample and target WAV;
-      acceptance requires the complete sample, while rejection requires exact
-      listened evidence. Terminal decisions now revalidate the current plan and
-      commit all target per-item decisions in one leased state transaction with
-      decision/sample/WAV provenance in state and the approved manifest. Add
-      workbench controls that obtain playback attestation instead of trusting
-      typed queue IDs, and expose safe sample expansion without applying it.
-      Reuse an accepted voice quality gate across later stories, but sample each
-      newly generated cohort; never silently carry approval across a changed
-      reference/model/profile or an unreviewed age/portrait variant.
+- [ ] Add an explicit reusable voice-quality gate across later stories. The
+      checksum-bound workbench cohort flow now samples technical and clean WAVs,
+      counts only completed exact-byte playback, records immutable
+      accept/reject/expand evidence and atomically projects terminal per-item
+      decisions. Build a separate reusable gate keyed by exact voice variant,
+      ordered reference hashes, backend/model/profile and synthesis policy, then
+      sample each newly generated story cohort before reusing it. Never silently
+      carry approval across changed controls or an unreviewed age/portrait
+      variant.
 - [ ] Repair the remaining 18 source-bound failures without broad retries:
       run the 12 exact sentence-boundary candidates with checksum-bound segment
       provenance, move the four three-attempt missed-EOS items to the configured
