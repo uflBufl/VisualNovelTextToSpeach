@@ -1155,6 +1155,42 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             "Narrator",
         )
 
+    def test_legacy_review_metrics_remeasure_digest_bound_nonzero_pause(self):
+        with TemporaryDirectory() as directory:
+            wav = Path(directory) / "legacy-pause.wav"
+            sample_rate = 16_000
+            indexes = np.arange(sample_rate // 2, dtype=np.float32)
+            tone = 0.2 * np.sin(2 * np.pi * 220 * indexes / sample_rate)
+            room_tone = np.full(sample_rate * 2, 0.001, dtype=np.float32)
+            write_pcm16_wav(
+                wav,
+                np.concatenate((tone, room_tone, tone)).astype(np.float32),
+                sample_rate,
+            )
+
+            quality = workbench_module._corrected_legacy_speech_quality(
+                str(wav), sha256_file(wav)
+            )
+            _duration, _wpm, _peak, flags = workbench_module._review_technical_metrics(
+                {"quality": {"duration_seconds": 3.0, "peak": 0.2}},
+                "A measured phrase after another phrase",
+                projected_speech_quality=quality,
+            )
+
+        self.assertEqual(quality["analysis_version"], 2)
+        self.assertGreater(quality["longest_internal_silence_seconds"], 1.2)
+        self.assertIn("notable pause", flags)
+
+    def test_legacy_review_metric_remeasurement_rejects_changed_wav(self):
+        with TemporaryDirectory() as directory:
+            wav = Path(directory) / "legacy.wav"
+            write_pcm16_wav(wav, np.zeros(1_600, dtype=np.float32), 16_000)
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "Generated WAV changed"
+            ):
+                workbench_module._corrected_legacy_speech_quality(str(wav), "0" * 64)
+
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

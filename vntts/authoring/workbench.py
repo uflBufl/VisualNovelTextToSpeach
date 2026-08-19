@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from platformdirs import user_data_path
@@ -35,6 +36,7 @@ from vntts.authoring.bulk_generation import (
     LEASE_SCHEMA,
     LEASE_VERSION,
     NO_PROMPT_SHA256,
+    SPEECH_QUALITY_ANALYSIS_VERSION,
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
@@ -43,6 +45,7 @@ from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
     load_generation_state,
     load_review_audio_bytes,
+    measure_generated_speech_bytes,
     normalize_short_trailing_ellipsis,
     normalized_failure_record,
     process_is_alive,
@@ -685,7 +688,7 @@ def inspect_workspace(
     )
 
 
-def _review_technical_metrics(result, text):
+def _review_technical_metrics(result, text, *, projected_speech_quality=None):
     quality = result.get("quality")
     if not isinstance(quality, dict):
         return None, None, None, ()
@@ -698,7 +701,11 @@ def _review_technical_metrics(result, text):
     peak = float(peak) if isinstance(peak, (int, float)) else None
     word_count = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
     words_per_minute = None if duration is None else float(word_count * 60 / duration)
-    speech_quality = result.get("speech_quality")
+    speech_quality = (
+        projected_speech_quality
+        if projected_speech_quality is not None
+        else result.get("speech_quality")
+    )
     speech_quality = speech_quality if isinstance(speech_quality, dict) else {}
     silence_ratio = speech_quality.get("silence_ratio")
     internal_silence = speech_quality.get("longest_internal_silence_seconds")
@@ -715,6 +722,31 @@ def _review_technical_metrics(result, text):
     if isinstance(internal_silence, (int, float)) and internal_silence >= 0.5:
         flags.append("notable pause")
     return duration, words_per_minute, peak, tuple(flags)
+
+
+@lru_cache(maxsize=2048)
+def _corrected_legacy_speech_quality(audio_path, expected_sha256):
+    """Re-measure one legacy WAV from digest-bound bytes for review attention."""
+    path = Path(audio_path)
+    try:
+        content = path.read_bytes()
+    except OSError as error:
+        raise AuthoringWorkbenchError(
+            f"Unable to read generated WAV for review metrics: {error}"
+        ) from error
+    if hashlib.sha256(content).hexdigest() != expected_sha256:
+        raise AuthoringWorkbenchError(
+            "Generated WAV changed while review metrics were being projected"
+        )
+    try:
+        return asdict(
+            measure_generated_speech_bytes(
+                content,
+                analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+        )
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def _review_voice_character(item, result):
@@ -760,8 +792,19 @@ def list_review_items(workspace_directory):
                 _safe_relative(result["path"], "Generated audio"),
                 "Generated audio",
             )
+        stored_speech_quality = result.get("speech_quality")
+        projected_speech_quality = None
+        if audio is not None and (
+            not isinstance(stored_speech_quality, dict)
+            or "analysis_version" not in stored_speech_quality
+        ):
+            projected_speech_quality = _corrected_legacy_speech_quality(
+                str(audio), str(result.get("file_sha256") or "")
+            )
         duration, words_per_minute, peak, technical_flags = _review_technical_metrics(
-            result, item.text
+            result,
+            item.text,
+            projected_speech_quality=projected_speech_quality,
         )
         records.append(
             ReviewItem(

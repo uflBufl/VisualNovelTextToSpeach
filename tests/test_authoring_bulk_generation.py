@@ -1263,6 +1263,61 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertGreater(failure["speech_quality"]["leading_silence_seconds"], 0.8)
         self.assertIn("leading silence", failure["silence_failures"][0])
 
+    def test_silence_gate_normalizes_pcm16_before_applying_dbfs_threshold(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            wav = root / "room-tone-pause.wav"
+            tone = audio_samples()
+            room_tone = np.full(16_000 * 2, 0.001, dtype=np.float32)
+            write_pcm16_wav(wav, np.concatenate((tone, room_tone, tone)), 16_000)
+
+            legacy = bulk_module.inspect_generated_speech(
+                wav,
+                analysis_version=bulk_module.LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+            with self.assertRaises(bulk_module.SpeechSilenceValidationError) as raised:
+                bulk_module.inspect_generated_speech(wav)
+
+        self.assertEqual(legacy.analysis_version, 1)
+        self.assertEqual(legacy.longest_internal_silence_seconds, 0.0)
+        self.assertEqual(raised.exception.quality.analysis_version, 2)
+        self.assertGreater(
+            raised.exception.quality.longest_internal_silence_seconds, 1.2
+        )
+        self.assertIn("internal silence", raised.exception.failures[0])
+
+    def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            generated = state["items"][item["queue_id"]]
+            self.assertEqual(generated["speech_quality"]["analysis_version"], 2)
+
+            audio = result.state.parent / generated["path"]
+            legacy = bulk_module.inspect_generated_speech(
+                audio,
+                analysis_version=bulk_module.LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+            generated["speech_quality"] = {
+                "silence_ratio": legacy.silence_ratio,
+                "leading_silence_seconds": legacy.leading_silence_seconds,
+                "trailing_silence_seconds": legacy.trailing_silence_seconds,
+                "longest_internal_silence_seconds": (
+                    legacy.longest_internal_silence_seconds
+                ),
+            }
+            result.state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            loaded = load_generation_state(result.state, queue)
+
+        self.assertNotIn(
+            "analysis_version",
+            loaded["items"][item["queue_id"]]["speech_quality"],
+        )
+
     def test_exact_failed_sentence_repair_renders_segments_with_distinct_seeds(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

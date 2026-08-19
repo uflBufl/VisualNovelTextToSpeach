@@ -88,6 +88,17 @@ style. Those remain manual acceptance gates. Although v1.5 improves
 long-reference/short-text cloning, it does not make a contaminated reference a
 safe production prompt.
 
+Generated-speech silence analysis is versioned independently from the state
+schema. Version 1 accidentally compared raw signed PCM16 amplitudes with a
+normalized dBFS threshold, so quiet but nonzero room tone could hide audible
+pauses. Version 2 divides PCM16 samples by 32768 before applying the existing
+80 ms / -45 dBFS analysis and records `analysis_version: 2` with every new
+success or typed silence failure. Existing state without the field remains
+readable and checksum-valid through the exact legacy calculation. For review
+only, the workbench remeasures such legacy WAVs from one digest-bound byte
+snapshot using version 2; this adds attention flags but never changes approval
+authority.
+
 One/two-word MOSS hesitation text retains a strict three-second limit. Longer
 text receives a 90-word-per-minute allowance plus 2.5 seconds for lead/tail
 cadence, still capped at 20 seconds. Both limits remain in persistent cache
