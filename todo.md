@@ -33,7 +33,20 @@ Follow the evidence-backed order and invariants in
       defect. The initial Aderyn pass approved two natural adult lines, rejected
       four adult lines with pauses/slow pacing and rejected one child line.
       Reject only listened artifacts; do not promote the remaining child output
-      or apply adult decisions across unrelated portrait variants.
+      or apply adult decisions across unrelated portrait variants. Exclude the
+      seven remaining Dobharchú outputs from this listen-through: the expanded
+      real-story sample already found a cohort-level pacing/pause defect, so
+      leave those exact items pending until the repair comparison below.
+- [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
+      Preserve the 11 exact approved WAVs; do not promote either whole portrait
+      variant. The current state has 19 listened rejects, seven pending and 11
+      failed Dobharchú items. Build a successor immutable comparison over those
+      37 unresolved items using bounded alternative reference/profile/backend
+      candidates, with token-level duration control still disabled. Add a
+      conservative slow-pace flag and a pause-sensitive gate that catches the
+      reviewer-observed inter-phrase pauses missed by the current zero-silence
+      metric. Review a deterministic short/medium/long sample per exact portrait
+      variant and expand only when that sample finds another substantive defect.
 - [ ] Replace repeat-per-line approval with an explicit checksum-bound cohort
       review contract. Define a cohort by the exact voice variant, ordered
       reference hashes, backend/model/profile, synthesis policy and relevant

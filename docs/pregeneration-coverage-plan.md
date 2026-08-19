@@ -107,6 +107,25 @@ quality decision/binding must exclude or replace that child synthesis variant.
 The immutable v3 review and v4 binding remain preserved as the evidence that
 was actually used for this run.
 
+The subsequent real-story Dobharchú review found a different failure mode:
+the source identity can produce good lines, but MOSS delivery is inconsistent.
+At state SHA-256
+`b55581341e07fa701ce5a839a251c78d45f1e0b6f361b69fdebff10e28480b03`,
+the 37-line portrait variant has 11 approved, 17 rejected, four pending and
+five failed items. The 11-line portrait variant has no approvals, two rejects,
+three pending and six failed items. The reviewer rejected lines for
+intermittently slow delivery and excessive pauses between phrases. Thirteen of
+the 17 rejected outputs in the larger variant are below 110 WPM, but four are
+not; pace alone therefore cannot authorize a repair. The current speech-quality
+projection reports zero internal silence on these rejected artifacts, so it
+also does not detect the perceptually objectionable pauses. The 11 approved
+WAVs remain exact line authority, not proof that either complete Dobharchú
+variant passes a reusable cohort gate. Leave the seven unreviewed outputs
+pending and preserve the immutable v3 review/v4 binding as historical inputs.
+A successor cohort must compare bounded alternative reference/profile/backend
+renders and add a pause-sensitive perceptual or acoustic gate before reuse in a
+later story.
+
 ## Coverage order
 
 Pregeneration follows a fixed order so a fallback cannot hide recoverable game
