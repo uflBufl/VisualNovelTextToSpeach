@@ -957,6 +957,40 @@ class MainTest(unittest.TestCase):
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
 
+    def test_isolated_worker_startup_receives_controller_cancellation(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "Pocket TTS default"
+        backend.capabilities.concurrent_prepare_and_play = False
+        received = {}
+
+        def pocket_factory(registry, **options):
+            received["registry"] = registry
+            received.update(options)
+            return backend
+
+        pocket_factory.supports_startup_cancellation = True
+        registry = Mock()
+        with (
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(speech_backend="pocket-tts"),
+                pocket_backend_factory=pocket_factory,
+                model_asset_manager_factory=Mock(),
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertIs(received["registry"], registry)
+        self.assertIs(
+            received["startup_cancellation"], controller.shutdown_requested
+        )
+        controller.shutdown()
+
     def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):
         backend = Mock()
         backend.registry = Mock()
@@ -1259,6 +1293,29 @@ class MainTest(unittest.TestCase):
 
         controller.tts.set_volume.assert_called_once_with(0.35)
         controller.tts.set_speed.assert_called_once_with(1.25)
+
+    def test_applying_settings_keeps_loaded_backend_identity_until_restart(self):
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts", tts_model="pocket-tts"),
+            tts_factory=Mock(),
+        )
+        loaded_backend = Mock(name="loaded-pocket-backend")
+        controller.speech_backend = loaded_backend
+
+        controller.apply_settings(
+            AppSettings(
+                speech_backend="moss-tts",
+                tts_model="local-moss",
+                tts_language="English",
+                output_volume_percent=35,
+            )
+        )
+
+        self.assertIs(controller.speech_backend, loaded_backend)
+        self.assertEqual(controller.settings.speech_backend, "pocket-tts")
+        self.assertEqual(controller.settings.tts_model, "pocket-tts")
+        self.assertIsNone(controller.settings.tts_language)
+        self.assertEqual(controller.settings.output_volume_percent, 35)
 
     def test_controller_reports_current_recognized_dialog(self):
         dialogs = []

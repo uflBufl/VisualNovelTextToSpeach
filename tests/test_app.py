@@ -7,7 +7,7 @@ from unittest.mock import ANY, Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
 
 from vntts.app import (  # noqa: E402
     SettingsDialog,
@@ -740,6 +740,34 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog.deleteLater()
 
+    def test_composite_settings_fields_have_accessible_labels(self):
+        dialog = SettingsDialog(AppSettings())
+        expected = {
+            "Screenshot directory": dialog.screenshot_directory,
+            "Game window": dialog.game_window,
+            "Diagnostics directory": dialog.ocr_diagnostics_directory,
+            "Narrator reference": dialog.narrator_reference,
+        }
+        labels = {
+            label.text(): label
+            for label in dialog.findChildren(QLabel)
+            if label.text() in expected
+        }
+
+        for name, field in expected.items():
+            self.assertIs(labels[name].buddy(), field)
+            self.assertTrue(field.accessibleName())
+            self.assertTrue(field.accessibleDescription())
+        for button in (
+            dialog.screenshot_browse_button,
+            dialog.refresh_windows_button,
+            dialog.diagnostics_browse_button,
+            dialog.narrator_reference_button,
+        ):
+            self.assertTrue(button.accessibleName())
+            self.assertTrue(button.accessibleDescription())
+        dialog.deleteLater()
+
     def test_settings_change_updates_macos_launch_at_login(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -763,6 +791,32 @@ class TrayApplicationTest(unittest.TestCase):
         configure.assert_called_once_with(True)
         controller.apply_settings.assert_called_once_with(updated)
         self.assertEqual(tray_application.settings, updated)
+        tray_application.shutdown()
+
+    def test_backend_setting_reports_restart_and_keeps_effective_identity_visible(self):
+        controller = Mock()
+        controller.settings = AppSettings(speech_backend="pocket-tts")
+        tray_application = TrayApplication(
+            self.application,
+            controller.settings,
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        updated = controller.settings.updated(speech_backend="moss-tts")
+        dialog.settings.return_value = updated
+
+        with (
+            patch("vntts.app.SettingsDialog", return_value=dialog),
+            patch.object(tray_application, "start_hotkeys"),
+            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+        ):
+            tray_application.open_settings()
+
+        controller.apply_settings.assert_called_once_with(updated)
+        self.assertEqual(tray_application.settings.speech_backend, "moss-tts")
+        self.assertIn("restart required", tray_application.status_action.text())
+        self.assertIn("still uses pocket-tts", tray_application.status_action.text())
         tray_application.shutdown()
 
     def test_macos_permission_action_opens_recovery_dialog(self):
@@ -1304,6 +1358,39 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertFalse(results[0][0])
         self.assertIn("invalid Pioneer reference", results[0][1])
+        tray_application.shutdown()
+
+    def test_pocket_onboarding_cancellation_stops_startup_and_reports_cancelled(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        controller.start.side_effect = lambda: (
+            tray_application.cancel_onboarding_download(),
+            False,
+        )[1]
+        results = []
+        tray_application.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+
+        with patch("vntts.app.Thread", ImmediateThread):
+            tray_application.run_onboarding_test(
+                AppSettings(speech_backend="pocket-tts")
+            )
+
+        controller.shutdown.assert_called_once_with()
+        controller.test_current_dialog.assert_not_called()
+        self.assertEqual(results, [(False, "OCR-to-speech test cancelled.")])
         tray_application.shutdown()
 
     def test_package_self_test_does_not_start_qt_application(self):

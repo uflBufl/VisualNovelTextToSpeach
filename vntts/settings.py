@@ -17,6 +17,15 @@ audio_source_policies = {
     "prefer-game-audio",
 }
 default_audio_source_policy = "live-tts-only"
+restart_required_setting_names = (
+    "speech_backend",
+    "tts_model",
+    "tts_speaker",
+    "tts_language",
+    "tts_speaker_wav",
+    "voice_manifest",
+    "narrator_speaker",
+)
 
 
 def _platform_app_name():
@@ -319,6 +328,25 @@ class AppSettings:
 
     def updated(self, **changes):
         return replace(self, **changes)
+
+
+def restart_required_setting_changes(current, requested):
+    """Return runtime-bound fields that cannot change in the current process."""
+    if not isinstance(current, AppSettings) or not isinstance(requested, AppSettings):
+        raise TypeError("Restart comparison requires AppSettings values")
+    return tuple(
+        name
+        for name in restart_required_setting_names
+        if getattr(current, name) != getattr(requested, name)
+    )
+
+
+def preserve_loaded_runtime_settings(current, requested):
+    """Apply ordinary settings while retaining the loaded runtime identity."""
+    changes = restart_required_setting_changes(current, requested)
+    if not changes:
+        return requested
+    return requested.updated(**{name: getattr(current, name) for name in changes})
 
 
 def load_app_settings(path=None, *, environment=None, warn=None):

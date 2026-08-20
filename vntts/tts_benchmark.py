@@ -20,10 +20,10 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 
 from vntts.cli import cli_error, cli_messages
 from vntts.settings import get_local_data_directory
-from vntts.speech_backend import (
-    ChatterboxNanoVoiceRouterBackend,
-    MossTTSVoiceRouterBackend,
-    PocketTTSVoiceRouterBackend,
+from vntts.speech_worker import (
+    create_chatterbox_worker_backend,
+    create_moss_worker_backend,
+    create_pocket_worker_backend,
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -74,13 +74,13 @@ def create_backend(
         ),
     }
     if name == "pocket-tts":
-        return PocketTTSVoiceRouterBackend(
+        return create_pocket_worker_backend(
             registry,
             voice_state_cache_directory=cache_root / "voices",
             **common,
         )
     if name == "chatterbox-nano":
-        return ChatterboxNanoVoiceRouterBackend(
+        return create_chatterbox_worker_backend(
             registry,
             conditioning_cache_directory=cache_root / "conditionals",
             **common,
@@ -94,7 +94,7 @@ def create_backend(
             }.items()
             if value is not None
         }
-        return MossTTSVoiceRouterBackend(
+        return create_moss_worker_backend(
             registry,
             **({"model_name": str(model_name)} if model_name is not None else {}),
             **streaming_options,
@@ -262,10 +262,12 @@ def benchmark_backend(
             stop_error = None
             for backend in reversed(created_backends):
                 stop = getattr(backend, "stop", None)
-                if not callable(stop):
-                    continue
                 try:
-                    stop()
+                    if callable(stop):
+                        stop()
+                    shutdown = getattr(backend, "shutdown", None)
+                    if callable(shutdown):
+                        shutdown()
                 except Exception as error:  # pragma: no cover - backend-specific
                     if stop_error is None:
                         stop_error = error

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.asset_ui import AssetManagerDialog
+from vntts.async_ui import LatestTaskRunner
 from vntts.calibration import show_calibration_overlay
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -37,6 +38,13 @@ from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
 default_onboarding_model = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+
+def _add_composite_form_row(form, label_text, field, field_layout):
+    label = QLabel(label_text)
+    label.setBuddy(field)
+    form.addRow(label, field_layout)
+    return label
 
 
 class ConfigurationPage(QWizardPage):
@@ -62,10 +70,18 @@ class ConfigurationPage(QWizardPage):
         )
         self.game_window = QComboBox()
         self.game_window.setEditable(True)
+        self.game_window.setAccessibleName("Game window")
+        self.game_window.setAccessibleDescription(
+            "Window title captured for dialogue recognition"
+        )
         if settings.game_window_title:
             self.game_window.addItem(settings.game_window_title)
             self.game_window.setCurrentText(settings.game_window_title)
         self.refresh_button = QPushButton("Refresh...")
+        self.refresh_button.setAccessibleName("Refresh game windows")
+        self.refresh_button.setAccessibleDescription(
+            "Reload the list of capturable game windows"
+        )
         self.refresh_button.setMinimumWidth(120)
         self.refresh_button.clicked.connect(self.refresh_windows)
         self.window_layout = QHBoxLayout()
@@ -92,7 +108,17 @@ class ConfigurationPage(QWizardPage):
         )
         self.tts_language = QLineEdit(settings.tts_language or "en")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
+        self.narrator_reference.setAccessibleName("Narrator reference")
+        self.narrator_reference.setAccessibleDescription(
+            "Audio reference used for the narrator voice"
+        )
         self.narrator_reference_button = QPushButton("Browse...")
+        self.narrator_reference_button.setAccessibleName(
+            "Browse for narrator reference"
+        )
+        self.narrator_reference_button.setAccessibleDescription(
+            "Choose a narrator audio reference file"
+        )
         self.narrator_reference_button.setMinimumWidth(120)
         self.narrator_reference_button.clicked.connect(self.browse_narrator_reference)
         self.narrator_reference_layout = QHBoxLayout()
@@ -105,7 +131,15 @@ class ConfigurationPage(QWizardPage):
             settings.voice_manifest
             or (str(default_voice_manifest) if default_voice_manifest else "")
         )
+        self.voice_manifest.setAccessibleName("Voice manifest")
+        self.voice_manifest.setAccessibleDescription(
+            "Character voice manifest JSON file"
+        )
         self.browse_manifest_button = QPushButton("Browse...")
+        self.browse_manifest_button.setAccessibleName("Browse for voice manifest")
+        self.browse_manifest_button.setAccessibleDescription(
+            "Choose a character voice manifest JSON file"
+        )
         self.browse_manifest_button.setMinimumWidth(120)
         self.browse_manifest_button.clicked.connect(self.browse_voice_manifest)
         self.manifest_layout = QHBoxLayout()
@@ -134,7 +168,9 @@ class ConfigurationPage(QWizardPage):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.addRow("Capture source", self.capture_mode)
-        form.addRow("Game window", self.window_layout)
+        _add_composite_form_row(
+            form, "Game window", self.game_window, self.window_layout
+        )
         form.addRow("Read once hotkey", self.read_hotkey)
         form.addRow("Live reading hotkey", self.live_hotkey)
         if sys.platform == "darwin":
@@ -143,8 +179,15 @@ class ConfigurationPage(QWizardPage):
         form.addRow("TTS model", self.tts_model)
         form.addRow("OCR language", self.ocr_language)
         form.addRow("TTS language", self.tts_language)
-        form.addRow("Narrator reference", self.narrator_reference_layout)
-        form.addRow("Voice manifest", self.manifest_layout)
+        _add_composite_form_row(
+            form,
+            "Narrator reference",
+            self.narrator_reference,
+            self.narrator_reference_layout,
+        )
+        _add_composite_form_row(
+            form, "Voice manifest", self.voice_manifest, self.manifest_layout
+        )
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("", self.terms)
         form.addRow("", self.license_label)
@@ -319,15 +362,69 @@ class DiagnosticsPage(QWizardPage):
         self.diagnostics = diagnostics
         self.flow = None
         self.complete = False
+        self.runner = LatestTaskRunner(self)
+        self.runner.finished.connect(self._checks_finished)
         self.setTitle("Check required components")
         self.setSubTitle("Errors must be fixed before setup can continue.")
+        self.status = QLabel("Checks have not run.")
+        self.status.setWordWrap(True)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
         self.results = QListWidget()
+        actions = QHBoxLayout()
+        self.retry_button = QPushButton("Run checks again")
+        self.retry_button.clicked.connect(self.start_checks)
+        self.cancel_button = QPushButton("Cancel checks")
+        self.cancel_button.clicked.connect(self.cancel_checks)
+        self.cancel_button.setEnabled(False)
+        actions.addWidget(self.retry_button)
+        actions.addWidget(self.cancel_button)
+        actions.addStretch()
         layout = QVBoxLayout(self)
+        layout.addWidget(self.status)
+        layout.addWidget(self.progress)
         layout.addWidget(self.results)
+        layout.addLayout(actions)
 
     def initializePage(self):
+        self.start_checks()
+
+    def start_checks(self):
+        self.runner.cancel()
         self.results.clear()
-        diagnostics = self.diagnostics.run(self.flow.draft_settings)
+        self.complete = False
+        self.status.setText("Checking OCR, audio, permissions, and speech assets...")
+        self.progress.show()
+        self.retry_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.completeChanged.emit()
+        self.runner.start(self.diagnostics.run, self.flow.draft_settings)
+
+    def cancel_checks(self):
+        if not self.runner.cancel():
+            return
+        self.complete = False
+        self.progress.hide()
+        self.retry_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.status.setText("Checks cancelled. Run them again to continue.")
+        self.completeChanged.emit()
+
+    def cleanupPage(self):
+        self.cancel_checks()
+
+    def _checks_finished(self, diagnostics, error):
+        self.progress.hide()
+        self.retry_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        if error is not None:
+            self.complete = False
+            self.results.clear()
+            self.results.addItem(f"[ERROR] Diagnostics failed: {error}")
+            self.status.setText("Checks failed. Fix the error or run them again.")
+            self.completeChanged.emit()
+            return
         self.complete = all(result.passed for result in diagnostics)
         for result in diagnostics:
             prefix = {
@@ -336,6 +433,11 @@ class DiagnosticsPage(QWizardPage):
                 "error": "[ERROR]",
             }[result.status]
             self.results.addItem(f"{prefix} {result.name}: {result.message}")
+        self.status.setText(
+            "Checks complete."
+            if self.complete
+            else "Checks complete with errors that must be fixed."
+        )
         self.completeChanged.emit()
 
     def isComplete(self):
@@ -411,6 +513,7 @@ class EndToEndTestPage(QWizardPage):
         super().__init__()
         self.flow = None
         self.successful = False
+        self.running = False
         self.setTitle("Test OCR and speech")
         instructions = QLabel(
             "Keep dialogue visible in the calibrated area. The first test can "
@@ -419,9 +522,9 @@ class EndToEndTestPage(QWizardPage):
         instructions.setWordWrap(True)
         self.button = QPushButton("Run OCR-to-speech test")
         self.button.clicked.connect(self.run_test)
-        self.cancel_button = QPushButton("Cancel model download")
+        self.cancel_button = QPushButton("Cancel test")
         self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        self.cancel_button.clicked.connect(self.request_cancel)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -437,8 +540,10 @@ class EndToEndTestPage(QWizardPage):
 
     def initializePage(self):
         self.successful = False
+        self.running = False
         self.button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancel test")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status.setText("The test has not run.")
@@ -446,11 +551,21 @@ class EndToEndTestPage(QWizardPage):
 
     def run_test(self):
         self.successful = False
+        self.running = True
         self.button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.status.setText("Loading the model and testing OCR and audio...")
         self.completeChanged.emit()
         self.test_requested.emit(self.flow.draft_settings)
+
+    def request_cancel(self):
+        if not self.running:
+            return
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancelling...")
+        self.status.setText("Cancelling the OCR-to-speech test...")
+        self.completeChanged.emit()
+        self.cancel_requested.emit()
 
     def set_progress(self, percent, message):
         if percent is None:
@@ -462,8 +577,10 @@ class EndToEndTestPage(QWizardPage):
 
     def set_result(self, successful, message):
         self.successful = successful
+        self.running = False
         self.button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancel test")
         self.progress.setRange(0, 100)
         if successful:
             self.progress.setValue(100)
@@ -552,6 +669,11 @@ class OnboardingWizard(QDialog):
         self.show_page(0)
 
     def show_page(self, index):
+        previous = self.pages[self.current_page_index]
+        if previous is not self.pages[max(0, min(index, len(self.pages) - 1))]:
+            cleanup = getattr(previous, "cleanupPage", None)
+            if callable(cleanup):
+                cleanup()
         self.current_page_index = max(0, min(index, len(self.pages) - 1))
         page = self.pages[self.current_page_index]
         self.stack.setCurrentWidget(page)
@@ -578,7 +700,9 @@ class OnboardingWizard(QDialog):
         final = self.current_page_index == len(self.pages) - 1
         page = self.pages[self.current_page_index]
         complete = getattr(page, "isComplete", lambda: True)()
-        self.back_button.setEnabled(self.current_page_index > 0)
+        test_running = self.test_page.running
+        self.back_button.setEnabled(self.current_page_index > 0 and not test_running)
+        self.cancel_button.setEnabled(not test_running)
         self.next_button.setVisible(not final)
         self.next_button.setEnabled(bool(complete))
         self.finish_button.setVisible(final)
@@ -589,6 +713,13 @@ class OnboardingWizard(QDialog):
             return
         self.completed_settings = self.draft_settings.updated(onboarding_completed=True)
         super().accept()
+
+    def reject(self):
+        if self.test_page.running:
+            self.test_page.request_cancel()
+            return
+        self.diagnostics_page.runner.cancel()
+        super().reject()
 
     def settings(self):
         return self.completed_settings or self.draft_settings

@@ -373,12 +373,11 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     else:
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(decision_document)
+    _validate_decision_against_plan(plan_document, decision_document)
     if decision_document["decision"] == "expand":
         raise CohortReviewError(
             "Expand decisions create a new plan and cannot be applied"
         )
-    if decision_document["plan_id"] != plan_document["plan_id"]:
-        raise CohortReviewError("Cohort review decision belongs to a different plan")
     current = build_cohort_review_plan(
         workspace_directory,
         clean_samples_per_bucket=plan_document["policy"]["clean_samples_per_bucket"],
@@ -387,36 +386,6 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         raise CohortReviewError(
             "Workspace review authority changed after the cohort plan was published"
         )
-    cohort = next(
-        (
-            value
-            for value in plan_document["cohorts"]
-            if value["cohort_id"] == decision_document["cohort_id"]
-        ),
-        None,
-    )
-    if cohort is None:
-        raise CohortReviewError("Cohort decision target is absent from its plan")
-    expected_targets = [_decision_item(value) for value in cohort["items"]]
-    if decision_document["target_items"] != expected_targets:
-        raise CohortReviewError(
-            "Cohort decision target identities do not match its plan"
-        )
-    if decision_document["sample_queue_ids"] != cohort["sample_queue_ids"]:
-        raise CohortReviewError("Cohort decision sample does not match its plan")
-    expected_policy = {
-        "schema_version": plan_document["policy"]["schema_version"],
-        "clean_samples_per_bucket": plan_document["policy"]["clean_samples_per_bucket"],
-    }
-    if decision_document["plan_policy"] != expected_policy:
-        raise CohortReviewError("Cohort decision policy does not match its plan")
-    target_by_id = {value["queue_id"]: value for value in expected_targets}
-    expected_reviewed = [
-        target_by_id[value["queue_id"]]
-        for value in decision_document["reviewed_samples"]
-    ]
-    if decision_document["reviewed_samples"] != expected_reviewed:
-        raise CohortReviewError("Cohort reviewed evidence does not match its plan")
     try:
         summary = inspect_workspace(workspace_directory)
     except AuthoringWorkbenchError as error:
@@ -482,6 +451,7 @@ def execute_cohort_review_decision(workspace_directory, plan, decision):
     else:
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(decision_document)
+    _validate_decision_against_plan(plan_document, decision_document)
     try:
         workspace, _configuration = _load_workspace(workspace_directory)
     except AuthoringWorkbenchError as error:
@@ -515,6 +485,43 @@ def execute_cohort_review_decision(workspace_directory, plan, decision):
         CohortReviewPlan(plan_document["plan_id"], plan_document),
         CohortReviewDecision(decision_document["decision_id"], decision_document),
     )
+
+
+def _validate_decision_against_plan(plan_document, decision_document):
+    """Validate every immutable decision identity against one exact plan."""
+    if decision_document["plan_id"] != plan_document["plan_id"]:
+        raise CohortReviewError("Cohort review decision belongs to a different plan")
+    cohort = next(
+        (
+            value
+            for value in plan_document["cohorts"]
+            if value["cohort_id"] == decision_document["cohort_id"]
+        ),
+        None,
+    )
+    if cohort is None:
+        raise CohortReviewError("Cohort decision target is absent from its plan")
+    expected_targets = [_decision_item(value) for value in cohort["items"]]
+    if decision_document["target_items"] != expected_targets:
+        raise CohortReviewError(
+            "Cohort decision target identities do not match its plan"
+        )
+    if decision_document["sample_queue_ids"] != cohort["sample_queue_ids"]:
+        raise CohortReviewError("Cohort decision sample does not match its plan")
+    expected_policy = {
+        "schema_version": plan_document["policy"]["schema_version"],
+        "clean_samples_per_bucket": plan_document["policy"]["clean_samples_per_bucket"],
+    }
+    if decision_document["plan_policy"] != expected_policy:
+        raise CohortReviewError("Cohort decision policy does not match its plan")
+    target_by_id = {value["queue_id"]: value for value in expected_targets}
+    expected_reviewed = [
+        target_by_id[value["queue_id"]]
+        for value in decision_document["reviewed_samples"]
+    ]
+    if decision_document["reviewed_samples"] != expected_reviewed:
+        raise CohortReviewError("Cohort reviewed evidence does not match its plan")
+    return cohort
 
 
 def _validated_plan_document(plan):

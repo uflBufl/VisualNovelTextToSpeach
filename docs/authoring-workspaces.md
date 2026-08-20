@@ -30,6 +30,15 @@ selected digest are retained, and the workspace never claims they are the same.
 Selected files are copied into application data, so resume does not depend on
 mutable extractor paths.
 
+Cohort review treats generation state as authority and the approved-only
+manifest as a derived projection. Terminal acceptance commits authority before
+publication, so a failed manifest replacement cannot publish an uncommitted
+approval. Rejection revokes the manifest entry before committing the rejected
+state, so a partial failure can leave the item pending but can never leave a
+rejected WAV published. Every decision is validated against its exact plan,
+cohort, policy, target identities, sample and reviewed evidence before immutable
+review evidence is created.
+
 An optional `vntts.authoring.reference_selection` voice-manifest extension is
 validated against every copied candidate WAV before workspace publication. See
 [authoring-reference-selection.md](authoring-reference-selection.md). This

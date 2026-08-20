@@ -1950,26 +1950,42 @@ def _review_generation_cohort(
                     "Cohort review queue changed before the final commit"
                 )
             lease.assert_owned()
-            try:
-                os.replace(staged_state, state_path)
-            except OSError as error:
-                raise BulkGenerationError(
-                    f"Unable to save cohort review decision: {error}"
-                ) from error
-            try:
-                lease.assert_owned()
-            except BulkGenerationError as error:
-                raise BulkGenerationError(
-                    "Cohort review decision was saved, but manifest rebuild was "
-                    f"blocked: {error}"
-                ) from error
-            try:
-                os.replace(staged_manifest, manifest_path)
-            except OSError as error:
-                raise BulkGenerationError(
-                    "Cohort review decision was saved, but manifest rebuild failed: "
-                    f"{error}"
-                ) from error
+            if decision == "rejected":
+                # Revocation must reach the derived manifest before authority is
+                # committed. A later state failure leaves a conservative
+                # pending item, never a rejected WAV that is still published.
+                try:
+                    os.replace(staged_manifest, manifest_path)
+                    lease.assert_owned()
+                    os.replace(staged_state, state_path)
+                except OSError as error:
+                    raise BulkGenerationError(
+                        "Cohort rejection did not fully commit; the published "
+                        f"manifest remains fail-closed: {error}"
+                    ) from error
+            else:
+                # Approval becomes authoritative before it is projected. If the
+                # projection fails, the manifest remains conservative.
+                try:
+                    os.replace(staged_state, state_path)
+                except OSError as error:
+                    raise BulkGenerationError(
+                        f"Unable to save cohort review decision: {error}"
+                    ) from error
+                try:
+                    lease.assert_owned()
+                except BulkGenerationError as error:
+                    raise BulkGenerationError(
+                        "Cohort review decision was saved, but manifest rebuild was "
+                        f"blocked: {error}"
+                    ) from error
+                try:
+                    os.replace(staged_manifest, manifest_path)
+                except OSError as error:
+                    raise BulkGenerationError(
+                        "Cohort review decision was saved, but manifest rebuild failed: "
+                        f"{error}"
+                    ) from error
         finally:
             for staged in (staged_state, staged_manifest):
                 staged.unlink(missing_ok=True)

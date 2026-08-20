@@ -10,11 +10,35 @@ from vntts.settings import (
     get_config_directory,
     get_local_data_directory,
     load_app_settings,
+    preserve_loaded_runtime_settings,
+    restart_required_setting_changes,
     settings_schema_version,
 )
 
 
 class SettingsTest(unittest.TestCase):
+    def test_loaded_runtime_identity_is_preserved_until_restart(self):
+        current = AppSettings(
+            speech_backend="pocket-tts",
+            tts_model="pocket-tts",
+            output_volume_percent=100,
+        )
+        requested = current.updated(
+            speech_backend="moss-tts",
+            tts_model="local-moss",
+            tts_language="English",
+            output_volume_percent=35,
+        )
+
+        changes = restart_required_setting_changes(current, requested)
+        effective = preserve_loaded_runtime_settings(current, requested)
+
+        self.assertEqual(changes, ("speech_backend", "tts_model", "tts_language"))
+        self.assertEqual(effective.speech_backend, "pocket-tts")
+        self.assertEqual(effective.tts_model, "pocket-tts")
+        self.assertIsNone(effective.tts_language)
+        self.assertEqual(effective.output_volume_percent, 35)
+
     def test_schema_11_idle_delay_migrates_to_lower_live_latency(self):
         settings = AppSettings.from_mapping(
             {

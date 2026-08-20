@@ -7,10 +7,10 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy  # noqa: E402
 
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
-from vntts.onboarding import OnboardingDiagnostics  # noqa: E402
+from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
@@ -236,6 +236,30 @@ class OnboardingWizardTest(unittest.TestCase):
 
         self.assertTrue(wizard.settings().onboarding_completed)
 
+    def test_running_end_to_end_test_guards_navigation_and_cancels_truthfully(self):
+        wizard = OnboardingWizard(AppSettings())
+        wizard.show_page(len(wizard.pages) - 1)
+        cancelled = []
+        wizard.cancel_requested.connect(lambda: cancelled.append(True))
+
+        wizard.test_page.run_test()
+
+        self.assertTrue(wizard.test_page.running)
+        self.assertEqual(wizard.test_page.cancel_button.text(), "Cancel test")
+        self.assertFalse(wizard.back_button.isEnabled())
+        self.assertFalse(wizard.cancel_button.isEnabled())
+        wizard.reject()
+        self.assertEqual(cancelled, [True])
+        self.assertTrue(wizard.test_page.running)
+        self.assertEqual(wizard.test_page.cancel_button.text(), "Cancelling...")
+        self.assertIn("Cancelling", wizard.test_page.status.text())
+
+        wizard.test_page.set_result(False, "OCR-to-speech test cancelled.")
+        self.assertFalse(wizard.test_page.running)
+        self.assertTrue(wizard.back_button.isEnabled())
+        self.assertTrue(wizard.cancel_button.isEnabled())
+        wizard.deleteLater()
+
     def test_configuration_gives_text_fields_room_to_expand(self):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.configuration_page
@@ -250,6 +274,65 @@ class OnboardingWizardTest(unittest.TestCase):
             page.manage_assets_button.sizePolicy().horizontalPolicy(),
             QSizePolicy.Policy.Expanding,
         )
+        wizard.deleteLater()
+
+    def test_diagnostics_page_is_async_cancellable_and_stale_safe(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        diagnostics = Mock()
+        diagnostics.run.return_value = (
+            DiagnosticResult("Capture", "ok", "Ready"),
+        )
+        wizard = OnboardingWizard(AppSettings(), diagnostics=diagnostics)
+        pool = ManualThreadPool()
+        wizard.diagnostics_page.runner.thread_pool = pool
+
+        wizard.show_page(2)
+        self.assertTrue(wizard.diagnostics_page.runner.active)
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertEqual(wizard.diagnostics_page.results.count(), 0)
+
+        wizard.diagnostics_page.cancel_checks()
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertEqual(wizard.diagnostics_page.results.count(), 0)
+        self.assertIn("cancelled", wizard.diagnostics_page.status.text().casefold())
+
+        wizard.diagnostics_page.start_checks()
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertTrue(wizard.diagnostics_page.complete)
+        self.assertTrue(wizard.next_button.isEnabled())
+        self.assertEqual(wizard.diagnostics_page.results.count(), 1)
+        wizard.deleteLater()
+
+    def test_composite_configuration_fields_have_accessible_labels(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.configuration_page
+        labels = {
+            label.text(): label
+            for label in page.findChildren(QLabel)
+            if label.text() in {"Game window", "Narrator reference", "Voice manifest"}
+        }
+
+        self.assertIs(labels["Game window"].buddy(), page.game_window)
+        self.assertIs(labels["Narrator reference"].buddy(), page.narrator_reference)
+        self.assertIs(labels["Voice manifest"].buddy(), page.voice_manifest)
+        for field in (
+            page.game_window,
+            page.narrator_reference,
+            page.voice_manifest,
+            page.refresh_button,
+            page.narrator_reference_button,
+            page.browse_manifest_button,
+        ):
+            self.assertTrue(field.accessibleName())
+            self.assertTrue(field.accessibleDescription())
         wizard.deleteLater()
 
     def test_calibration_hides_wizard_before_frozen_overlay_capture(self):

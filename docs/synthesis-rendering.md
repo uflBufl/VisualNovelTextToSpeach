@@ -1,5 +1,52 @@
 # Device-independent speech rendering
 
+## Restart-only runtime identity
+
+Speech backend, model, language, narrator reference and voice-manifest identity
+are fixed once a backend has loaded. Saving different values persists the next
+startup configuration, but the active controller retains its current runtime
+identity and applies only safe live settings such as volume, rate and generation
+profile. The UI reports both facts explicitly: the new settings were saved and
+the current session still uses the previous backend. A future hot-swap must
+construct and health-check a replacement off to the side, then atomically swap
+it or keep the old runtime unchanged.
+
+## Isolated backend workers
+
+Pocket TTS, Chatterbox Nano and MOSS-TTS execute in separate worker processes
+launched by their own locked environment's Python interpreter. The desktop
+process owns capture, routing and audio-device playback; the worker owns model
+loading, conditioning caches and waveform generation. A length-prefixed JSON
+protocol carries health, prime and live-mode commands plus typed render
+requests. Float32 PCM chunks travel as binary frame payloads, followed by the
+same completion, limits, timing and diagnostic result used by in-process
+renderers.
+
+Startup is fail closed. Before reporting health, the worker verifies the file
+origin and version of each backend's ABI-sensitive modules: NumPy and Torch for
+Pocket, NumPy/Torch/Transformers for Chatterbox, and NumPy/MLX Core for MOSS.
+Every origin must be beneath that backend environment's `site-packages`.
+Missing runtimes, mixed imports, an unexpected interpreter, malformed frames or
+worker exit prevent the backend from becoming ready. Cancellation terminates
+the exact worker process, which also makes non-cooperative model calls bounded;
+a later request creates a fresh worker and repeats the provenance gate. App
+shutdown sends a graceful command and falls back to terminate/kill.
+
+The startup wait is bounded to 30 minutes so a first model download can finish,
+but it polls cancellation instead of sleeping for that entire interval. Local
+2026-08-20 smoke evidence loaded and rendered short PCM through isolated Pocket,
+Chatterbox and MOSS workers with every reported module origin under the selected
+runtime. The MOSS TTS snapshot (`4,864,630,369` bytes) and Audio Tokenizer
+snapshot (`2,397,008,800` bytes) were accepted only after their SHA-256 digests
+matched Hugging Face metadata. An offline Apple Silicon smoke then returned a
+complete 48 kHz stereo render; stopping a separate active generation returned a
+typed `cancelled` result and left no render thread alive.
+
+The parent streams worker PCM through its existing output device and applies
+the configured volume there. Settings that change backend/model/language/voice
+identity remain restart-only, so no worker is silently repurposed across a
+different persisted runtime configuration.
+
 `vntts.synthesis` defines the boundary between waveform generation and audio
 device playback. MOSS-TTS, Pocket TTS, Chatterbox Nano, and XTTS implement this
 boundary.

@@ -55,13 +55,18 @@ from vntts.runtime_config import (
     initialize_voice_router,
 )
 from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
-from vntts.settings import AppSettings
+from vntts.settings import AppSettings, preserve_loaded_runtime_settings
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
     XTTSVoiceRouterBackend,
+)
+from vntts.speech_worker import (
+    create_chatterbox_worker_backend,
+    create_moss_worker_backend,
+    create_pocket_worker_backend,
 )
 from vntts.voices import (
     VoiceChoice,
@@ -210,9 +215,9 @@ class AppController:
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
         model_asset_manager_factory=ModelAssetManager,
-        chatterbox_backend_factory=ChatterboxNanoVoiceRouterBackend,
-        moss_backend_factory=MossTTSVoiceRouterBackend,
-        pocket_backend_factory=PocketTTSVoiceRouterBackend,
+        chatterbox_backend_factory=create_chatterbox_worker_backend,
+        moss_backend_factory=create_moss_worker_backend,
+        pocket_backend_factory=create_pocket_worker_backend,
         speech_backpressure_factory=AdaptiveSpeechBackpressure,
         correction_store=None,
         history=None,
@@ -344,6 +349,15 @@ class AppController:
                     "narrator_reference": narrator_reference,
                     "volume": self.settings.output_volume_percent / 100,
                 }
+                if (
+                    getattr(
+                        backend_factory, "supports_startup_cancellation", False
+                    )
+                    is True
+                ):
+                    backend_options["startup_cancellation"] = (
+                        self.shutdown_requested
+                    )
                 if self.settings.speech_backend == "moss-tts":
                     backend_options.update(
                         model_name=self.settings.tts_model,
@@ -968,6 +982,8 @@ class AppController:
         return character, text
 
     def apply_settings(self, settings):
+        if self.tts is not None or self.speech_backend is not None:
+            settings = preserve_loaded_runtime_settings(self.settings, settings)
         was_live = self.is_live_running
         if was_live:
             self._set_backend_live_mode(False)
@@ -1218,7 +1234,10 @@ class AppController:
         return self.voice_router.speak(character, text)
 
     def _apply_narrator_voice(self, voice):
-        if isinstance(self.voice_router, PocketTTSVoiceRouterBackend):
+        set_narrator_voice = getattr(self.voice_router, "set_narrator_voice", None)
+        if callable(set_narrator_voice):
+            set_narrator_voice(voice, self.settings.tts_speaker_wav)
+        elif isinstance(self.voice_router, PocketTTSVoiceRouterBackend):
             self.voice_router.narrator_reference = (
                 voice.references[0]
                 if voice is not None and voice.references
@@ -1245,6 +1264,10 @@ class AppController:
             self.voice_router.narrator_voice = voice
 
     def _clear_voice_runtime_cache(self):
+        clear_runtime_cache = getattr(self.voice_router, "clear_runtime_cache", None)
+        if callable(clear_runtime_cache):
+            clear_runtime_cache()
+            return
         cache = getattr(self.voice_router, "audio_cache", None)
         clear = getattr(cache, "clear", None)
         if callable(clear):
@@ -2004,7 +2027,7 @@ class AppController:
         if (
             voice is None
             and voice_key == "narrator"
-            and isinstance(live_backend, MossTTSVoiceRouterBackend)
+            and getattr(live_backend, "name", None) == "moss-tts"
             and live_backend.narrator_reference
         ):
             return "voice:narrator:reference-1"
@@ -2053,9 +2076,16 @@ class AppController:
         self._stop_tts()
 
     def _stop_tts(self):
-        if self.tts is not None and hasattr(self.tts, "stop"):
+        active_tts = self.tts
+        if active_tts is not None and hasattr(active_tts, "stop"):
             try:
-                self.tts.stop()
+                active_tts.stop()
+            except Exception as error:
+                self.error_handler(error)
+        shutdown = getattr(active_tts, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
             except Exception as error:
                 self.error_handler(error)
         self.tts = None

@@ -382,6 +382,80 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             self.assertEqual(state_path.read_bytes(), before)
 
+    def test_mismatched_decision_creates_no_immutable_evidence(self):
+        for decision_name in ("accepted", "expand"):
+            with self.subTest(decision=decision_name), TemporaryDirectory() as directory:
+                workspace, _state_path, queue_id = self.create_pending_workspace(
+                    Path(directory)
+                )
+                plan = build_cohort_review_plan(workspace)
+                cohort_id = plan.document["cohorts"][0]["cohort_id"]
+                options = (
+                    {"next_clean_samples_per_bucket": 2}
+                    if decision_name == "expand"
+                    else {}
+                )
+                decision = build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    decision_name,
+                    reviewed_queue_ids=[queue_id],
+                    **options,
+                )
+                forged = deepcopy(decision.document)
+                forged["plan_id"] = "0" * 64
+                forged["decision_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in forged.items()
+                        if key != "decision_id"
+                    }
+                )
+
+                with self.assertRaisesRegex(
+                    CohortReviewError, "belongs to a different plan"
+                ):
+                    execute_cohort_review_decision(workspace, plan, forged)
+
+                self.assertFalse((workspace / "cohort-reviews").exists())
+
+    def test_rejection_revokes_manifest_before_state_commit(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            decision = build_cohort_review_decision(
+                plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
+            )
+            manifest_path = state_path.parent / "manifest.json"
+            original_replace = __import__("os").replace
+
+            def fail_state_commit(source, destination):
+                if Path(destination).resolve() == state_path.resolve():
+                    raise OSError("injected state commit failure")
+                return original_replace(source, destination)
+
+            with (
+                patch(
+                    "vntts.authoring.bulk_generation.os.replace",
+                    side_effect=fail_state_commit,
+                ),
+                self.assertRaisesRegex(CohortReviewError, "remains fail-closed"),
+            ):
+                apply_cohort_review_decision(workspace, plan, decision)
+
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                state["items"][queue_id]["review_status"], "pending_review"
+            )
+            self.assertNotIn(
+                queue_id,
+                {entry["queue_id"] for entry in manifest["entries"]},
+            )
+
     def test_wav_change_during_staging_blocks_both_state_and_manifest(self):
         with TemporaryDirectory() as directory:
             workspace, state_path, queue_id = self.create_pending_workspace(

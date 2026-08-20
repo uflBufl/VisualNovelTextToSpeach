@@ -1,15 +1,18 @@
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
 )
+
+from vntts.async_ui import LatestTaskRunner
 
 
 class ReadinessDialog(QDialog):
@@ -19,10 +22,12 @@ class ReadinessDialog(QDialog):
     voices_requested = Signal()
     refresh_requested = Signal()
 
-    def __init__(self, settings, diagnostics, parent=None):
+    def __init__(self, settings, diagnostics, parent=None, *, thread_pool=None):
         super().__init__(parent)
         self.settings = settings
         self.diagnostics = diagnostics
+        self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.runner.finished.connect(self._checks_finished)
         self.setWindowTitle("Ready to play")
         self.resize(820, 500)
 
@@ -33,6 +38,9 @@ class ReadinessDialog(QDialog):
         intro.setWordWrap(True)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Status", "Component", "Details"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -50,15 +58,20 @@ class ReadinessDialog(QDialog):
             button.clicked.connect(signal.emit)
             actions.addWidget(button)
         actions.addStretch()
-        refresh = QPushButton("Run checks again")
-        refresh.clicked.connect(self.refresh)
-        actions.addWidget(refresh)
+        self.refresh_button = QPushButton("Run checks again")
+        self.refresh_button.clicked.connect(self.refresh)
+        actions.addWidget(self.refresh_button)
+        self.cancel_button = QPushButton("Cancel checks")
+        self.cancel_button.clicked.connect(self.cancel_checks)
+        self.cancel_button.setEnabled(False)
+        actions.addWidget(self.cancel_button)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
         layout.addWidget(self.summary)
+        layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
         layout.addLayout(actions)
         layout.addWidget(buttons)
@@ -69,7 +82,31 @@ class ReadinessDialog(QDialog):
         self.refresh()
 
     def refresh(self):
-        results = self.diagnostics.run(self.settings)
+        self.runner.cancel()
+        self.table.setRowCount(0)
+        self.summary.setText("Running readiness checks...")
+        self.progress.show()
+        self.refresh_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.runner.start(self.diagnostics.run, self.settings)
+
+    def cancel_checks(self):
+        if not self.runner.cancel():
+            return
+        self.table.setRowCount(0)
+        self.progress.hide()
+        self.refresh_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.summary.setText("Checks cancelled. No readiness result is active.")
+
+    def _checks_finished(self, results, error):
+        self.progress.hide()
+        self.refresh_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        if error is not None:
+            self.table.setRowCount(0)
+            self.summary.setText(f"Checks failed: {error}")
+            return
         self.table.setRowCount(len(results))
         colors = {
             "ok": QColor("#287a3d"),
@@ -94,3 +131,7 @@ class ReadinessDialog(QDialog):
         else:
             self.summary.setText("Ready to play. All checks passed.")
         self.refresh_requested.emit()
+
+    def closeEvent(self, event: QCloseEvent):
+        self.runner.cancel()
+        super().closeEvent(event)

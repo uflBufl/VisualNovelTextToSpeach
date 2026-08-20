@@ -90,6 +90,7 @@ from vntts.settings import (
     get_local_data_directory,
     get_settings_path,
     load_app_settings,
+    restart_required_setting_changes,
 )
 from vntts.speech_backend import default_moss_tts_model
 from vntts.support import (
@@ -108,6 +109,13 @@ from vntts.window_capture import (
 
 application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+
+def _add_composite_form_row(form, label_text, field, field_layout):
+    label = QLabel(label_text)
+    label.setBuddy(field)
+    form.addRow(label, field_layout)
+    return label
 
 
 def create_application_icon(style, *, platform=None):
@@ -205,10 +213,18 @@ class SettingsDialog(QDialog):
         )
         self.game_window = QComboBox()
         self.game_window.setEditable(True)
+        self.game_window.setAccessibleName("Game window")
+        self.game_window.setAccessibleDescription(
+            "Window title captured for dialogue recognition"
+        )
         if settings.game_window_title:
             self.game_window.addItem(settings.game_window_title)
             self.game_window.setCurrentText(settings.game_window_title)
         refresh_windows_button = QPushButton("Refresh...")
+        refresh_windows_button.setAccessibleName("Refresh game windows")
+        refresh_windows_button.setAccessibleDescription(
+            "Reload the list of capturable game windows"
+        )
         refresh_windows_button.clicked.connect(self.refresh_windows)
         window_layout = QHBoxLayout()
         window_layout.addWidget(self.game_window)
@@ -257,6 +273,10 @@ class SettingsDialog(QDialog):
         self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
+        self.narrator_reference.setAccessibleName("Narrator reference")
+        self.narrator_reference.setAccessibleDescription(
+            "Audio reference used for the narrator voice"
+        )
         default_voice_manifest = find_default_voice_manifest()
         self.game_pack = QLineEdit(settings.game_pack or "")
         self.voice_manifest = QLineEdit(
@@ -311,22 +331,48 @@ class SettingsDialog(QDialog):
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
         browse_button = QPushButton("Browse...")
+        browse_button.setAccessibleName("Browse for screenshot directory")
+        browse_button.setAccessibleDescription(
+            "Choose where captured screenshots are stored"
+        )
         browse_button.clicked.connect(self.browse_screenshot_directory)
         screenshot_layout = QHBoxLayout()
         screenshot_layout.addWidget(self.screenshot_directory)
         screenshot_layout.addWidget(browse_button)
         diagnostics_browse_button = QPushButton("Browse...")
+        diagnostics_browse_button.setAccessibleName(
+            "Browse for diagnostics directory"
+        )
+        diagnostics_browse_button.setAccessibleDescription(
+            "Choose where uncertain OCR frames are stored"
+        )
         diagnostics_browse_button.clicked.connect(self.browse_ocr_diagnostics_directory)
         diagnostics_layout = QHBoxLayout()
         diagnostics_layout.addWidget(self.ocr_diagnostics_directory)
         diagnostics_layout.addWidget(diagnostics_browse_button)
         self.diagnostics_browse_button = diagnostics_browse_button
         narrator_reference_button = QPushButton("Browse...")
+        narrator_reference_button.setAccessibleName(
+            "Browse for narrator reference"
+        )
+        narrator_reference_button.setAccessibleDescription(
+            "Choose a narrator audio reference file"
+        )
         narrator_reference_button.clicked.connect(self.browse_narrator_reference)
         narrator_reference_layout = QHBoxLayout()
         narrator_reference_layout.addWidget(self.narrator_reference)
         narrator_reference_layout.addWidget(narrator_reference_button)
         self.narrator_reference_button = narrator_reference_button
+        self.screenshot_browse_button = browse_button
+        self.refresh_windows_button = refresh_windows_button
+        self.screenshot_directory.setAccessibleName("Screenshot directory")
+        self.screenshot_directory.setAccessibleDescription(
+            "Directory where captured screenshots are stored"
+        )
+        self.ocr_diagnostics_directory.setAccessibleName("Diagnostics directory")
+        self.ocr_diagnostics_directory.setAccessibleDescription(
+            "Directory where uncertain OCR frames are stored"
+        )
 
         shortcuts_form = QFormLayout()
         shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
@@ -340,20 +386,37 @@ class SettingsDialog(QDialog):
             shortcuts_form.addRow(self.macos_hotkey_notice)
 
         capture_form = QFormLayout()
-        capture_form.addRow("Screenshot directory", screenshot_layout)
+        _add_composite_form_row(
+            capture_form,
+            "Screenshot directory",
+            self.screenshot_directory,
+            screenshot_layout,
+        )
         capture_form.addRow("Capture source", self.capture_mode)
-        capture_form.addRow("Game window", window_layout)
+        _add_composite_form_row(
+            capture_form, "Game window", self.game_window, window_layout
+        )
         capture_form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
         capture_form.addRow("OCR language", self.ocr_language)
         capture_form.addRow("OCR diagnostics", self.retain_uncertain_frames)
-        capture_form.addRow("Diagnostics directory", diagnostics_layout)
+        _add_composite_form_row(
+            capture_form,
+            "Diagnostics directory",
+            self.ocr_diagnostics_directory,
+            diagnostics_layout,
+        )
 
         speech_form = QFormLayout()
         speech_form.addRow("Speech engine", self.speech_backend)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
         speech_form.addRow("Speech model", self.tts_model)
         speech_form.addRow("TTS language", self.tts_language)
-        speech_form.addRow("Narrator reference", narrator_reference_layout)
+        _add_composite_form_row(
+            speech_form,
+            "Narrator reference",
+            self.narrator_reference,
+            narrator_reference_layout,
+        )
         speech_form.addRow("Game pack", self.game_pack)
         speech_form.addRow("Voice manifest", self.voice_manifest)
         speech_form.addRow("Story index", self.story_index)
@@ -1260,16 +1323,29 @@ class TrayApplication(QObject):
         self.signals.hotkeys_requested.emit()
 
     def run_onboarding_test(self, settings):
-        self.onboarding_cancel_event = Event()
+        cancel_event = Event()
+        self.onboarding_cancel_event = cancel_event
 
         def run_test():
+            def cancelled():
+                if not cancel_event.is_set():
+                    return False
+                self.signals.onboarding_test_finished.emit(
+                    False, "OCR-to-speech test cancelled."
+                )
+                return True
+
+            if cancelled():
+                return
             self.controller.apply_settings(settings)
+            if cancelled():
+                return
             if settings.speech_backend == "coqui-xtts":
                 try:
                     self.controller.model_assets.download(
                         settings.tts_model,
                         progress=self.signals.onboarding_test_progress.emit,
-                        cancel_event=self.onboarding_cancel_event,
+                        cancel_event=cancel_event,
                     )
                 except ModelDownloadCancelled as error:
                     self.signals.onboarding_test_finished.emit(False, str(error))
@@ -1280,8 +1356,13 @@ class TrayApplication(QObject):
                         f"Model download or verification failed: {error}",
                     )
                     return
+            if cancelled():
+                return
             self.last_controller_error = None
-            if not self.controller.start():
+            started = self.controller.start()
+            if cancelled():
+                return
+            if not started:
                 self.signals.onboarding_test_finished.emit(
                     False,
                     self.last_controller_error
@@ -1296,6 +1377,8 @@ class TrayApplication(QObject):
                     format_runtime_error(error),
                 )
                 return
+            if cancelled():
+                return
             preview = " ".join(text.split())
             if len(preview) > 160:
                 preview = f"{preview[:157]}..."
@@ -1308,6 +1391,7 @@ class TrayApplication(QObject):
 
     def cancel_onboarding_download(self):
         self.onboarding_cancel_event.set()
+        self.controller.shutdown()
 
     def open_settings(self):
         dialog = SettingsDialog(self.settings)
@@ -1325,6 +1409,10 @@ class TrayApplication(QObject):
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return
+        restart_changes = restart_required_setting_changes(
+            self.settings, updated_settings
+        )
+        effective_backend = self.controller.settings.speech_backend
         self.settings = updated_settings
         self.dashboard.set_configuration(self.settings)
         self.auto_advance_action.blockSignals(True)
@@ -1334,7 +1422,13 @@ class TrayApplication(QObject):
         self._sync_active_profile()
         self.controller.apply_settings(self.settings)
         self.signals.hotkeys_requested.emit()
-        self.set_status(f"Settings saved to {path}")
+        if restart_changes:
+            self.set_status(
+                f"Settings saved to {path}; restart required to load speech "
+                f"engine/model changes. This session still uses {effective_backend}."
+            )
+        else:
+            self.set_status(f"Settings saved to {path}")
         if self.readiness_dialog is not None:
             self.readiness_dialog.update_settings(self.settings)
 
