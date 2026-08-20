@@ -17,11 +17,23 @@ pending WAVs are legacy outcomes whose generation profile is absent. They must
 not be batch-approved from a sampled cohort or silently assigned the current
 profile.
 
+The immutable legacy job records Centurion and the local MOSS model path, but
+it has no provider or generation profile; the 150 state items also have no
+synthesis-control digest. Current provenance therefore cannot be recovered
+without invention. These exact items require regeneration under the immutable
+current workspace controls.
+
 The 158 failures split into 140 legacy outcomes without complete synthesis
 controls and 18 current outcomes with exact provider, model, profile and
 synthesis-control provenance. A repair plan may prescribe a concrete strategy
 only for the latter group. Legacy outcomes first require immutable provenance
 recovery or regeneration under current controls.
+
+The verified repair planner now reports 140
+`provenance_recovery_or_regeneration` records and only 18 executable current
+repairs: 12 `sentence_boundary_segmentation`, four `offline_fallback_backend`
+and two `reference_comparison`. This classification is read-only and preserves
+the state and queue identities above.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
@@ -40,28 +52,24 @@ an old WAV or change generation state.
 
 ## Execution order
 
-1. Make repair planning fail closed for unbound legacy failures. Keep their
-   exact queue IDs and failure evidence, but do not recommend segmentation,
-   retry, fallback or reference changes until controls are bound.
-2. Resolve the 150 legacy pending WAVs without a listen-all shortcut. Recover
-   exact immutable controls when evidence exists; otherwise regenerate exact
-   IDs in a successor config-addressed workspace. Never mutate the imported
-   history or relabel old WAVs as current output.
-3. Repair only the 18 current-provenance failures with bounded exact-ID plans:
+1. Resolve the 150 legacy pending WAVs without a listen-all shortcut. Regenerate
+   their exact IDs under current immutable controls in bounded batches. Never
+   mutate the imported history or relabel old WAVs as current output.
+2. Repair only the 18 current-provenance failures with bounded exact-ID plans:
    sentence-boundary segmentation, configured offline fallback, or explicit
    reference comparison. Preserve the 20-second ceiling and compare every
    non-target state item after a run.
-4. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
+3. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
    build a successor Dobharchú comparison that addresses slow pacing and
    inter-phrase pauses. Human listening remains the authority for identity,
    pronunciation and contamination.
-5. Generate the ten currently ready lines and newly unblocked missing-reference
+4. Generate the ten currently ready lines and newly unblocked missing-reference
    lines only after their controls are immutable. Apply checksum-bound cohort
    review to every new control combination.
-6. Rebuild the approved-only manifest only from authoritative terminal state.
+5. Rebuild the approved-only manifest only from authoritative terminal state.
    Final game-pack publication remains blocked until every queue item has a
    terminal decision or an explicit supported fallback.
-7. Run the real Character Story acceptance with the approved manifest: verify
+6. Run the real Character Story acceptance with the approved manifest: verify
    generated routing, original-audio precedence, Centurion narration, missing
    or failed live fallback and no stale/duplicate speech or early advance.
 

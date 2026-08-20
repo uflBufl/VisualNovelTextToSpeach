@@ -10,15 +10,13 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Resolve the remaining legacy pending-review WAVs (150 at the documented
-      checkpoint) by recovering exact immutable synthesis controls or
-      regenerating exact queue IDs in a successor
-      workspace. Do not sample-approve them, assign the current profile to old
-      WAVs, or mutate imported history.
-- [ ] Keep the 140 provenance-unbound legacy failures out of executable repair
-      cohorts. Repair only the 18 current-provenance failures with exact-ID
-      bounded plans, then generate the ten currently ready lines and newly
-      unblocked reference lines under immutable controls.
+- [ ] Regenerate the remaining legacy pending-review WAVs (150 at the
+      documented checkpoint) as bounded exact-ID batches under current
+      immutable controls. Do not sample-approve them, assign the current profile
+      to old WAVs, or mutate imported history.
+- [ ] Repair only the 18 current-provenance failures with exact-ID bounded
+      plans, then generate the ten currently ready lines and newly unblocked
+      reference lines under immutable controls.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
