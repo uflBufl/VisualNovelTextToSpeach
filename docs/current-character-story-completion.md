@@ -46,6 +46,16 @@ with no active attempt, lease or partial WAV. Seven of those failures have only
 one current provider attempt and are eligible for at most seeds one and two in
 a separate bounded-seed workspace.
 
+That successor is
+`resume-395a5e5eec0327a3a793b66d-15a0395f9ee3e3e3`. Its exact seven-item run
+used only seeds one and two; all seven remained typed LIMITED with three total
+MOSS provider attempts and no WAV. The final state SHA-256 is
+`67dd14ab2cd629464c7fc83c4da1ccb97f43cf51781ef48f15998d95a13e1b52`.
+All 338 non-target state items and the base state remained unchanged, with no
+active attempt, lease or partial file. Those seven are now exhausted MOSS
+outcomes eligible only for the existing one-attempt Pocket fallback or manual
+reference comparison, not another seed retry.
+
 All 179 failures therefore have current synthesis-control evidence. The
 verified repair planner reports seven `bounded_seed_retry`, 68
 `sentence_boundary_segmentation`, 75 `offline_fallback_backend` and 29
@@ -107,10 +117,10 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 14 new repair/ready-line WAVs. Run only the seven planned
-   bounded-seed repairs through their remaining provider attempts, then extend
-   bounded specialist repair over the now-current 68 sentence, 75
-   offline-fallback and 29 reference-comparison cohorts. Merge only exact
+1. Review the 14 new repair/ready-line WAVs. Run one unseeded Pocket attempt for
+   the seven newly exhausted bounded-seed outcomes, then extend bounded
+   specialist repair over the now-current 68 sentence, 82 offline-fallback and
+   29 reference-comparison cohorts. Merge only exact
    terminal outcomes into a successor history. Preserve the 20-second ceiling
    and compare every non-target state item after a run.
 2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and

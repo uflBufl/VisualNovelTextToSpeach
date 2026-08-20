@@ -2101,6 +2101,9 @@ def _carry_forward_review_outcomes(
         }
         if strategy == BOUNDED_SEED_RETRY:
             carry_record["source_provider_attempts"] = provider_attempts
+        parent_carry = result.get("carry_forward")
+        if isinstance(parent_carry, dict):
+            carry_record["source_parent_carry_forward"] = copy.deepcopy(parent_carry)
         copied_result = copy.deepcopy(result)
         copied_result["carry_forward"] = carry_record
         target_state["items"][queue_id] = copied_result
@@ -2824,10 +2827,16 @@ def _validate_workspace_carry_forward(directory, workspace):
             "source_voice_reference",
         }
         bounded_failed_fields = failed_fields | {"source_provider_attempts"}
+        nested_failed_fields = failed_fields | {"source_parent_carry_forward"}
+        nested_bounded_failed_fields = bounded_failed_fields | {
+            "source_parent_carry_forward"
+        }
         if not isinstance(item, dict) or frozenset(item) not in {
             frozenset(terminal_fields),
             frozenset(failed_fields),
             frozenset(bounded_failed_fields),
+            frozenset(nested_failed_fields),
+            frozenset(nested_bounded_failed_fields),
         }:
             raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
         queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
@@ -2897,6 +2906,11 @@ def _validate_workspace_carry_forward(directory, workspace):
                     raise AuthoringWorkbenchError(
                         "Workspace bounded-seed source attempts are exhausted"
                     )
+            parent_carry = item.get("source_parent_carry_forward")
+            if parent_carry is not None and not isinstance(parent_carry, dict):
+                raise AuthoringWorkbenchError(
+                    "Workspace nested carry-forward provenance is malformed"
+                )
         else:
             _require_sha256(item.get("audio_sha256"), "Carry-forward WAV SHA-256")
     if version in {2, 3} and set(failed_queue_ids) != {
@@ -2954,6 +2968,9 @@ def _validate_workspace_offline_fallback_state(directory, workspace):
         elif result.get("provider") == expected["source_provider"]:
             source_result = copy.deepcopy(result)
             source_result.pop("carry_forward", None)
+            parent_carry = expected.get("source_parent_carry_forward")
+            if parent_carry is not None:
+                source_result["carry_forward"] = copy.deepcopy(parent_carry)
             if _canonical_sha256(source_result) != expected["source_item_sha256"]:
                 raise AuthoringWorkbenchError(
                     f"Workspace carried failure changed for {queue_id!r}"

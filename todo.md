@@ -13,11 +13,11 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 - [ ] Review the 14 validated current-failure repair/new-line WAVs (three
       sentence repairs, ten unseeded Pocket fallbacks and one newly generated
       ready line), leaving all decisions pending until their exact bytes are
-      heard. Add checksum-bound same-backend carry for the seven newly eligible
-      bounded-seed repairs and run at most their two remaining provider attempts
-      in a separate config-addressed workspace. Then extend specialist repair
-      over the 68 sentence, 75 offline-fallback and 29 reference-comparison
-      cohorts without a broad retry or a raised 20-second ceiling.
+      heard. The seven new bounded-seed repairs exhausted seeds one and two
+      without a WAV; run their one unseeded Pocket fallback attempt in a new
+      config-addressed workspace. Then extend specialist repair over the 68
+      sentence, 82 offline-fallback and 29 reference-comparison cohorts without
+      a broad retry or a raised 20-second ceiling.
 - [ ] After the 13 repair WAVs are reviewed, run the checksum-bound
       `merge-workspace-outcomes` command to create one successor containing the
       77 primary approvals plus only exact approved/rejected sentence and

@@ -827,7 +827,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )["items"][fixture["queue_id"]]
             command = generation_command(repaired.directory, retries=1, seed=0)
             renderer = SyntheticRenderer(
-                [SynthesisCompletion.LIMITED, SynthesisCompletion.COMPLETE],
+                [SynthesisCompletion.LIMITED, SynthesisCompletion.LIMITED],
                 diagnostics_backend="moss-tts",
             )
             renderer.name = "moss-tts"
@@ -848,14 +848,38 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 result.state, repaired.directory / "queue.jsonl"
             )["items"][fixture["queue_id"]]
             inspect_workspace(repaired.directory)
+            fallback_policy = FailureRepairPolicy(
+                offline_fallback_queue_ids=(fixture["queue_id"],)
+            )
+            fallback = create_resume_workspace(
+                imported,
+                root / "fallback",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                narrator_character="Rhiannon",
+                failure_repair_policy=fallback_policy,
+                carry_forward_from=repaired.directory,
+            )
+            fallback_item = load_generation_state(
+                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(fallback.directory)
             source_state_after = source_state_path.read_bytes()
 
         self.assertEqual(carried["carry_forward"]["source_provider_attempts"], 1)
         self.assertEqual([request.seed for request in renderer.requests], [1, 2])
-        self.assertEqual(final["status"], "generated")
+        self.assertEqual(final["status"], "failed")
         self.assertEqual(final["attempts"], 3)
         self.assertEqual(final["attempts_by_provider"], {"moss-tts": 3})
         self.assertEqual(final["failure_repair"]["strategy"], "bounded_seed_retry")
+        self.assertEqual(
+            fallback_item["carry_forward"]["source_parent_carry_forward"],
+            final["carry_forward"],
+        )
         self.assertEqual(source_state_after, source_state_before)
         self.assertEqual(
             command[command.index("--bounded-seed-failed") + 1],
