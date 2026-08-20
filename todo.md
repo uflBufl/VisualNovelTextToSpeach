@@ -10,13 +10,13 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Regenerate the remaining legacy pending-review WAVs (140 at the
-      documented checkpoint) as bounded exact-ID batches under current
-      immutable controls. Do not sample-approve them, assign the current profile
-      to old WAVs, or mutate imported history.
-- [ ] Repair only the 18 current-provenance failures with exact-ID bounded
+- [ ] Repair only the 30 current-provenance failures with exact-ID bounded
       plans, then generate the ten currently ready lines and newly unblocked
       reference lines under immutable controls.
+- [ ] Add a checksum-bound exact-ID regeneration plan/command for the 140
+      legacy failures that still lack synthesis-control provenance, then run it
+      in bounded batches under current immutable controls. Do not invent or
+      backfill provenance onto the old failure records.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
@@ -73,10 +73,10 @@ Follow the evidence-backed order and invariants in
       sample each newly generated story cohort before reusing it. Never silently
       carry approval across changed controls or an unreviewed age/portrait
       variant.
-- [ ] Repair the remaining 18 source-bound failures without broad retries:
-      run the 12 exact sentence-boundary candidates with checksum-bound segment
-      provenance, move the four three-attempt missed-EOS items to the configured
-      offline fallback backend, and manually audition alternatives for the two
+- [ ] Repair the remaining 30 current-provenance failures without broad retries:
+      run the 15 exact sentence-boundary candidates with checksum-bound segment
+      provenance, move the 11 exhausted missed-EOS items to the configured
+      offline fallback backend, and manually audition alternatives for the four
       exact `reference_comparison` silence failures before `select-reference`.
       Objective metrics cannot decide speaker identity, background
       contamination or pronunciation. Keep the 20-second ceiling.
@@ -98,9 +98,9 @@ Follow the evidence-backed order and invariants in
 - [ ] Validate the split Narrator controls in a real Character Story run:
       approved pregenerated Centurion tracks take precedence, while Pocket uses
       Centurion only as the missing/failed live fallback. Retain Paper Heron as
-      an ordinary character voice. The current approved-only manifest has 69
-      entries; the 61 remaining clean Narrator WAVs need the risk-based review
-      policy above rather than another unconditional listen-all gate.
+      an ordinary character voice. The current approved-only manifest has 77
+      entries; the 128 current-provenance pending WAVs need the risk-based
+      three-cohort review plan rather than another unconditional listen-all gate.
 - [ ] Validate unique-prefix generated-audio routing in the next Character Story
       run. The 2026-08-16 baseline delayed generation start by as much as 11 s
       even though Pocket itself reached first PCM roughly 6-143 ms later; the
