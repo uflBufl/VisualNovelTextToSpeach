@@ -6,15 +6,15 @@ not authority to generate, review, approve or publish any item.
 
 ## Verified checkpoint
 
-The read-only checkpoint refreshed after the bounded legacy-pending
+The read-only checkpoint refreshed after the bounded legacy-failure
 regeneration on 2026-08-21 has 592 queue items: 77 approved, 36 rejected, 128
 generated and awaiting current-provenance review, 170 failed, 10 ready but not
 generated, 164 blocked by missing references and seven pure sound effects.
-There is no active attempt.
+There is no active attempt, generation lease or partial WAV.
 The queue SHA-256 is
 `1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`
 and the authoritative state SHA-256 is
-`065e2a7079669ea4d721f1c4a46fbded41831c5ae72f928fb595b8ea42e986c1`.
+`e81e18f8df3ce67ee28d9ae1b2a8b595319949bd89ffd07b069231e23f863a68`.
 
 The current cohort plan now has three exact cohorts covering all 128 pending
 WAVs, with 36 checksum-bound samples and zero blocked items. No decision was
@@ -29,17 +29,20 @@ WAV. Every batch preserved the canonical hash of all non-target state items,
 left no active attempt, lease or partial file, and did not change review
 authority. The final pending-resolution plan is empty.
 
-The 170 failures now split into 140 legacy outcomes without complete synthesis
-controls and 30 current outcomes with exact provider, model, profile and
-synthesis-control provenance. A repair plan may prescribe a concrete strategy
-only for the latter group. Legacy failures first require their own immutable
-exact-ID regeneration plan under current controls.
+The 140 legacy failures were regenerated in six exact-ID batches of at most 25
+items. Every item retained its old attempts under
+`attempts_by_provider.legacy-unbound` and received exactly one seed-zero MOSS
+attempt under the current immutable controls. All 140 attempts ended as typed
+failures and published no WAV. Every batch compared all non-target state items,
+left no active attempt, lease or partial file, and did not change review
+authority. No legacy provenance was invented or written onto the old attempt
+history.
 
-The verified repair planner now reports 140
-`provenance_recovery_or_regeneration` records and 30 executable current
-repairs: 15 `sentence_boundary_segmentation`, 11 `offline_fallback_backend`
-and four `reference_comparison`. This classification is read-only and preserves
-the state and queue identities above.
+All 170 failures therefore have current synthesis-control evidence. The
+verified repair planner reports 66 `sentence_boundary_segmentation`, 75
+`offline_fallback_backend` and 29 `reference_comparison` records. This
+classification is read-only and binds the state and queue identities above;
+the zero-publish result rules out another broad MOSS seed retry.
 
 The first bounded current-failure repair pass completed on 2026-08-21 in two
 separate config-addressed workspaces. Sentence segmentation produced three
@@ -95,24 +98,22 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 13 new repair WAVs, resolve the 13 remaining typed failures and
-   four reference-comparison items without broad retry, then merge only exact
-   terminal outcomes into a successor history. Preserve the 20-second ceiling
-   and compare every non-target state item after a run.
-2. Add a checksum-bound exact-ID regeneration plan for the 140 legacy failures,
-   then regenerate them under current controls without assigning invented
-   provenance to the old state records.
-3. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
+1. Review the 13 new repair WAVs, then extend bounded specialist repair over
+   the now-current 66 sentence, 75 offline-fallback and 29 reference-comparison
+   cohorts. Merge only exact terminal outcomes into a successor history.
+   Preserve the 20-second ceiling and compare every non-target state item after
+   a run.
+2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
    build a successor Dobharchú comparison that addresses slow pacing and
    inter-phrase pauses. Human listening remains the authority for identity,
    pronunciation and contamination.
-4. Generate the ten currently ready lines and newly unblocked missing-reference
+3. Generate the ten currently ready lines and newly unblocked missing-reference
    lines only after their controls are immutable. Apply checksum-bound cohort
    review to every new control combination.
-5. Rebuild the approved-only manifest only from authoritative terminal state.
+4. Rebuild the approved-only manifest only from authoritative terminal state.
    Final game-pack publication remains blocked until every queue item has a
    terminal decision or an explicit supported fallback.
-6. Run the real Character Story acceptance with the approved manifest: verify
+5. Run the real Character Story acceptance with the approved manifest: verify
    generated routing, original-audio precedence, Centurion narration, missing
    or failed live fallback and no stale/duplicate speech or early advance.
 

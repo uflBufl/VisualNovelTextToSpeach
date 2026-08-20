@@ -24,10 +24,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 - [ ] Generate the ten currently ready lines and newly unblocked reference
       lines under immutable controls, then apply the same risk-based cohort
       review and exact outcome merge.
-- [ ] Add a checksum-bound exact-ID regeneration plan/command for the 140
-      legacy failures that still lack synthesis-control provenance, then run it
-      in bounded batches under current immutable controls. Do not invent or
-      backfill provenance onto the old failure records.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
