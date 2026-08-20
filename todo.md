@@ -10,7 +10,7 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Regenerate the remaining legacy pending-review WAVs (150 at the
+- [ ] Regenerate the remaining legacy pending-review WAVs (140 at the
       documented checkpoint) as bounded exact-ID batches under current
       immutable controls. Do not sample-approve them, assign the current profile
       to old WAVs, or mutate imported history.

@@ -6,19 +6,22 @@ not authority to generate, review, approve or publish any item.
 
 ## Verified checkpoint
 
-The read-only checkpoint captured at `2026-08-20T11:41:08+00:00` has 592 queue
-items: 67 approved, 36 rejected, 150 generated and still pending review, 158
-failed, 10 ready but not generated, 164 blocked by missing references and seven
-pure sound effects. There is no active attempt. The queue SHA-256 is
-`1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`.
+The read-only checkpoint refreshed after the completed human cohort review on
+2026-08-20 has 592 queue items: 77 approved, 36 rejected, 140 generated and
+still pending review, 158 failed, 10 ready but not generated, 164 blocked by
+missing references and seven pure sound effects. There is no active attempt.
+The queue SHA-256 is
+`1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`
+and the authoritative state SHA-256 is
+`0b95ea1b898d2ed749a958e47bf85e1ce0c2911bec5becc5da3214258c952109`.
 
-The current cohort plan has no bindable pending cohort left. The 150 remaining
+The current cohort plan has no bindable pending cohort left. The 140 remaining
 pending WAVs are legacy outcomes whose generation profile is absent. They must
 not be batch-approved from a sampled cohort or silently assigned the current
 profile.
 
 The immutable legacy job records Centurion and the local MOSS model path, but
-it has no provider or generation profile; the 150 state items also have no
+it has no provider or generation profile; the 140 state items also have no
 synthesis-control digest. Current provenance therefore cannot be recovered
 without invention. These exact items require regeneration under the immutable
 current workspace controls.
@@ -52,7 +55,7 @@ an old WAV or change generation state.
 
 ## Execution order
 
-1. Resolve the 150 legacy pending WAVs without a listen-all shortcut. Regenerate
+1. Resolve the 140 legacy pending WAVs without a listen-all shortcut. Regenerate
    their exact IDs under current immutable controls in bounded batches. Never
    mutate the imported history or relabel old WAVs as current output.
 2. Repair only the 18 current-provenance failures with bounded exact-ID plans:
