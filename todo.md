@@ -7,16 +7,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Make checksum-bound cohort review usable and reversible before decision
 
-- [ ] Replace the opaque one-way `Play next cohort sample` flow with a visible
-      ordered sample list that shows the exact line, speaker, duration, playback
-      state and cohort membership. Let the reviewer select and replay any sample
-      as many times as needed; only a complete exact-byte playback counts as
-      heard, and replaying must not discard prior completed-playback evidence.
-- [ ] Keep stable Previous, Replay/Play, Stop and Next controls in one fixed
-      location. Navigation must never jump horizontally, start table-cell
-      editing, change the current cohort implicitly or move to another sample
-      merely because playback finished. Provide documented keyboard shortcuts
-      that work regardless of table edit focus.
 - [ ] Make cohort decisions explicit at the sample and cohort levels. The UI
       must clearly distinguish `sample sounds bad`, `reject cohort`, `accept
       cohort`, and `expand sample`; explain how many exact WAVs each action will

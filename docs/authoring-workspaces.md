@@ -505,17 +505,32 @@ transaction. Approved-manifest projection retains the decision, sample and
 target-audio provenance. `expand` decisions cannot be applied.
 
 The workbench exposes the same flow under `Checksum-bound cohort review`.
-Planning and projection run off the Qt thread. `Play next cohort sample` selects
-the exact pending row, and only an actual `EndOfMedia` event for the captured
-WAV bytes counts as listened; Stop, playback error, selection change and stale
-hashes do not. `Accept cohort` remains disabled until every sample finishes,
-`Reject cohort` requires at least one finished sample, and `Expand sample`
-requires the complete current sample. The workbench writes idempotent immutable
-plan/decision evidence under the workspace `cohort-reviews/` directory before a
-terminal projection, asks for confirmation, and reloads authority afterwards.
-The controls never auto-apply anything on workbench open. No command or UI
-decision was applied to the real Character Story workspace during
-implementation or verification.
+Planning and projection run off the Qt thread. A visible ordered table shows
+every exact sample's playback state, line, source-speaker to effective-voice
+mapping, duration and text. Selecting or navigating never starts playback.
+`Previous sample`, `Replay selected sample`, `Stop sample` and `Next sample`
+stay in one fixed row; their keyboard equivalents are `Ctrl+Alt+Left`,
+`Ctrl+Alt+R`, `Ctrl+Alt+S` and `Ctrl+Alt+Right`. Replay is available both before
+and after a sample has been heard and does not erase earlier listening evidence.
+Only an actual `EndOfMedia` event for the captured WAV bytes counts as heard;
+Stop, playback error, selection change and stale hashes do not. `Accept cohort`
+remains disabled until every sample finishes, `Reject cohort` requires at least
+one finished sample, and `Expand sample` requires the complete current sample.
+The progress label and action tooltips explain the heard count, selected state,
+disabled gate and exact number of cohort WAVs affected. The workbench writes
+idempotent immutable plan/decision evidence under the workspace
+`cohort-reviews/` directory before a terminal projection, asks for confirmation,
+and reloads authority afterwards. The controls never auto-apply anything on
+workbench open. No command or UI decision was applied to the real Character
+Story workspace during implementation or verification.
+
+A read-only acceptance on 2026-08-20 against the current 592-line Character
+Story workspace projected 141 awaiting-review rows and one remaining
+checksum-bound Centurion cohort. Its one exact sample appeared as
+`Narrator -> Centurion`, selected but not heard, with Replay enabled. This
+acceptance did not start playback or create a review decision; it verified the
+real workspace projection after earlier reviewer decisions had reduced the
+previous two-cohort checkpoint to one unresolved cohort.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
