@@ -69,7 +69,10 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
-from vntts.authoring.pending_resolution import build_pending_resolution_plan
+from vntts.authoring.pending_resolution import (
+    build_pending_resolution_plan,
+    write_pending_resolution_plan,
+)
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
     inspect_generation_queue,
@@ -420,6 +423,11 @@ def create_parser():
         help="Bind cohort-blocked pending WAVs to conservative next actions",
     )
     pending_resolution.add_argument("workspace", type=Path)
+    pending_resolution.add_argument(
+        "--output",
+        type=Path,
+        help="Publish the immutable plan without replacing an existing file",
+    )
     cohort_decision = subparsers.add_parser(
         "cohort-review-decision",
         help="Record an immutable human decision over one exact cohort sample",
@@ -898,9 +906,12 @@ def main(argv=None):
             )
             return 0
         if arguments.command == "pending-resolution-plan":
+            plan = build_pending_resolution_plan(arguments.workspace)
+            if arguments.output is not None:
+                write_pending_resolution_plan(plan, arguments.output)
             print(
                 json.dumps(
-                    build_pending_resolution_plan(arguments.workspace).to_dict(),
+                    plan.to_dict(),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,

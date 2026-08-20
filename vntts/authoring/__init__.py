@@ -113,6 +113,8 @@ from vntts.authoring.pending_resolution import (
     PendingResolutionError,
     PendingResolutionPlan,
     build_pending_resolution_plan,
+    load_pending_resolution_plan,
+    write_pending_resolution_plan,
 )
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
@@ -259,6 +261,7 @@ __all__ = [
     "load_listening_session",
     "load_cohort_review_decision",
     "load_cohort_review_plan",
+    "load_pending_resolution_plan",
     "load_generation_state",
     "load_source_reference_plan",
     "is_spoken_queue_item",
@@ -298,4 +301,5 @@ __all__ = [
     "validate_reference_selection_provenance",
     "write_cohort_review_decision",
     "write_cohort_review_plan",
+    "write_pending_resolution_plan",
 ]

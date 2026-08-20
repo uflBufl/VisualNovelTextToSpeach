@@ -23,11 +23,13 @@ synthesis-control provenance. A repair plan may prescribe a concrete strategy
 only for the latter group. Legacy outcomes first require immutable provenance
 recovery or regeneration under current controls.
 
-`vntts-pregenerate pending-resolution-plan WORKSPACE` produces a read-only
-canonical plan for the cohort-blocked pending WAVs. Every record binds the
-queue, line, text, state item and audio SHA-256 plus the original blocker. Its
-only permitted action is `provenance_recovery_or_regeneration`; creating the
-plan does not relabel a WAV, change review state or authorize a render.
+`vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
+atomically publishes a no-replace canonical plan for the cohort-blocked pending
+WAVs. Every record binds the queue, line, text, state item and audio SHA-256 plus
+the original blocker. Its only permitted action is
+`provenance_recovery_or_regeneration`; creating the plan does not relabel a WAV,
+change review state or authorize a render. Loading the plan revalidates its
+schema, exact inventory, counts and canonical identity.
 
 ## Execution order
 
