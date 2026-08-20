@@ -256,6 +256,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn("INTERRUPTED", dialog.status.text())
             self.assertIn("Resolve source audio:", dialog.counts.text())
             self.assertIn("Other skipped actions:", dialog.counts.text())
+            self.assertEqual(dialog.counts.text().count("<br>"), 2)
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
             self.assertTrue(dialog.review_table.hasFocus())
@@ -291,7 +292,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.show()
             self.application.processEvents()
 
-            self.assertTrue(dialog.generation_section.isChecked())
+            self.assertFalse(dialog.generation_section.isChecked())
             self.assertFalse(dialog.readiness_details.isChecked())
             self.assertFalse(dialog.voice_box.isChecked())
             self.assertFalse(dialog.technical.isChecked())
@@ -344,7 +345,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 self.assert_inspector_control_reachable(reopened, control)
 
             reopened._reset_layout()
-            self.assertTrue(reopened.generation_section.isChecked())
+            self.assertFalse(reopened.generation_section.isChecked())
             self.assertFalse(reopened.readiness_details.isChecked())
             self.assertFalse(reopened.voice_box.isChecked())
             self.assertFalse(reopened.technical.isChecked())
@@ -1535,6 +1536,16 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.cohort_choice.count(), 1)
             self.assertEqual(dialog.cohort_samples.rowCount(), 1)
             self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")
+            self.assertEqual(
+                dialog.review_table.horizontalHeaderItem(1).text(),
+                "Source speaker",
+            )
+            self.assertEqual(
+                dialog.review_table.horizontalHeaderItem(2).text(),
+                "Effective voice",
+            )
+            self.assertEqual(dialog.review_table.item(0, 2).text(), "Rhiannon")
+            self.assertIn("effective voice Rhiannon", dialog.current_review.text())
             self.assertTrue(dialog.cohort_replay.isEnabled())
             self.assertFalse(dialog.cohort_accept.isEnabled())
             self.assertFalse(dialog.cohort_reject.isEnabled())

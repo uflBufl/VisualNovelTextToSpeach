@@ -757,8 +757,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setHorizontalHeaderLabels(
             [
                 "Line",
-                "Speaker",
-                "Character",
+                "Source speaker",
+                "Effective voice",
                 "Status",
                 "Collection",
                 "Technical",
@@ -1335,20 +1335,31 @@ class AuthoringWorkbenchDialog(QDialog):
         if self.summary is None or self.collection_selection is None:
             return
         self.counts.setText(
-            " | ".join(
+            "<b>Review</b>: "
+            + " | ".join(
                 (
-                    f"Lines ready to generate: {self.summary.pending}",
                     f"Generated awaiting review: {self.summary.generated}",
                     f"Approved: {self.summary.approved}",
                     f"Rejected: {self.summary.rejected}",
-                    f"Live fallback: {self.summary.live_fallback}",
+                )
+            )
+            + "<br><b>Coverage</b>: "
+            + " | ".join(
+                (
+                    f"Lines ready to generate: {self.summary.pending}",
                     f"Failed: {self.summary.failed}",
                     f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
+                    f"Live fallback: {self.summary.live_fallback}",
                     f"Recoverable source audio: {self.summary.recoverable_source_audio}",
                     f"Manual review: {self.summary.manual_review}",
                     f"Resolve source audio: {self.summary.resolve_audio}",
                     f"Skipped sound effects: {self.summary.skipped_sound_effects}",
                     f"Other skipped actions: {self.summary.skipped_actions}",
+                )
+            )
+            + "<br><b>Selection</b>: "
+            + " | ".join(
+                (
                     f"Selected collections: {self.collection_selection.collection_count}",
                     f"Selected story lines: {self.collection_selection.story_records}",
                     f"Selected queue lines: {self.collection_selection.queue_items}",
@@ -1822,7 +1833,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 (
                     review.line_id,
                     review.speaker,
-                    review.voice_character,
+                    self._effective_review_voice(review),
                     review.review_status or review.status,
                     review.collection_id or "Unassigned",
                     review_technical_summary(review),
@@ -2075,12 +2086,16 @@ class AuthoringWorkbenchDialog(QDialog):
     def _cohort_voice_label(self, item):
         if item is None:
             return "Unavailable"
-        effective = item.voice_character
-        if effective.casefold() == "narrator" and self._workspace is not None:
-            effective = self._workspace["narrator_character"]
+        effective = self._effective_review_voice(item)
         if item.speaker.casefold() == effective.casefold():
             return effective
         return f"{item.speaker} -> {effective}"
+
+    def _effective_review_voice(self, item):
+        effective = item.voice_character
+        if effective.casefold() == "narrator" and self._workspace is not None:
+            return self._workspace["narrator_character"]
+        return effective
 
     def _populate_cohort_samples(self):
         cohort = self._selected_cohort()
@@ -2560,8 +2575,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.current_review.setText("Current review: none")
         else:
             self.current_review.setText(
-                f"Current review: {selected.line_id} | speaker {selected.speaker} | "
-                f"character {selected.voice_character} | "
+                f"Current review: {selected.line_id} | source speaker {selected.speaker} | "
+                f"effective voice {self._effective_review_voice(selected)} | "
                 f"status {selected.review_status or selected.status} | "
                 f"{review_technical_summary(selected)}"
             )
@@ -2974,8 +2989,11 @@ class AuthoringWorkbenchDialog(QDialog):
             self.splitter.setSizes(restored_sizes)
         else:
             self.splitter.setSizes([560, 180])
-        generation_expanded = self.settings.value(
-            "generation-expanded", True, type=bool
+        layout_version = self.settings.value("layout-version", 0, type=int)
+        generation_expanded = (
+            self.settings.value("generation-expanded", False, type=bool)
+            if layout_version >= 2
+            else False
         )
         self.generation_section.setChecked(generation_expanded)
         expanded = self.settings.value("technical-expanded", False, type=bool)
@@ -3009,6 +3027,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue(
             "generation-expanded", self.generation_section.isChecked()
         )
+        self.settings.setValue("layout-version", 2)
         self.settings.setValue("technical-expanded", self.technical.isChecked())
         self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
         self.settings.setValue("voice-expanded", self.voice_box.isChecked())
@@ -3026,7 +3045,7 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _reset_layout(self):
         self.splitter.setSizes([560, 180])
-        self.generation_section.setChecked(True)
+        self.generation_section.setChecked(False)
         self.technical.setChecked(False)
         self.readiness_details.setChecked(False)
         self.voice_box.setChecked(False)
@@ -3034,6 +3053,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.beginGroup(self.settings_group)
         self.settings.remove("splitter")
         self.settings.remove("generation-expanded")
+        self.settings.setValue("layout-version", 2)
         self.settings.remove("technical-expanded")
         self.settings.remove("readiness-expanded")
         self.settings.remove("voice-expanded")

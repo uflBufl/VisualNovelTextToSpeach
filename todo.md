@@ -19,11 +19,10 @@ sections after their implementation has been verified and committed.
       and quality warnings without requiring horizontal scanning. Filters must
       make Narrator-only and character-only work obvious and must never silently
       mix unrelated voices into a focused cohort task.
-- [ ] Replace dense status prose with a compact summary and drill-down counts.
-      Use consistent terms for source speaker, effective character, generated
-      voice, pending review, technical attention, missing reference and failed
-      generation. Never label Centurion narration as though `Narrator` were the
-      selected voice without also showing the mapping.
+- [ ] Add drill-down counts behind the compact Review/Coverage/Selection
+      summary. Finish applying the established source-speaker/effective-voice
+      terminology to pending review, technical attention, missing reference and
+      failed-generation details.
 - [ ] Define predictable sizing and persistence: useful minimum window size,
       readable column defaults, resizable panes, remembered filters and selected
       task, no clipped controls and no large empty diagnostics panel by default.

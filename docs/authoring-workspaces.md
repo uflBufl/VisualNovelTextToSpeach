@@ -543,6 +543,16 @@ acceptance did not start playback or create a review decision; it verified the
 real workspace projection after earlier reviewer decisions had reduced the
 previous two-cohort checkpoint to one unresolved cohort.
 
+The default workbench layout is review-first. Generation, readiness, voice
+reference and technical sections remain reachable in the lower inspector, but
+generation starts collapsed for layout version 2 and `Reset layout` restores
+that state. The top summary is split into compact Review, Coverage and Selection
+rows instead of one unbroken status sentence. Review tables name their identity
+columns `Source speaker` and `Effective voice`; narrator rows retain the source
+identity `Narrator` while showing the configured synthesis choice, for example
+`Narrator` beside `Centurion`. The selected-line description uses the same
+terms, so the UI does not present `Narrator` as if it were the chosen voice.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,
