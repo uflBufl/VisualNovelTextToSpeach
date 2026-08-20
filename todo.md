@@ -3,16 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## Authoring workbench UX redesign
-
-### P1 - Remove the redundant one-character review shortcut
-
-- [ ] Remove `Rhiannon only` from the authoring workbench. The general character
-      filter already provides the same scope without a story-specific control.
-      Keep `Narrator only` and `Characters only`, update the focus/accessibility
-      order and UI tests, and verify that persisted filters from older layouts
-      reopen without selecting a hidden shortcut.
-
 ## Offline authoring and application responsibility split
 
 ### P0 - Complete the current Character Story in fail-closed order

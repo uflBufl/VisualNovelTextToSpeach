@@ -393,8 +393,9 @@ Generated-audio review has a separate scope from generation. Collection
 checkboxes constrain only Generate and Retry; clearing them never hides audio
 that still needs a decision. Review opens on `Awaiting review` and can be
 filtered independently by synthesis character, review status, source
-collection and case-insensitive line text. `Rhiannon only` and `Exclude
-Narrator` are explicit shortcuts. `Technical attention` shows only awaiting
+collection and case-insensitive line text. `Narrator only` and `Characters
+only` remain explicit source-scope shortcuts; named characters use the general
+character filter instead of one-off buttons. `Technical attention` shows only awaiting
 review items with conservative pace, peak or silence flags. Every generated
 row displays duration, words per minute, peak and its attention flags; the
 metrics never substitute for listening. Failed rows display a normalized

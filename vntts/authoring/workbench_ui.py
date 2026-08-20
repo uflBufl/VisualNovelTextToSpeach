@@ -705,15 +705,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_search = QLineEdit()
         self.review_search.setPlaceholderText("Search line text")
         self.review_search.setAccessibleName("Filter review by line text")
-        self.rhiannon_only = QPushButton("Rhiannon only")
         self.narrator_only = QPushButton("Narrator only")
         self.exclude_narrator = QPushButton("Characters only")
         self.exclude_narrator.setCheckable(True)
-        self._accessible_button(
-            self.rhiannon_only,
-            "Show only Rhiannon review items",
-            "Set the independent review character filter to Rhiannon",
-        )
         self._accessible_button(
             self.narrator_only,
             "Show only Narrator review items",
@@ -730,7 +724,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_status,
             self.review_collection,
             self.review_search,
-            self.rhiannon_only,
             self.narrator_only,
             self.exclude_narrator,
         ):
@@ -1070,7 +1063,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_status.currentTextChanged.connect(self._apply_review_filters)
         self.review_collection.currentTextChanged.connect(self._apply_review_filters)
         self.review_search.textChanged.connect(self._apply_review_filters)
-        self.rhiannon_only.clicked.connect(self._show_rhiannon_reviews)
         self.narrator_only.clicked.connect(self._show_narrator_reviews)
         self.exclude_narrator.toggled.connect(self._exclude_narrator_changed)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
@@ -2479,13 +2471,6 @@ class AuthoringWorkbenchDialog(QDialog):
             playback.close()
             playback.deleteLater()
 
-    def _show_rhiannon_reviews(self):
-        index = self.review_character.findText("Rhiannon")
-        if index < 0:
-            self.review_character.addItem("Rhiannon")
-            index = self.review_character.findText("Rhiannon")
-        self.review_character.setCurrentIndex(index)
-
     def _show_narrator_reviews(self):
         index = self.review_character.findText("Narrator")
         if index < 0:
@@ -3228,7 +3213,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_status,
             self.review_collection,
             self.review_search,
-            self.rhiannon_only,
             self.narrator_only,
             self.exclude_narrator,
             self.review_table,

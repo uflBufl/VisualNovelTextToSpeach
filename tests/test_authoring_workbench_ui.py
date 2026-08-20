@@ -600,11 +600,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertIn("near clipping", dialog.review_table.item(0, 6).text())
             dialog.review_status.setCurrentText("Awaiting review")
-            dialog.rhiannon_only.click()
+            dialog.review_character.setCurrentText("Rhiannon")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(
                 dialog._selected_review_item().queue_id, "rhiannon-pending"
             )
+            self.assertFalse(hasattr(dialog, "rhiannon_only"))
             dialog.review_character.setCurrentText("All characters")
             dialog.narrator_only.click()
             self.assertEqual(dialog.review_table.rowCount(), 1)
