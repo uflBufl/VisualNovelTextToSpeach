@@ -10,20 +10,23 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the 13 validated current-failure repair WAVs (three sentence
-      repairs and ten unseeded Pocket fallbacks), leaving all decisions pending
-      until their exact bytes are heard. Resolve the 12 remaining MOSS limits,
-      one Pocket silence failure and four reference-comparison items without a
-      broad retry or a raised 20-second ceiling.
-- [ ] Add a checksum-bound multi-source outcome merge for config-addressed
-      workspaces. It must combine the 77 primary approvals with only exact
-      terminal outcomes from the sentence and Pocket repair workspaces, reject
-      conflicting queue/item/WAV/review authority, preserve every source state
-      digest and never treat a pending or failed repair as terminal. Use it to
-      create one successor history after the 13 repair WAVs are reviewed.
-- [ ] Generate the ten currently ready lines and newly unblocked reference
-      lines under immutable controls, then apply the same risk-based cohort
-      review and exact outcome merge.
+- [ ] Review the 14 validated current-failure repair/new-line WAVs (three
+      sentence repairs, ten unseeded Pocket fallbacks and one newly generated
+      ready line), leaving all decisions pending until their exact bytes are
+      heard. Add checksum-bound same-backend carry for the seven newly eligible
+      bounded-seed repairs and run at most their two remaining provider attempts
+      in a separate config-addressed workspace. Then extend specialist repair
+      over the 68 sentence, 75 offline-fallback and 29 reference-comparison
+      cohorts without a broad retry or a raised 20-second ceiling.
+- [ ] After the 13 repair WAVs are reviewed, run the checksum-bound
+      `merge-workspace-outcomes` command to create one successor containing the
+      77 primary approvals plus only exact approved/rejected sentence and
+      Pocket repair outcomes. Inspect its source-state/item/WAV ledger and
+      approved-only manifest before using the successor for generation.
+- [ ] Generate newly unblocked reference lines under immutable controls as
+      references become available, then apply the same risk-based cohort review
+      and exact outcome merge. The previous ten ready lines are complete: one
+      produced a pending-review WAV and nine now have typed repair evidence.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real

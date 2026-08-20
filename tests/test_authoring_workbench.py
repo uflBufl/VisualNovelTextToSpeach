@@ -766,6 +766,102 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture["queue_id"],
         )
 
+    def test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            publish_generated_manifest,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            queue_path = source.directory / "queue.jsonl"
+            source_state_path = (
+                source.directory / "generated-audio/generation-state.json"
+            )
+            initial = load_generation_state(source_state_path, queue_path)
+            initial_item = initial["items"].pop(fixture["queue_id"])
+            (source.directory / "generated-audio" / initial_item["path"]).unlink()
+            source_state_path.write_text(
+                json.dumps(initial, sort_keys=True), encoding="utf-8"
+            )
+            publish_generated_manifest(source_state_path)
+            failed_renderer = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            failed_renderer.name = "moss-tts"
+            failed_renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                source.directory / "generated-audio",
+                failed_renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+            )
+            source_state_before = source_state_path.read_bytes()
+            policy = FailureRepairPolicy(
+                bounded_seed_retry_queue_ids=(fixture["queue_id"],)
+            )
+            repaired = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=policy,
+                carry_forward_from=source.directory,
+            )
+            carried = load_generation_state(
+                repaired.directory / "generated-audio/generation-state.json",
+                repaired.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            command = generation_command(repaired.directory, retries=1, seed=0)
+            renderer = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED, SynthesisCompletion.COMPLETE],
+                diagnostics_backend="moss-tts",
+            )
+            renderer.name = "moss-tts"
+            renderer.model_name = "model with spaces"
+            result = run_bulk_generation(
+                repaired.directory / "queue.jsonl",
+                repaired.directory / "generated-audio",
+                renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=1,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            final = load_generation_state(
+                result.state, repaired.directory / "queue.jsonl"
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(repaired.directory)
+            source_state_after = source_state_path.read_bytes()
+
+        self.assertEqual(carried["carry_forward"]["source_provider_attempts"], 1)
+        self.assertEqual([request.seed for request in renderer.requests], [1, 2])
+        self.assertEqual(final["status"], "generated")
+        self.assertEqual(final["attempts"], 3)
+        self.assertEqual(final["attempts_by_provider"], {"moss-tts": 3})
+        self.assertEqual(final["failure_repair"]["strategy"], "bounded_seed_retry")
+        self.assertEqual(source_state_after, source_state_before)
+        self.assertEqual(
+            command[command.index("--bounded-seed-failed") + 1],
+            fixture["queue_id"],
+        )
+
     def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

@@ -7,18 +7,19 @@ not authority to generate, review, approve or publish any item.
 ## Verified checkpoint
 
 The read-only checkpoint refreshed after the bounded legacy-failure
-regeneration on 2026-08-21 has 592 queue items: 77 approved, 36 rejected, 128
-generated and awaiting current-provenance review, 170 failed, 10 ready but not
+regeneration on 2026-08-21 has 592 queue items: 77 approved, 36 rejected, 129
+generated and awaiting current-provenance review, 179 failed, zero ready but not
 generated, 164 blocked by missing references and seven pure sound effects.
 There is no active attempt, generation lease or partial WAV.
 The queue SHA-256 is
 `1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`
 and the authoritative state SHA-256 is
-`e81e18f8df3ce67ee28d9ae1b2a8b595319949bd89ffd07b069231e23f863a68`.
+`de93ffd0286be2b41f47689f97025d8290c950c5caf39939b262b26960c4c2d7`.
 
-The current cohort plan now has three exact cohorts covering all 128 pending
-WAVs, with 36 checksum-bound samples and zero blocked items. No decision was
-applied during regeneration; the approved-only manifest remains at 77 entries.
+The previous cohort plan covered the earlier 128 pending WAVs. It is now stale
+by design and must be rebuilt because one newly ready line produced an
+additional pending-review WAV. No decision was applied during generation; the
+approved-only manifest remains at 77 entries.
 
 The earlier 140 pending WAVs had no provider/profile/control identity and could
 not be relabeled. They were regenerated under the immutable current workspace
@@ -38,11 +39,19 @@ left no active attempt, lease or partial file, and did not change review
 authority. No legacy provenance was invented or written onto the old attempt
 history.
 
-All 170 failures therefore have current synthesis-control evidence. The
-verified repair planner reports 66 `sentence_boundary_segmentation`, 75
-`offline_fallback_backend` and 29 `reference_comparison` records. This
-classification is read-only and binds the state and queue identities above;
-the zero-publish result rules out another broad MOSS seed retry.
+The remaining ten reference-ready lines were then generated as one exact-ID,
+zero-retry batch. One produced a validated pending-review WAV and nine ended as
+typed missed-EOS limits; all 411 non-target state records remained canonical,
+with no active attempt, lease or partial WAV. Seven of those failures have only
+one current provider attempt and are eligible for at most seeds one and two in
+a separate bounded-seed workspace.
+
+All 179 failures therefore have current synthesis-control evidence. The
+verified repair planner reports seven `bounded_seed_retry`, 68
+`sentence_boundary_segmentation`, 75 `offline_fallback_backend` and 29
+`reference_comparison` records. This classification is read-only and binds the
+state and queue identities above; the zero-publish legacy result rules out
+another broad MOSS seed retry.
 
 The first bounded current-failure repair pass completed on 2026-08-21 in two
 separate config-addressed workspaces. Sentence segmentation produced three
@@ -98,11 +107,12 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 13 new repair WAVs, then extend bounded specialist repair over
-   the now-current 66 sentence, 75 offline-fallback and 29 reference-comparison
-   cohorts. Merge only exact terminal outcomes into a successor history.
-   Preserve the 20-second ceiling and compare every non-target state item after
-   a run.
+1. Review the 14 new repair/ready-line WAVs. Run only the seven planned
+   bounded-seed repairs through their remaining provider attempts, then extend
+   bounded specialist repair over the now-current 68 sentence, 75
+   offline-fallback and 29 reference-comparison cohorts. Merge only exact
+   terminal outcomes into a successor history. Preserve the 20-second ceiling
+   and compare every non-target state item after a run.
 2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
    build a successor Dobharchú comparison that addresses slow pacing and
    inter-phrase pauses. Human listening remains the authority for identity,

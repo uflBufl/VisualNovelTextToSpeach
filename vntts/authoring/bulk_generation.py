@@ -1603,7 +1603,8 @@ def run_bulk_generation(
                     if attempt_repair is not None:
                         state["items"][queue_id]["failure_repair"] = attempt_repair
                     if (
-                        repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION
+                        repair_strategy
+                        in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
                         and isinstance(existing.get("carry_forward"), dict)
                         and existing["carry_forward"].get("mode") == "failed-outcome"
                     ):
@@ -1681,7 +1682,8 @@ def run_bulk_generation(
                     if attempt_repair is not None:
                         state["items"][queue_id]["failure_repair"] = attempt_repair
                     if (
-                        repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION
+                        repair_strategy
+                        in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
                         and isinstance(existing.get("carry_forward"), dict)
                         and existing["carry_forward"].get("mode") == "failed-outcome"
                     ):

@@ -123,20 +123,23 @@ run generation or publish a final game pack.
 When a repair starts from a mutable workspace rather than the immutable legacy
 seed, pass that workspace with `--carry-forward-from`. The carry ledger schema
 v3 binds the exact source state and failed item before the repair workspace is
-published. A same-backend sentence-boundary repair must keep the source
-backend, model, generation profile, missing-voice policy, queue and copied
-voice controls unchanged. The selected line must still be a typed
-`missed_eos_audio_limit` failure with at least two safe sentence segments.
-Cross-backend Pocket fallback keeps the stricter exhausted-attempt and Pocket
-default requirements below. The two strategies cannot share one workspace.
+published. Same-backend sentence-boundary and bounded-seed repairs must keep
+the source backend, model, generation profile, missing-voice policy, queue and
+copied voice controls unchanged. A sentence repair requires a typed
+`missed_eos_audio_limit` failure with at least two safe sentence segments. A
+bounded-seed repair requires the same typed failure with one or two exact
+provider attempts and permits only the remaining attempts up to a cumulative
+provider maximum of three. Cross-backend Pocket fallback keeps the stricter
+exhausted-attempt and Pocket default requirements below. Same-backend and
+cross-backend strategies cannot share one workspace.
 
 Both creation and every later workspace load fail closed if the carried item,
-strategy, source configuration or exact queue-ID selection changes. A sentence
-repair retains the source failure record as additive `carry_forward`
-provenance after either success or another typed failure, so the repaired WAV
-does not erase the history that authorized it. Existing sentence-repair
-workspaces whose immutable imported seed already contains a current typed
-failure remain supported without carry-forward.
+strategy, source configuration, provider-attempt count or exact queue-ID
+selection changes. Sentence and bounded-seed repairs retain the source failure
+record as additive `carry_forward` provenance after either success or another
+typed failure, so the repaired WAV does not erase the history that authorized
+it. Existing sentence-repair workspaces whose immutable imported seed already
+contains a current typed failure remain supported without carry-forward.
 
 ```sh
 uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
@@ -149,6 +152,12 @@ uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
   --carry-forward-from CURRENT_WORKSPACE \
   --sentence-segment-failed QUEUE_ID
 ```
+
+For a bounded retry, replace the final option with
+`--bounded-seed-failed QUEUE_ID`. A source with one provider attempt may run
+with `--retries 1`, producing only seeds 1 and 2. The carry ledger stores both
+the cumulative history and the exact source-provider attempt count; legacy
+attempts owned by another provider do not consume current seed space.
 
 ## Moving exhausted failures to Pocket TTS
 

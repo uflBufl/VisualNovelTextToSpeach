@@ -55,6 +55,7 @@ from vntts.authoring.bulk_generation import (
     sha256_control_path,
 )
 from vntts.authoring.failure_repair import (
+    BOUNDED_SEED_RETRY,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
@@ -1803,12 +1804,15 @@ def _carry_forward_review_outcomes(
     repair_policy = failure_repair_policy
     failed_selected = repair_policy.queue_ids
     sentence_selected = set(repair_policy.sentence_segment_queue_ids)
+    bounded_selected = set(repair_policy.bounded_seed_retry_queue_ids)
     offline_selected = set(repair_policy.offline_fallback_queue_ids)
-    unsupported_selected = set(failed_selected) - sentence_selected - offline_selected
+    unsupported_selected = (
+        set(failed_selected) - sentence_selected - bounded_selected - offline_selected
+    )
     if unsupported_selected:
         raise AuthoringWorkbenchError(
-            "Carry-forward currently supports only sentence segmentation and "
-            "offline fallback failures"
+            "Carry-forward currently supports only bounded seed, sentence "
+            "segmentation and offline fallback failures"
         )
     if source_workspace is None:
         if characters is not None or offline_selected:
@@ -1863,19 +1867,20 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward source and target model configuration differs"
         )
-    if sentence_selected and offline_selected:
+    same_backend_selected = sentence_selected | bounded_selected
+    if same_backend_selected and offline_selected:
         raise AuthoringWorkbenchError(
-            "One carry-forward workspace cannot mix same-backend sentence repair "
+            "One carry-forward workspace cannot mix same-backend failure repair "
             "with cross-backend offline fallback"
         )
     source_base_config = dict(source_run_config_normalized)
     source_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
     target_base_config = dict(target_run_config_normalized)
     target_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
-    if sentence_selected and source_base_config != target_base_config:
+    if same_backend_selected and source_base_config != target_base_config:
         raise AuthoringWorkbenchError(
-            "Sentence repair requires the exact source backend, model, profile and "
-            "missing-voice policy"
+            "Same-backend repair requires the exact source backend, model, profile "
+            "and missing-voice policy"
         )
     if offline_selected and (
         run_config.get("backend") != "pocket-tts"
@@ -2048,6 +2053,18 @@ def _carry_forward_review_outcomes(
             raise AuthoringWorkbenchError(
                 f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
             )
+        if strategy == BOUNDED_SEED_RETRY:
+            provider_attempts = result.get("attempts_by_provider", {}).get(
+                result.get("provider"), attempts
+            )
+            if (
+                not isinstance(provider_attempts, int)
+                or isinstance(provider_attempts, bool)
+                or not 1 <= provider_attempts < 3
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Bounded-seed source attempts are exhausted for {queue_id!r}"
+                )
         source_item_sha256 = _canonical_sha256(result)
         requested_character = synthesis_character_for_line(
             queue_by_id[queue_id].speaker,
@@ -2082,6 +2099,8 @@ def _carry_forward_review_outcomes(
                 reference_character,
             ),
         }
+        if strategy == BOUNDED_SEED_RETRY:
+            carry_record["source_provider_attempts"] = provider_attempts
         copied_result = copy.deepcopy(result)
         copied_result["carry_forward"] = carry_record
         target_state["items"][queue_id] = copied_result
@@ -2757,8 +2776,10 @@ def _validate_workspace_carry_forward(directory, workspace):
                     "Workspace carried failure selection differs from repair policy"
                 )
             sentence_selected = set(repair_policy.sentence_segment_queue_ids)
+            bounded_selected = set(repair_policy.bounded_seed_retry_queue_ids)
             offline_selected = set(repair_policy.offline_fallback_queue_ids)
-            if sentence_selected and offline_selected:
+            same_backend_selected = sentence_selected | bounded_selected
+            if same_backend_selected and offline_selected:
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward mixes incompatible repair backends"
                 )
@@ -2766,9 +2787,9 @@ def _validate_workspace_carry_forward(directory, workspace):
             source_base["failure_repair_policy"] = FailureRepairPolicy().to_document()
             target_base = dict(target_run_config)
             target_base["failure_repair_policy"] = FailureRepairPolicy().to_document()
-            if sentence_selected and source_base != target_base:
+            if same_backend_selected and source_base != target_base:
                 raise AuthoringWorkbenchError(
-                    "Workspace sentence-repair backend provenance is inconsistent"
+                    "Workspace same-backend repair provenance is inconsistent"
                 )
             if offline_selected and (
                 target_run_config["backend"] != "pocket-tts"
@@ -2802,9 +2823,11 @@ def _validate_workspace_carry_forward(directory, workspace):
             "source_failure_kind",
             "source_voice_reference",
         }
+        bounded_failed_fields = failed_fields | {"source_provider_attempts"}
         if not isinstance(item, dict) or frozenset(item) not in {
             frozenset(terminal_fields),
             frozenset(failed_fields),
+            frozenset(bounded_failed_fields),
         }:
             raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
         queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
@@ -2864,6 +2887,16 @@ def _validate_workspace_carry_forward(directory, workspace):
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure attempts are invalid"
                 )
+            if version == 3 and strategy == BOUNDED_SEED_RETRY:
+                provider_attempts = item.get("source_provider_attempts")
+                if (
+                    not isinstance(provider_attempts, int)
+                    or isinstance(provider_attempts, bool)
+                    or not 1 <= provider_attempts < 3
+                ):
+                    raise AuthoringWorkbenchError(
+                        "Workspace bounded-seed source attempts are exhausted"
+                    )
         else:
             _require_sha256(item.get("audio_sha256"), "Carry-forward WAV SHA-256")
     if version in {2, 3} and set(failed_queue_ids) != {
@@ -2908,15 +2941,15 @@ def _validate_workspace_offline_fallback_state(directory, workspace):
             raise AuthoringWorkbenchError(
                 f"Workspace carried failure source changed for {queue_id!r}"
             )
-        transitioned_sentence_repair = (
-            strategy == SENTENCE_BOUNDARY_SEGMENTATION
+        transitioned_same_backend_repair = (
+            strategy in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
             and isinstance(repair, dict)
-            and repair.get("strategy") == SENTENCE_BOUNDARY_SEGMENTATION
+            and repair.get("strategy") == strategy
         )
-        if transitioned_sentence_repair:
+        if transitioned_same_backend_repair:
             if result.get("provider") != target_provider:
                 raise AuthoringWorkbenchError(
-                    f"Workspace sentence repair provider changed for {queue_id!r}"
+                    f"Workspace same-backend repair provider changed for {queue_id!r}"
                 )
         elif result.get("provider") == expected["source_provider"]:
             source_result = copy.deepcopy(result)
