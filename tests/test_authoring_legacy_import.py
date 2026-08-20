@@ -33,13 +33,18 @@ from vntts.authoring.legacy_import import (
 )
 
 
-def write_legacy_fixture(root, *, job_name="original-job", title="Patch 3.7"):
+def write_legacy_fixture(
+    root,
+    *,
+    job_name="original-job",
+    title="Patch 3.7",
+    text="Preserve this generated line exactly.",
+):
     root.mkdir(parents=True, exist_ok=True)
     story = root / "story-index.jsonl"
     story.write_text("synthetic story provenance\n", encoding="utf-8")
     voices = root / "voice-manifest.json"
     voices.write_text('{"version": 2, "voices": []}\n', encoding="utf-8")
-    text = "Preserve this generated line exactly."
     text_hash = text_sha256(text)
     line_id = "reverse1999:315401:7"
     queue_id = expected_voice_generation_queue_id(line_id, text_hash)

@@ -1582,6 +1582,14 @@ def run_bulk_generation(
                         )
                     if attempt_repair is not None:
                         state["items"][queue_id]["failure_repair"] = attempt_repair
+                    if (
+                        repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION
+                        and isinstance(existing.get("carry_forward"), dict)
+                        and existing["carry_forward"].get("mode") == "failed-outcome"
+                    ):
+                        state["items"][queue_id]["carry_forward"] = copy.deepcopy(
+                            existing["carry_forward"]
+                        )
                     state["active"] = None
                     atomic_write_json(state_path, state, sort_keys=True)
                     generated += 1
@@ -1651,6 +1659,14 @@ def run_bulk_generation(
                         )
                     if attempt_repair is not None:
                         state["items"][queue_id]["failure_repair"] = attempt_repair
+                    if (
+                        repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION
+                        and isinstance(existing.get("carry_forward"), dict)
+                        and existing["carry_forward"].get("mode") == "failed-outcome"
+                    ):
+                        state["items"][queue_id]["carry_forward"] = copy.deepcopy(
+                            existing["carry_forward"]
+                        )
                     if run_attempts < attempt_limit and not is_cancelled:
                         _write_active_phase(
                             state_path, state, "retrying", last_error=last_error

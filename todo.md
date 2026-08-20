@@ -11,8 +11,14 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
 - [ ] Repair only the 30 current-provenance failures with exact-ID bounded
-      plans, then generate the ten currently ready lines and newly unblocked
-      reference lines under immutable controls.
+      plans. First generalize checksum-bound failed-outcome carry-forward so a
+      successor workspace can preserve the exact current failure for
+      same-backend sentence segmentation as well as cross-backend Pocket
+      fallback, while rejecting stale state, mismatched strategies and any
+      non-policy ID. Then execute the 15 segmentation and 11 fallback IDs;
+      leave the four reference-comparison decisions for human listening. After
+      that, generate the ten currently ready lines and newly unblocked reference
+      lines under immutable controls.
 - [ ] Add a checksum-bound exact-ID regeneration plan/command for the 140
       legacy failures that still lack synthesis-control provenance, then run it
       in bounded batches under current immutable controls. Do not invent or

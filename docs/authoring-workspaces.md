@@ -118,6 +118,38 @@ result = create_resume_workspace(
 This operation preserves review authority; it does not approve Narrator audio,
 run generation or publish a final game pack.
 
+## Carrying current failures into repair workspaces
+
+When a repair starts from a mutable workspace rather than the immutable legacy
+seed, pass that workspace with `--carry-forward-from`. The carry ledger schema
+v3 binds the exact source state and failed item before the repair workspace is
+published. A same-backend sentence-boundary repair must keep the source
+backend, model, generation profile, missing-voice policy, queue and copied
+voice controls unchanged. The selected line must still be a typed
+`missed_eos_audio_limit` failure with at least two safe sentence segments.
+Cross-backend Pocket fallback keeps the stricter exhausted-attempt and Pocket
+default requirements below. The two strategies cannot share one workspace.
+
+Both creation and every later workspace load fail closed if the carried item,
+strategy, source configuration or exact queue-ID selection changes. A sentence
+repair retains the source failure record as additive `carry_forward`
+provenance after either success or another typed failure, so the repaired WAV
+does not erase the history that authorized it. Existing sentence-repair
+workspaces whose immutable imported seed already contains a current typed
+failure remain supported without carry-forward.
+
+```sh
+uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
+  --story-index STORY_INDEX.jsonl \
+  --voice-manifest VOICES/manifest.json \
+  --narrator-character Centurion \
+  --backend moss-tts \
+  --model LOCAL_MOSS_MODEL \
+  --generation-profile stable \
+  --carry-forward-from CURRENT_WORKSPACE \
+  --sentence-segment-failed QUEUE_ID
+```
+
 ## Moving exhausted failures to Pocket TTS
 
 An exhausted typed MOSS failure can move to a new immutable Pocket workspace
