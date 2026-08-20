@@ -516,6 +516,10 @@ Only an actual `EndOfMedia` event for the captured WAV bytes counts as heard;
 Stop, playback error, selection change and stale hashes do not. `Accept cohort`
 remains disabled until every sample finishes, `Reject cohort` requires at least
 one finished sample, and `Expand sample` requires the complete current sample.
+Finish, Stop and media-error paths immediately restore replay/navigation and
+the currently valid decision controls. Media errors remain visible in the
+status text and can be retried in place; an integrity failure instead fails
+closed and exposes `Retry workspace load`.
 The progress label and action tooltips explain the heard count, selected state,
 disabled gate and exact number of cohort WAVs affected. After a complete
 playback, `Mark sample bad` records a reversible sample-level assessment; it

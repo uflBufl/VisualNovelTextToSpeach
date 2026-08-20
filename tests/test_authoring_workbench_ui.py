@@ -1550,6 +1550,15 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.replay_selected_cohort_sample()
             self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog._media_error(None, "simulated cohort playback failure")
+            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")
+            self.assertTrue(dialog.cohort_replay.isEnabled())
+            self.assertFalse(dialog.cohort_accept.isEnabled())
+            self.assertFalse(dialog.cohort_reject.isEnabled())
+            self.assertIn("AUDIO PREVIEW ERROR", dialog.status.text())
+
+            dialog.replay_selected_cohort_sample()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
             self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Heard")
             self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "No issue marked")

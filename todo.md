@@ -5,14 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Authoring workbench UX redesign
 
-### P0 - Make checksum-bound cohort review usable and reversible before decision
-
-- [ ] Preserve actionable controls after playback. Finishing, stopping,
-      replaying or encountering a media error must never leave Apply/Accept,
-      Reject or replay/navigation buttons permanently disabled. Display the
-      specific blocking reason beside disabled controls and provide an in-place
-      recovery action instead of requiring the window to be reopened.
-
 ### P0 - Review the complete workbench information architecture and workflow
 
 - [ ] Audit the end-to-end tasks separately: workspace loading, collection
