@@ -78,6 +78,21 @@ workspace still matches it byte-for-byte. Batch size is limited to 25. The
 command is inspection output: this operation does not launch the child, archive
 an old WAV or change generation state.
 
+`vntts-pregenerate failure-regeneration-plan WORKSPACE --output PLAN.json`
+does the equivalent for current failed records that lack exact synthesis
+controls. Each record binds the workspace/config, queue, state and failed item
+SHA-256 plus its old attempt/seed evidence. The plan contains only the
+`provenance_recovery_or_regeneration` cohort; it never assigns a provider,
+model or control digest to the old result.
+
+`vntts-pregenerate failure-regeneration-command WORKSPACE PLAN.json
+--batch-index N [--batch-size 10]` revalidates the complete plan and prints one
+exact-ID `--regenerate-existing --retries 0 --seed 0` child command, with a
+maximum batch size of 25. When an old failed record has no provider, its old
+attempt count is preserved under `attempts_by_provider.legacy-unbound`; the
+first newly proven provider attempt starts at seed zero. The command is
+inspection output and does not launch generation.
+
 ## Execution order
 
 1. Review the 13 new repair WAVs, resolve the 13 remaining typed failures and

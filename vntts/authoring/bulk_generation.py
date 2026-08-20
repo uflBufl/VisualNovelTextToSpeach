@@ -1440,8 +1440,16 @@ def run_bulk_generation(
             if destination.exists():
                 _archive_interrupted_artifact(output_directory, destination)
             attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
+            default_attempt_provider = provider
+            if (
+                regenerate_existing
+                and existing.get("status") == "failed"
+                and not existing.get("provider")
+                and not existing.get("synthesis_provenance_sha256")
+            ):
+                default_attempt_provider = "legacy-unbound"
             attempts_by_provider = _provider_attempts(
-                existing, attempts, default_provider=provider
+                existing, attempts, default_provider=default_attempt_provider
             )
             provider_attempts = attempts_by_provider.get(provider, 0)
             run_attempts = 0

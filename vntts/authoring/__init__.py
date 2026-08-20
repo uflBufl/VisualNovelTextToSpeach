@@ -45,6 +45,17 @@ from vntts.authoring.delivery import (
     annotate_delivery,
     apply_delivery_policy,
 )
+from vntts.authoring.failure_regeneration import (
+    FAILURE_REGENERATION_PLAN_SCHEMA,
+    FAILURE_REGENERATION_PLAN_VERSION,
+    FailureRegenerationCommand,
+    FailureRegenerationError,
+    FailureRegenerationPlan,
+    build_failure_regeneration_command,
+    build_failure_regeneration_plan,
+    load_failure_regeneration_plan,
+    write_failure_regeneration_plan,
+)
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
@@ -198,6 +209,11 @@ __all__ = [
     "EdgeSilenceTrim",
     "FailureRepairPolicy",
     "FailureRepairPolicyError",
+    "FAILURE_REGENERATION_PLAN_SCHEMA",
+    "FAILURE_REGENERATION_PLAN_VERSION",
+    "FailureRegenerationCommand",
+    "FailureRegenerationError",
+    "FailureRegenerationPlan",
     "FinalGamePackError",
     "FinalGamePackResult",
     "SpeechQuality",
@@ -240,6 +256,8 @@ __all__ = [
     "build_benchmark_corpus",
     "build_cohort_review_decision",
     "build_cohort_review_plan",
+    "build_failure_regeneration_command",
+    "build_failure_regeneration_plan",
     "build_pending_resolution_plan",
     "build_pending_regeneration_command",
     "execute_cohort_review_decision",
@@ -267,6 +285,7 @@ __all__ = [
     "load_cohort_review_plan",
     "load_pending_resolution_plan",
     "load_generation_state",
+    "load_failure_regeneration_plan",
     "load_source_reference_plan",
     "is_spoken_queue_item",
     "next_pending_trial",
@@ -305,5 +324,6 @@ __all__ = [
     "validate_reference_selection_provenance",
     "write_cohort_review_decision",
     "write_cohort_review_plan",
+    "write_failure_regeneration_plan",
     "write_pending_resolution_plan",
 ]

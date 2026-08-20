@@ -44,6 +44,13 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.authoring.failure_regeneration import (
+    FailureRegenerationError,
+    build_failure_regeneration_command,
+    build_failure_regeneration_plan,
+    load_failure_regeneration_plan,
+    write_failure_regeneration_plan,
+)
 from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
@@ -438,6 +445,20 @@ def create_parser():
     pending_regeneration.add_argument("plan", type=Path)
     pending_regeneration.add_argument("--batch-index", type=int, required=True)
     pending_regeneration.add_argument("--batch-size", type=int, default=10)
+    failure_regeneration = subparsers.add_parser(
+        "failure-regeneration-plan",
+        help="Bind provenance-unbound failures to exact-ID regeneration",
+    )
+    failure_regeneration.add_argument("workspace", type=Path)
+    failure_regeneration.add_argument("--output", type=Path)
+    failure_command = subparsers.add_parser(
+        "failure-regeneration-command",
+        help="Print one bounded exact-ID command from a current failure plan",
+    )
+    failure_command.add_argument("workspace", type=Path)
+    failure_command.add_argument("plan", type=Path)
+    failure_command.add_argument("--batch-index", type=int, required=True)
+    failure_command.add_argument("--batch-size", type=int, default=10)
     cohort_decision = subparsers.add_parser(
         "cohort-review-decision",
         help="Record an immutable human decision over one exact cohort sample",
@@ -943,6 +964,29 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "failure-regeneration-plan":
+            plan = build_failure_regeneration_plan(arguments.workspace)
+            if arguments.output is not None:
+                write_failure_regeneration_plan(plan, arguments.output)
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
+        if arguments.command == "failure-regeneration-command":
+            print(
+                json.dumps(
+                    build_failure_regeneration_command(
+                        arguments.workspace,
+                        load_failure_regeneration_plan(arguments.plan),
+                        batch_index=arguments.batch_index,
+                        batch_size=arguments.batch_size,
+                    ).to_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "cohort-review-decision":
             decision = build_cohort_review_decision(
                 load_cohort_review_plan(arguments.plan),
@@ -1104,6 +1148,7 @@ def main(argv=None):
         CohortReviewError,
         DeliveryAnnotationError,
         FinalGamePackError,
+        FailureRegenerationError,
         LegacyAuthoringImportError,
         ListeningImportError,
         ReferenceSelectionError,

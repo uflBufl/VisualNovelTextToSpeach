@@ -1063,6 +1063,58 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertNotEqual(resumed["schema"], STATE_SCHEMA)
 
+    def test_explicit_legacy_failure_regeneration_starts_fresh_provider_seed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item("legacy")
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            state_path = output / "generation-state.json"
+            output.mkdir()
+            atomic_write_json(
+                state_path,
+                {
+                    "schema": LEGACY_STATE_SCHEMA,
+                    "schema_version": 1,
+                    "queue_sha256": sha256_file(queue),
+                    "game": None,
+                    "language": None,
+                    "active": None,
+                    "items": {
+                        item["queue_id"]: {
+                            "status": "failed",
+                            "attempts": 7,
+                            "seed": 6,
+                            "last_error": "Legacy limit",
+                            "updated_at": "2026-08-16T10:00:00+00:00",
+                        }
+                    },
+                },
+                sort_keys=True,
+            )
+            renderer = SyntheticRenderer()
+
+            result = self.run_generation(
+                queue,
+                output,
+                renderer,
+                retries=0,
+                seed=0,
+                include_queue_ids=(item["queue_id"],),
+                regenerate_existing=True,
+            )
+            regenerated = load_generation_state(state_path, queue)["items"][
+                item["queue_id"]
+            ]
+
+        self.assertEqual(result.generated, 1)
+        self.assertEqual(renderer.requests[0].seed, 0)
+        self.assertEqual(regenerated["attempts"], 8)
+        self.assertEqual(
+            regenerated["attempts_by_provider"],
+            {"legacy-unbound": 7, "synthetic": 1},
+        )
+
     def test_rejects_forged_active_identity_before_consuming_attempt(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
