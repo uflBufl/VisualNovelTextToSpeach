@@ -10,20 +10,20 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Repair only the 30 current-provenance failures with exact-ID bounded
-      plans. First generalize checksum-bound failed-outcome carry-forward so a
-      successor workspace can preserve the exact current failure for
-      same-backend sentence segmentation as well as cross-backend Pocket
-      fallback, while rejecting stale state, mismatched strategies and any
-      non-policy ID. Then execute the 15 segmentation and 11 fallback IDs;
-      make Pocket fallback use an explicit backend-owned unseeded attempt
-      identity instead of the deterministic seed contract that Pocket rejects,
-      while retaining exact request/control provenance and forbidding generic
-      seeded retries; recreate the fallback workspace from the untouched MOSS
-      source before the bounded rerun.
-      leave the four reference-comparison decisions for human listening. After
-      that, generate the ten currently ready lines and newly unblocked reference
-      lines under immutable controls.
+- [ ] Review the 13 validated current-failure repair WAVs (three sentence
+      repairs and ten unseeded Pocket fallbacks), leaving all decisions pending
+      until their exact bytes are heard. Resolve the 12 remaining MOSS limits,
+      one Pocket silence failure and four reference-comparison items without a
+      broad retry or a raised 20-second ceiling.
+- [ ] Add a checksum-bound multi-source outcome merge for config-addressed
+      workspaces. It must combine the 77 primary approvals with only exact
+      terminal outcomes from the sentence and Pocket repair workspaces, reject
+      conflicting queue/item/WAV/review authority, preserve every source state
+      digest and never treat a pending or failed repair as terminal. Use it to
+      create one successor history after the 13 repair WAVs are reviewed.
+- [ ] Generate the ten currently ready lines and newly unblocked reference
+      lines under immutable controls, then apply the same risk-based cohort
+      review and exact outcome merge.
 - [ ] Add a checksum-bound exact-ID regeneration plan/command for the 140
       legacy failures that still lack synthesis-control provenance, then run it
       in bounded batches under current immutable controls. Do not invent or
@@ -84,13 +84,6 @@ Follow the evidence-backed order and invariants in
       sample each newly generated story cohort before reusing it. Never silently
       carry approval across changed controls or an unreviewed age/portrait
       variant.
-- [ ] Repair the remaining 30 current-provenance failures without broad retries:
-      run the 15 exact sentence-boundary candidates with checksum-bound segment
-      provenance, move the 11 exhausted missed-EOS items to the configured
-      offline fallback backend, and manually audition alternatives for the four
-      exact `reference_comparison` silence failures before `select-reference`.
-      Objective metrics cannot decide speaker identity, background
-      contamination or pronunciation. Keep the 20-second ceiling.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

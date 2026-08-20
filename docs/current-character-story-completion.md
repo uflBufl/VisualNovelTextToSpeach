@@ -41,6 +41,28 @@ repairs: 15 `sentence_boundary_segmentation`, 11 `offline_fallback_backend`
 and four `reference_comparison`. This classification is read-only and preserves
 the state and queue identities above.
 
+The first bounded current-failure repair pass completed on 2026-08-21 in two
+separate config-addressed workspaces. Sentence segmentation produced three
+validated pending-review WAVs and retained 12 typed bounded failures. Pocket
+fallback initially exposed and then closed a seeded-request contract bug; the
+diagnostic workspace was preserved under `interrupted-workspaces`, and a fresh
+workspace was recreated from the unchanged MOSS source. Its one backend-owned
+unseeded attempt per ID produced ten validated pending-review WAVs and one
+typed speech-silence failure (1.52 seconds internal silence, 51% silent
+frames). All 13 new WAVs remain unapproved. Both runs ended with `active=null`,
+no lease or partial WAV, and an empty approved-only repair manifest. The four
+reference-comparison items were not rendered or relabeled.
+
+The sentence workspace is
+`resume-395a5e5eec0327a3a793b66d-cb751125876e4228`, with final state SHA-256
+`fca03e0fcf7e818dc9ffaa696be0a801f7a3f5c91dde6aa8b169696d7ae048a7`.
+The Pocket workspace is
+`resume-395a5e5eec0327a3a793b66d-ccceda27182925c9`, with final state SHA-256
+`f7aff27e5cef754c8d6cee5b4e4e5c1a906202eab3c159492e7c6734f97002f8`.
+These specialist histories do not yet merge their future review outcomes with
+the 77 approvals in the primary workspace; that merge must be checksum-bound
+and explicit.
+
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
 WAVs. Every record binds the queue, line, text, state item and audio SHA-256 plus
@@ -58,10 +80,10 @@ an old WAV or change generation state.
 
 ## Execution order
 
-1. Repair only the 30 current-provenance failures with bounded exact-ID plans:
-   sentence-boundary segmentation, configured offline fallback, or explicit
-   reference comparison. Preserve the 20-second ceiling and compare every
-   non-target state item after a run.
+1. Review the 13 new repair WAVs, resolve the 13 remaining typed failures and
+   four reference-comparison items without broad retry, then merge only exact
+   terminal outcomes into a successor history. Preserve the 20-second ceiling
+   and compare every non-target state item after a run.
 2. Add a checksum-bound exact-ID regeneration plan for the 140 legacy failures,
    then regenerate them under current controls without assigning invented
    provenance to the old state records.
