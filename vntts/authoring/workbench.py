@@ -1288,6 +1288,10 @@ def generation_command(
             raise AuthoringWorkbenchError(
                 "Generation queue IDs differ from workspace failure-repair policy"
             )
+    if repair_policy.offline_fallback_queue_ids and retries != 0:
+        raise AuthoringWorkbenchError(
+            "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
+        )
     if configured_backend is None:
         raise AuthoringWorkbenchError(
             "Create a config-addressed workspace with a generation backend"

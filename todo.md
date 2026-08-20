@@ -16,6 +16,11 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       same-backend sentence segmentation as well as cross-backend Pocket
       fallback, while rejecting stale state, mismatched strategies and any
       non-policy ID. Then execute the 15 segmentation and 11 fallback IDs;
+      make Pocket fallback use an explicit backend-owned unseeded attempt
+      identity instead of the deterministic seed contract that Pocket rejects,
+      while retaining exact request/control provenance and forbidding generic
+      seeded retries; recreate the fallback workspace from the untouched MOSS
+      source before the bounded rerun.
       leave the four reference-comparison decisions for human listening. After
       that, generate the ten currently ready lines and newly unblocked reference
       lines under immutable controls.

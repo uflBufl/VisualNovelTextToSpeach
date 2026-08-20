@@ -1173,6 +1173,10 @@ def run_bulk_generation(
     backend_name = _required_text(
         getattr(backend, "name", provider), "Backend identity"
     )
+    if repair_policy.offline_fallback_queue_ids and retries != 0:
+        raise BulkGenerationError(
+            "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
+        )
     if backend_name != provider:
         raise BulkGenerationError(
             f"Configured provider {provider!r} does not match backend {backend_name!r}"
@@ -1454,6 +1458,12 @@ def run_bulk_generation(
                 attempts_by_provider[provider] = provider_attempts
                 run_attempts += 1
                 attempt_seed = seed + provider_attempts - 1
+                request_seed = (
+                    None
+                    if repair_strategy == OFFLINE_FALLBACK_BACKEND
+                    and provider == "pocket-tts"
+                    else attempt_seed
+                )
                 attempt_repair = None
                 if repair_document is not None:
                     attempt_repair = copy.deepcopy(repair_document)
@@ -1490,13 +1500,14 @@ def run_bulk_generation(
                     provider_attempt=provider_attempts,
                     attempts_by_provider=attempts_by_provider,
                     seed=attempt_seed,
+                    seed_applied=request_seed is not None,
                     started_at=started_at,
                     last_error=last_error,
                 )
                 request = SynthesisRequest(
                     voice=voice,
                     text=synthesis_text,
-                    seed=attempt_seed,
+                    seed=request_seed,
                     generation_profile=generation_profile,
                     cancellation=cancellation,
                     cache_policy=SynthesisCachePolicy.BYPASS,
@@ -1561,6 +1572,7 @@ def run_bulk_generation(
                         "synthesis_provenance_sha256": provenance_sha256,
                         "synthesis_configuration": synthesis_configuration,
                         "seed": attempt_seed,
+                        "seed_applied": request_seed is not None,
                         "generation_profile": generation_profile,
                         "speaker": item.speaker,
                         "requested_voice_character": requested_voice,
@@ -1621,6 +1633,7 @@ def run_bulk_generation(
                             sorted(attempts_by_provider.items())
                         ),
                         "seed": attempt_seed,
+                        "seed_applied": request_seed is not None,
                         "last_error": last_error,
                         "failure": _failure_record(
                             error,
@@ -1832,6 +1845,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "attempts",
             "attempts_by_provider",
             "cohort_review",
+            "seed_applied",
         ):
             if field in result:
                 entry[field] = result[field]
@@ -2540,6 +2554,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
                 queue_id,
                 None if queue_by_id is None else queue_by_id[queue_id],
             )
+            _validate_seed_application(result, queue_id)
             continue
         if status == "live_fallback":
             if "failure" in result:
@@ -2554,6 +2569,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
                 queue_id,
                 None if queue_by_id is None else queue_by_id[queue_id],
             )
+            _validate_seed_application(result, queue_id)
             continue
         queue_item = None if queue_by_id is None else queue_by_id[queue_id]
         _validate_success_item(
@@ -2564,6 +2580,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             state_schema=state["schema"],
         )
         _validate_failure_repair_record(result, queue_id, queue_item)
+        _validate_seed_application(result, queue_id)
     active = state.get("active")
     if active is not None and not isinstance(active, dict):
         raise BulkGenerationError(
@@ -3024,6 +3041,26 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
         )
 
 
+def _validate_seed_application(result, queue_id):
+    if "seed_applied" not in result:
+        return
+    applied = result.get("seed_applied")
+    if not isinstance(applied, bool):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} seed_applied must be boolean"
+        )
+    repair = result.get("failure_repair")
+    unseeded_pocket_fallback = (
+        result.get("provider") == "pocket-tts"
+        and isinstance(repair, dict)
+        and repair.get("strategy") == OFFLINE_FALLBACK_BACKEND
+    )
+    if applied == unseeded_pocket_fallback:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} seed application conflicts with its backend"
+        )
+
+
 def _validate_active_attempt(active, queue_by_id):
     queue_id = active.get("queue_id")
     if not isinstance(queue_id, str) or not queue_id:
@@ -3109,12 +3146,14 @@ def _validate_active_attempt(active, queue_by_id):
             "failure_repair",
             "attempts",
             "attempts_by_provider",
+            "seed_applied",
         ):
             if field in active:
                 active_result[field] = active[field]
         _validate_synthesis_identity(active_result, queue_id, queue_item)
         active_result["seed"] = active.get("seed")
         _validate_failure_repair_record(active_result, queue_id, queue_item)
+        _validate_seed_application(active_result, queue_id)
 
 
 def _validate_synthesis_controls(state):
@@ -3347,6 +3386,7 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             "synthesis_configuration",
             "source_reference_binding",
             "failure_repair",
+            "seed_applied",
         ):
             if field in active:
                 interrupted_result[field] = active[field]
@@ -3384,6 +3424,7 @@ def _write_active(
     provider_attempt,
     attempts_by_provider,
     seed,
+    seed_applied,
     started_at,
     last_error,
 ):
@@ -3405,6 +3446,7 @@ def _write_active(
         "provider_attempt": provider_attempt,
         "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
         "seed": seed,
+        "seed_applied": seed_applied,
         "provider": provider,
         "model": model,
         "generation_profile": generation_profile,

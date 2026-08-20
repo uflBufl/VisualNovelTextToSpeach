@@ -177,10 +177,14 @@ provider/model/profile, failure kind, attempts, seed, effective character and
 all source reference hashes. The target workspace independently binds its
 Pocket model, profile, manifest and copied reference controls. `attempts`
 remains the cumulative history across providers, while
-`attempts_by_provider` gives each backend its own seed sequence; the first
-Pocket attempt therefore uses the requested base seed even after five MOSS
-attempts. State and approved-manifest records retain both the fallback repair
-ledger and provider counters. Pocket output passes the same typed-completion,
+`attempts_by_provider` gives each backend its own attempt sequence. Pocket does
+not expose deterministic seeded generation, so the
+fallback sends `seed=None` to the backend and records `seed_applied=false`.
+The integer `seed` in state remains a monotonic provider-attempt identity; it
+must not be represented as an applied sampling seed. One config-addressed
+fallback run permits exactly one Pocket attempt (`--retries 0`). State and
+approved-manifest records retain both the fallback repair ledger and provider
+counters. Pocket output passes the same typed-completion,
 PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
 other generated artifact.
 

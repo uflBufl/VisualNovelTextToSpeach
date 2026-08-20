@@ -584,6 +584,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ):
                 generation_command(fallback.directory, retries=0, seed=0)
             fallback_state_path.write_bytes(fallback_state_bytes)
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "single backend-owned unseeded attempt"
+            ):
+                generation_command(fallback.directory, retries=1, seed=0)
             command = generation_command(fallback.directory, retries=0, seed=0)
             renderer = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="pocket-tts"
@@ -629,8 +633,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         final_item = final["items"][fixture["queue_id"]]
         self.assertEqual(carried_item["carry_forward"]["mode"], "failed-outcome")
         self.assertEqual(carried_item["provider"], "moss-tts")
-        self.assertEqual([request.seed for request in renderer.requests], [0])
-        self.assertEqual([request.seed for request in second_renderer.requests], [1])
+        self.assertEqual([request.seed for request in renderer.requests], [None])
+        self.assertEqual([request.seed for request in second_renderer.requests], [None])
         self.assertEqual(after_first["items"][fixture["queue_id"]]["status"], "failed")
         self.assertEqual(final_item["attempts"], moss_attempts + 2)
         self.assertEqual(
@@ -639,6 +643,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         self.assertEqual(final_item["provider"], "pocket-tts")
         self.assertEqual(final_item["seed"], 1)
+        self.assertFalse(final_item["seed_applied"])
         self.assertEqual(
             final_item["failure_repair"]["source_failure"]["source_provider"],
             "moss-tts",
