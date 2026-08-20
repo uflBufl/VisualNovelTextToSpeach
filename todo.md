@@ -10,8 +10,9 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Resolve the 154 legacy pending-review WAVs by recovering exact immutable
-      synthesis controls or regenerating exact queue IDs in a successor
+- [ ] Resolve the remaining legacy pending-review WAVs (150 at the documented
+      checkpoint) by recovering exact immutable synthesis controls or
+      regenerating exact queue IDs in a successor
       workspace. Do not sample-approve them, assign the current profile to old
       WAVs, or mutate imported history.
 - [ ] Keep the 140 provenance-unbound legacy failures out of executable repair

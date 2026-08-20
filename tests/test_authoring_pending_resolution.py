@@ -1,0 +1,137 @@
+import hashlib
+import json
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from vntts.authoring.bulk_generation import ReviewAuthority
+from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.cohort_review import CohortReviewPlan
+from vntts.authoring.pending_resolution import (
+    RECOVER_OR_REGENERATE,
+    PendingResolutionError,
+    build_pending_resolution_plan,
+)
+from vntts.authoring.workbench import ReviewItem
+
+
+class PendingResolutionPlanTest(unittest.TestCase):
+    def fixture(self):
+        queue_sha256 = "1" * 64
+        state_sha256 = "2" * 64
+        queue_id = "game:line:1"
+        plan = CohortReviewPlan(
+            "3" * 64,
+            {
+                "workspace_id": "resume-1234567890abcdef12345678-1234567890abcdef",
+                "workspace_config_fingerprint": "4" * 64,
+                "queue_sha256": queue_sha256,
+                "state_sha256": state_sha256,
+                "blocked_items": [
+                    {
+                        "queue_id": queue_id,
+                        "line_id": "game:line",
+                        "reason": "Generation profile must be non-empty text",
+                    }
+                ],
+            },
+        )
+        item = ReviewItem(
+            queue_id=queue_id,
+            line_id="game:line",
+            speaker="Narrator",
+            voice_character="Narrator",
+            text="Exact pending text",
+            status="generated",
+            review_status="pending_review",
+            attempts=3,
+            seed=2,
+            last_error=None,
+            audio=None,
+            authority=ReviewAuthority(
+                queue_sha256=queue_sha256,
+                state_sha256=state_sha256,
+                item_sha256="5" * 64,
+                audio_sha256="6" * 64,
+            ),
+        )
+        return plan, item
+
+    def test_builds_exact_fail_closed_record_without_mutating_authority(self):
+        plan, item = self.fixture()
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(item,),
+            ),
+        ):
+            result = build_pending_resolution_plan("workspace")
+
+        self.assertEqual(result.document["blocked_pending_count"], 1)
+        self.assertEqual(result.document["action_counts"], {RECOVER_OR_REGENERATE: 1})
+        record = result.document["records"][0]
+        self.assertEqual(record["queue_id"], item.queue_id)
+        self.assertEqual(record["item_sha256"], "5" * 64)
+        self.assertEqual(record["audio_sha256"], "6" * 64)
+        self.assertEqual(
+            record["text_sha256"], hashlib.sha256(item.text.encode()).hexdigest()
+        )
+        self.assertEqual(record["action"], RECOVER_OR_REGENERATE)
+
+    def test_rejects_state_change_between_cohort_and_resolution_projection(self):
+        plan, item = self.fixture()
+        changed = SimpleNamespace(**{**item.__dict__})
+        changed.authority = ReviewAuthority(
+            queue_sha256=item.authority.queue_sha256,
+            state_sha256="f" * 64,
+            item_sha256=item.authority.item_sha256,
+            audio_sha256=item.authority.audio_sha256,
+        )
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(changed,),
+            ),
+            self.assertRaisesRegex(PendingResolutionError, "state changed"),
+        ):
+            build_pending_resolution_plan("workspace")
+
+    def test_cli_prints_the_canonical_read_only_plan(self):
+        plan, item = self.fixture()
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(item,),
+            ),
+        ):
+            expected = build_pending_resolution_plan("workspace")
+        output = StringIO()
+        with (
+            patch(
+                "vntts.authoring.cli.build_pending_resolution_plan",
+                return_value=expected,
+            ),
+            redirect_stdout(output),
+        ):
+            exit_code = authoring_main(["pending-resolution-plan", "workspace"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue()), expected.document)
+
+
+if __name__ == "__main__":
+    unittest.main()

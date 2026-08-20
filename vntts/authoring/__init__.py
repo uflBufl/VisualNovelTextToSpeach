@@ -106,6 +106,14 @@ from vntts.authoring.model_benchmark import (
     build_benchmark_corpus,
     select_representative_items,
 )
+from vntts.authoring.pending_resolution import (
+    PENDING_RESOLUTION_PLAN_SCHEMA,
+    PENDING_RESOLUTION_PLAN_VERSION,
+    RECOVER_OR_REGENERATE,
+    PendingResolutionError,
+    PendingResolutionPlan,
+    build_pending_resolution_plan,
+)
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
     GenerationQueuePlan,
@@ -175,6 +183,11 @@ __all__ = [
     "DELIVERY_ANNOTATION_VERSION",
     "LEGACY_ENGLISH_POLICY",
     "PRESERVE_DELIVERY_POLICY",
+    "PENDING_RESOLUTION_PLAN_SCHEMA",
+    "PENDING_RESOLUTION_PLAN_VERSION",
+    "PendingResolutionError",
+    "PendingResolutionPlan",
+    "RECOVER_OR_REGENERATE",
     "DeliveryAnnotationError",
     "DeliveryPolicyApplication",
     "EdgeSilenceTrim",
@@ -222,6 +235,7 @@ __all__ = [
     "build_benchmark_corpus",
     "build_cohort_review_decision",
     "build_cohort_review_plan",
+    "build_pending_resolution_plan",
     "execute_cohort_review_decision",
     "create_listening_session",
     "create_listening_session_from_reports",
