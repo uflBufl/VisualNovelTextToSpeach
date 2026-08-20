@@ -3000,7 +3000,11 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             "source_failure_kind",
             "source_voice_reference",
         }
-        if not isinstance(source, dict) or set(source) != required:
+        allowed_sources = {
+            frozenset(required),
+            frozenset(required | {"source_parent_carry_forward"}),
+        }
+        if not isinstance(source, dict) or frozenset(source) not in allowed_sources:
             raise BulkGenerationError(
                 f"State item {queue_id!r} offline fallback source is malformed"
             )
@@ -3032,6 +3036,11 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             f"State item {queue_id!r} source attempts",
         )
         _integer(source.get("source_seed"), f"State item {queue_id!r} source seed")
+        parent_carry = source.get("source_parent_carry_forward")
+        if parent_carry is not None and not isinstance(parent_carry, dict):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} parent carry-forward is malformed"
+            )
         voice = source.get("source_voice_reference")
         if (
             not isinstance(voice, dict)

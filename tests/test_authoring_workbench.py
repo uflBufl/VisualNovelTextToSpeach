@@ -868,7 +868,31 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 fallback.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             inspect_workspace(fallback.directory)
+            repaired_state_path = (
+                repaired.directory / "generated-audio/generation-state.json"
+            )
+            repaired_state_before = repaired_state_path.read_bytes()
+            pocket = SyntheticRenderer(diagnostics_backend="pocket-tts")
+            pocket.name = "pocket-tts"
+            pocket.model_name = "pocket-tts"
+            pocket_result = run_bulk_generation(
+                fallback.directory / "queue.jsonl",
+                fallback.directory / "generated-audio",
+                pocket,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=fallback_policy,
+            )
+            pocket_item = load_generation_state(
+                pocket_result.state, fallback.directory / "queue.jsonl"
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(fallback.directory)
             source_state_after = source_state_path.read_bytes()
+            repaired_state_after = repaired_state_path.read_bytes()
 
         self.assertEqual(carried["carry_forward"]["source_provider_attempts"], 1)
         self.assertEqual([request.seed for request in renderer.requests], [1, 2])
@@ -880,6 +904,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fallback_item["carry_forward"]["source_parent_carry_forward"],
             final["carry_forward"],
         )
+        self.assertEqual([request.seed for request in pocket.requests], [None])
+        self.assertEqual(pocket_item["status"], "generated")
+        self.assertFalse(pocket_item["seed_applied"])
+        self.assertEqual(repaired_state_after, repaired_state_before)
         self.assertEqual(source_state_after, source_state_before)
         self.assertEqual(
             command[command.index("--bounded-seed-failed") + 1],
