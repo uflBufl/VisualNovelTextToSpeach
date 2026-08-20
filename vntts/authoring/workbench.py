@@ -639,13 +639,14 @@ def merge_workspace_outcomes(
             source_failure = result.get("carry_forward")
             if source_failure is None:
                 source_failure = repair.get("source_failure")
+            root_source_failure = _root_carry_forward_authority(source_failure)
             base_result = base_items.get(queue_id)
             if (
-                not isinstance(source_failure, dict)
-                or source_failure.get("source_workspace_id")
+                not isinstance(root_source_failure, dict)
+                or root_source_failure.get("source_workspace_id")
                 != base_document["workspace_id"]
                 or not isinstance(base_result, dict)
-                or source_failure.get("source_item_sha256")
+                or root_source_failure.get("source_item_sha256")
                 != _canonical_sha256(base_result)
             ):
                 raise AuthoringWorkbenchError(
@@ -2151,6 +2152,20 @@ def _terminal_review_outcome(result):
         ("approved", "approved"),
         ("generated", "rejected"),
     }
+
+
+def _root_carry_forward_authority(value):
+    if not isinstance(value, dict):
+        return value
+    observed = set()
+    current = value
+    while isinstance(current.get("source_parent_carry_forward"), dict):
+        digest = _canonical_sha256(current)
+        if digest in observed:
+            raise AuthoringWorkbenchError("Nested carry-forward provenance is cyclic")
+        observed.add(digest)
+        current = current["source_parent_carry_forward"]
+    return current
 
 
 def _same_seed_generation(seed_result, reviewed_result):

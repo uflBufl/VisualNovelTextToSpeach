@@ -10,15 +10,13 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the 14 validated current-failure repair/new-line WAVs (three
-      sentence repairs, ten unseeded Pocket fallbacks and one newly generated
-      ready line), leaving all decisions pending until their exact bytes are
-      heard. The seven new bounded-seed repairs exhausted seeds one and two
-      without a WAV; run their one unseeded Pocket fallback attempt in a new
-      config-addressed workspace. Then extend specialist repair over the 68
-      sentence, 82 offline-fallback and 29 reference-comparison cohorts without
+- [ ] Review the 21 validated current-failure repair/new-line WAVs (three
+      sentence repairs, seventeen unseeded Pocket fallbacks and one newly
+      generated ready line), leaving all decisions pending until their exact
+      bytes are heard. Then extend specialist repair over the remaining 68
+      sentence, 75 offline-fallback and 29 reference-comparison cohorts without
       a broad retry or a raised 20-second ceiling.
-- [ ] After the 13 repair WAVs are reviewed, run the checksum-bound
+- [ ] After the repair WAVs are reviewed, run the checksum-bound
       `merge-workspace-outcomes` command to create one successor containing the
       77 primary approvals plus only exact approved/rejected sentence and
       Pocket repair outcomes. Inspect its source-state/item/WAV ledger and

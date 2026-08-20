@@ -56,6 +56,16 @@ active attempt, lease or partial file. Those seven are now exhausted MOSS
 outcomes eligible only for the existing one-attempt Pocket fallback or manual
 reference comparison, not another seed retry.
 
+The one permitted Pocket successor is
+`resume-395a5e5eec0327a3a793b66d-cb98c8cbe65621fa`. All seven unseeded Pocket
+attempts produced validated pending-review WAVs; none was approved. Its final
+state SHA-256 is
+`c4ab7f6ffb64c91850a9a2f2e721acd41149b7033b3ec73d31591ce64e35307d`.
+All 338 non-target items and the bounded source state remained unchanged, with
+no active attempt, lease or partial WAV. Two earlier Pocket destinations that
+failed closed before rendering were preserved under `interrupted-workspaces`;
+they are diagnostics, not runnable histories.
+
 All 179 failures therefore have current synthesis-control evidence. The
 verified repair planner reports seven `bounded_seed_retry`, 68
 `sentence_boundary_segmentation`, 75 `offline_fallback_backend` and 29
@@ -117,10 +127,9 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 14 new repair/ready-line WAVs. Run one unseeded Pocket attempt for
-   the seven newly exhausted bounded-seed outcomes, then extend bounded
-   specialist repair over the now-current 68 sentence, 82 offline-fallback and
-   29 reference-comparison cohorts. Merge only exact
+1. Review the 21 new repair/ready-line WAVs, then extend bounded specialist
+   repair over the remaining 68 sentence, 75 offline-fallback and 29
+   reference-comparison cohorts. Merge only exact
    terminal outcomes into a successor history. Preserve the 20-second ceiling
    and compare every non-target state item after a run.
 2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and

@@ -891,6 +891,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 pocket_result.state, fallback.directory / "queue.jsonl"
             )["items"][fixture["queue_id"]]
             inspect_workspace(fallback.directory)
+            review_workspace_item(fallback.directory, fixture["queue_id"], "approved")
+            merged = merge_workspace_outcomes(
+                source.directory, (fallback.directory,), root / "merged"
+            )
+            merged_item = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(merged.directory)
             source_state_after = source_state_path.read_bytes()
             repaired_state_after = repaired_state_path.read_bytes()
 
@@ -907,6 +916,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual([request.seed for request in pocket.requests], [None])
         self.assertEqual(pocket_item["status"], "generated")
         self.assertFalse(pocket_item["seed_applied"])
+        self.assertEqual(merged_item["status"], "approved")
+        self.assertEqual(
+            merged_item["outcome_merge"]["source_workspace_id"],
+            fallback.directory.name,
+        )
         self.assertEqual(repaired_state_after, repaired_state_before)
         self.assertEqual(source_state_after, source_state_before)
         self.assertEqual(
