@@ -177,6 +177,7 @@ from vntts.authoring.workbench import (
     immutable_history_timestamps,
     inspect_collection_selection,
     list_workspace_collections,
+    merge_workspace_outcomes,
     workspace_voice_snapshot,
 )
 
@@ -280,6 +281,7 @@ __all__ = [
     "inspect_standalone_generation",
     "listening_progress",
     "list_workspace_collections",
+    "merge_workspace_outcomes",
     "load_listening_session",
     "load_cohort_review_decision",
     "load_cohort_review_plan",

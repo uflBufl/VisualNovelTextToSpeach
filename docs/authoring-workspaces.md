@@ -188,6 +188,36 @@ counters. Pocket output passes the same typed-completion,
 PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
 other generated artifact.
 
+## Merging reviewed repair outcomes
+
+Sentence and Pocket repairs remain separate config-addressed histories while
+they are generated and reviewed. After review, create one successor with
+`merge-workspace-outcomes`; never copy their state or WAVs by hand:
+
+```sh
+uv run vntts-pregenerate merge-workspace-outcomes PRIMARY_WORKSPACE \
+  --source-workspace SENTENCE_REPAIR_WORKSPACE \
+  --source-workspace POCKET_REPAIR_WORKSPACE
+```
+
+The primary workspace supplies the complete base state, including its existing
+approvals and rejections. Every source must share its exact immutable import and
+byte-identical queue and must be a schema-v3 exact-ID failure-repair workspace.
+Only selected repair items whose current state is `approved/approved` or
+`generated/rejected` are eligible. Pending-review and failed repairs are not
+terminal, are not copied and cannot satisfy a source that has no reviewed
+outcome.
+
+Each copied item must still bind the exact failed base item that authorized its
+repair. A stale base item, conflicting source for one queue ID, existing base
+review decision, changed state, changed WAV, active attempt, lease, partial WAV,
+path collision or symlink aborts before publication. The successor is assembled
+under staging and published with atomic no-replace rename. Its workspace
+identity binds the base state SHA-256, every source workspace/config/state
+digest and every terminal source item/WAV digest. Each merged state item and
+the approved-only manifest retain that additive ledger. Repeating the exact
+merge is idempotent and none of the source workspaces is mutated.
+
 When source/reference discovery and the bounded offline fallback are both
 exhausted, authoring can record an explicit terminal Pocket live-fallback
 decision for one exact queue identity. This does not create or approve a WAV:

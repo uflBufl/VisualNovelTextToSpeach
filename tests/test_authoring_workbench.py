@@ -48,6 +48,7 @@ from vntts.authoring.workbench import (
     inspect_generation_readiness,
     inspect_workspace,
     list_review_items,
+    merge_workspace_outcomes,
     prepare_review_audio,
     review_selected_item,
     review_workspace_item,
@@ -764,6 +765,132 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             command[command.index("--sentence-segment-failed") + 1],
             fixture["queue_id"],
         )
+
+    def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        text = "The first sentence is complete. The second sentence is also complete."
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root, text=text)
+            queue_path = source.directory / "queue.jsonl"
+            source_state_path = (
+                source.directory / "generated-audio/generation-state.json"
+            )
+            failed_renderer = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            failed_renderer.name = "moss-tts"
+            failed_renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                source.directory / "generated-audio",
+                failed_renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                regenerate_existing=True,
+            )
+            source_state_before = source_state_path.read_bytes()
+            policy = FailureRepairPolicy(
+                sentence_segment_queue_ids=(fixture["queue_id"],)
+            )
+            repaired = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=policy,
+                carry_forward_from=source.directory,
+            )
+            success_renderer = SyntheticRenderer(diagnostics_backend="moss-tts")
+            success_renderer.name = "moss-tts"
+            success_renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                repaired.directory / "queue.jsonl",
+                repaired.directory / "generated-audio",
+                success_renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "no reviewed repair outcomes"
+            ):
+                merge_workspace_outcomes(
+                    source.directory, (repaired.directory,), root / "merged"
+                )
+            review_workspace_item(repaired.directory, fixture["queue_id"], "approved")
+            repair_state_path = (
+                repaired.directory / "generated-audio/generation-state.json"
+            )
+            repair_state_before = repair_state_path.read_bytes()
+
+            merged = merge_workspace_outcomes(
+                source.directory, (repaired.directory,), root / "merged"
+            )
+            repeated = merge_workspace_outcomes(
+                source.directory, (repaired.directory,), root / "merged"
+            )
+            summary = inspect_workspace(merged.directory)
+            merged_state = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )
+            item = merged_state["items"][fixture["queue_id"]]
+            manifest = json.loads(
+                (merged.directory / "generated-audio/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            workspace = json.loads(
+                (merged.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+
+            self.assertTrue(merged.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(summary.approved, 1)
+            self.assertEqual(item["status"], "approved")
+            self.assertEqual(item["review_status"], "approved")
+            self.assertEqual(
+                item["outcome_merge"]["source_workspace_id"],
+                repaired.directory.name,
+            )
+            self.assertEqual(len(manifest["entries"]), 1)
+            self.assertEqual(
+                manifest["entries"][0]["outcome_merge"], item["outcome_merge"]
+            )
+            self.assertEqual(
+                workspace["outcome_merge"]["items"][0]["queue_id"], fixture["queue_id"]
+            )
+            self.assertEqual(source_state_path.read_bytes(), source_state_before)
+            self.assertEqual(repair_state_path.read_bytes(), repair_state_before)
+
+            tampered = json.loads(source_state_path.read_text(encoding="utf-8"))
+            tampered["items"][fixture["queue_id"]]["last_error"] = "changed authority"
+            source_state_path.write_text(
+                json.dumps(tampered, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "authority is stale"):
+                merge_workspace_outcomes(
+                    source.directory, (repaired.directory,), root / "different-root"
+                )
 
     def test_carry_forward_copies_new_full_outcome_with_exact_controls(self):
         with TemporaryDirectory() as directory:

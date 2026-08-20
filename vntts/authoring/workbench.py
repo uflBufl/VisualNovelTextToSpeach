@@ -548,6 +548,320 @@ def create_resume_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
+def merge_workspace_outcomes(
+    base_workspace,
+    outcome_workspaces,
+    workspaces_root=None,
+):
+    """Create a config-addressed successor from exact reviewed repair outcomes."""
+    base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
+        base_workspace, "base"
+    )
+    source_values = tuple(
+        Path(value).expanduser().resolve() for value in outcome_workspaces
+    )
+    if not source_values:
+        raise AuthoringWorkbenchError(
+            "Outcome merge requires at least one source workspace"
+        )
+    if len(set(source_values)) != len(source_values):
+        raise AuthoringWorkbenchError("Outcome merge source workspace is duplicated")
+    if base_directory in source_values:
+        raise AuthoringWorkbenchError("Outcome merge source must differ from its base")
+
+    base_queue, base_state, _base_state_payload, base_state_sha256 = (
+        _stable_workspace_state(base_directory, base_document, "base")
+    )
+    base_queue_sha256 = sha256_file(base_directory / "queue.jsonl")
+    base_items = base_state["items"]
+    merged_items = {}
+    source_records = []
+    source_snapshots = []
+    source_audio = {}
+    for source_value in source_values:
+        (
+            source_directory,
+            source_document,
+            source_workspace_sha256,
+        ) = _load_workspace_snapshot(source_value, "source")
+        if source_document["source"] != base_document["source"]:
+            raise AuthoringWorkbenchError(
+                "Outcome merge workspaces must share one immutable import"
+            )
+        source_queue, source_state, _payload, source_state_sha256 = (
+            _stable_workspace_state(source_directory, source_document, "source")
+        )
+        if (
+            sha256_file(source_directory / "queue.jsonl") != base_queue_sha256
+            or source_queue.metadata != base_queue.metadata
+            or [item.document for item in source_queue.items]
+            != [item.document for item in base_queue.items]
+        ):
+            raise AuthoringWorkbenchError(
+                "Outcome merge source queue differs from its base"
+            )
+        carry = source_document.get("carry_forward")
+        if not isinstance(carry, dict) or carry.get("schema_version") != 3:
+            raise AuthoringWorkbenchError(
+                "Outcome merge source must be a current failure-repair workspace"
+            )
+        selected_ids = carry.get("failed_queue_ids")
+        if not isinstance(selected_ids, list) or not selected_ids:
+            raise AuthoringWorkbenchError(
+                "Outcome merge source has no exact repair selection"
+            )
+        source_record = {
+            "workspace_id": source_document["workspace_id"],
+            "config_fingerprint": _require_sha256(
+                source_document.get("config_fingerprint"),
+                "Outcome merge source configuration fingerprint",
+            ),
+            "state_sha256": source_state_sha256,
+        }
+        terminal_count = 0
+        for queue_id in selected_ids:
+            result = source_state["items"].get(queue_id)
+            if not isinstance(result, dict) or not _terminal_review_outcome(result):
+                continue
+            if queue_id in merged_items:
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge has conflicting sources for {queue_id!r}"
+                )
+            repair = result.get("failure_repair")
+            if not isinstance(repair, dict) or repair.get("strategy") not in {
+                SENTENCE_BOUNDARY_SEGMENTATION,
+                OFFLINE_FALLBACK_BACKEND,
+            }:
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge item {queue_id!r} lacks a supported repair outcome"
+                )
+            source_failure = result.get("carry_forward")
+            if source_failure is None:
+                source_failure = repair.get("source_failure")
+            base_result = base_items.get(queue_id)
+            if (
+                not isinstance(source_failure, dict)
+                or source_failure.get("source_workspace_id")
+                != base_document["workspace_id"]
+                or not isinstance(base_result, dict)
+                or source_failure.get("source_item_sha256")
+                != _canonical_sha256(base_result)
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge source authority is stale for {queue_id!r}"
+                )
+            if _terminal_review_outcome(base_result):
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge conflicts with existing review authority for {queue_id!r}"
+                )
+            relative = _safe_relative(
+                result.get("path"), f"Outcome merge item {queue_id!r} path"
+            )
+            audio_path = _within(
+                source_directory / "generated-audio",
+                relative,
+                "Outcome merge source WAV",
+            )
+            audio_payload = _read_file_bytes(audio_path, "outcome merge source WAV")
+            audio_sha256 = hashlib.sha256(audio_payload).hexdigest()
+            if audio_sha256 != _require_sha256(
+                result.get("file_sha256"),
+                f"Outcome merge item {queue_id!r} WAV SHA-256",
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge source WAV changed for {queue_id!r}"
+                )
+            ledger = {
+                "queue_id": queue_id,
+                "source_workspace_id": source_document["workspace_id"],
+                "source_state_sha256": source_state_sha256,
+                "source_item_sha256": _canonical_sha256(result),
+                "audio_sha256": audio_sha256,
+                "status": result["status"],
+                "review_status": result["review_status"],
+            }
+            merged_items[queue_id] = (copy.deepcopy(result), ledger)
+            source_audio[queue_id] = (audio_path, audio_payload, relative)
+            source_snapshots.append((audio_path, audio_sha256))
+            terminal_count += 1
+        if terminal_count == 0:
+            raise AuthoringWorkbenchError(
+                f"Outcome merge source {source_document['workspace_id']!r} has no reviewed repair outcomes"
+            )
+        source_record["terminal_item_count"] = terminal_count
+        source_records.append(source_record)
+        if len({value["workspace_id"] for value in source_records}) != len(
+            source_records
+        ):
+            raise AuthoringWorkbenchError(
+                "Outcome merge source workspace identity is duplicated"
+            )
+        source_snapshots.append(
+            (
+                source_directory / "generated-audio/generation-state.json",
+                source_state_sha256,
+            )
+        )
+        source_snapshots.append(
+            (source_directory / "workspace.json", source_workspace_sha256)
+        )
+
+    source_records.sort(key=lambda value: value["workspace_id"])
+    ledger_items = [merged_items[key][1] for key in sorted(merged_items)]
+    outcome_merge = {
+        "schema": "vntts.authoring-workspace-outcome-merge",
+        "schema_version": 1,
+        "base_workspace_id": base_document["workspace_id"],
+        "base_state_sha256": base_state_sha256,
+        "sources": source_records,
+        "items": ledger_items,
+    }
+    config_fingerprint = _workspace_config_fingerprint(
+        base_document["source"]["import_id"],
+        base_document.get("story_index"),
+        base_document.get("voice_manifest"),
+        base_document["narrator_character"],
+        base_document["run_config"],
+        base_document.get("carry_forward"),
+        outcome_merge,
+    )
+    workspace_id = (
+        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
+        f"{config_fingerprint[:16]}"
+    )
+    root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    destination = _within(root, Path(workspace_id), "Outcome merge destination")
+    staging = Path(tempfile.mkdtemp(prefix=".merge-staging-", dir=root)).resolve()
+    _within(root, Path(staging.name), "Outcome merge staging directory")
+    base_snapshots = [
+        (base_directory / "workspace.json", base_workspace_sha256),
+        (
+            base_directory / "generated-audio/generation-state.json",
+            base_state_sha256,
+        ),
+    ]
+    try:
+        for tree_name in ("provenance", "inputs"):
+            _copy_workspace_tree_snapshot(
+                base_directory / tree_name,
+                staging / tree_name,
+                base_snapshots,
+            )
+        queue_payload = _read_file_bytes(
+            base_directory / "queue.jsonl", "outcome merge base queue"
+        )
+        (staging / "queue.jsonl").write_bytes(queue_payload)
+        base_snapshots.append((base_directory / "queue.jsonl", base_queue_sha256))
+        output = staging / "generated-audio"
+        output.mkdir()
+        target_state = copy.deepcopy(base_state)
+        path_owners = {}
+        for queue_id, result in base_items.items():
+            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+                continue
+            relative = _safe_relative(
+                result["path"], f"Base generation item {queue_id!r} path"
+            )
+            owner = path_owners.setdefault(relative.as_posix(), queue_id)
+            if owner != queue_id:
+                raise AuthoringWorkbenchError(
+                    f"Base generation WAV path collides with {owner!r}"
+                )
+            source_path = _within(
+                base_directory / "generated-audio", relative, "Base generation WAV"
+            )
+            payload = _read_file_bytes(source_path, "base generation WAV")
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest != _require_sha256(
+                result.get("file_sha256"),
+                f"Base item {queue_id!r} WAV SHA-256",
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Base generation WAV changed for {queue_id!r}"
+                )
+            target_path = _within(output, relative, "Merged base WAV")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(payload)
+            base_snapshots.append((source_path, digest))
+        for queue_id, (result, ledger) in merged_items.items():
+            previous = target_state["items"].get(queue_id)
+            previous_path = previous.get("path") if isinstance(previous, dict) else None
+            relative = source_audio[queue_id][2]
+            if previous_path and previous_path != relative.as_posix():
+                old_target = _within(
+                    output,
+                    _safe_relative(previous_path, "Replaced merge WAV"),
+                    "Replaced merge WAV",
+                )
+                if old_target.is_file():
+                    old_target.unlink()
+            owner = path_owners.get(relative.as_posix())
+            if owner not in {None, queue_id}:
+                raise AuthoringWorkbenchError(
+                    f"Outcome merge WAV path collides with {owner!r}"
+                )
+            target_audio = _within(output, relative, "Merged outcome WAV")
+            target_audio.parent.mkdir(parents=True, exist_ok=True)
+            target_audio.write_bytes(source_audio[queue_id][1])
+            copied = copy.deepcopy(result)
+            copied["outcome_merge"] = {
+                key: value for key, value in ledger.items() if key != "queue_id"
+            }
+            target_state["items"][queue_id] = copied
+        atomic_write_json(
+            output / "generation-state.json", target_state, sort_keys=True
+        )
+        try:
+            publish_generated_manifest(output / "generation-state.json")
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        workspace = copy.deepcopy(base_document)
+        workspace.update(
+            {
+                "workspace_id": workspace_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "outcome_merge": outcome_merge,
+                "config_fingerprint": config_fingerprint,
+            }
+        )
+        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+        import_snapshot = _load_json(
+            staging / "provenance/import.json", "merged import snapshot"
+        )
+        _validate_workspace_carry_forward(staging, workspace)
+        _validate_workspace_input_config(staging, workspace, import_snapshot)
+        _validate_workspace_offline_fallback_state(staging, workspace)
+        _validate_workspace_outcome_merge(staging, workspace)
+        for path, digest in (*base_snapshots, *source_snapshots):
+            if not path.is_file() or sha256_file(path) != digest:
+                raise AuthoringWorkbenchError(
+                    "Outcome merge source changed before workspace publication"
+                )
+        if destination.exists():
+            _directory, existing = _load_workspace(destination)
+            if existing.get("outcome_merge") != outcome_merge:
+                raise AuthoringWorkbenchError(
+                    "Outcome merge destination conflicts with another source set"
+                )
+            return WorkspaceCreationResult(destination, False)
+        try:
+            _rename_directory_no_replace(staging, destination)
+        except (OSError, FinalGamePackError) as error:
+            if destination.exists():
+                _directory, existing = _load_workspace(destination)
+                if existing.get("outcome_merge") == outcome_merge:
+                    return WorkspaceCreationResult(destination, False)
+            raise AuthoringWorkbenchError(
+                f"Unable to publish outcome merge workspace: {error}"
+            ) from error
+        staging = None
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+    return WorkspaceCreationResult(destination, True)
+
+
 def inspect_workspace(
     workspace_directory,
     *,
@@ -2135,6 +2449,7 @@ def _load_workspace(workspace_directory):
     _workspace_run_config_with_policy(run_config)
     _validate_workspace_input_config(directory, workspace, snapshot)
     _validate_workspace_offline_fallback_state(directory, workspace)
+    _validate_workspace_outcome_merge(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -2142,6 +2457,7 @@ def _load_workspace(workspace_directory):
         narrator,
         run_config,
         workspace.get("carry_forward"),
+        workspace.get("outcome_merge"),
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -2706,6 +3022,213 @@ def _validate_workspace_input_config(directory, workspace, import_snapshot):
             )
 
 
+def _stable_workspace_state(directory, workspace, label):
+    queue = _load_bound_workspace_queue(directory, workspace)
+    output = directory / "generated-audio"
+    state_path = output / "generation-state.json"
+    payload = _read_file_bytes(state_path, f"{label} generation state")
+    digest = hashlib.sha256(payload).hexdigest()
+    try:
+        parsed = json.loads(payload.decode("utf-8"))
+        validated = load_generation_state(state_path, directory / "queue.jsonl")
+    except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
+        raise AuthoringWorkbenchError(
+            f"Outcome merge {label} state is invalid: {error}"
+        ) from error
+    if parsed != validated or sha256_file(state_path) != digest:
+        raise AuthoringWorkbenchError(
+            f"Outcome merge {label} state changed while it was loaded"
+        )
+    if parsed.get("active") is not None:
+        raise AuthoringWorkbenchError(
+            f"Outcome merge {label} has an active generation attempt"
+        )
+    if (output / ".generation-lease.json").exists():
+        raise AuthoringWorkbenchError(f"Outcome merge {label} has a generation lease")
+    if any(output.rglob("*.partial.wav")):
+        raise AuthoringWorkbenchError(
+            f"Outcome merge {label} has a partial generation artifact"
+        )
+    return queue, parsed, payload, digest
+
+
+def _load_workspace_snapshot(workspace_directory, label):
+    candidate = Path(workspace_directory).expanduser().resolve()
+    document, digest, _payload = _load_json_snapshot(
+        candidate / "workspace.json", f"outcome merge {label} workspace"
+    )
+    directory, validated = _load_workspace(candidate)
+    if document != validated or sha256_file(directory / "workspace.json") != digest:
+        raise AuthoringWorkbenchError(
+            f"Outcome merge {label} workspace changed while it was loaded"
+        )
+    return directory, document, digest
+
+
+def _copy_workspace_tree_snapshot(source, target, snapshots):
+    if source.is_symlink() or not source.is_dir():
+        raise AuthoringWorkbenchError("Outcome merge immutable input tree is invalid")
+    target.mkdir(parents=True)
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise AuthoringWorkbenchError(
+                "Outcome merge immutable input tree contains a symlink"
+            )
+        if path.is_dir():
+            continue
+        relative = path.relative_to(source)
+        payload = _read_file_bytes(path, "outcome merge immutable input")
+        digest = hashlib.sha256(payload).hexdigest()
+        destination = _within(target, relative, "Outcome merge immutable input")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        snapshots.append((path, digest))
+
+
+def _validate_workspace_outcome_merge(directory, workspace):
+    merge = workspace.get("outcome_merge")
+    if merge is None:
+        return
+    fields = {
+        "schema",
+        "schema_version",
+        "base_workspace_id",
+        "base_state_sha256",
+        "sources",
+        "items",
+    }
+    if (
+        not isinstance(merge, dict)
+        or set(merge) != fields
+        or merge.get("schema") != "vntts.authoring-workspace-outcome-merge"
+        or merge.get("schema_version") != 1
+        or not re.fullmatch(
+            r"resume-[0-9a-f]{24}-[0-9a-f]{16}",
+            str(merge.get("base_workspace_id", "")),
+        )
+    ):
+        raise AuthoringWorkbenchError("Workspace outcome merge provenance is malformed")
+    _require_sha256(merge.get("base_state_sha256"), "Outcome merge base state SHA-256")
+    sources = merge.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise AuthoringWorkbenchError("Workspace outcome merge source ledger is empty")
+    source_by_id = {}
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {
+            "workspace_id",
+            "config_fingerprint",
+            "state_sha256",
+            "terminal_item_count",
+        }:
+            raise AuthoringWorkbenchError("Workspace outcome merge source is malformed")
+        workspace_id = source.get("workspace_id")
+        if (
+            not isinstance(workspace_id, str)
+            or not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
+            or workspace_id in source_by_id
+            or workspace_id == merge["base_workspace_id"]
+        ):
+            raise AuthoringWorkbenchError(
+                "Workspace outcome merge source identity is invalid"
+            )
+        _require_sha256(
+            source.get("config_fingerprint"),
+            "Outcome merge source configuration fingerprint",
+        )
+        _require_sha256(
+            source.get("state_sha256"), "Outcome merge source state SHA-256"
+        )
+        count = source.get("terminal_item_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise AuthoringWorkbenchError(
+                "Workspace outcome merge source count is invalid"
+            )
+        source_by_id[workspace_id] = source
+    if sources != sorted(sources, key=lambda value: value["workspace_id"]):
+        raise AuthoringWorkbenchError(
+            "Workspace outcome merge sources are not canonical"
+        )
+    items = merge.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError("Workspace outcome merge item ledger is empty")
+    queue_ids = []
+    counts = Counter()
+    try:
+        state = load_generation_state(
+            directory / "generated-audio/generation-state.json",
+            directory / "queue.jsonl",
+        )
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {
+            "queue_id",
+            "source_workspace_id",
+            "source_state_sha256",
+            "source_item_sha256",
+            "audio_sha256",
+            "status",
+            "review_status",
+        }:
+            raise AuthoringWorkbenchError("Workspace outcome merge item is malformed")
+        queue_id = _required_text(item.get("queue_id"), "Outcome merge queue ID")
+        source = source_by_id.get(item.get("source_workspace_id"))
+        if (
+            source is None
+            or item.get("source_state_sha256") != source["state_sha256"]
+            or (item.get("status"), item.get("review_status"))
+            not in {("approved", "approved"), ("generated", "rejected")}
+        ):
+            raise AuthoringWorkbenchError(
+                "Workspace outcome merge item provenance is inconsistent"
+            )
+        source_item_sha256 = _require_sha256(
+            item.get("source_item_sha256"), "Outcome merge source item SHA-256"
+        )
+        audio_sha256 = _require_sha256(
+            item.get("audio_sha256"), "Outcome merge WAV SHA-256"
+        )
+        result = state["items"].get(queue_id)
+        if not isinstance(result, dict) or not _terminal_review_outcome(result):
+            raise AuthoringWorkbenchError(
+                f"Workspace outcome merge result is not terminal for {queue_id!r}"
+            )
+        observed = result.get("outcome_merge")
+        expected = {key: value for key, value in item.items() if key != "queue_id"}
+        if observed != expected:
+            raise AuthoringWorkbenchError(
+                f"Workspace outcome merge result changed for {queue_id!r}"
+            )
+        source_result = copy.deepcopy(result)
+        source_result.pop("outcome_merge", None)
+        if _canonical_sha256(source_result) != source_item_sha256:
+            raise AuthoringWorkbenchError(
+                f"Workspace merged source item changed for {queue_id!r}"
+            )
+        audio_path = _within(
+            directory / "generated-audio",
+            _safe_relative(result.get("path"), "Outcome merge WAV path"),
+            "Outcome merge WAV",
+        )
+        if not audio_path.is_file() or sha256_file(audio_path) != audio_sha256:
+            raise AuthoringWorkbenchError(
+                f"Workspace outcome merge WAV changed for {queue_id!r}"
+            )
+        queue_ids.append(queue_id)
+        counts[item["source_workspace_id"]] += 1
+    if queue_ids != sorted(set(queue_ids)):
+        raise AuthoringWorkbenchError(
+            "Workspace outcome merge item ledger is not canonical"
+        )
+    if any(
+        counts[workspace_id] != source["terminal_item_count"]
+        for workspace_id, source in source_by_id.items()
+    ):
+        raise AuthoringWorkbenchError(
+            "Workspace outcome merge source counts are inconsistent"
+        )
+
+
 def _workspace_config_fingerprint(
     import_id,
     story_config,
@@ -2713,6 +3236,7 @@ def _workspace_config_fingerprint(
     narrator_character,
     run_config,
     carry_forward=None,
+    outcome_merge=None,
 ):
     fingerprint = {
         "import_id": import_id,
@@ -2723,6 +3247,8 @@ def _workspace_config_fingerprint(
     }
     if carry_forward is not None:
         fingerprint["carry_forward"] = carry_forward
+    if outcome_merge is not None:
+        fingerprint["outcome_merge"] = outcome_merge
     payload = json.dumps(
         fingerprint,
         ensure_ascii=False,

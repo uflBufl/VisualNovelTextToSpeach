@@ -110,6 +110,7 @@ from vntts.authoring.workbench import (
     default_workspaces_root,
     generation_control_bindings,
     generation_output_identity,
+    merge_workspace_outcomes,
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
@@ -329,6 +330,21 @@ def create_parser():
     )
     _add_missing_voice_policy_arguments(workspace)
     _add_failure_repair_arguments(workspace)
+    merge = subparsers.add_parser(
+        "merge-workspace-outcomes",
+        help="Create a successor from exact reviewed repair outcomes",
+    )
+    merge.add_argument("base_workspace", type=Path)
+    merge.add_argument(
+        "--source-workspace",
+        action="append",
+        dest="source_workspaces",
+        type=Path,
+        required=True,
+    )
+    merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
     generate = subparsers.add_parser(
         "generate", help="Resume typed device-independent generation from a queue"
     )
@@ -648,6 +664,24 @@ def main(argv=None):
                         "created": result.created,
                         "missing_voice_policy": missing_voice_policy.to_document(),
                         "failure_repair_policy": failure_repair_policy.to_document(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "merge-workspace-outcomes":
+            result = merge_workspace_outcomes(
+                arguments.base_workspace,
+                arguments.source_workspaces,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
                     },
                     ensure_ascii=False,
                     indent=2,
