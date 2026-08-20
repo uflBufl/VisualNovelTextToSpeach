@@ -1739,6 +1739,14 @@ def _carry_forward_review_outcomes(
             result.get("voice_character", requested_character),
             f"Failure-repair source voice character for {queue_id!r}",
         )
+        reference_character = (
+            _required_text(
+                source_document.get("narrator_character"),
+                "Carry-forward source narrator character",
+            )
+            if effective_character == "Narrator"
+            else effective_character
+        )
         carry_record = {
             "mode": "failed-outcome",
             "source_workspace_id": source_document["workspace_id"],
@@ -1753,7 +1761,7 @@ def _carry_forward_review_outcomes(
             "source_failure_kind": failure["kind"],
             "source_voice_reference": _voice_reference_identity(
                 source_registry,
-                effective_character,
+                reference_character,
             ),
         }
         copied_result = copy.deepcopy(result)
