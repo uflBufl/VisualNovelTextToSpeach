@@ -3,6 +3,78 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
+## Authoring workbench UX redesign
+
+### P0 - Make checksum-bound cohort review usable and reversible before decision
+
+- [ ] Replace the opaque one-way `Play next cohort sample` flow with a visible
+      ordered sample list that shows the exact line, speaker, duration, playback
+      state and cohort membership. Let the reviewer select and replay any sample
+      as many times as needed; only a complete exact-byte playback counts as
+      heard, and replaying must not discard prior completed-playback evidence.
+- [ ] Keep stable Previous, Replay/Play, Stop and Next controls in one fixed
+      location. Navigation must never jump horizontally, start table-cell
+      editing, change the current cohort implicitly or move to another sample
+      merely because playback finished. Provide documented keyboard shortcuts
+      that work regardless of table edit focus.
+- [ ] Make cohort decisions explicit at the sample and cohort levels. The UI
+      must clearly distinguish `sample sounds bad`, `reject cohort`, `accept
+      cohort`, and `expand sample`; explain how many exact WAVs each action will
+      affect before confirmation. Accept remains gated on all required samples,
+      while Reject remains available after any completed sample and Replay
+      remains available before and after the gate is satisfied.
+- [ ] Preserve actionable controls after playback. Finishing, stopping,
+      replaying or encountering a media error must never leave Apply/Accept,
+      Reject or replay/navigation buttons permanently disabled. Display the
+      specific blocking reason beside disabled controls and provide an in-place
+      recovery action instead of requiring the window to be reopened.
+
+### P0 - Review the complete workbench information architecture and workflow
+
+- [ ] Audit the end-to-end tasks separately: workspace loading, collection
+      selection, generation, individual review, cohort review, reference
+      audition and diagnostics. Redesign the default screen around the active
+      task instead of showing every subsystem at once; move secondary generation
+      controls, voice-reference browsing and technical logs into clearly named
+      tabs or collapsible detail panels.
+- [ ] Make review the primary workspace: keep the audio controls, selected line,
+      decision controls and pending navigation together; show Speaker, effective
+      synthesis voice (for example `Narrator -> Centurion`), status, attempts
+      and quality warnings without requiring horizontal scanning. Filters must
+      make Narrator-only and character-only work obvious and must never silently
+      mix unrelated voices into a focused cohort task.
+- [ ] Replace dense status prose with a compact summary and drill-down counts.
+      Use consistent terms for source speaker, effective character, generated
+      voice, pending review, technical attention, missing reference and failed
+      generation. Never label Centurion narration as though `Narrator` were the
+      selected voice without also showing the mapping.
+- [ ] Define predictable sizing and persistence: useful minimum window size,
+      readable column defaults, resizable panes, remembered filters and selected
+      task, no clipped controls and no large empty diagnostics panel by default.
+      Review the interface visually at compact laptop and large desktop sizes.
+
+### P1 - Prove responsiveness, accessibility and real-workspace usability
+
+- [ ] Keep all integrity projection, WAV preparation, review publication and
+      manifest rebuild work off the Qt thread. Replay, Accept and Reject should
+      acknowledge immediately, keep navigation responsive and show bounded
+      progress; add event-loop heartbeat tests for cold load, replay and both
+      decision paths on a 592-item fixture.
+- [ ] Specify and test focus order, accessible names, status announcements,
+      contrast-independent state, screen-reader labels and keyboard-only review.
+      Media and decision actions must remain reachable after table selection,
+      playback completion, errors and asynchronous reloads.
+- [ ] Add deterministic Qt tests for repeat playback, previous/next stability,
+      disabled-action reasons, media failure recovery, stale authority, rapid
+      sequential actions and close-during-operation behavior. Keep exact WAV,
+      queue, state and lease checks fail-closed while making those failures
+      understandable and recoverable.
+- [ ] Run a fresh manual acceptance on the real 592-line Character Story
+      workspace. Measure open, replay, Accept and Reject responsiveness; verify
+      both current Centurion cohorts can be reviewed without unrelated Narrator
+      rows or control movement; capture screenshots and move the accepted UX
+      contract and measurements to `docs/` before removing this section.
+
 ## Offline authoring and application responsibility split
 
 ### P0 - Complete the current Character Story in fail-closed order
