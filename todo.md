@@ -5,16 +5,13 @@ sections after their implementation has been verified and committed.
 
 ## Authoring workbench UX redesign
 
-### P0 - Review the complete workbench information architecture and workflow
+### P1 - Remove the redundant one-character review shortcut
 
-### P1 - Prove real-workspace usability
-
-- [ ] Run a fresh manual acceptance on the real 592-line Character Story
-      workspace. Measure open, replay, Accept and Reject responsiveness; verify
-      the one currently unresolved Centurion cohort can be reviewed without
-      unrelated Narrator rows or control movement. Automated read-only visual
-      acceptance is complete; this remaining gate requires a human playback and
-      decision pass.
+- [ ] Remove `Rhiannon only` from the authoring workbench. The general character
+      filter already provides the same scope without a story-specific control.
+      Keep `Narrator only` and `Characters only`, update the focus/accessibility
+      order and UI tests, and verify that persisted filters from older layouts
+      reopen without selecting a hidden shortcut.
 
 ## Offline authoring and application responsibility split
 

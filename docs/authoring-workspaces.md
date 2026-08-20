@@ -536,12 +536,15 @@ workbench open. No command or UI decision was applied to the real Character
 Story workspace during implementation or verification.
 
 A read-only acceptance on 2026-08-20 against the current 592-line Character
-Story workspace projected 141 awaiting-review rows and one remaining
+Story workspace first projected 141 awaiting-review rows and one remaining
 checksum-bound Centurion cohort. Its one exact sample appeared as
-`Narrator -> Centurion`, selected but not heard, with Replay enabled. This
-acceptance did not start playback or create a review decision; it verified the
-real workspace projection after earlier reviewer decisions had reduced the
-previous two-cohort checkpoint to one unresolved cohort.
+`Narrator -> Centurion`, selected but not heard, with Replay enabled. The
+subsequent human pass replayed and marked that sample acceptable, accepted the
+one-item cohort and durably projected it as approved. A fresh plan then reported
+zero reviewable cohorts and zero pending cohort items; 140 older generated
+items remain separately blocked from cohort planning because they do not carry
+the required current synthesis provenance. This closes the real-workspace
+cohort acceptance gate without treating those historical items as reviewed.
 
 The default workbench layout is review-first. Generation, readiness, voice
 reference and technical sections remain reachable in the lower inspector, but
