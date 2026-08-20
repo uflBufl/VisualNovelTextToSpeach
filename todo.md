@@ -34,11 +34,6 @@ sections after their implementation has been verified and committed.
       contrast-independent state, screen-reader labels and keyboard-only review.
       Media and decision actions must remain reachable after table selection,
       playback completion, errors and asynchronous reloads.
-- [ ] Add deterministic Qt tests for repeat playback, previous/next stability,
-      disabled-action reasons, media failure recovery, stale authority, rapid
-      sequential actions and close-during-operation behavior. Keep exact WAV,
-      queue, state and lease checks fail-closed while making those failures
-      understandable and recoverable.
 - [ ] Run a fresh manual acceptance on the real 592-line Character Story
       workspace. Measure open, replay, Accept and Reject responsiveness; verify
       both current Centurion cohorts can be reviewed without unrelated Narrator

@@ -583,6 +583,13 @@ the durable save is active, and applies the returned authoritative result
 without a synchronous full projection. Cold workspace projection and exact-WAV
 playback preparation have equivalent heartbeat gates.
 
+The deterministic UI matrix additionally covers repeat playback before and
+after the heard gate, stable previous/next positions and keyboard shortcuts,
+disabled-action reasons, media-error retry, stale queue/state/WAV/lease
+authority, rapid sequential decisions, background-projection replacement and
+close deferral during every authoritative operation. These UX paths retain the
+same fail-closed integrity checks as the command-line workflow.
+
 Generation runs through `QProcess` with program and arguments kept separate.
 The dialog polls authoritative state while the child is live, preserves
 ordered merged output with an incremental UTF-8 decoder, and exposes it under
