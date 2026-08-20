@@ -70,7 +70,9 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicyError,
 )
 from vntts.authoring.pending_resolution import (
+    build_pending_regeneration_command,
     build_pending_resolution_plan,
+    load_pending_resolution_plan,
     write_pending_resolution_plan,
 )
 from vntts.authoring.queue_builder import (
@@ -428,6 +430,14 @@ def create_parser():
         type=Path,
         help="Publish the immutable plan without replacing an existing file",
     )
+    pending_regeneration = subparsers.add_parser(
+        "pending-regeneration-command",
+        help="Print one bounded exact-ID command from a current pending plan",
+    )
+    pending_regeneration.add_argument("workspace", type=Path)
+    pending_regeneration.add_argument("plan", type=Path)
+    pending_regeneration.add_argument("--batch-index", type=int, required=True)
+    pending_regeneration.add_argument("--batch-size", type=int, default=10)
     cohort_decision = subparsers.add_parser(
         "cohort-review-decision",
         help="Record an immutable human decision over one exact cohort sample",
@@ -912,6 +922,21 @@ def main(argv=None):
             print(
                 json.dumps(
                     plan.to_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "pending-regeneration-command":
+            print(
+                json.dumps(
+                    build_pending_regeneration_command(
+                        arguments.workspace,
+                        load_pending_resolution_plan(arguments.plan),
+                        batch_index=arguments.batch_index,
+                        batch_size=arguments.batch_size,
+                    ).to_dict(),
                     ensure_ascii=False,
                     indent=2,
                     sort_keys=True,

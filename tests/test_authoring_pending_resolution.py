@@ -14,6 +14,8 @@ from vntts.authoring.cohort_review import CohortReviewPlan
 from vntts.authoring.pending_resolution import (
     RECOVER_OR_REGENERATE,
     PendingResolutionError,
+    PendingResolutionPlan,
+    build_pending_regeneration_command,
     build_pending_resolution_plan,
     load_pending_resolution_plan,
     write_pending_resolution_plan,
@@ -162,6 +164,83 @@ class PendingResolutionPlanTest(unittest.TestCase):
             path.write_text(json.dumps(forged), encoding="utf-8")
             with self.assertRaisesRegex(PendingResolutionError, "identity is invalid"):
                 load_pending_resolution_plan(path)
+
+    def test_regeneration_command_is_exact_bounded_and_current(self):
+        plan, item = self.fixture()
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(item,),
+            ),
+        ):
+            expected = build_pending_resolution_plan("workspace")
+        argv = (
+            "python",
+            "-m",
+            "vntts.authoring.cli",
+            "generate",
+            "--regenerate-existing",
+            "--queue-id",
+            item.queue_id,
+        )
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_pending_resolution_plan",
+                return_value=expected,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.generation_command",
+                return_value=argv,
+            ) as command,
+        ):
+            result = build_pending_regeneration_command(
+                "workspace", expected, batch_index=1, batch_size=10
+            )
+
+        self.assertEqual(result.batch_index, 1)
+        self.assertEqual(result.batch_count, 1)
+        self.assertEqual(result.queue_ids, (item.queue_id,))
+        self.assertEqual(result.command, argv)
+        command.assert_called_once_with(
+            "workspace", queue_ids=(item.queue_id,), regenerate_existing=True
+        )
+
+    def test_regeneration_command_rejects_stale_or_out_of_range_plan(self):
+        plan, item = self.fixture()
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(item,),
+            ),
+        ):
+            expected = build_pending_resolution_plan("workspace")
+        changed = PendingResolutionPlan(
+            "f" * 64, {**expected.document, "plan_id": "f" * 64}
+        )
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_pending_resolution_plan",
+                return_value=changed,
+            ),
+            self.assertRaisesRegex(PendingResolutionError, "authority changed"),
+        ):
+            build_pending_regeneration_command("workspace", expected, batch_index=1)
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_pending_resolution_plan",
+                return_value=expected,
+            ),
+            self.assertRaisesRegex(PendingResolutionError, "exceeds 1"),
+        ):
+            build_pending_regeneration_command("workspace", expected, batch_index=2)
 
 
 if __name__ == "__main__":

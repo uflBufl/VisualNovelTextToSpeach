@@ -31,6 +31,13 @@ the original blocker. Its only permitted action is
 change review state or authorize a render. Loading the plan revalidates its
 schema, exact inventory, counts and canonical identity.
 
+`vntts-pregenerate pending-regeneration-command WORKSPACE PLAN.json
+--batch-index N [--batch-size 10]` recomputes the current resolution plan and
+prints one bounded exact-ID `--regenerate-existing` child command only when the
+workspace still matches it byte-for-byte. Batch size is limited to 25. The
+command is inspection output: this operation does not launch the child, archive
+an old WAV or change generation state.
+
 ## Execution order
 
 1. Make repair planning fail closed for unbound legacy failures. Keep their

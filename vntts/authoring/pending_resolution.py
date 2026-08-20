@@ -13,7 +13,11 @@ from vntts.authoring.cohort_review import (
     CohortReviewError,
     build_cohort_review_plan,
 )
-from vntts.authoring.workbench import AuthoringWorkbenchError, list_review_items
+from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
+    generation_command,
+    list_review_items,
+)
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
@@ -33,6 +37,26 @@ class PendingResolutionPlan:
 
     def to_dict(self):
         return dict(self.document)
+
+
+@dataclass(frozen=True)
+class PendingRegenerationCommand:
+    """One bounded exact-ID regeneration command derived from a current plan."""
+
+    batch_id: str
+    batch_index: int
+    batch_count: int
+    queue_ids: tuple[str, ...]
+    command: tuple[str, ...]
+
+    def to_dict(self):
+        return {
+            "batch_id": self.batch_id,
+            "batch_index": self.batch_index,
+            "batch_count": self.batch_count,
+            "queue_ids": list(self.queue_ids),
+            "command": list(self.command),
+        }
 
 
 def build_pending_resolution_plan(workspace_directory):
@@ -102,6 +126,73 @@ def build_pending_resolution_plan(workspace_directory):
     plan_id = _canonical_sha256(body)
     document = {**body, "plan_id": plan_id}
     return PendingResolutionPlan(plan_id, document)
+
+
+def build_pending_regeneration_command(
+    workspace_directory,
+    plan,
+    *,
+    batch_index,
+    batch_size=10,
+):
+    """Return one current exact-ID regeneration argv without launching it."""
+    document = _validated_plan_document(plan)
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or not 1 <= batch_size <= 25
+    ):
+        raise PendingResolutionError("Pending regeneration batch size must be 1 to 25")
+    if (
+        not isinstance(batch_index, int)
+        or isinstance(batch_index, bool)
+        or batch_index < 1
+    ):
+        raise PendingResolutionError(
+            "Pending regeneration batch index must be positive"
+        )
+    current = build_pending_resolution_plan(workspace_directory)
+    if current.document != document:
+        raise PendingResolutionError(
+            "Workspace pending authority changed after the resolution plan was published"
+        )
+    records = document["records"]
+    if not records:
+        raise PendingResolutionError(
+            "Pending resolution plan has no regeneration items"
+        )
+    batch_count = (len(records) + batch_size - 1) // batch_size
+    if batch_index > batch_count:
+        raise PendingResolutionError(
+            f"Pending regeneration batch index exceeds {batch_count}"
+        )
+    start = (batch_index - 1) * batch_size
+    queue_ids = tuple(
+        value["queue_id"] for value in records[start : start + batch_size]
+    )
+    try:
+        command = tuple(
+            generation_command(
+                workspace_directory,
+                queue_ids=queue_ids,
+                regenerate_existing=True,
+            )
+        )
+    except AuthoringWorkbenchError as error:
+        raise PendingResolutionError(str(error)) from error
+    body = {
+        "pending_resolution_plan_id": document["plan_id"],
+        "batch_index": batch_index,
+        "batch_size": batch_size,
+        "queue_ids": list(queue_ids),
+    }
+    return PendingRegenerationCommand(
+        batch_id=_canonical_sha256(body),
+        batch_index=batch_index,
+        batch_count=batch_count,
+        queue_ids=queue_ids,
+        command=command,
+    )
 
 
 def write_pending_resolution_plan(plan, output_path):
