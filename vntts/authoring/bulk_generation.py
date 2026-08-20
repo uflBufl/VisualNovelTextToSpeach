@@ -891,7 +891,14 @@ def generation_failure_repair_plan(state_path, queue_path):
         failure = record["failure"]
         kind = failure["kind"]
         attempts = record["attempts"]
-        if kind == "missed_eos_audio_limit":
+        if not _failure_has_bound_synthesis_controls(record):
+            action = "provenance_recovery_or_regeneration"
+            reason = (
+                "legacy failure lacks exact provider, model, generation profile or "
+                "synthesis-control provenance; recover immutable evidence or regenerate "
+                "under current controls before selecting a repair"
+            )
+        elif kind == "missed_eos_audio_limit":
             if len(safe_sentence_segments(record["text"])) >= 2:
                 action = "sentence_boundary_segmentation"
                 reason = "multiple complete sentence boundaries"
@@ -959,6 +966,15 @@ def generation_failure_repair_plan(state_path, queue_path):
         "action_counts": dict(sorted(action_counts.items())),
         "records": planned,
     }
+
+
+def _failure_has_bound_synthesis_controls(record):
+    for field in ("provider", "model", "generation_profile"):
+        value = record.get(field)
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            return False
+    digest = record.get("synthesis_control_digest")
+    return isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
 
 
 def _validate_failure_repair_selection(

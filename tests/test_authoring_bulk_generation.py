@@ -570,7 +570,10 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             root = Path(directory)
             limited_item = queue_item("limited", character="Narrator")
             silence_item = queue_item("silence", character="Rhiannon")
-            queue = write_queue(root / "queue.jsonl", [limited_item, silence_item])
+            unbound_item = queue_item("unbound", character="Narrator")
+            queue = write_queue(
+                root / "queue.jsonl", [limited_item, silence_item, unbound_item]
+            )
             result = self.run_generation(
                 queue,
                 root / "output",
@@ -588,6 +591,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "model": "moss-local",
                 "generation_profile": "stable",
                 "synthesis_provenance_sha256": "a" * 64,
+                "updated_at": "2026-08-18T00:00:00+00:00",
+            }
+            state["items"][unbound_item["queue_id"]] = {
+                "status": "failed",
+                "attempts": 3,
+                "seed": 2,
+                "last_error": "MOSS generation hit the text-length audio limit before EOS",
                 "updated_at": "2026-08-18T00:00:00+00:00",
             }
             atomic_write_json(result.state, state, sort_keys=True)
@@ -621,10 +631,10 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(repair_exit_code, 0)
         self.assertEqual(json.loads(output.getvalue()), report)
         self.assertEqual(json.loads(repair_output.getvalue()), repair_plan)
-        self.assertEqual(report["failure_count"], 2)
+        self.assertEqual(report["failure_count"], 3)
         self.assertEqual(
             {entry["value"]: entry["count"] for entry in report["cohorts"]["kind"]},
-            {"missed_eos_audio_limit": 1, "speech_silence": 1},
+            {"missed_eos_audio_limit": 2, "speech_silence": 1},
         )
         legacy = next(
             record
@@ -635,13 +645,21 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(legacy["requested_voice_character"], "Rhiannon")
         self.assertEqual(
             repair_plan["action_counts"],
-            {"bounded_seed_retry": 1, "reference_comparison": 1},
+            {
+                "bounded_seed_retry": 1,
+                "provenance_recovery_or_regeneration": 1,
+                "reference_comparison": 1,
+            },
         )
         actions = {
             record["queue_id"]: record["action"] for record in repair_plan["records"]
         }
         self.assertEqual(actions[limited_item["queue_id"]], "bounded_seed_retry")
         self.assertEqual(actions[silence_item["queue_id"]], "reference_comparison")
+        self.assertEqual(
+            actions[unbound_item["queue_id"]],
+            "provenance_recovery_or_regeneration",
+        )
 
     def test_stereo_renderer_is_downmixed_without_doubling_wav_duration(self):
         with TemporaryDirectory() as directory:
