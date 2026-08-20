@@ -578,6 +578,13 @@ Collapsed technical details consume no log-sized empty area. Geometry, splitter,
 review filters and disclosure states remain persisted, while layout-version 2
 migrates an older default to the collapsed generation panel.
 
+The compact summary keeps the decision-critical Review, Coverage and Selection
+counts visible. `Outcome details` is the collapsed drill-down for recoverable
+source audio, manual review, unresolved source audio, skipped sound effects,
+other skipped actions and the latest authoritative line/status/timestamp. This
+keeps the default screen short without hiding the less common outcome classes
+or folding them into a misleading generic failure count.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

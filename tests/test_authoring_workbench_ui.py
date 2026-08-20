@@ -254,8 +254,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertIn("INTERRUPTED", dialog.status.text())
-            self.assertIn("Resolve source audio:", dialog.counts.text())
-            self.assertIn("Other skipped actions:", dialog.counts.text())
+            self.assertIn("Resolve source audio:", dialog.outcome_details_text.text())
+            self.assertIn("Other actions:", dialog.outcome_details_text.text())
             self.assertEqual(dialog.counts.text().count("<br>"), 2)
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
@@ -295,12 +295,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.minimumWidth(), 900)
             self.assertEqual(dialog.minimumHeight(), 640)
             self.assertFalse(dialog.generation_section.isChecked())
+            self.assertFalse(dialog.outcome_details.isChecked())
             self.assertFalse(dialog.readiness_details.isChecked())
             self.assertFalse(dialog.voice_box.isChecked())
             self.assertFalse(dialog.technical.isChecked())
             self.assertGreaterEqual(dialog.splitter.widget(0).height(), 320)
             for section in (
                 dialog.generation_section,
+                dialog.outcome_details,
                 dialog.readiness_details,
                 dialog.voice_box,
                 dialog.technical,
@@ -312,6 +314,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.resize(1_440, 900)
             for section in (
                 dialog.generation_section,
+                dialog.outcome_details,
                 dialog.readiness_details,
                 dialog.voice_box,
                 dialog.technical,
@@ -321,6 +324,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertGreaterEqual(dialog.splitter.widget(0).height(), 320)
             for control in (
                 dialog.narrator,
+                dialog.outcome_details_text,
                 dialog.readiness_text,
                 dialog.recent_choice,
                 dialog.process_log,
@@ -335,11 +339,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             reopened.show()
             self.application.processEvents()
             self.assertTrue(reopened.generation_section.isChecked())
+            self.assertTrue(reopened.outcome_details.isChecked())
             self.assertTrue(reopened.readiness_details.isChecked())
             self.assertTrue(reopened.voice_box.isChecked())
             self.assertTrue(reopened.technical.isChecked())
             for control in (
                 reopened.narrator,
+                reopened.outcome_details_text,
                 reopened.readiness_text,
                 reopened.recent_choice,
                 reopened.process_log,
@@ -348,6 +354,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             reopened._reset_layout()
             self.assertFalse(reopened.generation_section.isChecked())
+            self.assertFalse(reopened.outcome_details.isChecked())
             self.assertFalse(reopened.readiness_details.isChecked())
             self.assertFalse(reopened.voice_box.isChecked())
             self.assertFalse(reopened.technical.isChecked())

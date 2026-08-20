@@ -7,11 +7,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Review the complete workbench information architecture and workflow
 
-- [ ] Add drill-down counts behind the compact Review/Coverage/Selection
-      summary. Finish applying the established source-speaker/effective-voice
-      terminology to pending review, technical attention, missing reference and
-      failed-generation details.
-
 ### P1 - Prove responsiveness, accessibility and real-workspace usability
 
 - [ ] Specify and test focus order, accessible names, status announcements,

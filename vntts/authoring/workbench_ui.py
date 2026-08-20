@@ -555,6 +555,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.counts = QLabel()
         self.counts.setAccessibleName("Authoring outcome counts")
         self.counts.setWordWrap(True)
+        self.outcome_details = DisclosureSection("Outcome details")
+        self.outcome_details.setAccessibleName("Detailed authoring outcome counts")
+        self.outcome_details_text = QLabel()
+        self.outcome_details_text.setWordWrap(True)
+        self.outcome_details_text.setAccessibleName(
+            "Source-audio, fallback, skip and latest outcome details"
+        )
+        self.outcome_details.content_layout.addWidget(self.outcome_details_text)
         self.active = QLabel()
         self.active.setAccessibleName("Current generation attempt")
         self.active.setWordWrap(True)
@@ -1000,6 +1008,7 @@ class AuthoringWorkbenchDialog(QDialog):
         secondary_layout = QVBoxLayout(secondary)
         secondary_layout.setContentsMargins(4, 4, 4, 4)
         secondary_layout.addWidget(self.reset_layout)
+        secondary_layout.addWidget(self.outcome_details)
         secondary_layout.addWidget(self.generation_section)
         secondary_layout.addWidget(self.readiness_details)
         secondary_layout.addWidget(self.voice_box)
@@ -1077,6 +1086,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_box.toggled.connect(self.voice_content.setVisible)
         for section in (
             self.generation_section,
+            self.outcome_details,
             self.readiness_details,
             self.voice_box,
             self.technical,
@@ -1367,11 +1377,6 @@ class AuthoringWorkbenchDialog(QDialog):
                     f"Failed: {self.summary.failed}",
                     f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
                     f"Live fallback: {self.summary.live_fallback}",
-                    f"Recoverable source audio: {self.summary.recoverable_source_audio}",
-                    f"Manual review: {self.summary.manual_review}",
-                    f"Resolve source audio: {self.summary.resolve_audio}",
-                    f"Skipped sound effects: {self.summary.skipped_sound_effects}",
-                    f"Other skipped actions: {self.summary.skipped_actions}",
                 )
             )
             + "<br><b>Selection</b>: "
@@ -1381,6 +1386,31 @@ class AuthoringWorkbenchDialog(QDialog):
                     f"Selected story lines: {self.collection_selection.story_records}",
                     f"Selected queue lines: {self.collection_selection.queue_items}",
                     f"Selected ready lines: {self.collection_selection.readiness.ready}",
+                )
+            )
+        )
+        self.outcome_details_text.setText(
+            "<b>Source handling</b>: "
+            + " | ".join(
+                (
+                    f"Recoverable source audio: {self.summary.recoverable_source_audio}",
+                    f"Manual review: {self.summary.manual_review}",
+                    f"Resolve source audio: {self.summary.resolve_audio}",
+                )
+            )
+            + "<br><b>Skipped</b>: "
+            + " | ".join(
+                (
+                    f"Sound effects: {self.summary.skipped_sound_effects}",
+                    f"Other actions: {self.summary.skipped_actions}",
+                )
+            )
+            + "<br><b>Latest outcome</b>: "
+            + " | ".join(
+                (
+                    f"Line: {self.summary.latest_line or 'none'}",
+                    f"Status: {self.summary.latest_status or 'none'}",
+                    f"Updated: {self.summary.latest_updated_at or 'unknown'}",
                 )
             )
         )
@@ -3037,6 +3067,10 @@ class AuthoringWorkbenchDialog(QDialog):
         readiness_expanded = self.settings.value("readiness-expanded", False, type=bool)
         self.readiness_details.setChecked(readiness_expanded)
         self.readiness_text.setVisible(readiness_expanded)
+        outcome_expanded = self.settings.value(
+            "outcome-details-expanded", False, type=bool
+        )
+        self.outcome_details.setChecked(outcome_expanded)
         voice_expanded = self.settings.value("voice-expanded", False, type=bool)
         self.voice_box.setChecked(voice_expanded)
         self.voice_content.setVisible(voice_expanded)
@@ -3065,6 +3099,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue("layout-version", 2)
         self.settings.setValue("technical-expanded", self.technical.isChecked())
         self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
+        self.settings.setValue(
+            "outcome-details-expanded", self.outcome_details.isChecked()
+        )
         self.settings.setValue("voice-expanded", self.voice_box.isChecked())
         self.settings.setValue("review-status", self.review_status.currentText())
         self.settings.setValue("review-search", self.review_search.text())
@@ -3081,6 +3118,7 @@ class AuthoringWorkbenchDialog(QDialog):
     def _reset_layout(self):
         self.splitter.setSizes([560, 180])
         self.generation_section.setChecked(False)
+        self.outcome_details.setChecked(False)
         self.technical.setChecked(False)
         self.readiness_details.setChecked(False)
         self.voice_box.setChecked(False)
@@ -3091,6 +3129,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue("layout-version", 2)
         self.settings.remove("technical-expanded")
         self.settings.remove("readiness-expanded")
+        self.settings.remove("outcome-details-expanded")
         self.settings.remove("voice-expanded")
         self.settings.endGroup()
         self.settings.sync()
@@ -3192,6 +3231,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.stop_generation,
             self.open_output,
             self.reset_layout,
+            self.outcome_details.header,
             self.generation_section.header,
             self.readiness_details.header,
             self.recent_choice,
