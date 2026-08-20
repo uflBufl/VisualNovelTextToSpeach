@@ -585,6 +585,15 @@ other skipped actions and the latest authoritative line/status/timestamp. This
 keeps the default screen short without hiding the less common outcome classes
 or folding them into a misleading generic failure count.
 
+Accessibility does not depend on color. Runtime, review-gate and cohort-gate
+states are persistent text; visible changes emit native Qt screen-reader
+announcement events (assertive for runtime failures, polite for review/cohort
+progress). Buttons and tables have explicit names/descriptions, the tab order
+follows review filters -> table -> navigation/audio -> decisions -> cohort ->
+secondary panels, and keyboard-only tests cover individual and cohort replay,
+navigation, approval, rejection and recovery. Playback finish/error and async
+reload tests prove those controls remain reachable after state transitions.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

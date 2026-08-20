@@ -259,6 +259,16 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.counts.text().count("<br>"), 2)
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
+            with patch(
+                "vntts.authoring.workbench_ui.QAccessible.updateAccessibility"
+            ) as announce:
+                dialog.review_action_reason.setText(
+                    "Review ready for keyboard decision"
+                )
+            self.assertEqual(
+                announce.call_args.args[0].message(),
+                "Review ready for keyboard decision",
+            )
             self.assertTrue(dialog.review_table.hasFocus())
             for button in dialog.findChildren(QPushButton):
                 self.assertTrue(button.accessibleName(), button.text())

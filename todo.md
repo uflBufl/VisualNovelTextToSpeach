@@ -7,12 +7,8 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Review the complete workbench information architecture and workflow
 
-### P1 - Prove responsiveness, accessibility and real-workspace usability
+### P1 - Prove real-workspace usability
 
-- [ ] Specify and test focus order, accessible names, status announcements,
-      contrast-independent state, screen-reader labels and keyboard-only review.
-      Media and decision actions must remain reachable after table selection,
-      playback completion, errors and asynchronous reloads.
 - [ ] Run a fresh manual acceptance on the real 592-line Character Story
       workspace. Measure open, replay, Accept and Reject responsiveness; verify
       the one currently unresolved Centurion cohort can be reviewed without

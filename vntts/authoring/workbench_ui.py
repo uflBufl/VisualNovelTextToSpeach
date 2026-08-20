@@ -26,6 +26,8 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleAnnouncementEvent,
     QCloseEvent,
     QDesktopServices,
     QKeySequence,
@@ -85,6 +87,27 @@ from vntts.authoring.workbench import (
     workspace_voice_snapshot,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+
+class AnnouncementLabel(QLabel):
+    """Visible status text that emits a native screen-reader announcement."""
+
+    def __init__(self, *arguments, assertive=False, **keywords):
+        super().__init__(*arguments, **keywords)
+        self._announcement_politeness = (
+            QAccessible.AnnouncementPoliteness.Assertive
+            if assertive
+            else QAccessible.AnnouncementPoliteness.Polite
+        )
+
+    def setText(self, text):
+        message = str(text)
+        changed = message != self.text()
+        super().setText(message)
+        if changed and self.isVisible():
+            event = QAccessibleAnnouncementEvent(self, message)
+            event.setPoliteness(self._announcement_politeness)
+            QAccessible.updateAccessibility(event)
 
 
 class DisclosureSection(QWidget):
@@ -549,7 +572,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.narrator = QLabel()
         self.narrator.setAccessibleName("Configured narrator and synthesis model")
         self.narrator.setWordWrap(True)
-        self.status = QLabel()
+        self.status = AnnouncementLabel(assertive=True)
         self.status.setAccessibleName("Authoring runtime status")
         self.status.setWordWrap(True)
         self.counts = QLabel()
@@ -718,12 +741,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.current_review = QLabel("Current review: none")
         self.current_review.setAccessibleName("Current review line speaker and status")
         self.current_review.setWordWrap(True)
-        self.review_action_reason = QLabel("Select an awaiting-review line")
+        self.review_action_reason = AnnouncementLabel("Select an awaiting-review line")
         self.review_action_reason.setAccessibleName("Review action availability reason")
         self.review_action_reason.setWordWrap(True)
         self.cohort_choice = QComboBox()
         self.cohort_choice.setAccessibleName("Checksum-bound review cohort")
-        self.cohort_progress = QLabel("Cohort review: build a current sample")
+        self.cohort_progress = AnnouncementLabel(
+            "Cohort review: build a current sample"
+        )
         self.cohort_progress.setAccessibleName("Cohort sample playback progress")
         self.cohort_progress.setWordWrap(True)
         self.cohort_load = QPushButton("Build cohort sample")
