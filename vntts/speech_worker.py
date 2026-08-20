@@ -140,12 +140,18 @@ def _runtime_paths(backend, runtime_directory=None):
         "chatterbox-nano": "chatterbox-nano",
         "moss-tts": "moss-tts",
     }[backend]
-    root = Path(
-        runtime_directory
-        or os.environ.get(configured, "")
-        or Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
-    ).expanduser().resolve()
-    interpreter = root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    root = (
+        Path(
+            runtime_directory
+            or os.environ.get(configured, "")
+            or Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
+        )
+        .expanduser()
+        .resolve()
+    )
+    interpreter = root / (
+        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+    )
     if sys.platform == "win32":
         site_packages_candidates = (root / "Lib/site-packages",)
     else:
@@ -203,7 +209,9 @@ def _serialize_registry(registry):
 
 
 def _voice_from_document(value):
-    references = tuple(Path(item).expanduser().resolve() for item in value["references"])
+    references = tuple(
+        Path(item).expanduser().resolve() for item in value["references"]
+    )
     return CharacterVoice(
         character=value["character"],
         speaker=value["speaker"],
@@ -235,9 +243,7 @@ def _result_document(result):
 
 def _result_from_document(document, chunks):
     pcm = (
-        np.concatenate(chunks, axis=0)
-        if chunks
-        else np.empty((0, 1), dtype=np.float32)
+        np.concatenate(chunks, axis=0) if chunks else np.empty((0, 1), dtype=np.float32)
     )
     return SynthesisResult(
         pcm=pcm,
@@ -322,7 +328,11 @@ def worker_main(
                 narrator_reference = command.get("narrator_reference")
                 if narrator_reference != backend.narrator_reference:
                     backend.narrator_reference = narrator_reference
-                    for cache_name in ("voice_states", "prompt_audio_codes", "conditionals"):
+                    for cache_name in (
+                        "voice_states",
+                        "prompt_audio_codes",
+                        "conditionals",
+                    ):
                         cache = getattr(backend, cache_name, None)
                         if isinstance(cache, dict):
                             cache.pop("narrator", None)
@@ -389,7 +399,11 @@ def worker_main(
         try:
             _write_frame(
                 protocol_out,
-                {"type": "fatal", "error": str(error), "error_type": type(error).__name__},
+                {
+                    "type": "fatal",
+                    "error": str(error),
+                    "error_type": type(error).__name__,
+                },
             )
         except Exception:
             pass
@@ -432,6 +446,7 @@ class IsolatedSpeechBackend:
         self.generation_profile = generation_profile or (
             "stable" if backend == "moss-tts" else "default"
         )
+        self.model_name = str(worker_options.get("model_name") or backend)
         self.audio_output = audio_output
         self.clock = clock
         self.process_factory = process_factory
@@ -529,9 +544,7 @@ class IsolatedSpeechBackend:
                         + (f": {details}" if details else "")
                     )
                 try:
-                    message = self._next_message(
-                        process, timeout=min(0.1, remaining)
-                    )
+                    message = self._next_message(process, timeout=min(0.1, remaining))
                 except queue.Empty:
                     continue
                 break
@@ -543,8 +556,7 @@ class IsolatedSpeechBackend:
             details = "\n".join(self._stderr)
             reason = message.get("error") or details or str(message)
             raise TTSConfigurationError(
-                f"{self.name} isolated worker failed health check: "
-                f"{reason}"
+                f"{self.name} isolated worker failed health check: {reason}"
             )
         if Path(message["interpreter"]).resolve() != self.interpreter.resolve():
             self._terminate_process(process)
@@ -681,8 +693,10 @@ class IsolatedSpeechBackend:
                     continue
                 message_type = document.get("type")
                 if message_type == "chunk":
-                    pcm = np.frombuffer(payload, dtype=np.float32).copy().reshape(
-                        document["shape"]
+                    pcm = (
+                        np.frombuffer(payload, dtype=np.float32)
+                        .copy()
+                        .reshape(document["shape"])
                     )
                     chunks.append(pcm)
                     yield SynthesisChunk(
@@ -742,13 +756,17 @@ class IsolatedSpeechBackend:
         return self.prepare_playback(character, text).payload
 
     def synthesize(self, character, text):
-        return self.render(
-            SynthesisRequest(
-                voice=character,
-                text=text,
-                generation_profile=self.generation_profile,
+        return (
+            self.render(
+                SynthesisRequest(
+                    voice=character,
+                    text=text,
+                    generation_profile=self.generation_profile,
+                )
             )
-        ).collect().pcm.reshape(-1)
+            .collect()
+            .pcm.reshape(-1)
+        )
 
     def speak(self, character, text, *, playback_guard=None):
         return self.play_prepared(
@@ -762,9 +780,7 @@ class IsolatedSpeechBackend:
             raise TTSConfigurationError("Isolated backend received invalid playback")
         with self._playback_lock:
             if playback_guard is not None and not playback_guard():
-                return outcome_for_prepared(
-                    prepared, PlaybackStatus.INTERRUPTED, None
-                )
+                return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
             self._stop_requested.clear()
             started = self.clock()
             rendered = self.render(
@@ -772,8 +788,10 @@ class IsolatedSpeechBackend:
                     voice=prepared.payload.voice,
                     text=prepared.payload.text,
                     generation_profile=prepared.payload.generation_profile,
-                    cancellation=lambda: self._stop_requested.is_set()
-                    or (playback_guard is not None and not playback_guard()),
+                    cancellation=lambda: (
+                        self._stop_requested.is_set()
+                        or (playback_guard is not None and not playback_guard())
+                    ),
                     cache_policy=prepared.payload.cache_policy,
                 )
             )
@@ -833,7 +851,9 @@ class IsolatedSpeechBackend:
                 self.last_playback_underrun = underflowed
                 return outcome_for_prepared(
                     resolved,
-                    PlaybackStatus.COMPLETED if completed else PlaybackStatus.INTERRUPTED,
+                    PlaybackStatus.COMPLETED
+                    if completed
+                    else PlaybackStatus.INTERRUPTED,
                     self.last_playback_ms,
                     underflowed=underflowed,
                     generation_limited=result.completion is SynthesisCompletion.LIMITED,
@@ -910,9 +930,7 @@ class IsolatedSpeechBackend:
         return changed
 
     def set_live_mode_active(self, active):
-        if not active and (
-            self.process is None or self.process.poll() is not None
-        ):
+        if not active and (self.process is None or self.process.poll() is not None):
             return False
         return bool(self._request_value("set-live-mode", active=bool(active)))
 

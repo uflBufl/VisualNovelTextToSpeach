@@ -169,7 +169,9 @@ class SpeechWorkerTest(unittest.TestCase):
             module = SimpleNamespace(__file__=str(outside), __version__="1")
 
             with (
-                patch("vntts.speech_worker.importlib.import_module", return_value=module),
+                patch(
+                    "vntts.speech_worker.importlib.import_module", return_value=module
+                ),
                 self.assertRaisesRegex(TTSConfigurationError, "outside"),
             ):
                 _module_health(runtime_site, ("numpy",))
@@ -258,6 +260,25 @@ class SpeechWorkerTest(unittest.TestCase):
                 )
 
         self.assertEqual(backend.generation_profile, "stable")
+        self.assertEqual(backend.model_name, "moss-tts")
+
+    def test_worker_exposes_the_exact_configured_model_identity(self):
+        backend = object.__new__(IsolatedSpeechBackend)
+
+        with patch.object(IsolatedSpeechBackend, "_start_worker"):
+            with patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ):
+                IsolatedSpeechBackend.__init__(
+                    backend,
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    model_name="/models/moss-local",
+                )
+
+        self.assertEqual(backend.model_name, "/models/moss-local")
+        self.assertEqual(backend.worker_options["model_name"], "/models/moss-local")
 
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
