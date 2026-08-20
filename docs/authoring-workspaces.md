@@ -559,6 +559,25 @@ remain independent. Opening a cohort sample scopes the main review table by its
 exact queue ID, so unrelated Narrator outcomes do not appear beside the sample
 being judged. Line and queue IDs are searchable as well as dialogue text.
 
+The UI task boundary is explicit: workspace load and recovery stay in the top
+status area; individual and cohort review share the primary panel; collection
+selection and generation live in `Generation scope and controls`; selected
+readiness provenance lives in `Readiness details`; source audition lives in
+`Voice references`; and child output/copyable logs live in `Technical details`.
+All four secondary areas are named disclosure panels, and only the primary
+review task is expanded in a fresh layout.
+
+Read-only visual acceptance on 2026-08-20 covered the real workspace at the
+900x640 minimum and at 1600x1000. At the minimum size, navigation/audio controls
+occupy a stable first row and Approve/Reject/Retry occupy a stable second row;
+every label fits without horizontal movement during playback. The wide review
+table retains an explicit scrollbar rather than shrinking identity columns into
+ambiguity. At desktop size, the expanded cohort table shows fixed Playback,
+Assessment, Line, Speaker-to-voice and Duration columns plus stretchable text.
+Collapsed technical details consume no log-sized empty area. Geometry, splitter,
+review filters and disclosure states remain persisted, while layout-version 2
+migrates an older default to the collapsed generation panel.
+
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
 `(character, reference index)` values for that workspace; unknown characters,

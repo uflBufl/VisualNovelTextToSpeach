@@ -292,6 +292,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.show()
             self.application.processEvents()
 
+            self.assertEqual(dialog.minimumWidth(), 900)
+            self.assertEqual(dialog.minimumHeight(), 640)
             self.assertFalse(dialog.generation_section.isChecked())
             self.assertFalse(dialog.readiness_details.isChecked())
             self.assertFalse(dialog.voice_box.isChecked())
@@ -1492,7 +1494,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             dialog._all_reviews = (first, second)
             dialog._apply_review_filters()
-            dialog.resize(1_600, 1_000)
+            dialog.resize(900, 640)
             dialog.show()
             self.application.processEvents()
             dialog.player = Mock()
@@ -1508,6 +1510,21 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 [dialog.review_actions_layout.indexOf(control) for control in controls],
                 list(range(len(controls))),
+            )
+            self.assertEqual(
+                {control.geometry().y() for control in controls[:4]},
+                {controls[0].geometry().y()},
+            )
+            self.assertEqual(
+                {control.geometry().y() for control in controls[4:]},
+                {controls[4].geometry().y()},
+            )
+            self.assertGreater(controls[4].geometry().y(), controls[0].geometry().y())
+            self.assertTrue(
+                all(
+                    control.width() >= control.sizeHint().width()
+                    for control in controls
+                )
             )
             initial_positions = tuple(control.geometry().x() for control in controls)
 

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -540,6 +541,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._cohort_thread_pool.setMaxThreadCount(1)
 
         self.setWindowTitle("VNTTS authoring workbench")
+        self.setMinimumSize(900, 640)
         self.resize(1_080, 720)
         self.title = QLabel()
         self.title.setAccessibleName("Selected authoring workspace")
@@ -746,6 +748,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.cohort_samples.horizontalHeader().setSectionResizeMode(
             5, QHeaderView.ResizeMode.Stretch
         )
+        for column, width in enumerate((100, 120, 220, 180, 90)):
+            self.cohort_samples.setColumnWidth(column, width)
         self.cohort_samples.setMinimumHeight(140)
         self.cohort_previous = QPushButton("Previous sample")
         self.cohort_replay = QPushButton("Replay selected sample")
@@ -906,9 +910,9 @@ class AuthoringWorkbenchDialog(QDialog):
         ):
             self._accessible_button(button, name, description)
 
-        review_actions = QHBoxLayout()
+        review_actions = QGridLayout()
         self.review_actions_layout = review_actions
-        for widget in (
+        review_buttons = (
             self.previous_pending,
             self.next_pending,
             self.review_play,
@@ -916,8 +920,12 @@ class AuthoringWorkbenchDialog(QDialog):
             self.approve,
             self.reject,
             self.reload_authority,
-        ):
-            review_actions.addWidget(widget)
+        )
+        for column, widget in enumerate(review_buttons[:4]):
+            review_actions.addWidget(widget, 0, column)
+        review_actions.addWidget(self.approve, 1, 0)
+        review_actions.addWidget(self.reject, 1, 1)
+        review_actions.addWidget(self.reload_authority, 1, 2, 1, 2)
         generation_actions = QHBoxLayout()
         for widget in (
             self.retry_failed,

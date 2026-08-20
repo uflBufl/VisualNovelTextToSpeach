@@ -7,20 +7,10 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Review the complete workbench information architecture and workflow
 
-- [ ] Audit the end-to-end tasks separately: workspace loading, collection
-      selection, generation, individual review, cohort review, reference
-      audition and diagnostics. Redesign the default screen around the active
-      task instead of showing every subsystem at once; move secondary generation
-      controls, voice-reference browsing and technical logs into clearly named
-      tabs or collapsible detail panels.
 - [ ] Add drill-down counts behind the compact Review/Coverage/Selection
       summary. Finish applying the established source-speaker/effective-voice
       terminology to pending review, technical attention, missing reference and
       failed-generation details.
-- [ ] Define predictable sizing and persistence: useful minimum window size,
-      readable column defaults, resizable panes, remembered filters and selected
-      task, no clipped controls and no large empty diagnostics panel by default.
-      Review the interface visually at compact laptop and large desktop sizes.
 
 ### P1 - Prove responsiveness, accessibility and real-workspace usability
 
@@ -30,9 +20,10 @@ sections after their implementation has been verified and committed.
       playback completion, errors and asynchronous reloads.
 - [ ] Run a fresh manual acceptance on the real 592-line Character Story
       workspace. Measure open, replay, Accept and Reject responsiveness; verify
-      both current Centurion cohorts can be reviewed without unrelated Narrator
-      rows or control movement; capture screenshots and move the accepted UX
-      contract and measurements to `docs/` before removing this section.
+      the one currently unresolved Centurion cohort can be reviewed without
+      unrelated Narrator rows or control movement. Automated read-only visual
+      acceptance is complete; this remaining gate requires a human playback and
+      decision pass.
 
 ## Offline authoring and application responsibility split
 
