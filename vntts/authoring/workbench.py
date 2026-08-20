@@ -1731,15 +1731,20 @@ def _carry_forward_review_outcomes(
                 f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
             )
         source_item_sha256 = _canonical_sha256(result)
+        requested_character = synthesis_character_for_line(
+            queue_by_id[queue_id].speaker,
+            queue_by_id[queue_id].voice_character,
+        )
+        effective_character = _required_text(
+            result.get("voice_character", requested_character),
+            f"Failure-repair source voice character for {queue_id!r}",
+        )
         carry_record = {
             "mode": "failed-outcome",
             "source_workspace_id": source_document["workspace_id"],
             "source_state_sha256": source_state_sha256,
             "source_item_sha256": source_item_sha256,
-            "character": synthesis_character_for_line(
-                queue_by_id[queue_id].speaker,
-                queue_by_id[queue_id].voice_character,
-            ),
+            "character": effective_character,
             "source_provider": result["provider"],
             "source_model": source_model,
             "source_generation_profile": source_profile,
@@ -1748,10 +1753,7 @@ def _carry_forward_review_outcomes(
             "source_failure_kind": failure["kind"],
             "source_voice_reference": _voice_reference_identity(
                 source_registry,
-                synthesis_character_for_line(
-                    queue_by_id[queue_id].speaker,
-                    queue_by_id[queue_id].voice_character,
-                ),
+                effective_character,
             ),
         }
         copied_result = copy.deepcopy(result)
