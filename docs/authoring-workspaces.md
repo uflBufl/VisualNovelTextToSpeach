@@ -576,6 +576,13 @@ stops playback, clears stale rows and disables every generation-start/retry,
 review, open-folder and preview action. Stop Generation remains available for a
 child already owned by this window.
 
+Deterministic 592-row Qt acceptance also blocks the injected authority worker
+for both Approve and Reject while a 5-ms heartbeat remains active. Each click
+returns to the event loop in under 100 ms, disables conflicting decisions while
+the durable save is active, and applies the returned authoritative result
+without a synchronous full projection. Cold workspace projection and exact-WAV
+playback preparation have equivalent heartbeat gates.
+
 Generation runs through `QProcess` with program and arguments kept separate.
 The dialog polls authoritative state while the child is live, preserves
 ordered merged output with an incremental UTF-8 decoder, and exposes it under

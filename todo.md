@@ -30,11 +30,6 @@ sections after their implementation has been verified and committed.
 
 ### P1 - Prove responsiveness, accessibility and real-workspace usability
 
-- [ ] Keep all integrity projection, WAV preparation, review publication and
-      manifest rebuild work off the Qt thread. Replay, Accept and Reject should
-      acknowledge immediately, keep navigation responsive and show bounded
-      progress; add event-loop heartbeat tests for cold load, replay and both
-      decision paths on a 592-item fixture.
 - [ ] Specify and test focus order, accessible names, status announcements,
       contrast-independent state, screen-reader labels and keyboard-only review.
       Media and decision actions must remain reachable after table selection,

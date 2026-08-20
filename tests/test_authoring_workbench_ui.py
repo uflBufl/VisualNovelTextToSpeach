@@ -939,6 +939,73 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertIn("Approved: 1", dialog.counts.text())
 
+    def test_592_item_approve_and_reject_keep_qt_heartbeat_responsive(self):
+        for decision in ("approved", "rejected"):
+            with self.subTest(decision=decision), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.create_workspace(root)
+                self.mark_fixture_pending_review(workspace)
+                started = False
+                release = False
+
+                def reviewer(_path, queue_id, selected_decision, authority):
+                    nonlocal started
+                    started = True
+                    while not release:
+                        time.sleep(0.005)
+                    return ReviewCommit(
+                        queue_id=queue_id,
+                        status=(
+                            "approved"
+                            if selected_decision == "approved"
+                            else "generated"
+                        ),
+                        review_status=selected_decision,
+                        updated_at="2026-08-20T12:00:00+00:00",
+                        authority=replace(
+                            authority,
+                            state_sha256="a" * 64,
+                            item_sha256="b" * 64,
+                        ),
+                    )
+
+                dialog = AuthoringWorkbenchDialog(
+                    workspace,
+                    settings=self.settings(root),
+                    reviewer=reviewer,
+                )
+                first = dialog._selected_review_item()
+                dialog._all_reviews = tuple(
+                    replace(
+                        first,
+                        queue_id=(
+                            first.queue_id if index == 0 else f"queue-{index:03d}"
+                        ),
+                        line_id=f"line-{index:03d}",
+                        text=f"Review outcome {index}.",
+                    )
+                    for index in range(592)
+                )
+                dialog._apply_review_filters()
+                heartbeat = []
+                timer = QTimer()
+                timer.setInterval(5)
+                timer.timeout.connect(lambda: heartbeat.append(time.monotonic()))
+                timer.start()
+
+                before = time.monotonic()
+                dialog.review_selected(decision)
+                call_elapsed = time.monotonic() - before
+                self.wait_for(lambda: started and len(heartbeat) >= 2)
+
+                self.assertLess(call_elapsed, 0.1)
+                self.assertTrue(dialog._review_save_active)
+                self.assertGreaterEqual(len(heartbeat), 2)
+                release = True
+                self.wait_for(lambda: not dialog._review_save_active)
+                timer.stop()
+                self.assertIn(f"Saved {decision}", dialog.review_action_reason.text())
+
     def test_nonterminal_review_updates_next_row_without_full_projection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
