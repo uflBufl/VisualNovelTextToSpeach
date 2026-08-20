@@ -255,6 +255,7 @@ def build_cohort_review_decision(
     decision,
     *,
     reviewed_queue_ids,
+    sample_assessments=None,
     next_clean_samples_per_bucket=None,
 ):
     """Bind a human decision to exact sampled and projected WAV identities."""
@@ -291,6 +292,13 @@ def build_cohort_review_decision(
         )
     if decision == "rejected" and not reviewed:
         raise CohortReviewError("A rejected cohort requires at least one reviewed WAV")
+    assessments = _normalize_sample_assessments(reviewed, sample_assessments)
+    if decision == "accepted" and any(
+        value["assessment"] == "bad" for value in assessments
+    ):
+        raise CohortReviewError(
+            "An accepted cohort cannot contain a sample marked as bad"
+        )
     current_samples = document["policy"]["clean_samples_per_bucket"]
     if decision == "expand":
         if (
@@ -328,6 +336,7 @@ def build_cohort_review_decision(
         },
         "sample_queue_ids": list(sampled),
         "reviewed_samples": reviewed_evidence,
+        "sample_assessments": assessments,
         "target_items": target_items,
         "projection_review_status": (
             "approved"
@@ -423,6 +432,7 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         "plan_policy": decision_document["plan_policy"],
         "sample_queue_ids": decision_document["sample_queue_ids"],
         "reviewed_samples": decision_document["reviewed_samples"],
+        "sample_assessments": decision_document.get("sample_assessments", []),
     }
     try:
         commits = _review_generation_cohort(
@@ -594,6 +604,25 @@ def _decision_item(item):
     }
 
 
+def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
+    reviewed = list(reviewed_queue_ids)
+    if sample_assessments is None:
+        return [{"queue_id": queue_id, "assessment": "heard"} for queue_id in reviewed]
+    if not isinstance(sample_assessments, dict):
+        raise CohortReviewError("Sample assessments must be a queue-ID mapping")
+    if set(sample_assessments) != set(reviewed):
+        raise CohortReviewError(
+            "Sample assessments must cover exactly the reviewed queue IDs"
+        )
+    normalized = []
+    for queue_id in reviewed:
+        assessment = sample_assessments.get(queue_id)
+        if assessment not in {"acceptable", "bad"}:
+            raise CohortReviewError("Sample assessment must be acceptable or bad")
+        normalized.append({"queue_id": queue_id, "assessment": assessment})
+    return normalized
+
+
 def _validated_decision_document(document):
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review decision must be an object")
@@ -631,6 +660,7 @@ def _validated_decision_document(document):
     ):
         raise CohortReviewError("Cohort review decision sample IDs are invalid")
     reviewed = document.get("reviewed_samples")
+    assessments = document.get("sample_assessments", [])
     targets = document.get("target_items")
     if not isinstance(reviewed, list) or not isinstance(targets, list) or not targets:
         raise CohortReviewError("Cohort review decision evidence is invalid")
@@ -644,6 +674,28 @@ def _validated_decision_document(document):
         raise CohortReviewError("Cohort review decision item IDs must be unique")
     if not set(sampled).issubset(target_ids) or not set(reviewed_ids).issubset(sampled):
         raise CohortReviewError("Cohort review decision sample binding is invalid")
+    if not isinstance(assessments, list):
+        raise CohortReviewError("Cohort sample assessments must be a list")
+    assessment_ids = []
+    for value in assessments:
+        if not isinstance(value, dict):
+            raise CohortReviewError("Cohort sample assessment must be an object")
+        queue_id = _required_text(
+            value.get("queue_id"), "Cohort sample assessment queue ID"
+        )
+        if value.get("assessment") not in {"heard", "acceptable", "bad"}:
+            raise CohortReviewError("Cohort sample assessment is unsupported")
+        if set(value) != {"queue_id", "assessment"}:
+            raise CohortReviewError("Cohort sample assessment fields are invalid")
+        assessment_ids.append(queue_id)
+    if assessment_ids and assessment_ids != reviewed_ids:
+        raise CohortReviewError(
+            "Cohort sample assessments do not match reviewed evidence"
+        )
+    if decision == "accepted" and any(
+        value["assessment"] == "bad" for value in assessments
+    ):
+        raise CohortReviewError("Accepted cohort contains a bad sample assessment")
     if decision in {"accepted", "expand"} and set(reviewed_ids) != set(sampled):
         raise CohortReviewError("Cohort review decision is missing reviewed samples")
     if decision == "rejected" and not reviewed_ids:

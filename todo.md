@@ -7,12 +7,6 @@ sections after their implementation has been verified and committed.
 
 ### P0 - Make checksum-bound cohort review usable and reversible before decision
 
-- [ ] Make cohort decisions explicit at the sample and cohort levels. The UI
-      must clearly distinguish `sample sounds bad`, `reject cohort`, `accept
-      cohort`, and `expand sample`; explain how many exact WAVs each action will
-      affect before confirmation. Accept remains gated on all required samples,
-      while Reject remains available after any completed sample and Replay
-      remains available before and after the gate is satisfied.
 - [ ] Preserve actionable controls after playback. Finishing, stopping,
       replaying or encountering a media error must never leave Apply/Accept,
       Reject or replay/navigation buttons permanently disabled. Display the

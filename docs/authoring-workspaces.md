@@ -517,8 +517,15 @@ Stop, playback error, selection change and stale hashes do not. `Accept cohort`
 remains disabled until every sample finishes, `Reject cohort` requires at least
 one finished sample, and `Expand sample` requires the complete current sample.
 The progress label and action tooltips explain the heard count, selected state,
-disabled gate and exact number of cohort WAVs affected. The workbench writes
-idempotent immutable plan/decision evidence under the workspace
+disabled gate and exact number of cohort WAVs affected. After a complete
+playback, `Mark sample bad` records a reversible sample-level assessment; it
+does not reject the cohort. A bad marker blocks `Accept cohort` until cleared,
+while `Reject cohort` remains an explicit separate action. The confirmation
+reports the heard-sample count, bad-sample count and exact target-WAV count.
+New decisions bind the ordered per-sample `acceptable` or `bad` assessments to
+the reviewed queue IDs; historical version-1 decisions without that additive
+field remain readable. The workbench writes idempotent immutable plan/decision
+evidence under the workspace
 `cohort-reviews/` directory before a terminal projection, asks for confirmation,
 and reloads authority afterwards. The controls never auto-apply anything on
 workbench open. No command or UI decision was applied to the real Character

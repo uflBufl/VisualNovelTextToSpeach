@@ -1552,7 +1552,17 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._playback_prepare_active)
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
             self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Heard")
+            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "No issue marked")
             self.assertTrue(dialog.cohort_replay.isEnabled())
+            self.assertTrue(dialog.cohort_accept.isEnabled())
+
+            dialog.cohort_mark_bad.click()
+            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "Sounds bad")
+            self.assertEqual(dialog.cohort_mark_bad.text(), "Clear sample issue")
+            self.assertFalse(dialog.cohort_accept.isEnabled())
+            self.assertTrue(dialog.cohort_reject.isEnabled())
+            dialog.cohort_mark_bad.click()
+            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "No issue marked")
             self.assertTrue(dialog.cohort_accept.isEnabled())
             self.assertTrue(dialog.cohort_reject.isEnabled())
             self.assertIn("1/1 heard", dialog.cohort_progress.text())
@@ -1697,7 +1707,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertEqual(dialog.cohort_samples.rowCount(), 3)
             self.assertEqual(
-                dialog.cohort_samples.item(1, 2).text(),
+                dialog.cohort_samples.item(1, 3).text(),
                 "Narrator -> Rhiannon",
             )
 

@@ -180,6 +180,10 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             )
 
         self.assertEqual(decision.document["projection_review_status"], "approved")
+        self.assertEqual(
+            decision.document["sample_assessments"],
+            [{"queue_id": queue_id, "assessment": "heard"}],
+        )
         self.assertEqual(decision.document["reviewed_samples"][0]["queue_id"], queue_id)
         self.assertEqual(decision.document["target_items"][0]["queue_id"], queue_id)
         self.assertEqual(
@@ -204,6 +208,35 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             )
 
         self.assertEqual(decision.document["projection_review_status"], "rejected")
+
+    def test_bad_sample_is_bound_to_rejection_and_blocks_acceptance(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+
+            with self.assertRaisesRegex(CohortReviewError, "marked as bad"):
+                build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    "accepted",
+                    reviewed_queue_ids=[queue_id],
+                    sample_assessments={queue_id: "bad"},
+                )
+            decision = build_cohort_review_decision(
+                plan,
+                cohort_id,
+                "rejected",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={queue_id: "bad"},
+            )
+
+        self.assertEqual(
+            decision.document["sample_assessments"],
+            [{"queue_id": queue_id, "assessment": "bad"}],
+        )
 
     def test_expand_requires_complete_current_sample_and_larger_bound(self):
         with TemporaryDirectory() as directory:
@@ -384,7 +417,10 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
     def test_mismatched_decision_creates_no_immutable_evidence(self):
         for decision_name in ("accepted", "expand"):
-            with self.subTest(decision=decision_name), TemporaryDirectory() as directory:
+            with (
+                self.subTest(decision=decision_name),
+                TemporaryDirectory() as directory,
+            ):
                 workspace, _state_path, queue_id = self.create_pending_workspace(
                     Path(directory)
                 )
