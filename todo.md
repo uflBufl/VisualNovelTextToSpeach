@@ -13,12 +13,6 @@ sections after their implementation has been verified and committed.
       task instead of showing every subsystem at once; move secondary generation
       controls, voice-reference browsing and technical logs into clearly named
       tabs or collapsible detail panels.
-- [ ] Make review the primary workspace: keep the audio controls, selected line,
-      decision controls and pending navigation together; show Speaker, effective
-      synthesis voice (for example `Narrator -> Centurion`), status, attempts
-      and quality warnings without requiring horizontal scanning. Filters must
-      make Narrator-only and character-only work obvious and must never silently
-      mix unrelated voices into a focused cohort task.
 - [ ] Add drill-down counts behind the compact Review/Coverage/Selection
       summary. Finish applying the established source-speaker/effective-voice
       terminology to pending review, technical attention, missing reference and

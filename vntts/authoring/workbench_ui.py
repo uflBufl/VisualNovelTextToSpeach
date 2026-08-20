@@ -673,7 +673,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_search.setPlaceholderText("Search line text")
         self.review_search.setAccessibleName("Filter review by line text")
         self.rhiannon_only = QPushButton("Rhiannon only")
-        self.exclude_narrator = QPushButton("Exclude Narrator")
+        self.narrator_only = QPushButton("Narrator only")
+        self.exclude_narrator = QPushButton("Characters only")
         self.exclude_narrator.setCheckable(True)
         self._accessible_button(
             self.rhiannon_only,
@@ -681,8 +682,13 @@ class AuthoringWorkbenchDialog(QDialog):
             "Set the independent review character filter to Rhiannon",
         )
         self._accessible_button(
+            self.narrator_only,
+            "Show only Narrator review items",
+            "Set the review voice filter to source Narrator lines",
+        )
+        self._accessible_button(
             self.exclude_narrator,
-            "Exclude Narrator from review",
+            "Show character review items only",
             "Hide narrator outcomes without changing generation scope",
         )
         review_filters = QHBoxLayout()
@@ -692,6 +698,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_collection,
             self.review_search,
             self.rhiannon_only,
+            self.narrator_only,
             self.exclude_narrator,
         ):
             review_filters.addWidget(widget)
@@ -753,13 +760,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.cohort_reject = QPushButton("Reject cohort")
         self.cohort_expand = QPushButton("Expand sample")
 
-        self.review_table = QTableWidget(0, 8)
+        self.review_table = QTableWidget(0, 9)
         self.review_table.setHorizontalHeaderLabels(
             [
                 "Line",
                 "Source speaker",
                 "Effective voice",
                 "Status",
+                "Attempts",
                 "Collection",
                 "Technical",
                 "Text",
@@ -775,7 +783,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setSortingEnabled(False)
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.horizontalHeader().setSectionResizeMode(
-            6, QHeaderView.ResizeMode.Stretch
+            7, QHeaderView.ResizeMode.Stretch
         )
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
@@ -1021,7 +1029,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_collection.currentTextChanged.connect(self._apply_review_filters)
         self.review_search.textChanged.connect(self._apply_review_filters)
         self.rhiannon_only.clicked.connect(self._show_rhiannon_reviews)
-        self.exclude_narrator.toggled.connect(self._apply_review_filters)
+        self.narrator_only.clicked.connect(self._show_narrator_reviews)
+        self.exclude_narrator.toggled.connect(self._exclude_narrator_changed)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
         self.reference_next.clicked.connect(lambda: self._move_reference(1))
         self.reference_play.clicked.connect(self.play_reference)
@@ -1835,6 +1844,7 @@ class AuthoringWorkbenchDialog(QDialog):
                     review.speaker,
                     self._effective_review_voice(review),
                     review.review_status or review.status,
+                    str(review.attempts),
                     review.collection_id or "Unassigned",
                     review_technical_summary(review),
                     review.text,
@@ -1843,7 +1853,7 @@ class AuthoringWorkbenchDialog(QDialog):
             ):
                 self.review_table.setItem(row, column, QTableWidgetItem(value))
             self.review_table.item(row, 0).setData(256, review)
-        for column, width in enumerate((190, 120, 120, 110, 120, 260)):
+        for column, width in enumerate((190, 120, 120, 110, 80, 120, 260)):
             self.review_table.setColumnWidth(column, width)
 
     def _populate_review_filter_choices(self):
@@ -1907,7 +1917,10 @@ class AuthoringWorkbenchDialog(QDialog):
                 item.collection_id != collection
             ):
                 return False
-            if needle and needle not in item.text.casefold():
+            if needle and not any(
+                needle in value.casefold()
+                for value in (item.text, item.line_id, item.queue_id)
+            ):
                 return False
             if status == "Awaiting review":
                 return item.status == "generated" and item.review_status in {
@@ -2326,7 +2339,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_character.setCurrentText("All characters")
         self.review_status.setCurrentText("Awaiting review")
         self.review_collection.setCurrentText("All collections")
-        self.review_search.clear()
+        self.review_search.setText(queue_id)
         self.exclude_narrator.setChecked(False)
         self._apply_review_filters()
         row = self._row_for_queue_id(queue_id)
@@ -2409,6 +2422,19 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_character.addItem("Rhiannon")
             index = self.review_character.findText("Rhiannon")
         self.review_character.setCurrentIndex(index)
+
+    def _show_narrator_reviews(self):
+        index = self.review_character.findText("Narrator")
+        if index < 0:
+            self.review_character.addItem("Narrator")
+            index = self.review_character.findText("Narrator")
+        self.exclude_narrator.setChecked(False)
+        self.review_character.setCurrentIndex(index)
+
+    def _exclude_narrator_changed(self, checked):
+        if checked and self.review_character.currentText() == "Narrator":
+            self.review_character.setCurrentText("All characters")
+        self._apply_review_filters()
 
     def _row_for_queue_id(self, queue_id):
         if queue_id is None:
@@ -2578,6 +2604,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 f"Current review: {selected.line_id} | source speaker {selected.speaker} | "
                 f"effective voice {self._effective_review_voice(selected)} | "
                 f"status {selected.review_status or selected.status} | "
+                f"attempts {selected.attempts} | "
                 f"{review_technical_summary(selected)}"
             )
         self._update_cohort_actions()
@@ -3130,6 +3157,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_collection,
             self.review_search,
             self.rhiannon_only,
+            self.narrator_only,
             self.exclude_narrator,
             self.review_table,
             self.previous_pending,

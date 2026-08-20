@@ -579,7 +579,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 dialog._selected_review_item().queue_id, "rhiannon-pending"
             )
-            self.assertIn("near clipping", dialog.review_table.item(0, 5).text())
+            self.assertIn("near clipping", dialog.review_table.item(0, 6).text())
             dialog.review_status.setCurrentText("Awaiting review")
             dialog.rhiannon_only.click()
             self.assertEqual(dialog.review_table.rowCount(), 1)
@@ -587,7 +587,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog._selected_review_item().queue_id, "rhiannon-pending"
             )
             dialog.review_character.setCurrentText("All characters")
+            dialog.narrator_only.click()
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(
+                dialog._selected_review_item().queue_id, "narrator-pending"
+            )
+            self.assertEqual(dialog.review_table.item(0, 2).text(), "Rhiannon")
             dialog.exclude_narrator.setChecked(True)
+            self.assertEqual(dialog.review_character.currentText(), "All characters")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             dialog.review_collection.setCurrentText("side")
             self.assertEqual(dialog.review_table.rowCount(), 0)
@@ -599,7 +606,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.review_status.setCurrentText("Failed: audio limit")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(dialog._selected_review_item().queue_id, "narrator-failed")
-            self.assertIn("missed EOS", dialog.review_table.item(0, 5).text())
+            self.assertIn("missed EOS", dialog.review_table.item(0, 6).text())
+            self.assertEqual(dialog.review_table.item(0, 4).text(), "3")
 
     def test_sequential_pending_navigation_and_592_item_projection(self):
         with TemporaryDirectory() as directory:
@@ -1619,6 +1627,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.replay_selected_cohort_sample()
             self.wait_for(lambda: not dialog._playback_prepare_active)
+            self.assertEqual(dialog.review_search.text(), queue_id)
+            self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertTrue(dialog.cohort_stop.isEnabled())
             dialog.stop_preview()
             self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")

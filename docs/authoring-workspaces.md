@@ -552,6 +552,12 @@ columns `Source speaker` and `Effective voice`; narrator rows retain the source
 identity `Narrator` while showing the configured synthesis choice, for example
 `Narrator` beside `Centurion`. The selected-line description uses the same
 terms, so the UI does not present `Narrator` as if it were the chosen voice.
+The review table keeps status, attempt count and technical quality summary next
+to those identities. `Narrator only` and `Characters only` are explicit,
+mutually coherent filter actions; the existing character and collection filters
+remain independent. Opening a cohort sample scopes the main review table by its
+exact queue ID, so unrelated Narrator outcomes do not appear beside the sample
+being judged. Line and queue IDs are searchable as well as dialogue text.
 
 Voice references are searchable and navigable, and playback revalidates the
 contained snapshot at click time. Recent preview choices store only validated
