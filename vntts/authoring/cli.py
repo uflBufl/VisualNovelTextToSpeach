@@ -125,6 +125,11 @@ from vntts.authoring.voice_quality_gate import (
     load_voice_quality_gate,
     write_voice_quality_gate,
 )
+from vntts.authoring.voice_repair_comparison import (
+    VoiceRepairComparisonError,
+    build_voice_repair_comparison_plan,
+    write_voice_repair_comparison_plan,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -472,6 +477,19 @@ def create_parser():
     voice_gate_check.add_argument("gate", type=Path)
     voice_gate_check.add_argument("workspace", type=Path)
     voice_gate_check.add_argument("queue_id")
+    voice_repair = subparsers.add_parser(
+        "voice-repair-comparison-plan",
+        help="Plan a checksum-bound profile comparison for one unresolved voice",
+    )
+    voice_repair.add_argument("workspace", type=Path)
+    voice_repair.add_argument("character")
+    voice_repair.add_argument(
+        "--generation-profile",
+        action="append",
+        dest="generation_profiles",
+        help="Bounded profile to compare; repeat for each candidate",
+    )
+    voice_repair.add_argument("--output", type=Path, required=True)
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -1064,6 +1082,21 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "voice-repair-comparison-plan":
+            plan = build_voice_repair_comparison_plan(
+                arguments.workspace,
+                arguments.character,
+                generation_profiles=(
+                    ("stable", "natural")
+                    if arguments.generation_profiles is None
+                    else tuple(arguments.generation_profiles)
+                ),
+            )
+            write_voice_repair_comparison_plan(plan, arguments.output)
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
         if arguments.command == "failure-repair-plan":
             print(
                 json.dumps(
@@ -1351,6 +1384,7 @@ def main(argv=None):
         VoiceGenerationQueueError,
         VoiceManifestError,
         VoiceQualityGateError,
+        VoiceRepairComparisonError,
     ) as error:
         create_parser().error(str(error))
     print(

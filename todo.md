@@ -88,15 +88,18 @@ Follow the evidence-backed order and invariants in
       real-story sample already found a cohort-level pacing/pause defect, so
       leave those exact items pending until the repair comparison below.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
-      Preserve the 11 exact approved WAVs; do not promote either whole portrait
-      variant. The current state has 19 listened rejects, seven pending and 11
-      failed Dobharchú items. Build a successor immutable comparison over those
-      37 unresolved items using bounded alternative reference/profile/backend
-      candidates, with token-level duration control still disabled. Add a
-      conservative slow-pace flag and a pause-sensitive gate that catches the
-      reviewer-observed inter-phrase pauses missed by the current zero-silence
-      metric. Review a deterministic short/medium/long sample per exact portrait
-      variant and expand only when that sample finds another substantive defect.
+      Follow the immutable census and candidate contract in
+      [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
+      Preserve the 15 exact approvals and do not promote either portrait variant.
+      Publish an explicit portrait binding for the two listed absent IDs rather
+      than inferring it from `Dobharchú`. Then create separate config-addressed
+      `stable` and `natural` successor workspaces and generate only the five exact
+      deterministic sample IDs with token-level duration control disabled.
+      Compare matching lines, review every new technical-attention WAV plus the
+      complete five-line sample, and expand only a variant whose sample finds
+      another substantive defect. Apply the winning exact control only after the
+      comparison decision is checksum-bound; keep the other 15 approvals and all
+      unrelated queue items unchanged.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

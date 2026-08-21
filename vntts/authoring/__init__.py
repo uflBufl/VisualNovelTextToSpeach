@@ -215,6 +215,15 @@ from vntts.authoring.voice_quality_gate import (
     load_voice_quality_gate,
     write_voice_quality_gate,
 )
+from vntts.authoring.voice_repair_comparison import (
+    VOICE_REPAIR_COMPARISON_SCHEMA,
+    VOICE_REPAIR_COMPARISON_VERSION,
+    VoiceRepairComparisonError,
+    VoiceRepairComparisonPlan,
+    build_voice_repair_comparison_plan,
+    load_voice_repair_comparison_plan,
+    write_voice_repair_comparison_plan,
+)
 from vntts.authoring.workbench import (
     CollectionSelection,
     ImmutableHistoryTimestamp,
@@ -311,9 +320,13 @@ __all__ = [
     "WorkspaceVoice",
     "VOICE_QUALITY_GATE_SCHEMA",
     "VOICE_QUALITY_GATE_VERSION",
+    "VOICE_REPAIR_COMPARISON_SCHEMA",
+    "VOICE_REPAIR_COMPARISON_VERSION",
     "VoiceQualityCompatibility",
     "VoiceQualityGate",
     "VoiceQualityGateError",
+    "VoiceRepairComparisonError",
+    "VoiceRepairComparisonPlan",
     "aggregate_listening_report",
     "annotate_delivery",
     "apply_cohort_review_decision",
@@ -328,6 +341,7 @@ __all__ = [
     "build_failure_regeneration_plan",
     "build_specialist_failure_plan",
     "build_voice_quality_gate",
+    "build_voice_repair_comparison_plan",
     "build_pending_resolution_plan",
     "build_pending_regeneration_command",
     "execute_cohort_review_decision",
@@ -366,6 +380,7 @@ __all__ = [
     "load_source_reference_plan",
     "load_specialist_failure_plan",
     "load_voice_quality_gate",
+    "load_voice_repair_comparison_plan",
     "is_spoken_queue_item",
     "next_pending_trial",
     "plan_generation_queue",
@@ -412,4 +427,5 @@ __all__ = [
     "write_pending_resolution_plan",
     "write_specialist_failure_plan",
     "write_voice_quality_gate",
+    "write_voice_repair_comparison_plan",
 ]
