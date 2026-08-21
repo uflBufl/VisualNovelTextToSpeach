@@ -93,17 +93,15 @@ Follow the evidence-backed order and invariants in
       Preserve the 15 primary approvals. Record the user's exact approval of the
       three checksum-bound natural WAVs in the candidate review state; their two
       0.64-second pauses were heard as natural and are not defects for those exact
-      artifacts. Do not weaken the global silence gate. Publish an additive,
-      checksum-bound expression-alias contract for portraits 534703 and 534704:
-      they are the same Dobharchú identity with different facial expressions, but
-      their source portrait IDs, reference files and synthesis provenance remain
-      distinct. Do not extend that alias to unbound portrait 534705. Then create a
-      bounded sentence-boundary repair for the two natural sample failures, and
-      expand the accepted natural profile only across the remaining lines bound
-      to the two approved portrait variants. Verify exact queue scope, preserve
-      every unrelated state item, and never alter the primary approvals while
-      producing the successor outcome set. Stable failed all five samples and
-      must not be retried without a new bounded hypothesis.
+      artifacts. Do not weaken the global silence gate. The checksum-bound
+      expression-alias decision for portraits 534703 and 534704 is published and
+      preserves both source variants; do not extend it to unbound portrait
+      534705. Create a bounded sentence-boundary repair for the two natural sample
+      failures, and expand the accepted natural profile only across the remaining
+      lines bound to the two approved portrait variants. Verify exact queue scope,
+      preserve every unrelated state item, and never alter the primary approvals
+      while producing the successor outcome set. Stable failed all five samples
+      and must not be retried without a new bounded hypothesis.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

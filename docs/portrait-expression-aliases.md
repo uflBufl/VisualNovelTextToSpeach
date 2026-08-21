@@ -51,3 +51,14 @@ the same person with different expressions. The decision preserves variant IDs
 `cluster-e8dcae5254441ab7633ba7d9-anchor-1` under one logical identity. Portrait
 `534705` remains outside the decision because no checksum-bound portrait or
 source-audio route exists for it.
+
+The published real-data plan ID is
+`f441a8f9366f7f3c61892802f5b36bd8d19ffe97e036e2a6e2b1393a2fe477be`
+and its file SHA-256 is
+`41eefae7c4a3dea4a8aa578ccf48c22718b3b63d26dbbe4fe032fb4f79854b89`.
+The human decision ID is
+`f4c7ebfe5bec30b7649e12b6b75b853221ddffcf4660ff83d7a4f2cb302056f1`,
+its file SHA-256 is
+`c186caae367b598ce48901fdd64e17cd9d67444416850fe2589dbc938c9ef226`,
+and both variants map to logical identity
+`cc0370b5c6aa05bce10c30bcef36daa9a0468e34fd400e2486b6e51201d64f51`.
