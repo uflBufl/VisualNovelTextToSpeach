@@ -282,7 +282,8 @@ class CohortReviewBundleDialog(QDialog):
             f"{self.bundle.document['cohort_count']} cohorts | "
             f"{self.bundle.document['sample_item_count']} required samples for "
             f"{self.bundle.document['pending_item_count']} pending WAVs | "
-            f"{self.bundle.document['blocked_item_count']} blocked items excluded"
+            f"{self.bundle.document['blocked_item_count']} unique inherited blocked "
+            "items excluded"
         )
         self.status.setText("READY: select a cohort and play its exact samples")
         self._populate_cohorts()

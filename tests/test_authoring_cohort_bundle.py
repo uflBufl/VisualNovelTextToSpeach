@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests import test_authoring_cohort_review
 from vntts.authoring.cli import main as authoring_main
@@ -41,6 +42,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(bundle.document["cohort_count"], 2)
         self.assertEqual(bundle.document["pending_item_count"], 2)
         self.assertEqual(bundle.document["sample_item_count"], 2)
+        self.assertEqual(bundle.document["schema_version"], 2)
         self.assertEqual(len(bundle.document["cohorts"]), 2)
         for cohort in bundle.document["cohorts"]:
             self.assertEqual(len(cohort["samples"]), 1)
@@ -157,3 +159,22 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             {value[0].resolve() for value in sources},
         )
         self.assertTrue(all(sample.item.authority is not None for sample in samples))
+
+    def test_live_loader_requests_only_exact_sample_ids(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            from vntts.authoring import cohort_bundle as module
+
+            calls = []
+            original = module.list_review_items
+
+            def projected(workspace, queue_ids=None):
+                calls.append(tuple(queue_ids or ()))
+                return original(workspace, queue_ids=queue_ids)
+
+            with patch.object(module, "list_review_items", side_effect=projected):
+                _current, samples = load_cohort_review_bundle_samples(bundle)
+
+        self.assertEqual(sum(len(value) for value in calls), len(samples))
+        self.assertTrue(all(value for value in calls))

@@ -20,7 +20,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.workbench import ReviewItem, list_review_items
 
 COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
-COHORT_REVIEW_BUNDLE_VERSION = 1
+COHORT_REVIEW_BUNDLE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,14 @@ def _assemble_bundle(source_plans):
         "sample_item_count": sum(
             source["plan"]["sample_item_count"] for source in sources
         ),
-        "blocked_item_count": sum(
+        "blocked_item_count": len(
+            {
+                item["queue_id"]
+                for source in sources
+                for item in source["plan"]["blocked_items"]
+            }
+        ),
+        "blocked_source_occurrence_count": sum(
             source["plan"]["blocked_item_count"] for source in sources
         ),
         "sources": sources,
@@ -189,16 +196,32 @@ def refresh_cohort_review_bundle(bundle):
 
 def load_cohort_review_bundle_samples(bundle):
     """Revalidate a bundle and project its exact samples for an operator UI."""
-    current = refresh_cohort_review_bundle(bundle)
+    document = _validated_bundle_document(bundle)
+    current = CohortReviewBundle(document["bundle_id"], document)
     samples = []
-    for source in current.document["sources"]:
+    for source in document["sources"]:
         workspace = Path(source["workspace"])
-        review_items = {value.queue_id: value for value in list_review_items(workspace)}
-        flattened = {
-            value["cohort_id"]: value
-            for value in current.document["cohorts"]
+        source_cohorts = [
+            value
+            for value in document["cohorts"]
             if value["workspace_id"] == source["workspace_id"]
+        ]
+        sample_ids = [
+            sample["queue_id"]
+            for cohort in source_cohorts
+            for sample in cohort["samples"]
+        ]
+        review_items = {
+            value.queue_id: value
+            for value in list_review_items(workspace, queue_ids=sample_ids)
         }
+        if review_items and {
+            value.authority.state_sha256 for value in review_items.values()
+        } != {source["plan"]["state_sha256"]}:
+            raise CohortReviewError(
+                f"Bundle source state changed: {source['workspace_id']}"
+            )
+        flattened = {value["cohort_id"]: value for value in source_cohorts}
         for cohort in source["plan"]["cohorts"]:
             bundle_cohort = flattened[cohort["cohort_id"]]
             for sample in bundle_cohort["samples"]:
@@ -334,6 +357,7 @@ def _validated_bundle_document(bundle):
         "pending_item_count",
         "sample_item_count",
         "blocked_item_count",
+        "blocked_source_occurrence_count",
         "sources",
         "cohorts",
         "bundle_id",
@@ -404,10 +428,20 @@ def _validated_bundle_document(bundle):
         source["plan"]["sample_item_count"] for source in sources
     ):
         raise CohortReviewError("Cohort review bundle sample count is invalid")
-    if document.get("blocked_item_count") != sum(
-        source["plan"]["blocked_item_count"] for source in sources
+    if document.get("blocked_item_count") != len(
+        {
+            item["queue_id"]
+            for source in sources
+            for item in source["plan"]["blocked_items"]
+        }
     ):
         raise CohortReviewError("Cohort review bundle blocked count is invalid")
+    if document.get("blocked_source_occurrence_count") != sum(
+        source["plan"]["blocked_item_count"] for source in sources
+    ):
+        raise CohortReviewError(
+            "Cohort review bundle blocked source-occurrence count is invalid"
+        )
 
     actual = []
     for entry in cohorts:

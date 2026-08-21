@@ -387,18 +387,18 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         raise CohortReviewError(
             "Expand decisions create a new plan and cannot be applied"
         )
-    current = build_cohort_review_plan(
-        workspace_directory,
-        clean_samples_per_bucket=plan_document["policy"]["clean_samples_per_bucket"],
-    )
-    if current.plan_id != plan_document["plan_id"]:
-        raise CohortReviewError(
-            "Workspace review authority changed after the cohort plan was published"
-        )
     try:
+        _directory, workspace = _load_workspace(workspace_directory)
         summary = inspect_workspace(workspace_directory)
     except AuthoringWorkbenchError as error:
         raise CohortReviewError(str(error)) from error
+    if (
+        workspace.get("config_fingerprint")
+        != plan_document["workspace_config_fingerprint"]
+    ):
+        raise CohortReviewError(
+            "Workspace configuration changed after the cohort plan was published"
+        )
     if summary.state is None:
         raise CohortReviewError("Workspace has no generation state to review")
     try:
@@ -410,6 +410,10 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         ) from error
     if hashlib.sha256(state_payload).hexdigest() != plan_document["state_sha256"]:
         raise CohortReviewError("Cohort review state changed before projection")
+    if state.get("queue_sha256") != plan_document["queue_sha256"]:
+        raise CohortReviewError(
+            "Cohort review queue identity changed before projection"
+        )
     authorities = {}
     for target in decision_document["target_items"]:
         queue_id = target["queue_id"]

@@ -1075,7 +1075,20 @@ def _review_voice_character(item, result):
     )
 
 
-def list_review_items(workspace_directory):
+def list_review_items(workspace_directory, queue_ids=None):
+    selected_queue_ids = None
+    if queue_ids is not None:
+        if not isinstance(queue_ids, (list, tuple, set, frozenset)):
+            raise AuthoringWorkbenchError("Review queue IDs must be a collection")
+        selected_queue_ids = set()
+        for queue_id in queue_ids:
+            if not isinstance(queue_id, str) or not queue_id:
+                raise AuthoringWorkbenchError("Review queue ID must be non-empty text")
+            if queue_id in selected_queue_ids:
+                raise AuthoringWorkbenchError(
+                    f"Review queue ID is duplicated: {queue_id}"
+                )
+            selected_queue_ids.add(queue_id)
     summary = inspect_workspace(workspace_directory)
     if summary.state is None:
         return ()
@@ -1098,6 +1111,8 @@ def list_review_items(workspace_directory):
         )
     records = []
     for item in queue.items:
+        if selected_queue_ids is not None and item.queue_id not in selected_queue_ids:
+            continue
         result = state["items"].get(item.queue_id)
         if not isinstance(result, dict):
             continue
@@ -1169,6 +1184,13 @@ def list_review_items(workspace_directory):
                 ),
             )
         )
+    if selected_queue_ids is not None:
+        projected = {record.queue_id for record in records}
+        missing = sorted(selected_queue_ids - projected)
+        if missing:
+            raise AuthoringWorkbenchError(
+                f"Requested review outcomes are unavailable: {missing}"
+            )
     return tuple(records)
 
 

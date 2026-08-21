@@ -191,6 +191,27 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             cohort["items"][0]["audio_sha256"],
         )
 
+    def test_terminal_apply_uses_bound_state_instead_of_rescanning_plan(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+
+            with patch(
+                "vntts.authoring.cohort_review.build_cohort_review_plan",
+                side_effect=AssertionError("full plan rescan"),
+            ):
+                projection = apply_cohort_review_decision(workspace, plan, decision)
+
+        self.assertEqual(projection.queue_ids, (queue_id,))
+
     def test_reject_requires_reviewed_evidence_but_not_every_sample(self):
         with TemporaryDirectory() as directory:
             workspace, _state_path, queue_id = self.create_pending_workspace(
