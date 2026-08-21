@@ -59,6 +59,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     INLINE_PAUSE_MARKER,
+    MAX_BOUNDED_TOTAL_ATTEMPTS,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
@@ -2088,7 +2089,19 @@ def _carry_forward_review_outcomes(
             f"Offline fallback source profile for {queue_id!r}",
         )
         strategy = repair_policy.strategy_for(queue_id)
-        minimum_attempts = 3 if strategy == OFFLINE_FALLBACK_BACKEND else 1
+        minimum_attempts = (
+            MAX_BOUNDED_TOTAL_ATTEMPTS if strategy == OFFLINE_FALLBACK_BACKEND else 1
+        )
+        attempts_by_provider = result.get("attempts_by_provider")
+        source_provider_attempts = (
+            attempts_by_provider.get(result.get("provider"), attempts)
+            if isinstance(attempts_by_provider, dict)
+            else attempts
+        )
+        source_repair = result.get("failure_repair")
+        source_repair_strategy = (
+            source_repair.get("strategy") if isinstance(source_repair, dict) else None
+        )
         sentence_mismatch = strategy == SENTENCE_BOUNDARY_SEGMENTATION and not (
             _sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
         )
@@ -2099,6 +2112,22 @@ def _carry_forward_review_outcomes(
             failure_kind_mismatch = sentence_mismatch
         elif strategy == INLINE_PAUSE_MARKER:
             failure_kind_mismatch = inline_pause_mismatch
+        elif strategy == OFFLINE_FALLBACK_BACKEND:
+            failure_kind_mismatch = not (
+                isinstance(source_provider_attempts, int)
+                and not isinstance(source_provider_attempts, bool)
+                and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                and (
+                    failure.get("kind") == "missed_eos_audio_limit"
+                    or (
+                        failure.get("kind") == "speech_silence"
+                        and source_repair_strategy == INLINE_PAUSE_MARKER
+                        and _inline_pause_matches_failure(
+                            failure, queue_by_id[queue_id].text
+                        )
+                    )
+                )
+            )
         else:
             failure_kind_mismatch = failure.get("kind") != "missed_eos_audio_limit"
         if (
@@ -2166,6 +2195,10 @@ def _carry_forward_review_outcomes(
                 reference_character,
             ),
         }
+        if strategy == OFFLINE_FALLBACK_BACKEND:
+            carry_record["source_provider_attempts"] = source_provider_attempts
+            if source_repair_strategy is not None:
+                carry_record["source_repair_strategy"] = source_repair_strategy
         if strategy == BOUNDED_SEED_RETRY:
             carry_record["source_provider_attempts"] = provider_attempts
         parent_carry = result.get("carry_forward")
@@ -2957,16 +2990,22 @@ def _validate_workspace_carry_forward(directory, workspace):
             "source_voice_reference",
         }
         bounded_failed_fields = failed_fields | {"source_provider_attempts"}
+        repaired_failed_fields = bounded_failed_fields | {"source_repair_strategy"}
         nested_failed_fields = failed_fields | {"source_parent_carry_forward"}
         nested_bounded_failed_fields = bounded_failed_fields | {
+            "source_parent_carry_forward"
+        }
+        nested_repaired_failed_fields = repaired_failed_fields | {
             "source_parent_carry_forward"
         }
         if not isinstance(item, dict) or frozenset(item) not in {
             frozenset(terminal_fields),
             frozenset(failed_fields),
             frozenset(bounded_failed_fields),
+            frozenset(repaired_failed_fields),
             frozenset(nested_failed_fields),
             frozenset(nested_bounded_failed_fields),
+            frozenset(nested_repaired_failed_fields),
         }:
             raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
         queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
@@ -3002,9 +3041,26 @@ def _validate_workspace_carry_forward(directory, workspace):
             allowed_failure_kinds = {"missed_eos_audio_limit"}
             if strategy in {SENTENCE_BOUNDARY_SEGMENTATION, INLINE_PAUSE_MARKER}:
                 allowed_failure_kinds.add("speech_silence")
+            source_repair_strategy = item.get("source_repair_strategy")
+            source_provider_attempts = item.get("source_provider_attempts")
+            if (
+                strategy == OFFLINE_FALLBACK_BACKEND
+                and source_repair_strategy == INLINE_PAUSE_MARKER
+                and isinstance(source_provider_attempts, int)
+                and not isinstance(source_provider_attempts, bool)
+                and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+            ):
+                allowed_failure_kinds.add("speech_silence")
             if item.get("source_failure_kind") not in allowed_failure_kinds:
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure kind is unsupported"
+                )
+            if (
+                source_repair_strategy == INLINE_PAUSE_MARKER
+                and item.get("source_failure_kind") != "speech_silence"
+            ):
+                raise AuthoringWorkbenchError(
+                    "Workspace carry-forward source repair conflicts with its failure"
                 )
             source_voice = item.get("source_voice_reference")
             if (
@@ -3018,9 +3074,13 @@ def _validate_workspace_carry_forward(directory, workspace):
                     "Workspace carry-forward source references are invalid"
                 )
             attempts = item.get("source_attempts")
-            minimum_attempts = 3
+            minimum_attempts = MAX_BOUNDED_TOTAL_ATTEMPTS
             if version == 3:
-                minimum_attempts = 3 if strategy == OFFLINE_FALLBACK_BACKEND else 1
+                minimum_attempts = (
+                    MAX_BOUNDED_TOTAL_ATTEMPTS
+                    if strategy == OFFLINE_FALLBACK_BACKEND
+                    else 1
+                )
             if (
                 not isinstance(attempts, int)
                 or isinstance(attempts, bool)
@@ -3030,7 +3090,7 @@ def _validate_workspace_carry_forward(directory, workspace):
                     "Workspace carry-forward failure attempts are invalid"
                 )
             if version == 3 and strategy == BOUNDED_SEED_RETRY:
-                provider_attempts = item.get("source_provider_attempts")
+                provider_attempts = source_provider_attempts
                 if (
                     not isinstance(provider_attempts, int)
                     or isinstance(provider_attempts, bool)
@@ -3039,6 +3099,27 @@ def _validate_workspace_carry_forward(directory, workspace):
                     raise AuthoringWorkbenchError(
                         "Workspace bounded-seed source attempts are exhausted"
                     )
+            if (
+                version == 3
+                and strategy == OFFLINE_FALLBACK_BACKEND
+                and source_provider_attempts is not None
+                and (
+                    not isinstance(source_provider_attempts, int)
+                    or isinstance(source_provider_attempts, bool)
+                    or source_provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS
+                )
+            ):
+                raise AuthoringWorkbenchError(
+                    "Workspace offline-fallback source attempts are not exhausted"
+                )
+            if source_repair_strategy is not None and source_repair_strategy not in {
+                BOUNDED_SEED_RETRY,
+                INLINE_PAUSE_MARKER,
+                SENTENCE_BOUNDARY_SEGMENTATION,
+            }:
+                raise AuthoringWorkbenchError(
+                    "Workspace carry-forward source repair is invalid"
+                )
             parent_carry = item.get("source_parent_carry_forward")
             if parent_carry is not None and not isinstance(parent_carry, dict):
                 raise AuthoringWorkbenchError(

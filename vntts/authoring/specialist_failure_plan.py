@@ -15,6 +15,8 @@ from vntts.authoring.cohort_review import (
     _write_document_no_replace,
 )
 from vntts.authoring.failure_repair import (
+    INLINE_PAUSE_MARKER,
+    MAX_BOUNDED_TOTAL_ATTEMPTS,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
@@ -204,6 +206,16 @@ def _next_action(result, repair, failure):
     strategy = repair.get("strategy")
     providers = result.get("attempts_by_provider")
     providers = providers if isinstance(providers, dict) else {}
+    if (
+        strategy == INLINE_PAUSE_MARKER
+        and failure.get("kind") == "speech_silence"
+        and providers.get(result.get("provider"), 0) >= MAX_BOUNDED_TOTAL_ATTEMPTS
+        and not providers.get("pocket-tts")
+    ):
+        return (
+            OFFLINE_FALLBACK_BACKEND,
+            "Inline-pause repair exhausted three primary attempts; one unseeded Pocket attempt remains bounded",
+        )
     if (
         strategy == SENTENCE_BOUNDARY_SEGMENTATION
         and failure.get("kind") == "missed_eos_audio_limit"

@@ -3400,21 +3400,58 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             "source_failure_kind",
             "source_voice_reference",
         }
-        allowed_sources = {
-            frozenset(required),
-            frozenset(required | {"source_parent_carry_forward"}),
+        optional = {
+            "source_parent_carry_forward",
+            "source_provider_attempts",
+            "source_repair_strategy",
         }
-        if not isinstance(source, dict) or frozenset(source) not in allowed_sources:
+        if (
+            not isinstance(source, dict)
+            or not required.issubset(source)
+            or not set(source).issubset(required | optional)
+        ):
             raise BulkGenerationError(
                 f"State item {queue_id!r} offline fallback source is malformed"
             )
+        source_failure_kind = source.get("source_failure_kind")
+        source_repair_strategy = source.get("source_repair_strategy")
+        source_provider_attempts = source.get("source_provider_attempts")
+        inline_pause_source = (
+            source_failure_kind == "speech_silence"
+            and source_repair_strategy == INLINE_PAUSE_MARKER
+            and isinstance(source_provider_attempts, int)
+            and not isinstance(source_provider_attempts, bool)
+            and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+        )
         if (
             source.get("mode") != "failed-outcome"
             or source.get("source_provider") == result.get("provider")
-            or source.get("source_failure_kind") != "missed_eos_audio_limit"
+            or source_failure_kind not in {"missed_eos_audio_limit", "speech_silence"}
+            or (source_failure_kind == "speech_silence" and not inline_pause_source)
+            or (
+                source_repair_strategy == INLINE_PAUSE_MARKER
+                and source_failure_kind != "speech_silence"
+            )
         ):
             raise BulkGenerationError(
                 f"State item {queue_id!r} offline fallback source is inconsistent"
+            )
+        if source_provider_attempts is not None:
+            source_provider_attempts = _nonnegative_int(
+                source_provider_attempts,
+                f"State item {queue_id!r} source provider attempts",
+            )
+            if source_provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+                raise BulkGenerationError(
+                    f"State item {queue_id!r} offline fallback source attempts are not exhausted"
+                )
+        if source_repair_strategy is not None and source_repair_strategy not in {
+            BOUNDED_SEED_RETRY,
+            INLINE_PAUSE_MARKER,
+            SENTENCE_BOUNDARY_SEGMENTATION,
+        }:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} offline fallback source repair is invalid"
             )
         _required_sha256(
             source.get("source_state_sha256"),

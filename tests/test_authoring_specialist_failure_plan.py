@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 
 from vntts.authoring.cohort_review import CohortReviewError
 from vntts.authoring.specialist_failure_plan import (
+    INLINE_PAUSE_MARKER,
     OFFLINE_FALLBACK_BACKEND,
     REFERENCE_OR_LIVE,
     SENTENCE_REPAIR_RETRY,
@@ -141,6 +142,25 @@ class SpecialistFailurePlanTest(unittest.TestCase):
 
         self.assertEqual(
             plan.document["items"][0]["next_action"], SENTENCE_REPAIR_RETRY
+        )
+
+    def test_exhausted_inline_pause_failure_gets_one_pocket_attempt(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root, INLINE_PAUSE_MARKER, "a")
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            item = state["items"]["a"]
+            item["failure"]["kind"] = "speech_silence"
+            item["failure"]["completion"] = "complete"
+            item["attempts"] = 3
+            item["attempts_by_provider"] = {"moss-tts": 3}
+            state_path.write_text(json.dumps(state))
+
+            plan = build_specialist_failure_plan((workspace,))
+
+        self.assertEqual(
+            plan.document["items"][0]["next_action"], OFFLINE_FALLBACK_BACKEND
         )
 
 

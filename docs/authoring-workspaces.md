@@ -148,12 +148,15 @@ up to a cumulative provider maximum of three. Cross-backend Pocket fallback
 keeps the stricter exhausted-attempt and Pocket default requirements below.
 Same-backend and cross-backend strategies cannot share one workspace.
 
-The inline-pause comparison is MOSS-only, accepts exactly one queue ID and one
-attempt, and records the original text hash, derived prompt hash, marker count,
-pause value and synthesis-control digest. It is an experiment boundary rather
-than an automatic repair policy. Create it with
+The inline-pause comparison is MOSS-only, accepts exactly one queue ID per run,
+and records the original text hash, derived prompt hash, marker count, pause
+value and synthesis-control digest. It remains bounded to three cumulative
+provider attempts and is an experiment boundary rather than an automatic repair
+policy. Create it with
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`; the child command must
-also use `--retries 0`.
+also use `--retries 0`. After the third typed internal-silence failure, both the
+failure plan and specialist plan select `offline_fallback_backend`; another
+inline-marker attempt is rejected before state mutation.
 
 Both creation and every later workspace load fail closed if the carried item,
 strategy, source configuration, provider-attempt count or exact queue-ID
@@ -186,10 +189,13 @@ attempts owned by another provider do not consume current seed space.
 An exhausted typed MOSS failure can move to a new immutable Pocket workspace
 without mutating or relabeling the MOSS history. The exact queue ID is declared
 with `--offline-fallback-failed`, and `--carry-forward-from` names the source
-workspace whose current failed item is copied as evidence. Creation requires a
-typed `missed_eos_audio_limit` result with at least three completed source
-attempts, a different source backend, and `pocket-tts` as the target backend.
-The generated child is restricted to exactly those IDs.
+workspace whose current failed item is copied as evidence. Creation requires
+either a typed `missed_eos_audio_limit` result with at least three completed
+source attempts, or a current typed `speech_silence` result whose exact
+`inline_pause_marker` repair has exhausted three attempts from that same
+provider. A different source backend and `pocket-tts` as the target backend are
+mandatory. Arbitrary silence failures cannot enter this path. The generated
+child is restricted to exactly those IDs.
 
 ```sh
 uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
@@ -204,12 +210,14 @@ uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
 ```
 
 The carry ledger binds the source workspace/state/item hashes, source
-provider/model/profile, failure kind, attempts, seed, effective character and
-all source reference hashes. The target workspace independently binds its
-Pocket model, profile, manifest and copied reference controls. `attempts`
-remains the cumulative history across providers, while
-`attempts_by_provider` gives each backend its own attempt sequence. Pocket does
-not expose deterministic seeded generation, so the
+provider/model/profile, failure kind, repair strategy, total and provider-local
+attempts, seed, effective character and all source reference hashes. The target
+workspace independently binds its Pocket model, profile, manifest and copied
+reference controls. A missing or incompatible selected voice/reference blocks
+readiness before backend construction and leaves the immutable MOSS failure for
+manual resolution. `attempts` remains the cumulative history across providers,
+while `attempts_by_provider` gives each backend its own attempt sequence.
+Pocket does not expose deterministic seeded generation, so the
 fallback sends `seed=None` to the backend and records `seed_applied=false`.
 The integer `seed` in state remains a monotonic provider-attempt identity; it
 must not be represented as an applied sampling seed. One config-addressed

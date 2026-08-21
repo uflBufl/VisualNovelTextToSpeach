@@ -121,18 +121,6 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Complete the bounded quality-first path for lines that cannot be segmented
-      safely, including two-word clauses such as `What happened? You're hurt.`
-      Inline-marker repair is now capped at three cumulative deterministic MOSS
-      attempts and accepts only a `complete` render that passes the unchanged
-      silence gate; exhaustion publishes no WAV and the failure plan switches to
-      `offline_fallback_backend`. Implement the remaining transition to the exact
-      configured typed offline fallback. When no identity-compatible fallback
-      exists, leave the line as explicit manual-review work.
-      Do not globally rewrite punctuation, force token-level duration or raise
-      the 1.2-second internal-silence limit. Do not spend the acceptance budget
-      on a broad temperature/top-k/top-p/repetition grid: external reports show
-      the failure is prompt-sensitive and those sweeps are not a reliable cure.
 - [ ] Compare segmentation against a conservative silence-compression candidate
       on a small checksum-bound corpus before deciding whether waveform repair
       is worth supporting. Compression may remove only the center of a single
