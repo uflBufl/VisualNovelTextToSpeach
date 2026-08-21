@@ -277,6 +277,16 @@ small real checksum-bound corpus shows equal words and speaker identity with
 better cadence than segmentation. A rejected or inconclusive comparison leaves
 sentence segmentation as the preferred repair.
 
+The authoring workbench projects this evidence conservatively before any raw
+bundle exists. A typed internal-silence failure with safe complete sentence
+boundaries is shown as `Long sentence-boundary pause`, not the generic
+`speech silence` cohort, and its technical column includes the measured raw
+internal pause. Generated sentence-segmentation and inline-marker outcomes show
+their measured repaired pause. These labels are read-only diagnostics: they do
+not create audio, weaken validation or make a failed item reviewable. Side-by-
+side replay and a transform-bound decision remain unavailable until a real
+checksum-bound comparison bundle exists.
+
 The existing resumable generator correctly deletes `.partial.wav` after a
 speech-silence validation failure and records only typed diagnostics in state.
 Consequently the current immutable workspaces contain no trustworthy raw WAV

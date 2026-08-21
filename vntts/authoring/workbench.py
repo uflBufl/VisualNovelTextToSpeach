@@ -189,12 +189,21 @@ class ReviewItem:
     peak: float | None = None
     technical_flags: tuple[str, ...] = ()
     failure_category: str | None = None
+    internal_pause_seconds: float | None = None
+    repair_strategy: str | None = None
 
 
-def generation_failure_category(error):
+def generation_failure_category(error, *, text=""):
     """Collapse volatile backend diagnostics into actionable failure cohorts."""
     if isinstance(error, dict):
-        kind = normalized_failure_record(error).get("kind")
+        failure = normalized_failure_record(error, text=text)
+        kind = failure.get("kind")
+        if (
+            kind == "speech_silence"
+            and text
+            and _sentence_repair_matches_failure(failure, text)
+        ):
+            return "Long sentence-boundary pause"
         return {
             "missed_eos_audio_limit": "audio limit / missed EOS",
             "speech_silence": "speech silence",
@@ -215,7 +224,10 @@ def review_technical_summary(item):
     """Describe objective review metrics without making a listening decision."""
     if item.duration_seconds is None:
         if item.failure_category is not None:
-            return "Failure: " + item.failure_category
+            summary = "Failure: " + item.failure_category
+            if item.internal_pause_seconds is not None:
+                summary += f" | measured raw pause {item.internal_pause_seconds:.2f}s"
+            return summary
         return "No generated WAV"
     metrics = [f"{item.duration_seconds:.2f}s"]
     if item.words_per_minute is not None:
@@ -226,7 +238,30 @@ def review_technical_summary(item):
         metrics.append("attention: " + ", ".join(item.technical_flags))
     else:
         metrics.append("technical pass")
+    if (
+        item.repair_strategy
+        in {
+            SENTENCE_BOUNDARY_SEGMENTATION,
+            INLINE_PAUSE_MARKER,
+        }
+        and item.internal_pause_seconds is not None
+    ):
+        metrics.append(f"repaired pause {item.internal_pause_seconds:.2f}s")
     return " | ".join(metrics)
+
+
+def _review_internal_pause_seconds(result, *, failed):
+    source = (
+        normalized_failure_record(result).get("speech_quality")
+        if failed
+        else result.get("speech_quality")
+    )
+    if not isinstance(source, dict):
+        return None
+    value = source.get("longest_internal_silence_seconds")
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return None
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -1190,7 +1225,17 @@ def list_review_items(workspace_directory, queue_ids=None):
                 peak=peak,
                 technical_flags=technical_flags,
                 failure_category=(
-                    generation_failure_category(result) if status == "failed" else None
+                    generation_failure_category(result, text=item.text)
+                    if status == "failed"
+                    else None
+                ),
+                internal_pause_seconds=_review_internal_pause_seconds(
+                    result, failed=status == "failed"
+                ),
+                repair_strategy=(
+                    result.get("failure_repair", {}).get("strategy")
+                    if isinstance(result.get("failure_repair"), dict)
+                    else None
                 ),
             )
         )

@@ -157,10 +157,12 @@ while one-sentence controls remained below 0.25 seconds.
       preserve cancellation and stale-generation guards between segments. Use a
       previously approved fallback for unsafe short clauses rather than doing
       audible multi-seed retries during gameplay.
-- [ ] Expose the repair in the workbench as `Long sentence-boundary pause`, show
-      measured raw/repaired pause durations and offer immediate replay of both
-      versions without changing selection. Approval must bind the repaired WAV
-      and transform ledger; rejection must retain the raw failure evidence.
+- [ ] Finish the workbench repair review after a real comparison bundle exists:
+      offer immediate replay of both checksum-bound versions without changing
+      selection, bind approval to the repaired WAV and transform ledger, and
+      retain raw failure evidence on rejection. The workbench already labels
+      eligible failures as `Long sentence-boundary pause` and shows measured
+      raw/repaired pause durations without making failed audio reviewable.
 
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve

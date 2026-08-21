@@ -2020,6 +2020,66 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ),
             "speech silence",
         )
+        long_pause_failure = {
+            "failure": {
+                "schema_version": 1,
+                "kind": "speech_silence",
+                "error_type": "SpeechSilenceValidationError",
+                "text_features": {},
+                "speech_quality": {
+                    "leading_silence_seconds": 0.0,
+                    "trailing_silence_seconds": 0.0,
+                    "longest_internal_silence_seconds": 2.4,
+                    "silence_ratio": 0.4,
+                },
+            }
+        }
+        self.assertEqual(
+            workbench_module.generation_failure_category(
+                long_pause_failure,
+                text="A complete first sentence. A complete second sentence.",
+            ),
+            "Long sentence-boundary pause",
+        )
+        raw_failure = workbench_module.ReviewItem(
+            queue_id="queue-failed",
+            line_id="line-failed",
+            speaker="Dobharchú",
+            voice_character="Dobharchú",
+            text="A complete first sentence. A complete second sentence.",
+            status="failed",
+            review_status=None,
+            attempts=1,
+            seed=0,
+            last_error="Generated WAV failed speech-silence validation",
+            audio=None,
+            failure_category="Long sentence-boundary pause",
+            internal_pause_seconds=2.4,
+        )
+        self.assertEqual(
+            workbench_module.review_technical_summary(raw_failure),
+            "Failure: Long sentence-boundary pause | measured raw pause 2.40s",
+        )
+        repaired = workbench_module.ReviewItem(
+            queue_id="queue-repaired",
+            line_id="line-repaired",
+            speaker="Dobharchú",
+            voice_character="Dobharchú",
+            text="A complete first sentence. A complete second sentence.",
+            status="generated",
+            review_status="pending_review",
+            attempts=2,
+            seed=1,
+            last_error=None,
+            audio=Path("repaired.wav"),
+            duration_seconds=3.0,
+            internal_pause_seconds=0.72,
+            repair_strategy="sentence_boundary_segmentation",
+        )
+        self.assertEqual(
+            workbench_module.review_technical_summary(repaired),
+            "3.00s | technical pass | repaired pause 0.72s",
+        )
         self.assertEqual(
             workbench_module._review_voice_character(
                 SimpleNamespace(speaker="???", voice_character="Hero"), {}
