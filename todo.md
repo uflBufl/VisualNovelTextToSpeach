@@ -14,11 +14,6 @@ Follow the shared contract, per-surface findings and completion gates in
       workbench. Open the dedicated specialist reviewer for bundles and keep the
       workbench focused on generation/status plus exceptional item repair; do
       not broaden queue, state, WAV, lease or final-review authority.
-- [ ] Move the remaining blocking operator work to the shared cancellable task
-      lifecycle: voice-pack/reference import, calibration OCR, OCR correction
-      writes and dialogue-history replay. Snapshot editable inputs, show the
-      active phase and recovery, preserve exact playback/source authority, and
-      add compact/failure/close tests.
 - [ ] Normalize dashboard, compact controls, Settings, onboarding, readiness,
       diagnostics, support, profiles, voice preview, OCR and permissions after
       the evidence-review UIs are stable. Require one clear primary action,

@@ -1,12 +1,17 @@
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from threading import Event
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from vntts.main import recognize_screenshot_result  # noqa: E402
@@ -167,6 +172,15 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for OCR correction save")
+
     def test_saves_global_and_current_profile_tables(self):
         with TemporaryDirectory() as temporary_directory:
             store = OCRCorrectionStore(
@@ -177,12 +191,58 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
 
             dialog.save()
+            self.wait_for(lambda: not dialog._save_active)
 
             loaded = OCRCorrectionStore.load(store.path)
         self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
         self.assertEqual(loaded.profile_entries["game"], {"Vertln": "Vertin"})
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
         dialog.deleteLater()
+
+    def test_slow_save_keeps_qt_responsive_and_defers_close(self):
+        started = Event()
+        release = Event()
+        store = Mock(global_entries={}, profile_entries={})
+
+        def replace_entries(*_args):
+            started.set()
+            release.wait(3)
+
+        store.replace_entries.side_effect = replace_entries
+        dialog = OCRCorrectionsDialog("game", "Game", store)
+        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+
+        before = time.monotonic()
+        dialog.save()
+        elapsed = time.monotonic() - before
+        self.wait_for(lambda: started.is_set() and bool(heartbeat))
+
+        self.assertLess(elapsed, 0.1)
+        self.assertTrue(dialog._save_active)
+        self.assertFalse(dialog.buttons.isEnabled())
+        close_event = QCloseEvent()
+        dialog.closeEvent(close_event)
+        self.assertFalse(close_event.isAccepted())
+        self.assertIn("Close is deferred", dialog.status.text())
+
+        release.set()
+        self.wait_for(lambda: not dialog._save_active)
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_save_failure_restores_controls_for_retry(self):
+        store = Mock(global_entries={}, profile_entries={})
+        store.replace_entries.side_effect = OSError("temporary disk failure")
+        dialog = OCRCorrectionsDialog("game", "Game", store)
+        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+
+        dialog.save()
+        self.wait_for(lambda: not dialog._save_active)
+
+        self.assertIn("Select Save to retry", dialog.status.text())
+        self.assertTrue(dialog.buttons.isEnabled())
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
 
 
 if __name__ == "__main__":

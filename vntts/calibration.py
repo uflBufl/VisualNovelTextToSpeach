@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
+    QProgressBar,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.ocr import (
     DialogRegion,
     get_dialog_region_file,
@@ -59,8 +61,18 @@ def pixmap_from_pil(image):
 
 
 class CalibrationReviewDialog(QDialog):
-    def __init__(self, image, parent=None, *, recognizer=recognize_dialog_image_result):
+    def __init__(
+        self,
+        image,
+        parent=None,
+        *,
+        recognizer=recognize_dialog_image_result,
+        thread_pool=None,
+    ):
         super().__init__(parent)
+        self.recognizer = recognizer
+        self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.runner.finished.connect(self._recognition_finished)
         self.setWindowTitle("Confirm dialogue capture")
         self.resize(760, 460)
         preview = QLabel()
@@ -73,17 +85,12 @@ class CalibrationReviewDialog(QDialog):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        result_text = QTextEdit()
-        result_text.setReadOnly(True)
-        try:
-            result = recognizer(image)
-            speaker = result.character or "Narrator"
-            result_text.setPlainText(
-                f"Speaker: {speaker}\nOCR confidence: {result.confidence:.1f}%\n\n"
-                f"{result.text or '(No dialogue recognized)'}"
-            )
-        except Exception as error:
-            result_text.setPlainText(f"OCR preview failed: {error}")
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setPlainText("Recognizing the selected dialogue region...")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setAccessibleName("Calibration OCR progress")
         note = QLabel(
             "Confirm only when the speaker name and complete dialogue are inside "
             "the preview. Retry to draw the area again."
@@ -95,6 +102,8 @@ class CalibrationReviewDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("Save region")
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.save_button.setEnabled(False)
         buttons.button(QDialogButtonBox.StandardButton.Retry).setText("Draw again")
         buttons.accepted.connect(self.accept)
         buttons.button(QDialogButtonBox.StandardButton.Retry).clicked.connect(
@@ -103,9 +112,31 @@ class CalibrationReviewDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.addWidget(preview)
-        layout.addWidget(result_text)
+        layout.addWidget(self.result_text)
+        layout.addWidget(self.progress)
         layout.addWidget(note)
         layout.addWidget(buttons)
+        self.runner.start(self.recognizer, image.copy())
+
+    def _recognition_finished(self, result, error):
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100)
+        if error is not None:
+            self.result_text.setPlainText(f"OCR preview failed: {error}")
+            self.save_button.setText("Save region without OCR preview")
+            self.save_button.setEnabled(True)
+            return
+        speaker = result.character or "Narrator"
+        self.result_text.setPlainText(
+            f"Speaker: {speaker}\nOCR confidence: {result.confidence:.1f}%\n\n"
+            f"{result.text or '(No dialogue recognized)'}"
+        )
+        self.save_button.setText("Save region")
+        self.save_button.setEnabled(True)
+
+    def closeEvent(self, event):
+        self.runner.cancel()
+        super().closeEvent(event)
 
 
 class DialogRegionOverlay(QWidget):

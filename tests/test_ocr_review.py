@@ -1,13 +1,18 @@
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
@@ -122,6 +127,15 @@ class OCRReviewDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for OCR review write")
+
     def test_saves_profile_corrections_reloads_runtime_and_resolves_sample(self):
         with TemporaryDirectory() as temporary_directory:
             review_directory = Path(temporary_directory) / "review"
@@ -141,6 +155,7 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.corrected_text.setPlainText("Hello timekeeper.")
 
             dialog.save_correction()
+            self.wait_for(lambda: not dialog._write_active)
 
             loaded = OCRCorrectionStore.load(correction_store.path)
             pending = OCRReviewStore(review_directory).pending_samples()
@@ -167,10 +182,46 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog = OCRReviewDialog(review_directory, correction_store)
 
             dialog.resolve_without_correction()
+            self.wait_for(lambda: not dialog._write_active)
 
         self.assertEqual(correction_store.global_entries, {})
         self.assertEqual(dialog.sample_list.count(), 0)
         dialog.deleteLater()
+
+    def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):
+        with TemporaryDirectory() as temporary_directory:
+            review_directory = Path(temporary_directory) / "review"
+            record_uncertain_sample(review_directory)
+            dialog = OCRReviewDialog(review_directory)
+            original = dialog.review_store.mark_resolved
+            started = Event()
+            release = Event()
+
+            def slow_resolve(*args, **kwargs):
+                started.set()
+                release.wait(3)
+                return original(*args, **kwargs)
+
+            dialog.review_store.mark_resolved = slow_resolve
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+            before = time.monotonic()
+            dialog.resolve_without_correction()
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
+
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._write_active)
+            self.assertFalse(dialog.resolve_button.isEnabled())
+            self.assertIn("background", dialog.status.text())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close is deferred", dialog.status.text())
+
+            release.set()
+            self.wait_for(lambda: not dialog._write_active)
+            self.assertEqual(OCRReviewStore(review_directory).pending_samples(), [])
 
 
 if __name__ == "__main__":

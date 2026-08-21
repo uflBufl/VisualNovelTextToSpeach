@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
 
 
@@ -21,11 +22,16 @@ class OCRCorrectionsDialog(QDialog):
         profile_id=None,
         profile_name=None,
         store=None,
+        thread_pool=None,
         parent=None,
     ):
         super().__init__(parent)
         self.profile_id = profile_id
         self.store = store or OCRCorrectionStore.load()
+        self.save_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.save_runner.finished.connect(self._save_finished)
+        self._save_active = False
+        self._close_pending = False
         self.setWindowTitle("OCR corrections")
         self.resize(680, 460)
 
@@ -57,29 +63,72 @@ class OCRCorrectionsDialog(QDialog):
         )
         note.setWordWrap(True)
 
-        buttons = QDialogButtonBox(
+        self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.save)
-        buttons.rejected.connect(self.reject)
+        self.buttons.accepted.connect(self.save)
+        self.buttons.rejected.connect(self.reject)
+        self.status = QLabel()
+        self.status.setAccessibleName("OCR correction save status")
+        self.status.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(note)
         layout.addWidget(self.tabs)
-        layout.addWidget(buttons)
+        layout.addWidget(self.status)
+        layout.addWidget(self.buttons)
 
     def save(self):
         try:
-            self.store.replace_entries(
-                self._entries_from_table(self.global_table),
-                self.profile_id,
-                self._entries_from_table(self.profile_table),
-            )
-        except (OSError, ValueError) as error:
+            global_entries = self._entries_from_table(self.global_table)
+            profile_entries = self._entries_from_table(self.profile_table)
+        except ValueError as error:
             QMessageBox.warning(self, "Unable to save OCR corrections", str(error))
             return
-        self.accept()
+        self._save_active = True
+        self.tabs.setEnabled(False)
+        self.buttons.setEnabled(False)
+        self.status.setText("Saving OCR corrections in the background...")
+        self.save_runner.start(
+            self.store.replace_entries,
+            global_entries,
+            self.profile_id,
+            profile_entries,
+        )
+
+    def _save_finished(self, _result, error):
+        self._save_active = False
+        self.tabs.setEnabled(True)
+        self.buttons.setEnabled(True)
+        if error is not None:
+            self.status.setText(
+                f"OCR corrections were not saved: {error}. Select Save to retry."
+            )
+        else:
+            self.accept()
+        if self._close_pending and error is not None:
+            self._close_pending = False
+            self.close()
+
+    def reject(self):
+        if self._save_active:
+            self._close_pending = True
+            self.status.setText(
+                "Saving OCR corrections. Close is deferred until the write finishes."
+            )
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._save_active:
+            self._close_pending = True
+            self.status.setText(
+                "Saving OCR corrections. Close is deferred until the write finishes."
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     @staticmethod
     def _create_table(entries):

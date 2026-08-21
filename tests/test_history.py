@@ -1,13 +1,18 @@
 import json
 import os
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.history import DialogueHistory  # noqa: E402
@@ -69,6 +74,15 @@ class DialogueHistoryDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for dialogue replay")
+
     def test_searches_and_replays_selected_entry(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
@@ -80,6 +94,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.search.setText("suitcase")
         dialog.refresh()
         dialog.replay_selected()
+        self.wait_for(lambda: not dialog.replay_runner.active)
 
         self.assertEqual(dialog.entries.count(), 1)
         replay.assert_called_once_with("Marcus", "The suitcase is ready.")
@@ -98,6 +113,53 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
         history.export.assert_called_once_with("session.json")
         dialog.deleteLater()
+
+    def test_slow_replay_keeps_qt_responsive_and_reports_completion(self):
+        history = DialogueHistory()
+        history.add("Marcus", "The suitcase is ready.")
+        history.finish_current()
+        started = Event()
+        release = Event()
+
+        def replay(_character, _text):
+            started.set()
+            release.wait(3)
+
+        dialog = DialogueHistoryDialog(history, replay)
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+
+        before = time.monotonic()
+        dialog.replay_selected()
+        elapsed = time.monotonic() - before
+        self.wait_for(lambda: started.is_set() and bool(heartbeat))
+
+        self.assertLess(elapsed, 0.1)
+        self.assertTrue(dialog.replay_runner.active)
+        self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertIn("Preparing replay", dialog.status.text())
+        close_event = QCloseEvent()
+        dialog.closeEvent(close_event)
+        self.assertFalse(close_event.isAccepted())
+        self.assertIn("Close is deferred", dialog.status.text())
+
+        release.set()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertTrue(dialog.replay_button.isEnabled())
+        self.assertEqual(dialog.status.text(), "Replay finished.")
+
+    def test_replay_failure_is_retryable_in_dialog(self):
+        history = DialogueHistory()
+        history.add("Marcus", "The suitcase is ready.")
+        history.finish_current()
+        replay = Mock(side_effect=RuntimeError("backend unavailable"))
+        dialog = DialogueHistoryDialog(history, replay)
+
+        dialog.replay_selected()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+
+        self.assertIn("Select Replay to retry", dialog.status.text())
+        self.assertTrue(dialog.replay_button.isEnabled())
 
 
 if __name__ == "__main__":

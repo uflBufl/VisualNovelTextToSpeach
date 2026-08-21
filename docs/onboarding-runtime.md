@@ -18,3 +18,9 @@ the wizard after cancellation. The wizard keeps Next disabled until the current
 diagnostic run completes without errors. Probe cancellation is best-effort at
 the UI boundary: a blocking platform API may finish in its worker thread, but
 its invalidated result is discarded.
+
+Calibration review follows the same UI-thread boundary. The frozen selected crop
+is visible immediately while OCR runs on the shared thread pool; Save stays
+disabled until the current result arrives. A failed recognizer does not silently
+look successful: the only enabled fallback is explicitly labeled `Save region
+without OCR preview`. Closing the review invalidates a late OCR result.

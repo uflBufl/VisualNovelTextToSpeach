@@ -24,6 +24,7 @@ from vntts.assets import (
     ModelDownloadCancelled,
     VoicePackManager,
 )
+from vntts.async_ui import LatestTaskRunner
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
@@ -100,15 +101,21 @@ class AssetManagerDialog(QDialog):
         *,
         model_manager=None,
         voice_manager=None,
+        thread_pool=None,
         parent=None,
     ):
         super().__init__(parent)
         self.settings_value = settings
         self.model_manager = model_manager or ModelAssetManager()
         self.voice_manager = voice_manager or VoicePackManager()
+        self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.voice_runner.finished.connect(self._voice_import_finished)
         self.signals = AssetSignals()
         self.cancel_event = Event()
         self.operation_running = False
+        self.operation_kind = None
+        self._close_pending = False
+        self._voice_import_message = None
         self.setWindowTitle("Models and character voices")
         self.setMinimumSize(680, 440)
 
@@ -177,17 +184,21 @@ class AssetManagerDialog(QDialog):
             "Import an existing manifest or add local references for one character."
         )
         self.voice_status.setWordWrap(True)
-        import_pack = QPushButton("Import voice pack...")
-        add_voice = QPushButton("Add character voice...")
-        import_pack.clicked.connect(self.import_voice_pack)
-        add_voice.clicked.connect(self.add_character_voice)
+        self.voice_progress = QProgressBar()
+        self.voice_progress.setRange(0, 100)
+        self.voice_progress.setValue(0)
+        self.import_pack_button = QPushButton("Import voice pack...")
+        self.add_voice_button = QPushButton("Add character voice...")
+        self.import_pack_button.clicked.connect(self.import_voice_pack)
+        self.add_voice_button.clicked.connect(self.add_character_voice)
         actions = QHBoxLayout()
-        actions.addWidget(import_pack)
-        actions.addWidget(add_voice)
+        actions.addWidget(self.import_pack_button)
+        actions.addWidget(self.add_voice_button)
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("Active voice manifest"))
         layout.addWidget(self.voice_manifest)
         layout.addWidget(self.voice_status)
+        layout.addWidget(self.voice_progress)
         layout.addLayout(actions)
         layout.addStretch()
         return tab
@@ -212,7 +223,7 @@ class AssetManagerDialog(QDialog):
             )
             return
         self.cancel_event = Event()
-        self.set_operation_running(True)
+        self.set_operation_running(True, "download")
         self.model_status.setText("Preparing model download...")
         model_name = self.model_name()
         Thread(target=self._download_model, args=(model_name,), daemon=True).start()
@@ -238,7 +249,7 @@ class AssetManagerDialog(QDialog):
     def verify_model(self):
         if self.operation_running:
             return
-        self.set_operation_running(True)
+        self.set_operation_running(True, "verify")
         self.model_status.setText("Verifying model checksums...")
         model_name = self.model_name()
 
@@ -269,12 +280,19 @@ class AssetManagerDialog(QDialog):
                 tts_model=self.model_name()
             )
         self.model_status.setText(message)
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
 
-    def set_operation_running(self, running):
+    def set_operation_running(self, running, kind=None):
         self.operation_running = running
+        self.operation_kind = kind if running else None
         self.download_button.setEnabled(not running)
         self.verify_button.setEnabled(not running)
-        self.cancel_button.setEnabled(running)
+        self.cancel_button.setEnabled(running and kind == "download")
+        self.import_pack_button.setEnabled(not running)
+        self.add_voice_button.setEnabled(not running)
+        self.voice_manifest.setEnabled(not running)
         self.buttons.setEnabled(not running)
 
     def import_voice_pack(self):
@@ -286,31 +304,52 @@ class AssetManagerDialog(QDialog):
         )
         if not source:
             return
-        try:
-            manifest = self.voice_manager.import_pack(source)
-        except Exception as error:
-            QMessageBox.warning(self, "Voice pack import failed", str(error))
-            return
-        self.signals.voice_imported.emit(str(manifest), "Voice pack imported")
+        self._start_voice_import(
+            self.voice_manager.import_pack,
+            source,
+            message="Voice pack imported",
+        )
 
     def add_character_voice(self):
         dialog = VoiceImportDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         character, references, aliases = dialog.values()
-        try:
-            manifest = self.voice_manager.import_voice(
-                character,
-                references,
-                aliases=aliases,
-            )
-        except Exception as error:
-            QMessageBox.warning(self, "Voice import failed", str(error))
-            return
-        self.signals.voice_imported.emit(
-            str(manifest),
-            f"Imported {len(references)} reference(s) for {character}",
+        self._start_voice_import(
+            self.voice_manager.import_voice,
+            character,
+            tuple(references),
+            aliases=tuple(aliases),
+            message=f"Imported {len(references)} reference(s) for {character}",
         )
+
+    def _start_voice_import(self, operation, *arguments, message, **keyword_arguments):
+        if self.operation_running:
+            return
+        self._voice_import_message = message
+        self.set_operation_running(True, "voice-import")
+        self.voice_progress.setRange(0, 0)
+        self.voice_status.setText(
+            "Importing and checksum-validating voice files in the background..."
+        )
+        self.voice_runner.start(operation, *arguments, **keyword_arguments)
+
+    def _voice_import_finished(self, manifest, error):
+        message = self._voice_import_message
+        self._voice_import_message = None
+        self.set_operation_running(False)
+        self.voice_progress.setRange(0, 100)
+        if error is not None:
+            self.voice_progress.setValue(0)
+            self.voice_status.setText(
+                f"Voice import failed: {error}. Choose the source again to retry."
+            )
+        else:
+            self.voice_progress.setValue(100)
+            self.voice_imported(str(manifest), message or "Voice import complete")
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
 
     def voice_imported(self, manifest, message):
         self.voice_manifest.setText(manifest)
@@ -338,11 +377,29 @@ class AssetManagerDialog(QDialog):
 
     def reject(self):
         if self.operation_running:
-            self.cancel_download()
-            QMessageBox.information(
-                self,
-                "Download cancellation requested",
-                "Wait for the current network chunk to stop before closing.",
-            )
+            self._close_pending = True
+            if self.operation_kind == "download":
+                self.cancel_download()
+                QMessageBox.information(
+                    self,
+                    "Download cancellation requested",
+                    "Wait for the current network chunk to stop before closing.",
+                )
+            else:
+                self.voice_status.setText(
+                    "Close is deferred until the current verification or import finishes."
+                )
             return
         super().reject()
+
+    def closeEvent(self, event):
+        if self.operation_running:
+            self._close_pending = True
+            if self.operation_kind == "download":
+                self.cancel_download()
+            self.voice_status.setText(
+                "Close is deferred until the current model or voice operation finishes."
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
