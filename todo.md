@@ -95,6 +95,16 @@ Follow the evidence-backed order and invariants in
       than inferring it from `Dobharchú`. Then create separate config-addressed
       `stable` and `natural` successor workspaces and generate only the five exact
       deterministic sample IDs with token-level duration control disabled.
+      Prepare each candidate through a no-replace, self-contained manifest bundle
+      that embeds the exact plan/candidate ID and copies every manifest reference
+      by digest. Create both workspaces from the immutable legacy import rather
+      than mutating or carrying review state from the primary workspace; the five
+      sample IDs are absent in that import, so generation can remain a normal
+      exact-ID run. Verify the child argv contains exactly those five IDs and the
+      candidate profile, then compare the primary state and all unrelated
+      candidate seed records before and after each run. A candidate preparation
+      failure must leave no partial bundle/workspace, and an identical rerun must
+      be an explicit idempotent result.
       Compare matching lines, review every new technical-attention WAV plus the
       complete five-line sample, and expand only a variant whose sample finds
       another substantive defect. Apply the winning exact control only after the

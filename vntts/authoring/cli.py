@@ -127,7 +127,10 @@ from vntts.authoring.voice_quality_gate import (
 )
 from vntts.authoring.voice_repair_comparison import (
     VoiceRepairComparisonError,
+    build_voice_repair_candidate_command,
     build_voice_repair_comparison_plan,
+    load_voice_repair_comparison_plan,
+    prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
 )
 from vntts.authoring.workbench import (
@@ -490,6 +493,24 @@ def create_parser():
         help="Bounded profile to compare; repeat for each candidate",
     )
     voice_repair.add_argument("--output", type=Path, required=True)
+    voice_repair_workspace = subparsers.add_parser(
+        "voice-repair-candidate-workspace",
+        help="Create one self-contained candidate workspace from an immutable plan",
+    )
+    voice_repair_workspace.add_argument("plan", type=Path)
+    voice_repair_workspace.add_argument("candidate_id")
+    voice_repair_workspace.add_argument("import_directory", type=Path)
+    voice_repair_workspace.add_argument("--inputs-root", type=Path, required=True)
+    voice_repair_workspace.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    voice_repair_command = subparsers.add_parser(
+        "voice-repair-candidate-command",
+        help="Validate and print one exact sample-only generation command",
+    )
+    voice_repair_command.add_argument("plan", type=Path)
+    voice_repair_command.add_argument("candidate_id")
+    voice_repair_command.add_argument("workspace", type=Path)
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -1096,6 +1117,28 @@ def main(argv=None):
             print(
                 json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
             )
+            return 0
+        if arguments.command == "voice-repair-candidate-workspace":
+            result = prepare_voice_repair_candidate_workspace(
+                load_voice_repair_comparison_plan(arguments.plan),
+                arguments.candidate_id,
+                arguments.import_directory,
+                arguments.inputs_root,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if arguments.command == "voice-repair-candidate-command":
+            command = build_voice_repair_candidate_command(
+                load_voice_repair_comparison_plan(arguments.plan),
+                arguments.candidate_id,
+                arguments.workspace,
+            )
+            print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
             return 0
         if arguments.command == "failure-repair-plan":
             print(

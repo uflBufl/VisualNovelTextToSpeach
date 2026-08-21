@@ -61,3 +61,35 @@ uv run vntts-pregenerate voice-repair-comparison-plan \
 
 Publication is no-replace. Rebuilding against changed state, queue, references,
 manifest or model produces a different plan or fails closed.
+
+## Candidate preparation
+
+Each candidate is prepared from the immutable legacy import rather than by
+copying the mutable primary review state. The command publishes a self-contained
+voice-manifest bundle, copies every referenced WAV by exact digest, records the
+plan and candidate identities in the manifest, and then creates a
+config-addressed resume workspace:
+
+```bash
+uv run vntts-pregenerate voice-repair-candidate-workspace \
+  COMPARISON.json CANDIDATE_ID IMMUTABLE_IMPORT \
+  --inputs-root CANDIDATE_INPUTS
+```
+
+The bundle has a canonical, duplicate-free inventory and refuses traversal,
+symlinks, changed bytes, non-canonical ordering, an existing conflicting
+destination, or a stale source plan. Repeating the exact preparation is
+idempotent and reports that neither input nor workspace was newly created.
+
+Before generation, obtain and inspect the child command independently:
+
+```bash
+uv run vntts-pregenerate voice-repair-candidate-command \
+  COMPARISON.json CANDIDATE_ID CANDIDATE_WORKSPACE
+```
+
+The command rebinds the plan, workspace run configuration, candidate manifest,
+model control and exact sample scope. It contains the five listed queue IDs and
+does not select all pending items. Candidate generation must run only from a
+clean verified source commit, one profile at a time, with the primary workspace
+and every unrelated candidate seed record checked before and after the child.

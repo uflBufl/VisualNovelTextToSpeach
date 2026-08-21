@@ -10,8 +10,10 @@ from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.voice_repair_comparison import (
     VoiceRepairComparisonError,
+    build_voice_repair_candidate_command,
     build_voice_repair_comparison_plan,
     load_voice_repair_comparison_plan,
+    prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
 )
 
@@ -161,6 +163,199 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["target_count"], 1)
         self.assertEqual(state_after, state_before)
+
+    def test_candidate_input_workspace_and_command_are_exact_and_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_workspace = workspace_result.directory
+            source_state = source_workspace / "generated-audio/generation-state.json"
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            result = state["items"][fixture["queue_id"]]
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            source_before = source_state.read_bytes()
+            plan = build_voice_repair_comparison_plan(source_workspace, "Rhiannon")
+            candidate_id = plan.document["candidates"][1]["candidate_id"]
+
+            first = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            second = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            candidate_state = (
+                first.workspace_directory / "generated-audio/generation-state.json"
+            )
+            candidate_document = json.loads(candidate_state.read_text(encoding="utf-8"))
+            candidate_document["active"] = None
+            candidate_document["items"].pop(fixture["queue_id"], None)
+            candidate_state.write_text(
+                json.dumps(candidate_document, sort_keys=True), encoding="utf-8"
+            )
+            command = build_voice_repair_candidate_command(
+                plan, candidate_id, first.workspace_directory
+            )
+            candidate_manifest = json.loads(
+                (first.workspace_directory / "inputs/voice/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            source_after = source_state.read_bytes()
+
+        self.assertTrue(first.input_created)
+        self.assertTrue(first.workspace_created)
+        self.assertFalse(second.input_created)
+        self.assertFalse(second.workspace_created)
+        self.assertEqual(first.input_directory, second.input_directory)
+        self.assertEqual(first.workspace_directory, second.workspace_directory)
+        self.assertEqual(source_before, source_after)
+        self.assertEqual(
+            candidate_manifest["vntts.authoring.voice_repair_comparison"][
+                "candidate_id"
+            ],
+            candidate_id,
+        )
+        self.assertEqual(
+            [
+                command[index + 1]
+                for index, value in enumerate(command)
+                if value == "--queue-id"
+            ],
+            [fixture["queue_id"]],
+        )
+
+    def test_candidate_input_tamper_fails_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_state = (
+                workspace_result.directory / "generated-audio/generation-state.json"
+            )
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            _queue_id, result = next(iter(state["items"].items()))
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_voice_repair_comparison_plan(
+                workspace_result.directory, "Rhiannon"
+            )
+            candidate_id = plan.document["candidates"][0]["candidate_id"]
+            prepared = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            reference = next(
+                path
+                for path in prepared.input_directory.rglob("*")
+                if path.is_file() and path.name not in {"manifest.json", "bundle.json"}
+            )
+            reference.write_bytes(b"changed")
+
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "changed"):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+
+    def test_candidate_input_symlink_fails_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_state = (
+                workspace_result.directory / "generated-audio/generation-state.json"
+            )
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            _queue_id, result = next(iter(state["items"].items()))
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_voice_repair_comparison_plan(
+                workspace_result.directory, "Rhiannon"
+            )
+            candidate_id = plan.document["candidates"][0]["candidate_id"]
+            prepared = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            reference = next(
+                path
+                for path in prepared.input_directory.rglob("*")
+                if path.is_file() and path.name not in {"manifest.json", "bundle.json"}
+            )
+            reference.unlink()
+            reference.symlink_to(prepared.input_directory / "manifest.json")
+
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symbolic link"):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+
+    def test_candidate_inventory_duplicate_fails_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_state = (
+                workspace_result.directory / "generated-audio/generation-state.json"
+            )
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            _queue_id, result = next(iter(state["items"].items()))
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_voice_repair_comparison_plan(
+                workspace_result.directory, "Rhiannon"
+            )
+            candidate_id = plan.document["candidates"][0]["candidate_id"]
+            prepared = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            bundle_path = prepared.input_directory / "bundle.json"
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            bundle["inventory"].append(dict(bundle["inventory"][-1]))
+            bundle["bundle_id"] = _canonical_sha256(
+                {key: value for key, value in bundle.items() if key != "bundle_id"}
+            )
+            bundle_path.write_text(json.dumps(bundle, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "duplicate"):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
 
 
 if __name__ == "__main__":

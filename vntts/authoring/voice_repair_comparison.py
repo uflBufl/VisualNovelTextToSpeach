@@ -6,10 +6,12 @@ import copy
 import hashlib
 import json
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -23,6 +25,7 @@ from vntts.authoring.cohort_review import (
     _load_document,
     _write_document_no_replace,
 )
+from vntts.authoring.game_pack import FinalGamePackError
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -30,9 +33,12 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     _load_workspace_snapshot,
+    _rename_directory_no_replace,
     _safe_relative,
     _stable_workspace_state,
     _within,
+    create_resume_workspace,
+    generation_command,
     generation_failure_category,
     list_review_items,
 )
@@ -41,6 +47,9 @@ from vntts.speech_backend import get_moss_tts_generation_profile
 VOICE_REPAIR_COMPARISON_SCHEMA = "vntts.authoring-voice-repair-comparison-plan"
 VOICE_REPAIR_COMPARISON_VERSION = 1
 LENGTH_BUCKETS = ("short", "medium", "long")
+VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA = "vntts.authoring-voice-repair-candidate-bundle"
+VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION = 1
+VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD = "vntts.authoring.voice_repair_comparison"
 
 
 class VoiceRepairComparisonError(RuntimeError):
@@ -54,6 +63,28 @@ class VoiceRepairComparisonPlan:
 
     def to_dict(self):
         return copy.deepcopy(self.document)
+
+
+@dataclass(frozen=True)
+class VoiceRepairCandidateWorkspace:
+    plan_id: str
+    candidate_id: str
+    input_directory: Path
+    workspace_directory: Path
+    input_created: bool
+    workspace_created: bool
+    comparison_sample_queue_ids: tuple[str, ...]
+
+    def to_dict(self):
+        return {
+            "plan_id": self.plan_id,
+            "candidate_id": self.candidate_id,
+            "input_directory": str(self.input_directory),
+            "workspace_directory": str(self.workspace_directory),
+            "input_created": self.input_created,
+            "workspace_created": self.workspace_created,
+            "comparison_sample_queue_ids": list(self.comparison_sample_queue_ids),
+        }
 
 
 def build_voice_repair_comparison_plan(
@@ -277,6 +308,358 @@ def load_voice_repair_comparison_plan(path):
         raise VoiceRepairComparisonError(str(error)) from error
     document = _validate_plan(document)
     return VoiceRepairComparisonPlan(document["plan_id"], document)
+
+
+def prepare_voice_repair_candidate_workspace(
+    plan,
+    candidate_id,
+    import_directory,
+    input_root,
+    workspaces_root,
+):
+    """Publish one exact candidate input and create its isolated workspace."""
+    document = _validate_plan(plan)
+    candidate = _candidate(document, candidate_id)
+    _require_fresh_plan(document)
+    source_directory = Path(document["source"]["workspace"]).resolve()
+    input_directory, input_created = _publish_candidate_input(
+        document, candidate, source_directory, input_root
+    )
+    _require_fresh_plan(document)
+    try:
+        source_directory, source_workspace, _workspace_sha256 = (
+            _load_workspace_snapshot(source_directory, "voice repair source")
+        )
+        created = create_resume_workspace(
+            import_directory,
+            workspaces_root,
+            story_index=source_directory / "inputs/story-index.jsonl",
+            voice_manifest=input_directory / "manifest.json",
+            narrator_character=source_workspace["narrator_character"],
+            backend=candidate["provider"],
+            model=candidate["model"],
+            generation_profile=candidate["generation_profile"],
+            missing_voice_policy=source_workspace["run_config"].get(
+                "missing_voice_policy"
+            ),
+            failure_repair_policy=None,
+        )
+    except AuthoringWorkbenchError as error:
+        raise VoiceRepairComparisonError(str(error)) from error
+    return VoiceRepairCandidateWorkspace(
+        document["plan_id"],
+        candidate["candidate_id"],
+        input_directory,
+        created.directory,
+        input_created,
+        created.created,
+        tuple(document["comparison_sample_queue_ids"]),
+    )
+
+
+def build_voice_repair_candidate_command(
+    plan,
+    candidate_id,
+    workspace_directory,
+    *,
+    retries=0,
+    seed=0,
+):
+    """Return one exact-ID child command after independently rebinding controls."""
+    document = _validate_plan(plan)
+    candidate = _candidate(document, candidate_id)
+    _require_fresh_plan(document)
+    try:
+        directory, workspace, _workspace_sha256 = _load_workspace_snapshot(
+            workspace_directory, "voice repair candidate"
+        )
+    except AuthoringWorkbenchError as error:
+        raise VoiceRepairComparisonError(str(error)) from error
+    run_config = workspace.get("run_config")
+    expected_run = {
+        "backend": candidate["provider"],
+        "model": candidate["model"],
+        "generation_profile": candidate["generation_profile"],
+    }
+    if not isinstance(run_config, dict) or any(
+        run_config.get(key) != value for key, value in expected_run.items()
+    ):
+        raise VoiceRepairComparisonError(
+            "Candidate workspace run configuration differs from the plan"
+        )
+    manifest_path = directory / "inputs/voice/manifest.json"
+    manifest_payload = _read(manifest_path, "candidate voice manifest")
+    try:
+        manifest = json.loads(manifest_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VoiceRepairComparisonError(str(error)) from error
+    binding = manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD)
+    if binding != _candidate_manifest_binding(document, candidate):
+        raise VoiceRepairComparisonError(
+            "Candidate workspace manifest is not bound to the requested plan"
+        )
+    model_path = Path(candidate["model"]).expanduser()
+    model_control = candidate["model_control"]
+    observed_model_sha256 = (
+        sha256_control_path(model_path)
+        if model_control["kind"] == "path"
+        else _canonical_sha256({"model": candidate["model"]})
+    )
+    if observed_model_sha256 != model_control["sha256"]:
+        raise VoiceRepairComparisonError("Candidate model changed after planning")
+    try:
+        command = generation_command(
+            directory,
+            queue_ids=tuple(document["comparison_sample_queue_ids"]),
+            retries=retries,
+            seed=seed,
+        )
+    except AuthoringWorkbenchError as error:
+        raise VoiceRepairComparisonError(str(error)) from error
+    observed_ids = tuple(
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--queue-id"
+    )
+    if observed_ids != tuple(document["comparison_sample_queue_ids"]):
+        raise VoiceRepairComparisonError("Candidate child scope differs from the plan")
+    return command
+
+
+def _candidate(document, candidate_id):
+    candidate_id = _required_sha256(candidate_id, "Comparison candidate ID")
+    matches = [
+        value
+        for value in document["candidates"]
+        if value["candidate_id"] == candidate_id
+    ]
+    if len(matches) != 1:
+        raise VoiceRepairComparisonError("Comparison candidate is absent or ambiguous")
+    return matches[0]
+
+
+def _require_fresh_plan(document):
+    profiles = tuple(value["generation_profile"] for value in document["candidates"])
+    fresh = build_voice_repair_comparison_plan(
+        document["source"]["workspace"],
+        document["character"],
+        generation_profiles=profiles,
+        token_level_duration_control=False,
+    )
+    if fresh.plan_id != document["plan_id"]:
+        raise VoiceRepairComparisonError(
+            "Voice repair comparison source changed after planning"
+        )
+
+
+def _candidate_manifest_binding(document, candidate):
+    return {
+        "schema": "vntts.authoring-voice-repair-candidate",
+        "schema_version": 1,
+        "plan_id": document["plan_id"],
+        "candidate_id": candidate["candidate_id"],
+        "character": document["character"],
+        "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
+        "generation_profile": candidate["generation_profile"],
+        "token_level_duration_control": False,
+        "comparison_sample_queue_ids": list(document["comparison_sample_queue_ids"]),
+    }
+
+
+def _publish_candidate_input(document, candidate, source_directory, input_root):
+    root = Path(input_root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    name = f"voice-repair-{document['plan_id'][:24]}-{candidate['candidate_id'][:16]}"
+    raw_destination = root / name
+    if raw_destination.is_symlink():
+        raise VoiceRepairComparisonError(
+            "Voice repair candidate input is a symbolic link"
+        )
+    destination = _within(root, Path(name), "Voice repair candidate input")
+    if destination.exists():
+        _validate_candidate_input(destination, document, candidate)
+        return destination, False
+    staging = Path(tempfile.mkdtemp(prefix=".voice-repair-staging-", dir=root))
+    try:
+        source_manifest = source_directory / "inputs/voice/manifest.json"
+        source_payload = _read(source_manifest, "source voice manifest")
+        if (
+            hashlib.sha256(source_payload).hexdigest()
+            != document["source"]["voice_manifest_sha256"]
+        ):
+            raise VoiceRepairComparisonError(
+                "Source voice manifest changed after planning"
+            )
+        try:
+            manifest = json.loads(source_payload.decode("utf-8"))
+            with tempfile.TemporaryDirectory(
+                prefix="vntts-voice-repair-candidate-manifest-"
+            ) as temp:
+                snapshot = Path(temp) / "manifest.json"
+                snapshot.write_bytes(source_payload)
+                _metadata, voices = load_voice_manifest(snapshot, allow_legacy=False)
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            VoiceManifestError,
+        ) as error:
+            raise VoiceRepairComparisonError(str(error)) from error
+        if VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD in manifest:
+            raise VoiceRepairComparisonError(
+                "Source voice manifest already contains a repair candidate binding"
+            )
+        inventory = []
+        seen = set()
+        source_root = source_manifest.parent.resolve()
+        for voice in voices:
+            for value in voice.references:
+                try:
+                    relative = _safe_relative(value, "Candidate voice reference")
+                    source = _regular_contained_file(
+                        source_root, relative, "Candidate voice reference"
+                    )
+                except AuthoringWorkbenchError as error:
+                    raise VoiceRepairComparisonError(str(error)) from error
+                key = relative.as_posix()
+                if key in seen:
+                    continue
+                seen.add(key)
+                payload = source.read_bytes()
+                digest = hashlib.sha256(payload).hexdigest()
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                inventory.append({"path": key, "sha256": digest})
+        manifest[VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD] = _candidate_manifest_binding(
+            document, candidate
+        )
+        manifest_path = staging / "manifest.json"
+        atomic_write_json(manifest_path, manifest, sort_keys=True)
+        inventory = [
+            {"path": "manifest.json", "sha256": sha256_file(manifest_path)},
+            *sorted(inventory, key=lambda item: item["path"]),
+        ]
+        body = {
+            "schema": VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA,
+            "schema_version": VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION,
+            "plan_id": document["plan_id"],
+            "candidate_id": candidate["candidate_id"],
+            "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
+            "inventory": inventory,
+        }
+        bundle_id = _canonical_sha256(body)
+        atomic_write_json(
+            staging / "bundle.json", {**body, "bundle_id": bundle_id}, sort_keys=True
+        )
+        _validate_candidate_input(staging, document, candidate)
+        _require_fresh_plan(document)
+        try:
+            _rename_directory_no_replace(staging, destination)
+        except (FinalGamePackError, OSError) as error:
+            if destination.exists():
+                _validate_candidate_input(destination, document, candidate)
+                return destination, False
+            raise VoiceRepairComparisonError(
+                f"Unable to publish voice repair candidate input: {error}"
+            ) from error
+        staging = None
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+    return destination, True
+
+
+def _validate_candidate_input(directory, document, candidate):
+    directory = Path(directory)
+    if directory.is_symlink():
+        raise VoiceRepairComparisonError(
+            "Voice repair candidate input is a symbolic link"
+        )
+    directory = directory.resolve()
+    bundle_path = directory / "bundle.json"
+    if bundle_path.is_symlink():
+        raise VoiceRepairComparisonError("Candidate bundle document is unsafe")
+    try:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise VoiceRepairComparisonError(
+            f"Unable to load voice repair candidate input: {error}"
+        ) from error
+    if (
+        not isinstance(bundle, dict)
+        or bundle.get("schema") != VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA
+        or bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION
+        or bundle.get("plan_id") != document["plan_id"]
+        or bundle.get("candidate_id") != candidate["candidate_id"]
+        or bundle.get("source_voice_manifest_sha256")
+        != document["source"]["voice_manifest_sha256"]
+    ):
+        raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
+    claimed = _required_sha256(bundle.get("bundle_id"), "Candidate bundle ID")
+    if claimed != _canonical_sha256(
+        {key: value for key, value in bundle.items() if key != "bundle_id"}
+    ):
+        raise VoiceRepairComparisonError("Candidate bundle identity is invalid")
+    inventory = bundle.get("inventory")
+    if not isinstance(inventory, list) or not inventory:
+        raise VoiceRepairComparisonError("Candidate bundle inventory is empty")
+    declared = set()
+    ordered = []
+    for item in inventory:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+            raise VoiceRepairComparisonError("Candidate bundle inventory is malformed")
+        try:
+            relative = _safe_relative(item.get("path"), "Candidate bundle artifact")
+            path = _regular_contained_file(
+                directory, relative, "Candidate bundle artifact"
+            )
+        except AuthoringWorkbenchError as error:
+            raise VoiceRepairComparisonError(str(error)) from error
+        digest = _required_sha256(item.get("sha256"), "Candidate artifact SHA-256")
+        key = relative.as_posix()
+        if key in declared:
+            raise VoiceRepairComparisonError(
+                "Candidate bundle inventory contains duplicate paths"
+            )
+        if sha256_file(path) != digest:
+            raise VoiceRepairComparisonError("Candidate bundle artifact changed")
+        declared.add(key)
+        ordered.append(key)
+    if ordered != ["manifest.json", *sorted(declared - {"manifest.json"})]:
+        raise VoiceRepairComparisonError("Candidate bundle inventory is not canonical")
+    paths = tuple(directory.rglob("*"))
+    if any(path.is_symlink() for path in paths):
+        raise VoiceRepairComparisonError("Candidate bundle contains a symbolic link")
+    actual = {
+        path.relative_to(directory).as_posix()
+        for path in paths
+        if path.is_file() and path.name != "bundle.json"
+    }
+    if declared != actual:
+        raise VoiceRepairComparisonError("Candidate bundle inventory is incomplete")
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise VoiceRepairComparisonError(
+            f"Unable to load candidate voice manifest: {error}"
+        ) from error
+    if manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD) != (
+        _candidate_manifest_binding(document, candidate)
+    ):
+        raise VoiceRepairComparisonError("Candidate manifest binding changed")
+
+
+def _regular_contained_file(root, relative, label):
+    root = Path(root).resolve()
+    current = root
+    for part in Path(relative).parts:
+        current /= part
+        if current.is_symlink():
+            raise VoiceRepairComparisonError(f"{label} contains a symbolic link")
+    path = _within(root, Path(relative), label)
+    if not path.is_file():
+        raise VoiceRepairComparisonError(f"{label} is missing or is not a file")
+    return path
 
 
 def _selected_variant(queue_id, queue_voice_character, result, overrides):
@@ -783,7 +1166,10 @@ __all__ = [
     "VOICE_REPAIR_COMPARISON_VERSION",
     "VoiceRepairComparisonError",
     "VoiceRepairComparisonPlan",
+    "VoiceRepairCandidateWorkspace",
+    "build_voice_repair_candidate_command",
     "build_voice_repair_comparison_plan",
     "load_voice_repair_comparison_plan",
+    "prepare_voice_repair_candidate_workspace",
     "write_voice_repair_comparison_plan",
 ]

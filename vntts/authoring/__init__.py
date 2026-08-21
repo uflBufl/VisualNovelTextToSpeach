@@ -218,10 +218,13 @@ from vntts.authoring.voice_quality_gate import (
 from vntts.authoring.voice_repair_comparison import (
     VOICE_REPAIR_COMPARISON_SCHEMA,
     VOICE_REPAIR_COMPARISON_VERSION,
+    VoiceRepairCandidateWorkspace,
     VoiceRepairComparisonError,
     VoiceRepairComparisonPlan,
+    build_voice_repair_candidate_command,
     build_voice_repair_comparison_plan,
     load_voice_repair_comparison_plan,
+    prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
 )
 from vntts.authoring.workbench import (
@@ -322,6 +325,7 @@ __all__ = [
     "VOICE_QUALITY_GATE_VERSION",
     "VOICE_REPAIR_COMPARISON_SCHEMA",
     "VOICE_REPAIR_COMPARISON_VERSION",
+    "VoiceRepairCandidateWorkspace",
     "VoiceQualityCompatibility",
     "VoiceQualityGate",
     "VoiceQualityGateError",
@@ -341,6 +345,7 @@ __all__ = [
     "build_failure_regeneration_plan",
     "build_specialist_failure_plan",
     "build_voice_quality_gate",
+    "build_voice_repair_candidate_command",
     "build_voice_repair_comparison_plan",
     "build_pending_resolution_plan",
     "build_pending_regeneration_command",
@@ -388,6 +393,7 @@ __all__ = [
     "publish_generated_manifest",
     "publish_final_game_pack",
     "publish_failure_reference_audit",
+    "prepare_voice_repair_candidate_workspace",
     "prepare_failure_reference_audio",
     "normalize_short_trailing_ellipsis",
     "record_trial_preference",
