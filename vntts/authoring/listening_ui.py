@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.listening import (
     ensure_listening_report,
     listening_progress,
@@ -66,10 +67,23 @@ class ModelListeningDialog(QDialog):
         "b": {"normal": "#ea580c", "disabled": "#5f301f", "border": "#fed7aa"},
     }
 
-    def __init__(self, session_path, parent=None, *, auto_play=True):
+    def __init__(
+        self,
+        session_path,
+        parent=None,
+        *,
+        auto_play=True,
+        preference_recorder=record_trial_preference,
+        thread_pool=None,
+    ):
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
         self.session = load_listening_session(self.session_path)
+        self.preference_recorder = preference_recorder
+        self.preference_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.preference_runner.finished.connect(self._preference_finished)
+        self._preference_active = False
+        self._close_pending = False
         self.current_trial = None
         self.auto_play = auto_play
         self.auto_play_pending_b = False
@@ -360,43 +374,78 @@ class ModelListeningDialog(QDialog):
     def save_preference(self, preference):
         if self.current_trial is None:
             return
+        if self._preference_active:
+            self.status.setText("Wait for the current preference to finish saving.")
+            return
         if self.started_sides != {"a", "b"}:
             self.status.setText("Start both samples before choosing a preference.")
             return
-        try:
-            record_trial_preference(
-                self.session_path,
-                self.current_trial["trial_id"],
-                preference,
-                report_path=self.session_path.with_name("report.json"),
+        trial_id = self.current_trial["trial_id"]
+        self._preference_active = True
+        self.set_preference_buttons_enabled(False)
+        self.status.setText(
+            "Saving preference and updating the blinded report... "
+            "Playback remains available."
+        )
+        self.preference_runner.start(
+            self.preference_recorder,
+            self.session_path,
+            trial_id,
+            preference,
+            report_path=self.session_path.with_name("report.json"),
+        )
+
+    def _preference_finished(self, _result, error):
+        self._preference_active = False
+        if error is None:
+            self.stop_audio()
+            self.load_next_trial()
+        elif "Preference was saved" in str(error):
+            self._show_persisted_score_with_report_error(str(error))
+        else:
+            self.set_preference_buttons_enabled(
+                self.current_trial is not None and self.started_sides == {"a", "b"}
             )
-        except Exception as error:
-            if "Preference was saved" in str(error):
-                self.stop_audio()
-                self.session = load_listening_session(self.session_path)
-                completed, total = listening_progress(self.session)
-                self.progress.setText(f"Progress: {completed}/{total}")
-                self.current_trial = next_pending_trial(self.session)
-                if self.current_trial is not None:
-                    self.load_next_trial()
-                else:
-                    self.set_playback_indicator("complete")
-                    self.set_preference_buttons_enabled(False)
-                    self.dialogue.setPlainText("Listening session complete.")
-                    for widget in (
-                        self.play_a,
-                        self.play_b,
-                        self.skip_back,
-                        self.seek,
-                        self.skip_forward,
-                    ):
-                        widget.setEnabled(False)
-                self.status.setText(str(error))
-                return
-            self.status.setText(f"Unable to save listening score: {error}")
-            return
+            self.status.setText(
+                f"Preference was not saved: {error}. Choose again to retry."
+            )
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
+
+    def _show_persisted_score_with_report_error(self, message):
         self.stop_audio()
-        self.load_next_trial()
+        self.session = load_listening_session(self.session_path)
+        completed, total = listening_progress(self.session)
+        self.progress.setText(f"Progress: {completed}/{total}")
+        self.current_trial = next_pending_trial(self.session)
+        if self.current_trial is not None:
+            self.load_next_trial()
+        else:
+            self.set_playback_indicator("complete")
+            self.set_preference_buttons_enabled(False)
+            self.dialogue.setPlainText("Listening session complete.")
+            for widget in (
+                self.play_a,
+                self.play_b,
+                self.skip_back,
+                self.seek,
+                self.skip_forward,
+            ):
+                widget.setEnabled(False)
+        self.status.setText(message)
+
+    def closeEvent(self, event):
+        if self._preference_active:
+            self._close_pending = True
+            self.status.setText(
+                "Saving preference and report. Close is deferred until the "
+                "authoritative write finishes."
+            )
+            event.ignore()
+            return
+        self.player.stop()
+        super().closeEvent(event)
 
 
 def launch_listening_workbench(session_path):

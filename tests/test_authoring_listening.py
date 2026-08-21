@@ -1,9 +1,11 @@
 import hashlib
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -29,7 +31,8 @@ from vntts.authoring.listening_import import import_listening_session
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtCore import QPoint, Qt, QTimer
+    from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -40,7 +43,9 @@ except ModuleNotFoundError as error:
         raise
     QApplication = None
     QPoint = None
+    QCloseEvent = None
     Qt = None
+    QTimer = None
     QTest = None
     QMediaPlayer = None
     ModelListeningDialog = None
@@ -445,11 +450,20 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 widget.deleteLater()
         self.application.processEvents()
 
-    def create_dialog(self, root):
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for the Qt worker")
+
+    def create_dialog(self, root, **kwargs):
         session = create_listening_session_from_reports(
             write_model_reports(root, item_count=1), root / "session"
         )
-        dialog = ModelListeningDialog(session, auto_play=False)
+        dialog = ModelListeningDialog(session, auto_play=False, **kwargs)
         dialog.player = Mock()
         return session, dialog
 
@@ -465,6 +479,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.neither.isEnabled())
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
             dialog.save_preference("a")
+            self.wait_for(lambda: not dialog._preference_active)
 
             self.assertEqual(load_listening_session(session)["completed_count"], 1)
             self.assertIsNone(dialog.current_trial)
@@ -477,6 +492,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.started_sides = {"a", "b"}
             dialog.set_preference_buttons_enabled(True)
             dialog.neither.click()
+            self.wait_for(lambda: not dialog._preference_active)
 
             rating = load_listening_session(session)["trials"][0]["rating"]
 
@@ -537,12 +553,78 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 listening_module, "atomic_write_json", side_effect=fail_report
             ):
                 dialog.save_preference("a")
+                self.wait_for(lambda: not dialog._preference_active)
 
             self.assertEqual(load_listening_session(session)["completed_count"], 1)
             self.assertIsNone(dialog.current_trial)
             self.assertIn("Preference was saved", dialog.status.text())
             self.assertFalse(dialog.prefer_a.isEnabled())
             dialog.deleteLater()
+
+    def test_slow_save_keeps_qt_responsive_and_defers_close(self):
+        with TemporaryDirectory() as directory:
+            started = Event()
+            release = Event()
+
+            def slow_recorder(*args, **kwargs):
+                started.set()
+                release.wait(3)
+                return record_trial_preference(*args, **kwargs)
+
+            session, dialog = self.create_dialog(
+                Path(directory), preference_recorder=slow_recorder
+            )
+            dialog.started_sides = {"a", "b"}
+            dialog.set_preference_buttons_enabled(True)
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+
+            before = time.monotonic()
+            dialog.save_preference("a")
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
+
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._preference_active)
+            self.assertFalse(dialog.prefer_a.isEnabled())
+            self.assertTrue(dialog.play_a.isEnabled())
+            self.assertIn("Saving preference", dialog.status.text())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close is deferred", dialog.status.text())
+
+            release.set()
+            self.wait_for(lambda: not dialog._preference_active)
+            self.assertEqual(load_listening_session(session)["completed_count"], 1)
+
+    def test_transient_save_failure_can_retry_in_place(self):
+        with TemporaryDirectory() as directory:
+            attempts = 0
+
+            def flaky_recorder(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("temporary disk failure")
+                return record_trial_preference(*args, **kwargs)
+
+            session, dialog = self.create_dialog(
+                Path(directory), preference_recorder=flaky_recorder
+            )
+            dialog.started_sides = {"a", "b"}
+            dialog.set_preference_buttons_enabled(True)
+
+            dialog.save_preference("a")
+            self.wait_for(lambda: not dialog._preference_active)
+            self.assertIn("Choose again to retry", dialog.status.text())
+            self.assertTrue(dialog.prefer_a.isEnabled())
+            self.assertEqual(load_listening_session(session)["completed_count"], 0)
+
+            dialog.save_preference("a")
+            self.wait_for(lambda: not dialog._preference_active)
+            self.assertEqual(load_listening_session(session)["completed_count"], 1)
+            self.assertEqual(attempts, 2)
 
 
 if __name__ == "__main__":

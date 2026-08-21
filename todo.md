@@ -5,6 +5,27 @@ sections after their implementation has been verified and committed.
 
 ## Offline authoring and application responsibility split
 
+### P1 - Audit and normalize every operator interface
+
+Follow the shared contract, per-surface findings and completion gates in
+[`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
+
+- [ ] Remove duplicate cohort-review responsibility from the authoring
+      workbench. Open the dedicated specialist reviewer for bundles and keep the
+      workbench focused on generation/status plus exceptional item repair; do
+      not broaden queue, state, WAV, lease or final-review authority.
+- [ ] Move the remaining blocking operator work to the shared cancellable task
+      lifecycle: voice-pack/reference import, calibration OCR, OCR correction
+      writes and dialogue-history replay. Snapshot editable inputs, show the
+      active phase and recovery, preserve exact playback/source authority, and
+      add compact/failure/close tests.
+- [ ] Normalize dashboard, compact controls, Settings, onboarding, readiness,
+      diagnostics, support, profiles, voice preview, OCR and permissions after
+      the evidence-review UIs are stable. Require one clear primary action,
+      adjacent disabled reasons, inline validation, no forced log scrolling,
+      bounded refresh operations, consistent Save/Cancel/Close placement and
+      keyboard/screen-reader coverage at 100%, 150% and 200% DPI.
+
 ### P0 - Complete the current Character Story in fail-closed order
 
 Follow the checkpoint, dependencies and acceptance boundaries in
@@ -38,7 +59,10 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       it plays copied checksum-bound bytes without exposing source names,
       offers every opaque candidate plus `Neither candidate is acceptable`, and
       saves in a background worker without disabling playback. After all four
-      decisions, inspect the canonical decision-set ID and private mapping;
+      decisions, inspect the canonical decision-set ID and private mapping. The
+      UI requires every candidate in the current group to reach end of playback
+      before either candidate or Neither becomes available; affected line IDs
+      remain collapsed unless technical detail is requested. After all groups,
       these decisions are reference evidence only. Publish a new explicit
       selected reference/control binding before any regeneration.
 - [ ] After the repair WAVs are reviewed, run the checksum-bound

@@ -2,11 +2,13 @@ import hashlib
 import json
 import os
 import struct
+import time
 import unittest
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 
 import numpy as np
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
@@ -20,7 +22,10 @@ from vntts.authoring.source_reference_quality import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     from vntts.authoring.source_reference_quality_ui import (
@@ -30,7 +35,10 @@ except ModuleNotFoundError as error:
     if error.name != "PySide6":
         raise
     QApplication = None
+    QCloseEvent = None
     QMediaPlayer = None
+    QTest = None
+    QTimer = None
     SourceReferenceQualityDialog = None
 
 
@@ -132,6 +140,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def wait_for(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for the Qt worker")
+
     def test_decisions_are_immediately_available_and_playback_is_advisory(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
@@ -151,6 +168,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertTrue(dialog.reject.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             dialog._decide("reject")
+            self.wait_for(lambda: not dialog._decision_active)
             result = load_source_reference_quality_review(session)
             dialog.close()
 
@@ -181,6 +199,82 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close()
 
         self.assertEqual(message, "Exact game portrait is not installed")
+
+    def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = write_quality_session(root)
+            started = Event()
+            release = Event()
+
+            def slow_recorder(*args):
+                started.set()
+                release.wait(3)
+                from vntts.authoring.source_reference_quality import (
+                    record_source_reference_quality_decision,
+                )
+
+                return record_source_reference_quality_decision(*args)
+
+            dialog = SourceReferenceQualityDialog(
+                session, decision_recorder=slow_recorder
+            )
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+
+            before = time.monotonic()
+            dialog._decide("accept")
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
+
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._decision_active)
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertTrue(dialog.play_reference.isEnabled())
+            self.assertIn("Saving the exact", dialog.status.text())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close is deferred", dialog.status.text())
+
+            release.set()
+            self.wait_for(lambda: not dialog._decision_active)
+            result = load_source_reference_quality_review(session)
+            self.assertEqual(result["completed_count"], 1)
+
+    def test_transient_decision_failure_can_retry_in_place(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            attempts = 0
+
+            def flaky_recorder(*args):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("temporary disk failure")
+                from vntts.authoring.source_reference_quality import (
+                    record_source_reference_quality_decision,
+                )
+
+                return record_source_reference_quality_decision(*args)
+
+            dialog = SourceReferenceQualityDialog(
+                session, decision_recorder=flaky_recorder
+            )
+            dialog._decide("accept")
+            self.wait_for(lambda: not dialog._decision_active)
+            self.assertIn("Choose again to retry", dialog.status.text())
+            self.assertTrue(dialog.accept.isEnabled())
+            self.assertEqual(
+                load_source_reference_quality_review(session)["completed_count"], 0
+            )
+
+            dialog._decide("accept")
+            self.wait_for(lambda: not dialog._decision_active)
+            self.assertEqual(
+                load_source_reference_quality_review(session)["completed_count"], 1
+            )
+            self.assertEqual(attempts, 2)
 
 
 if __name__ == "__main__":

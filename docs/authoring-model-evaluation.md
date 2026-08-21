@@ -242,6 +242,15 @@ The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.
 
+Preference and derived-report publication run outside the Qt thread. While the
+exact trial snapshot is being committed, decision buttons are disabled with a
+visible saving reason but playback remains available. Closing the dialog is
+deferred until that authoritative operation reaches a terminal result. A
+transient failure restores the current decision controls for an in-dialog retry;
+if the preference was durable but report publication failed, the UI advances
+from the persisted session and preserves the existing explicit report-recovery
+message rather than offering a duplicate rating.
+
 ## Legacy-session compatibility
 
 The runtime dual-reads VNTTS-owned version 1 session/key/report schemas and the

@@ -76,6 +76,14 @@ accepted. Decisions are
 serialized through an exclusive lock and copied audio is revalidated whenever
 the review is loaded or played.
 
+Decision persistence runs outside the Qt thread. The current card and
+checksum-verified playback remain available while its decision buttons show a
+saving phase; Close is deferred until the exclusive authority operation
+finishes. A failed write leaves the card current and restores its valid actions,
+so the operator can retry in the same dialog. The existing immediate-decision
+policy remains deliberate: playback progress is advisory and no new heard gate
+is inferred by this responsiveness change.
+
 When `--portrait-directory` is supplied, a card copies the exact PNG whose
 filename matches its story portrait identity and binds its bytes, dimensions
 and SHA-256 into the immutable review. The UI renders those pixels instead of

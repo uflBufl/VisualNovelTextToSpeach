@@ -21,12 +21,15 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -97,9 +100,19 @@ class FailureReferenceAuditDialog(QDialog):
         self._save_active = False
         self._playback_buffer = None
         self._playback_target = None
+        self._heard_candidates = {}
 
         self.setWindowTitle("VNTTS failed-reference audit")
-        self.resize(1040, 650)
+        self.setMinimumSize(720, 460)
+        self.resize(900, 560)
+        self.heading = QLabel("Choose the best source reference for failed speech")
+        self.heading.setAccessibleName("Failed-reference review task")
+        self.heading.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.heading.setWordWrap(True)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, len(self.document["groups"]))
+        self.progress.setAccessibleName("Reference groups decided")
+        self.progress.setFormat("%v of %m groups decided")
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.status = QLabel(
@@ -111,6 +124,14 @@ class FailureReferenceAuditDialog(QDialog):
         self.candidate_choice = QComboBox()
         self.candidate_choice.setAccessibleName("Blinded reference candidate")
         self.group_choice.currentIndexChanged.connect(self._show_group)
+        self.candidate_choice.currentIndexChanged.connect(self._candidate_changed)
+
+        self.candidate_heading = QLabel()
+        self.candidate_heading.setAccessibleName("Current blinded candidate")
+        self.candidate_heading.setStyleSheet("font-size: 17px; font-weight: 600;")
+        self.candidate_heard = QLabel()
+        self.candidate_heard.setAccessibleName("Candidate listening progress")
+        self.candidate_heard.setWordWrap(True)
 
         self.cases = QTableWidget(0, 3)
         self.cases.setHorizontalHeaderLabels(["Line", "Speaker", "Failed text"])
@@ -123,6 +144,10 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.cases.setColumnWidth(0, 260)
         self.cases.setColumnWidth(1, 150)
+        self.technical_details = QCheckBox("Show affected failed lines")
+        self.technical_details.setAccessibleName("Show affected failed line details")
+        self.technical_details.toggled.connect(self.cases.setVisible)
+        self.cases.setVisible(False)
 
         self.play = QPushButton("Play selected candidate")
         self.stop = QPushButton("Stop")
@@ -130,6 +155,9 @@ class FailureReferenceAuditDialog(QDialog):
         self.neither = QPushButton("Neither candidate is acceptable")
         self.previous = QPushButton("Previous group")
         self.next = QPushButton("Next group")
+        self.action_reason = QLabel()
+        self.action_reason.setAccessibleName("Reference decision availability")
+        self.action_reason.setWordWrap(True)
         self.play.clicked.connect(self.play_selected)
         self.stop.clicked.connect(self.stop_playback)
         self.choose.clicked.connect(self.choose_selected)
@@ -143,17 +171,28 @@ class FailureReferenceAuditDialog(QDialog):
         playback.addWidget(self.stop)
         decisions_row = QHBoxLayout()
         decisions_row.addWidget(self.previous)
+        decisions_row.addStretch()
         decisions_row.addWidget(self.choose)
         decisions_row.addWidget(self.neither)
+        decisions_row.addStretch()
         decisions_row.addWidget(self.next)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.close)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.heading)
+        layout.addWidget(self.progress)
         layout.addWidget(self.summary)
         layout.addWidget(self.status)
         layout.addWidget(self.group_choice)
-        layout.addWidget(self.cases, 1)
+        layout.addWidget(self.candidate_heading)
+        layout.addWidget(self.candidate_heard)
         layout.addLayout(playback)
+        layout.addWidget(self.action_reason)
         layout.addLayout(decisions_row)
+        layout.addWidget(self.technical_details)
+        layout.addWidget(self.cases, 1)
+        layout.addWidget(buttons)
 
         self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
@@ -177,6 +216,15 @@ class FailureReferenceAuditDialog(QDialog):
             QKeySequence("Ctrl+Alt+Right"), self, activated=lambda: self._move_group(1)
         )
 
+        self.setTabOrder(self.group_choice, self.candidate_choice)
+        self.setTabOrder(self.candidate_choice, self.play)
+        self.setTabOrder(self.play, self.stop)
+        self.setTabOrder(self.stop, self.choose)
+        self.setTabOrder(self.choose, self.neither)
+        self.setTabOrder(self.neither, self.previous)
+        self.setTabOrder(self.previous, self.next)
+        self.setTabOrder(self.next, self.technical_details)
+
         for index, group in enumerate(self.document["groups"], start=1):
             voice = group["synthesis_voice_character"]
             self.group_choice.addItem(
@@ -195,15 +243,18 @@ class FailureReferenceAuditDialog(QDialog):
     def _show_group(self):
         group = self._current_group()
         self.stop_playback()
+        self.candidate_choice.blockSignals(True)
         self.candidate_choice.clear()
         self.cases.setRowCount(0)
         if group is None:
+            self.candidate_choice.blockSignals(False)
             return
         for index, candidate in enumerate(group["candidates"], start=1):
             self.candidate_choice.addItem(
                 f"Candidate {index} of {len(group['candidates'])}",
                 candidate["candidate_id"],
             )
+        self.candidate_choice.blockSignals(False)
         self.cases.setRowCount(len(group["cases"]))
         for row, case in enumerate(group["cases"]):
             for column, value in enumerate(
@@ -213,14 +264,57 @@ class FailureReferenceAuditDialog(QDialog):
         decision = self.decisions.get(group["group_id"])
         decision_text = decision["decision"] if decision is not None else "not decided"
         completed = len(self.decisions)
+        self.progress.setValue(completed)
+        self.technical_details.setText(
+            f"Show {len(group['cases'])} affected failed line(s)"
+        )
         self.summary.setText(
             f"Reference group {self.group_choice.currentIndex() + 1}/"
             f"{self.group_choice.count()} | {completed}/{self.group_choice.count()} "
             f"decided | Current decision: {decision_text}.\n"
-            "Listen to the opaque candidates, then choose the best exact reference "
-            "or Neither. This records reference evidence only."
+            "This records reference evidence only; it does not approve generated speech."
         )
+        self._update_candidate_card()
         self._update_actions()
+
+    def _candidate_changed(self):
+        self.stop_playback()
+        self._update_candidate_card()
+        self._update_actions()
+
+    def _candidate_position(self):
+        index = self.candidate_choice.currentIndex()
+        return (index + 1, self.candidate_choice.count())
+
+    def _current_heard_candidates(self):
+        group = self._current_group()
+        if group is None:
+            return set()
+        return self._heard_candidates.setdefault(group["group_id"], set())
+
+    def _all_current_candidates_heard(self):
+        group = self._current_group()
+        if group is None:
+            return False
+        expected = {candidate["candidate_id"] for candidate in group["candidates"]}
+        return expected.issubset(self._current_heard_candidates())
+
+    def _update_candidate_card(self):
+        group = self._current_group()
+        candidate_id = self.candidate_choice.currentData()
+        if group is None or not isinstance(candidate_id, str):
+            self.candidate_heading.setText("No candidate selected")
+            self.candidate_heard.clear()
+            return
+        position, total = self._candidate_position()
+        heard = self._current_heard_candidates()
+        self.candidate_heading.setText(f"Candidate {position} of {total}")
+        state = "heard" if candidate_id in heard else "not heard"
+        self.candidate_heard.setText(
+            f"Current candidate: {state}. Group listening progress: "
+            f"{len(heard)}/{total}. Listen through every candidate before deciding."
+        )
+        self.choose.setText(f"Use Candidate {position}")
 
     def play_selected(self):
         group = self._current_group()
@@ -250,6 +344,17 @@ class FailureReferenceAuditDialog(QDialog):
             self.status.setText(f"BLOCKED: {error}")
             self._update_actions()
             return
+        group = self._current_group()
+        if (
+            group is None
+            or group["group_id"] != audio.group_id
+            or self.candidate_choice.currentData() != audio.candidate_id
+        ):
+            self.status.setText(
+                "BLOCKED: candidate selection changed while audio was prepared"
+            )
+            self._update_actions()
+            return
         playback = QBuffer(self)
         playback.setData(QByteArray(audio.payload))
         if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
@@ -260,9 +365,20 @@ class FailureReferenceAuditDialog(QDialog):
         self._playback_target = (audio.group_id, audio.candidate_id, audio.sha256)
         self.player.setSourceDevice(playback, QUrl(f"memory:{audio.path.name}"))
         self.player.play()
-        self.status.setText(
-            f"PLAYING: {self.candidate_choice.currentText()} (checksum verified)"
+        candidate = next(
+            (
+                (index, value)
+                for index, value in enumerate(group["candidates"], 1)
+                if value["candidate_id"] == audio.candidate_id
+            ),
+            None,
         )
+        candidate_label = (
+            f"Candidate {candidate[0]} of {len(group['candidates'])}"
+            if candidate is not None
+            else "checksum-bound candidate"
+        )
+        self.status.setText(f"PLAYING: {candidate_label} (checksum verified)")
         self._update_actions()
 
     def stop_playback(self):
@@ -280,6 +396,14 @@ class FailureReferenceAuditDialog(QDialog):
     def save_decision(self, decision):
         group = self._current_group()
         if group is None or self._save_active:
+            return
+        if not self._all_current_candidates_heard():
+            heard = len(self._current_heard_candidates())
+            total = len(group["candidates"])
+            self.status.setText(
+                f"BLOCKED: listen through every candidate first ({heard}/{total} heard)."
+            )
+            self._update_actions()
             return
         self._save_serial += 1
         serial = self._save_serial
@@ -330,12 +454,18 @@ class FailureReferenceAuditDialog(QDialog):
             )
 
     def _media_status_changed(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+        if (
+            status == QMediaPlayer.MediaStatus.EndOfMedia
+            and self._playback_target is not None
+        ):
+            group_id, candidate_id, _sha256 = self._playback_target
+            self._heard_candidates.setdefault(group_id, set()).add(candidate_id)
             self.status.setText(
                 "HEARD: choose this candidate, replay another, or choose Neither."
             )
             self._playback_buffer = None
             self._playback_target = None
+            self._update_candidate_card()
             self._update_actions()
 
     def _media_error(self, _error, error_string):
@@ -348,12 +478,32 @@ class FailureReferenceAuditDialog(QDialog):
     def _update_actions(self):
         has_group = self._current_group() is not None
         has_candidate = has_group and self.candidate_choice.currentIndex() >= 0
+        all_heard = has_group and self._all_current_candidates_heard()
         self.play.setEnabled(has_candidate and not self._playback_active)
         self.stop.setEnabled(self._playback_buffer is not None)
-        self.choose.setEnabled(has_candidate and not self._save_active)
-        self.neither.setEnabled(has_group and not self._save_active)
-        self.previous.setEnabled(self.group_choice.count() > 1)
-        self.next.setEnabled(self.group_choice.count() > 1)
+        self.choose.setEnabled(has_candidate and all_heard and not self._save_active)
+        self.neither.setEnabled(has_group and all_heard and not self._save_active)
+        navigation_enabled = self.group_choice.count() > 1 and not self._save_active
+        self.previous.setEnabled(navigation_enabled)
+        self.next.setEnabled(navigation_enabled)
+        self.group_choice.setEnabled(not self._save_active)
+        if self._save_active:
+            self.action_reason.setText(
+                "Saving the group decision. Playback remains available; group "
+                "navigation waits for the authoritative write."
+            )
+        elif has_group and not all_heard:
+            heard = len(self._current_heard_candidates())
+            total = len(self._current_group()["candidates"])
+            self.action_reason.setText(
+                f"Decision locked: listen through every candidate ({heard}/{total} heard)."
+            )
+        elif has_group:
+            self.action_reason.setText(
+                "All candidates heard. Choose the best candidate or Neither acceptable."
+            )
+        else:
+            self.action_reason.setText("No reference group is available.")
 
     def closeEvent(self, event: QCloseEvent):
         if self._playback_active or self._save_active:

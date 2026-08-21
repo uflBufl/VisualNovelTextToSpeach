@@ -189,8 +189,12 @@ audit ID
 `52fc3aa6e545109b79bbce7f1842ae5f1428c2f467521f362b3b09832f53223e`.
 It contains 29 exact cases, four control groups, six blinded candidate pairs
 and no decisions at publication time. Its private key is mode 0600. A real
-offscreen UI open validated all source authorities and exposed four groups
-with Play, candidate and Neither actions enabled.
+offscreen UI open validated all source authorities and exposed four groups. The
+operator surface centers the current opaque candidate, keeps affected line IDs
+collapsed by default, records a session-local heard ledger and enables the
+candidate/Neither decisions only after every candidate in the current group
+reaches end of playback. Navigation and playback remain available outside the
+short background decision commit.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending

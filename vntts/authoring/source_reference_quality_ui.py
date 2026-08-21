@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.source_reference_quality import (
-    SourceReferenceQualityError,
     load_source_reference_quality_review,
     next_pending_quality_variant,
     quality_review_progress,
@@ -33,10 +33,22 @@ from vntts.authoring.source_reference_quality import (
 class SourceReferenceQualityDialog(QDialog):
     """Present exact original and generated evidence without cross-character A/B."""
 
-    def __init__(self, session_path, parent=None):
+    def __init__(
+        self,
+        session_path,
+        parent=None,
+        *,
+        decision_recorder=record_source_reference_quality_decision,
+        thread_pool=None,
+    ):
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
         self.session = load_source_reference_quality_review(self.session_path)
+        self.decision_recorder = decision_recorder
+        self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.decision_runner.finished.connect(self._decision_finished)
+        self._decision_active = False
+        self._close_pending = False
         self.current = None
         self.completed_audio = set()
         self._audio_buffer = None
@@ -298,6 +310,9 @@ class SourceReferenceQualityDialog(QDialog):
     def _decide(self, decision):
         if self.current is None:
             return
+        if self._decision_active:
+            self.status.setText("Wait for the current decision to finish saving.")
+            return
         if not {
             "accept": self.accept,
             "reject": self.reject,
@@ -305,16 +320,40 @@ class SourceReferenceQualityDialog(QDialog):
         }[decision].isEnabled():
             self.status.setText("This decision is unavailable for the current card.")
             return
-        try:
-            record_source_reference_quality_decision(
-                self.session_path, self.current["variant_id"], decision
+        self._decision_active = True
+        self._set_actions_enabled(False)
+        self.status.setText(
+            "Saving the exact reference decision... Playback remains available."
+        )
+        self.decision_runner.start(
+            self.decision_recorder,
+            self.session_path,
+            self.current["variant_id"],
+            decision,
+        )
+
+    def _decision_finished(self, _result, error):
+        self._decision_active = False
+        if error is None:
+            self._load_next()
+        else:
+            self._update_decision_enabled()
+            self.status.setText(
+                f"Decision was not saved: {error}. Choose again to retry."
             )
-        except (SourceReferenceQualityError, OSError) as error:
-            self.status.setText(f"Decision was not saved: {error}")
-            return
-        self._load_next()
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
 
     def closeEvent(self, event):
+        if self._decision_active:
+            self._close_pending = True
+            self.status.setText(
+                "Saving the exact reference decision. Close is deferred until "
+                "the authoritative write finishes."
+            )
+            event.ignore()
+            return
         self._stop()
         super().closeEvent(event)
 
