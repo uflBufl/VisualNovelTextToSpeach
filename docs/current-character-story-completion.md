@@ -73,27 +73,37 @@ verified repair planner reports seven `bounded_seed_retry`, 68
 state and queue identities above; the zero-publish legacy result rules out
 another broad MOSS seed retry.
 
-The first bounded current-failure repair pass completed on 2026-08-21 in two
-separate config-addressed workspaces. Sentence segmentation produced three
-validated pending-review WAVs and retained 12 typed bounded failures. Pocket
-fallback initially exposed and then closed a seeded-request contract bug; the
-diagnostic workspace was preserved under `interrupted-workspaces`, and a fresh
-workspace was recreated from the unchanged MOSS source. Its one backend-owned
-unseeded attempt per ID produced ten validated pending-review WAVs and one
-typed speech-silence failure (1.52 seconds internal silence, 51% silent
-frames). All 13 new WAVs remain unapproved. Both runs ended with `active=null`,
-no lease or partial WAV, and an empty approved-only repair manifest. The four
-reference-comparison items were not rendered or relabeled.
+The complete specialist repair pass finished on 2026-08-21 in ten final
+config-addressed workspaces. Sentence segmentation covered 68 exact IDs and
+produced 19 validated pending-review WAVs plus 49 typed failures. Direct Pocket
+fallback covered 75 exact IDs and produced 73 validated pending-review WAVs
+plus two typed failures. The seven exhausted bounded-MOSS items were carried
+through an exact nested repair chain into Pocket and all seven produced
+validated pending-review WAVs. This gives 99 unapproved specialist WAVs and 51
+terminal specialist failures. The separate newly ready primary line gives one
+additional unapproved WAV. The 29 reference-comparison items were not rendered
+or relabeled.
 
-The sentence workspace is
-`resume-395a5e5eec0327a3a793b66d-cb751125876e4228`, with final state SHA-256
-`fca03e0fcf7e818dc9ffaa696be0a801f7a3f5c91dde6aa8b169696d7ae048a7`.
-The Pocket workspace is
-`resume-395a5e5eec0327a3a793b66d-ccceda27182925c9`, with final state SHA-256
-`f7aff27e5cef754c8d6cee5b4e4e5c1a906202eab3c159492e7c6734f97002f8`.
-These specialist histories do not yet merge their future review outcomes with
-the 77 approvals in the primary workspace; that merge must be checksum-bound
-and explicit.
+The five sentence workspace suffixes are `cb751125876e4228`,
+`e1d0de2b7d52fee0`, `28b0822ac8eb1f0d`, `2359eb370afc2402`, and
+`b8ec90ce7a296823`; their pending counts are 3, 6, 4, 4, and 2. The five final
+Pocket workspace suffixes are `ccceda27182925c9`, `eec99d4b176ec721`,
+`69a686b6a33fbae3`, `84ab91224838c264`, and `cb98c8cbe65621fa`; their pending
+counts are 10, 24, 25, 14, and 7. Two earlier nested-Pocket workspaces that
+failed closed before rendering remain diagnostic archives, not review sources.
+Every final run preserved non-target records and its source state, ended with
+`active=null`, and left no lease or partial WAV. These specialist histories do
+not yet merge their future review outcomes with the 77 approvals in the
+primary workspace; that merge must be checksum-bound and explicit.
+
+Building the existing conservative cohort plan independently for each final
+workspace produces 20 exact cohorts and 81 required samples for the 99 WAVs.
+The large sample is intentional: every technical-attention WAV is mandatory,
+while only clean short/medium/long buckets are sampled. Opening ten independent
+workbench windows is not an acceptable operator workflow, so the next software
+boundary is a single review bundle that presents those exact source-bound
+samples without weakening their authority or applying a decision across source
+workspaces.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
@@ -127,11 +137,13 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 21 new repair/ready-line WAVs, then extend bounded specialist
-   repair over the remaining 68 sentence, 75 offline-fallback and 29
-   reference-comparison cohorts. Merge only exact
-   terminal outcomes into a successor history. Preserve the 20-second ceiling
-   and compare every non-target state item after a run.
+1. Review the 99 completed specialist WAVs through one checksum-bound
+   multi-workspace bundle plus the one newly generated primary WAV. Preserve
+   source-local review authority and merge only exact terminal outcomes into a
+   successor history. Cluster the remaining 51 typed failures before choosing
+   another action, and handle the 29 reference comparisons as a separate
+   blinded decision task. Do not raise the 20-second ceiling or run another
+   broad seed sweep.
 2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
    build a successor Dobharchú comparison that addresses slow pacing and
    inter-phrase pauses. Human listening remains the authority for identity,

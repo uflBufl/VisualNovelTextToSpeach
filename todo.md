@@ -10,12 +10,28 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the 21 validated current-failure repair/new-line WAVs (three
-      sentence repairs, seventeen unseeded Pocket fallbacks and one newly
-      generated ready line), leaving all decisions pending until their exact
-      bytes are heard. Then extend specialist repair over the remaining 68
-      sentence, 75 offline-fallback and 29 reference-comparison cohorts without
-      a broad retry or a raised 20-second ceiling.
+- [ ] Build one checksum-bound multi-workspace review bundle for the completed
+      specialist repairs instead of requiring ten separate workbench windows.
+      The exact inventory is 99 pending specialist WAVs across ten immutable
+      workspaces (19 sentence repairs and 80 Pocket fallbacks), plus one new
+      pending WAV in the primary workspace. The current conservative per-source
+      plans require 81 specialist samples because every technical-attention WAV
+      remains mandatory. The bundle must preserve source workspace/state/item/
+      WAV identity, show why each sample is mandatory, support replay and
+      sample-level bad/needs-another decisions, never project a decision into a
+      different source, and revalidate all source authorities before applying
+      terminal outcomes. Keep the remaining 51 specialist failures and 29
+      reference-comparison items out of this review inventory.
+- [ ] Cluster the 51 terminal specialist failures by typed completion/error,
+      text shape, voice/reference, backend and measured audio diagnostics.
+      Publish a checksum-bound analysis with an explicit next action per
+      cluster: safe text-boundary repair, a different verified reference,
+      manual/live fallback, or terminal unsupported. Do not raise the 20-second
+      ceiling or run another broad seed sweep.
+- [ ] Build the 29 reference-comparison cases as a separate blinded,
+      checksum-bound comparison task. It must include original/reference audio
+      when available, identify `neither is acceptable`, and require an explicit
+      selected reference/control binding before any regeneration.
 - [ ] After the repair WAVs are reviewed, run the checksum-bound
       `merge-workspace-outcomes` command to create one successor containing the
       77 primary approvals plus only exact approved/rejected sentence and
