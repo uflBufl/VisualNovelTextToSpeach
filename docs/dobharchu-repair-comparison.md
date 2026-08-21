@@ -153,4 +153,6 @@ bounded sentence-boundary repair rather than a global silence-policy change.
 Portraits `534703` and `534704` were also confirmed to show the same person with
 different facial expressions. Treat them as expression aliases for review and
 coverage while preserving both source portrait IDs, exact reference WAVs and
-synthesis provenance. This decision does not include unbound portrait `534705`.
+synthesis provenance. The reusable contract is documented in
+[`portrait-expression-aliases.md`](portrait-expression-aliases.md). This
+decision does not include unbound portrait `534705`.

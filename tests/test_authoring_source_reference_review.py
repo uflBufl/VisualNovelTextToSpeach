@@ -25,6 +25,16 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
+from vntts.authoring.portrait_aliases import (
+    PortraitAliasError,
+    build_portrait_alias_decision,
+    build_portrait_alias_plan,
+    load_portrait_alias_decision,
+    load_portrait_alias_plan,
+    portrait_identity_by_variant,
+    write_portrait_alias_decision,
+    write_portrait_alias_plan,
+)
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -120,8 +130,12 @@ def candidate_key(character, portrait, bank, media_id, reference_sha256):
 
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
-    def publish_quality_fixture(self, root, *, portrait_directory=None):
-        report, review, story = self.write_inputs(root)
+    def publish_quality_fixture(
+        self, root, *, portrait_directory=None, shared_portrait_bank=False
+    ):
+        report, review, story = self.write_inputs(
+            root, shared_portrait_bank=shared_portrait_bank
+        )
         plan = import_source_reference_review(report, review, story, root / "plan")
         evaluation = publish_source_reference_evaluation(
             plan.directory, root / "evaluation"
@@ -143,16 +157,19 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         return plan, evaluation, generation, quality
 
-    def write_inputs(self, root):
+    def write_inputs(self, root, *, shared_portrait_bank=False):
         root = Path(root)
         references = root / "references"
         references.mkdir()
         candidates = []
         decisions = []
+        accepted_young_bank = (
+            "hero-adult.bnk" if shared_portrait_bank else "hero-young.bnk"
+        )
         for index, (portrait, bank, decision) in enumerate(
             (
                 ("adult.png", "hero-adult.bnk", "accept"),
-                ("young.png", "hero-young.bnk", "accept"),
+                ("young.png", accepted_young_bank, "accept"),
                 ("adult.png", "hero-adult.bnk", "reject"),
             ),
             start=1,
@@ -600,6 +617,90 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 SourceReferenceQualityError, "portrait metadata changed"
             ):
                 load_source_reference_quality_review(result.session)
+
+    def test_portrait_alias_requires_same_voice_evidence_and_human_decision(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            portraits = root / "portraits"
+            portraits.mkdir()
+            write_test_png(portraits / "adult.png", red=120)
+            write_test_png(portraits / "young.png", red=121)
+            (root / "separate").mkdir()
+            _plan, _evaluation, _generation, separate = self.publish_quality_fixture(
+                root / "separate",
+                portrait_directory=portraits,
+            )
+            separate_session = load_source_reference_quality_review(separate.session)
+            for card in separate_session["variants"]:
+                record_source_reference_quality_decision(
+                    separate.session, card["variant_id"], "accept"
+                )
+            self.assertEqual(
+                build_portrait_alias_plan(separate.session).document["suggestions"],
+                [],
+            )
+
+            shared_root = root / "shared"
+            shared_root.mkdir()
+            _plan, _evaluation, _generation, shared = self.publish_quality_fixture(
+                shared_root,
+                portrait_directory=portraits,
+                shared_portrait_bank=True,
+            )
+            shared_session = load_source_reference_quality_review(shared.session)
+            for card in shared_session["variants"]:
+                record_source_reference_quality_decision(
+                    shared.session, card["variant_id"], "accept"
+                )
+            plan = build_portrait_alias_plan(shared.session)
+            plan_path = write_portrait_alias_plan(plan, root / "aliases-plan.json")
+            loaded_plan = load_portrait_alias_plan(plan_path)
+            suggestion = loaded_plan.document["suggestions"][0]
+            decision = build_portrait_alias_decision(
+                loaded_plan, [suggestion["suggestion_id"]]
+            )
+            decision_path = write_portrait_alias_decision(
+                decision, root / "aliases-decision.json"
+            )
+            loaded_decision = load_portrait_alias_decision(decision_path, loaded_plan)
+            identities = portrait_identity_by_variant(loaded_decision)
+
+        self.assertEqual(plan.document["suggestion_count"], 1)
+        self.assertEqual(suggestion["dhash_distance"], 0)
+        self.assertEqual(len(identities), 2)
+        self.assertEqual(len(set(identities.values())), 1)
+        self.assertEqual(
+            {value["portrait"] for value in suggestion["variants"]},
+            {"adult.png", "young.png"},
+        )
+
+    def test_portrait_alias_plan_rejects_changed_portrait_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            portraits = root / "portraits"
+            portraits.mkdir()
+            write_test_png(portraits / "adult.png", red=120)
+            write_test_png(portraits / "young.png", red=121)
+            _plan, _evaluation, _generation, quality = self.publish_quality_fixture(
+                root,
+                portrait_directory=portraits,
+                shared_portrait_bank=True,
+            )
+            session = load_source_reference_quality_review(quality.session)
+            for card in session["variants"]:
+                record_source_reference_quality_decision(
+                    quality.session, card["variant_id"], "accept"
+                )
+            plan = build_portrait_alias_plan(quality.session)
+            path = write_portrait_alias_plan(plan, root / "alias-plan.json")
+            current = load_source_reference_quality_review(quality.session)
+            portrait = (
+                quality.directory / current["variants"][0]["portrait_image"]["image"]
+            )
+            portrait.write_bytes(b"changed")
+
+            with self.assertRaisesRegex(PortraitAliasError, "changed"):
+                load_portrait_alias_plan(path)
 
     def test_quality_review_rejects_tampered_audio_and_concurrent_decision(self):
         with TemporaryDirectory() as directory:

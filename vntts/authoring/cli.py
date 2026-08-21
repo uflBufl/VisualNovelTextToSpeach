@@ -92,6 +92,14 @@ from vntts.authoring.pending_resolution import (
     load_pending_resolution_plan,
     write_pending_resolution_plan,
 )
+from vntts.authoring.portrait_aliases import (
+    PortraitAliasError,
+    build_portrait_alias_decision,
+    build_portrait_alias_plan,
+    load_portrait_alias_plan,
+    write_portrait_alias_decision,
+    write_portrait_alias_plan,
+)
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
     inspect_generation_queue,
@@ -511,6 +519,22 @@ def create_parser():
     voice_repair_command.add_argument("plan", type=Path)
     voice_repair_command.add_argument("candidate_id")
     voice_repair_command.add_argument("workspace", type=Path)
+    portrait_alias_plan = subparsers.add_parser(
+        "portrait-alias-plan",
+        help="Suggest checksum-bound same-character portrait expression aliases",
+    )
+    portrait_alias_plan.add_argument("quality_review", type=Path)
+    portrait_alias_plan.add_argument("--max-dhash-distance", type=int, default=6)
+    portrait_alias_plan.add_argument("--output", type=Path, required=True)
+    portrait_alias_decision = subparsers.add_parser(
+        "portrait-alias-decision",
+        help="Record explicit human authority over portrait alias suggestions",
+    )
+    portrait_alias_decision.add_argument("plan", type=Path)
+    portrait_alias_decision.add_argument(
+        "--accept-suggestion", action="append", required=True
+    )
+    portrait_alias_decision.add_argument("--output", type=Path, required=True)
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -1140,6 +1164,28 @@ def main(argv=None):
             )
             print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
             return 0
+        if arguments.command == "portrait-alias-plan":
+            plan = build_portrait_alias_plan(
+                arguments.quality_review,
+                max_dhash_distance=arguments.max_dhash_distance,
+            )
+            write_portrait_alias_plan(plan, arguments.output)
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
+        if arguments.command == "portrait-alias-decision":
+            decision = build_portrait_alias_decision(
+                load_portrait_alias_plan(arguments.plan),
+                arguments.accept_suggestion,
+            )
+            write_portrait_alias_decision(decision, arguments.output)
+            print(
+                json.dumps(
+                    decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
         if arguments.command == "failure-repair-plan":
             print(
                 json.dumps(
@@ -1419,6 +1465,7 @@ def main(argv=None):
         FailureReferenceAuditError,
         LegacyAuthoringImportError,
         ListeningImportError,
+        PortraitAliasError,
         ReferenceSelectionError,
         SourceReferenceReviewError,
         SourceReferenceQualityError,
