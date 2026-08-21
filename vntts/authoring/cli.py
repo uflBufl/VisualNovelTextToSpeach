@@ -247,7 +247,10 @@ def _add_failure_repair_arguments(parser):
     parser.add_argument(
         "--sentence-segment-failed",
         action="append",
-        help="Repair this exact current missed-EOS failure at safe sentence boundaries",
+        help=(
+            "Repair this exact current missed-EOS or internal-silence failure "
+            "at safe sentence boundaries"
+        ),
     )
     parser.add_argument(
         "--trim-edge-silence-failed",

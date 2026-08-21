@@ -921,7 +921,10 @@ def generation_failure_repair_plan(state_path, queue_path):
                 and quality.get("longest_internal_silence_seconds", 0)
                 <= MAX_INTERNAL_SILENCE_SECONDS
             )
-            if edge_only:
+            if _sentence_repair_matches_failure(failure, record["text"]):
+                action = "sentence_boundary_segmentation"
+                reason = "internal silence between multiple complete sentences"
+            elif edge_only:
                 action = "edge_silence_trim"
                 reason = "only measured boundary silence exceeds the speech gate"
             else:
@@ -1000,10 +1003,7 @@ def _validate_failure_repair_selection(
         failure = normalized_failure_record(result, text=item.text)
         strategy = policy.strategy_for(queue_id)
         if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-            if (
-                failure.get("kind") != "missed_eos_audio_limit"
-                or len(safe_sentence_segments(item.text)) < 2
-            ):
+            if not _sentence_repair_matches_failure(failure, item.text):
                 raise BulkGenerationError(
                     f"Sentence repair no longer matches failure {queue_id!r}"
                 )
@@ -1066,6 +1066,39 @@ def _validate_failure_repair_selection(
                 raise BulkGenerationError(
                     f"Offline fallback lacks a different bound source backend for {queue_id!r}"
                 )
+
+
+def _sentence_repair_matches_failure(failure, text):
+    if len(safe_sentence_segments(text)) < 2:
+        return False
+    if failure.get("kind") == "missed_eos_audio_limit":
+        return True
+    if failure.get("kind") != "speech_silence":
+        return False
+    quality = failure.get("speech_quality")
+    if not isinstance(quality, dict):
+        return False
+    values = {
+        field: quality.get(field)
+        for field in (
+            "leading_silence_seconds",
+            "trailing_silence_seconds",
+            "longest_internal_silence_seconds",
+        )
+    }
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not np.isfinite(value)
+        or value < 0
+        for value in values.values()
+    ):
+        return False
+    return bool(
+        values["longest_internal_silence_seconds"] > MAX_INTERNAL_SILENCE_SECONDS
+        and values["leading_silence_seconds"] <= MAX_LEADING_SILENCE_SECONDS
+        and values["trailing_silence_seconds"] <= MAX_TRAILING_SILENCE_SECONDS
+    )
 
 
 def _failure_repair_document(policy, queue_id, text, *, existing=None):

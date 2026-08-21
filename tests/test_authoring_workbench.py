@@ -766,6 +766,79 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture["queue_id"],
         )
 
+    def test_sentence_repair_carries_typed_internal_silence_failure(self):
+        from tests.test_authoring_bulk_generation import (
+            SyntheticRenderer,
+            audio_samples,
+        )
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            run_bulk_generation,
+        )
+
+        text = "The first warning is clear. The second warning is equally clear."
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root, text=text)
+            queue_path = source.directory / "queue.jsonl"
+            source_output = source.directory / "generated-audio"
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+            failed_renderer = SyntheticRenderer(
+                diagnostics_backend="moss-tts", pcm=failed_pcm
+            )
+            failed_renderer.name = "moss-tts"
+            failed_renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                source_output,
+                failed_renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                regenerate_existing=True,
+            )
+            source_state_path = source_output / "generation-state.json"
+            source_state_before = source_state_path.read_bytes()
+            source_item = load_generation_state(source_state_path, queue_path)["items"][
+                fixture["queue_id"]
+            ]
+            policy = FailureRepairPolicy(
+                sentence_segment_queue_ids=(fixture["queue_id"],)
+            )
+
+            repaired = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=policy,
+                carry_forward_from=source.directory,
+            )
+            repaired_state = load_generation_state(
+                repaired.directory / "generated-audio/generation-state.json",
+                repaired.directory / "queue.jsonl",
+            )
+            summary = inspect_workspace(repaired.directory)
+            source_state_after = source_state_path.read_bytes()
+
+        self.assertEqual(source_item["failure"]["kind"], "speech_silence")
+        self.assertEqual(
+            repaired_state["items"][fixture["queue_id"]]["carry_forward"]["mode"],
+            "failed-outcome",
+        )
+        self.assertEqual(summary.failed, 1)
+        self.assertEqual(source_state_after, source_state_before)
+
     def test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

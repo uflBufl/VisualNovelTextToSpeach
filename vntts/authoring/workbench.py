@@ -41,6 +41,7 @@ from vntts.authoring.bulk_generation import (
     ReviewAuthority,
     ReviewCommit,
     _canonical_sha256,
+    _sentence_repair_matches_failure,
     _snapshot_control_files,
     is_spoken_queue_item,
     load_generation_state,
@@ -60,7 +61,6 @@ from vntts.authoring.failure_repair import (
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
-    safe_sentence_segments,
 )
 from vntts.authoring.game_pack import (
     FinalGamePackError,
@@ -2057,13 +2057,16 @@ def _carry_forward_review_outcomes(
         )
         strategy = repair_policy.strategy_for(queue_id)
         minimum_attempts = 3 if strategy == OFFLINE_FALLBACK_BACKEND else 1
-        sentence_mismatch = (
-            strategy == SENTENCE_BOUNDARY_SEGMENTATION
-            and len(safe_sentence_segments(queue_by_id[queue_id].text)) < 2
+        sentence_mismatch = strategy == SENTENCE_BOUNDARY_SEGMENTATION and not (
+            _sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
+        )
+        failure_kind_mismatch = (
+            sentence_mismatch
+            if strategy == SENTENCE_BOUNDARY_SEGMENTATION
+            else failure.get("kind") != "missed_eos_audio_limit"
         )
         if (
-            failure.get("kind") != "missed_eos_audio_limit"
-            or sentence_mismatch
+            failure_kind_mismatch
             or not isinstance(attempts, int)
             or isinstance(attempts, bool)
             or attempts < minimum_attempts
@@ -2910,7 +2913,11 @@ def _validate_workspace_carry_forward(directory, workspace):
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure backend is inconsistent"
                 )
-            if item.get("source_failure_kind") != "missed_eos_audio_limit":
+            strategy = repair_policy.strategy_for(queue_id) if version == 3 else None
+            allowed_failure_kinds = {"missed_eos_audio_limit"}
+            if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+                allowed_failure_kinds.add("speech_silence")
+            if item.get("source_failure_kind") not in allowed_failure_kinds:
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure kind is unsupported"
                 )
@@ -2928,7 +2935,6 @@ def _validate_workspace_carry_forward(directory, workspace):
             attempts = item.get("source_attempts")
             minimum_attempts = 3
             if version == 3:
-                strategy = repair_policy.strategy_for(queue_id)
                 minimum_attempts = 3 if strategy == OFFLINE_FALLBACK_BACKEND else 1
             if (
                 not isinstance(attempts, int)

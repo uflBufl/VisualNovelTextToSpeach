@@ -1438,6 +1438,70 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             manifest["entries"][0]["failure_repair"], result["failure_repair"]
         )
 
+    def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The first warning is clear. The second warning is equally clear."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+            failed = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(pcm=failed_pcm),
+                retries=0,
+                seed=0,
+            )
+            failed_state = load_generation_state(failed.state, queue)
+            failed_item = failed_state["items"][item["queue_id"]]
+            repair_plan = generation_failure_repair_plan(failed.state, queue)
+            renderer = SyntheticRenderer()
+            policy = FailureRepairPolicy((item["queue_id"],))
+
+            repaired = self.run_generation(
+                queue,
+                output,
+                renderer,
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            repaired_item = load_generation_state(repaired.state, queue)["items"][
+                item["queue_id"]
+            ]
+
+        self.assertEqual(failed_item["failure"]["kind"], "speech_silence")
+        self.assertGreater(
+            failed_item["failure"]["speech_quality"][
+                "longest_internal_silence_seconds"
+            ],
+            1.2,
+        )
+        self.assertEqual(
+            repair_plan["records"][0]["action"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(repaired.generated, 1)
+        self.assertEqual(
+            [request.text for request in renderer.requests],
+            ["The first warning is clear.", "The second warning is equally clear."],
+        )
+        self.assertEqual([request.seed for request in renderer.requests], [1, 2])
+        self.assertEqual(
+            repaired_item["failure_repair"]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertLessEqual(
+            repaired_item["speech_quality"]["longest_internal_silence_seconds"],
+            1.2,
+        )
+
     def test_exact_edge_silence_repair_trims_before_quality_gate(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

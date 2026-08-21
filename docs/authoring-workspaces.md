@@ -125,13 +125,16 @@ seed, pass that workspace with `--carry-forward-from`. The carry ledger schema
 v3 binds the exact source state and failed item before the repair workspace is
 published. Same-backend sentence-boundary and bounded-seed repairs must keep
 the source backend, model, generation profile, missing-voice policy, queue and
-copied voice controls unchanged. A sentence repair requires a typed
-`missed_eos_audio_limit` failure with at least two safe sentence segments. A
-bounded-seed repair requires the same typed failure with one or two exact
-provider attempts and permits only the remaining attempts up to a cumulative
-provider maximum of three. Cross-backend Pocket fallback keeps the stricter
-exhausted-attempt and Pocket default requirements below. Same-backend and
-cross-backend strategies cannot share one workspace.
+copied voice controls unchanged. A sentence repair requires at least two safe
+complete sentence segments and either a typed `missed_eos_audio_limit` failure
+or a typed `speech_silence` failure where only the internal-pause limit is
+exceeded while leading and trailing silence remain within their global limits.
+This segmentation is a bounded repair; it does not weaken the speech-quality
+gate. A bounded-seed repair requires a typed `missed_eos_audio_limit` failure
+with one or two exact provider attempts and permits only the remaining attempts
+up to a cumulative provider maximum of three. Cross-backend Pocket fallback
+keeps the stricter exhausted-attempt and Pocket default requirements below.
+Same-backend and cross-backend strategies cannot share one workspace.
 
 Both creation and every later workspace load fail closed if the carried item,
 strategy, source configuration, provider-attempt count or exact queue-ID
