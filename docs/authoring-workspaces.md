@@ -611,6 +611,23 @@ and reloads authority afterwards. The controls never auto-apply anything on
 workbench open. No command or UI decision was applied to the real Character
 Story workspace during implementation or verification.
 
+When pending outcomes live in several immutable repair workspaces, use
+`vntts-pregenerate cohort-review-bundle --workspace WORKSPACE ...` instead of
+opening an unrelated workbench window for every source. The versioned bundle
+embeds every complete source plan, canonical source path, state/plan identity,
+cohort and sampled line/text/WAV checksum. Its flattened sample inventory adds
+the operator-facing reason each WAV is mandatory: either all of its technical
+flags or the deterministic clean length bucket. Duplicate source paths or
+workspace identities fail closed.
+
+`cohort-review-bundle-apply BUNDLE WORKSPACE_ID COHORT_ID DECISION` revalidates
+the entire bundle before constructing the ordinary source-plan decision. The
+transaction still writes evidence and projects only into the selected source
+workspace; it never promotes a matching-looking item in another repair source.
+The returned next-bundle identity reflects the changed source state. This CLI
+is the shared authority boundary for the unified Qt bundle reviewer; publishing
+a bundle alone remains read-only.
+
 A read-only acceptance on 2026-08-20 against the current 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining
 checksum-bound Centurion cohort. Its one exact sample appeared as

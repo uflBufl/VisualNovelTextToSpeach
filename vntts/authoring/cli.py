@@ -28,6 +28,12 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.cohort_bundle import (
+    build_cohort_review_bundle,
+    execute_cohort_bundle_decision,
+    load_cohort_review_bundle,
+    write_cohort_review_bundle,
+)
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     apply_cohort_review_decision,
@@ -443,6 +449,37 @@ def create_parser():
         type=Path,
         help="Publish the immutable plan without replacing an existing file",
     )
+    cohort_bundle = subparsers.add_parser(
+        "cohort-review-bundle",
+        help="Plan one checksum-bound review inventory across workspaces",
+    )
+    cohort_bundle.add_argument(
+        "--workspace",
+        action="append",
+        type=Path,
+        required=True,
+        help="Immutable source workspace; repeat for each source",
+    )
+    cohort_bundle.add_argument(
+        "--clean-samples-per-bucket",
+        type=int,
+        default=1,
+        help="Deterministic clean samples for each short/medium/long bucket",
+    )
+    cohort_bundle.add_argument("--output", type=Path)
+    cohort_bundle_apply = subparsers.add_parser(
+        "cohort-review-bundle-apply",
+        help="Apply one exact source-local cohort decision from a bundle",
+    )
+    cohort_bundle_apply.add_argument("bundle", type=Path)
+    cohort_bundle_apply.add_argument("workspace_id")
+    cohort_bundle_apply.add_argument("cohort_id")
+    cohort_bundle_apply.add_argument(
+        "decision", choices=("accepted", "rejected", "expand")
+    )
+    cohort_bundle_apply.add_argument("--reviewed-queue-id", action="append", default=[])
+    cohort_bundle_apply.add_argument("--bad-queue-id", action="append", default=[])
+    cohort_bundle_apply.add_argument("--next-clean-samples-per-bucket", type=int)
     pending_resolution = subparsers.add_parser(
         "pending-resolution-plan",
         help="Bind cohort-blocked pending WAVs to conservative next actions",
@@ -968,6 +1005,48 @@ def main(argv=None):
                 write_cohort_review_plan(plan, arguments.output)
             print(
                 json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
+        if arguments.command == "cohort-review-bundle":
+            bundle = build_cohort_review_bundle(
+                arguments.workspace,
+                clean_samples_per_bucket=arguments.clean_samples_per_bucket,
+            )
+            if arguments.output is not None:
+                write_cohort_review_bundle(bundle, arguments.output)
+            print(
+                json.dumps(
+                    bundle.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if arguments.command == "cohort-review-bundle-apply":
+            bad = set(arguments.bad_queue_id)
+            unexpected = sorted(bad - set(arguments.reviewed_queue_id))
+            if unexpected:
+                raise CohortReviewError(
+                    f"Bad queue IDs were not reviewed: {unexpected}"
+                )
+            assessments = [
+                {
+                    "queue_id": queue_id,
+                    "assessment": "bad" if queue_id in bad else "heard",
+                }
+                for queue_id in arguments.reviewed_queue_id
+            ]
+            projection = execute_cohort_bundle_decision(
+                load_cohort_review_bundle(arguments.bundle),
+                arguments.workspace_id,
+                arguments.cohort_id,
+                arguments.decision,
+                reviewed_queue_ids=arguments.reviewed_queue_id,
+                sample_assessments=assessments,
+                next_clean_samples_per_bucket=(arguments.next_clean_samples_per_bucket),
+            )
+            print(
+                json.dumps(
+                    projection.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
             )
             return 0
         if arguments.command == "pending-resolution-plan":
