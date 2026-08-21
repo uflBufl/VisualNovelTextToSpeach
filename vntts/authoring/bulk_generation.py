@@ -63,6 +63,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.silence_evidence import publish_silence_failure_evidence
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -1362,6 +1363,7 @@ def run_bulk_generation(
     missing_voice_policy=None,
     narrator_character=None,
     failure_repair_policy=None,
+    silence_failure_evidence=None,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -1449,6 +1451,34 @@ def run_bulk_generation(
         raise BulkGenerationError(
             "Failure repair requires an exact --queue-id selection matching its policy"
         )
+    evidence_directory = None
+    if silence_failure_evidence is not None:
+        evidence_directory = Path(silence_failure_evidence).expanduser()
+        if not evidence_directory.name or evidence_directory.name in {".", ".."}:
+            raise BulkGenerationError(
+                "Silence-failure evidence requires a directory name"
+            )
+        if not evidence_directory.is_absolute():
+            evidence_directory = Path.cwd() / evidence_directory
+        evidence_directory = (
+            evidence_directory.parent.resolve() / evidence_directory.name
+        )
+        try:
+            evidence_directory.relative_to(output_directory)
+        except ValueError:
+            pass
+        else:
+            raise BulkGenerationError(
+                "Silence-failure evidence must stay outside generated output"
+            )
+        if selected_queue_ids is None or len(selected_queue_ids) != 1 or retries != 0:
+            raise BulkGenerationError(
+                "Silence-failure evidence requires one exact queue ID and retries=0"
+            )
+        if evidence_directory.exists() or evidence_directory.is_symlink():
+            raise BulkGenerationError(
+                f"Silence-failure evidence destination already exists: {evidence_directory}"
+            )
     if (
         regenerate_existing
         and selected_queue_ids is None
@@ -1582,6 +1612,7 @@ def run_bulk_generation(
         generated = 0
         skipped_existing = 0
         cancelled = False
+        captured_silence_failure = None
         for item in candidates:
             queue_id = item.queue_id
             existing = state["items"].get(queue_id, {})
@@ -1877,6 +1908,14 @@ def run_bulk_generation(
                         partial.unlink()
                     raise
                 except Exception as error:
+                    captured_partial = None
+                    if (
+                        evidence_directory is not None
+                        and isinstance(error, SpeechSilenceValidationError)
+                        and partial.is_file()
+                        and not partial.is_symlink()
+                    ):
+                        captured_partial = partial.read_bytes()
                     if partial.exists():
                         partial.unlink()
                     completion = (
@@ -1962,6 +2001,15 @@ def run_bulk_generation(
                     else:
                         state["active"] = None
                         atomic_write_json(state_path, state, sort_keys=True)
+                    if captured_partial is not None:
+                        captured_silence_failure = {
+                            "wav_payload": captured_partial,
+                            "queue_id": queue_id,
+                            "line_id": item.line_id,
+                            "text": item.text,
+                            "text_sha256": item.text_sha256,
+                            "state_item": copy.deepcopy(state["items"][queue_id]),
+                        }
                     if is_cancelled:
                         cancelled = True
                         break
@@ -1982,6 +2030,26 @@ def run_bulk_generation(
         publish_generated_manifest(
             state_path, manifest_path=manifest_path, _lease_held=True
         )
+        if captured_silence_failure is not None:
+            publish_silence_failure_evidence(
+                evidence_directory,
+                captured_silence_failure["wav_payload"],
+                {
+                    "queue": str(queue_path),
+                    "queue_sha256": queue_sha256,
+                    "state": str(state_path),
+                    "state_sha256": sha256_file(state_path),
+                    "queue_id": captured_silence_failure["queue_id"],
+                    "line_id": captured_silence_failure["line_id"],
+                    "text": captured_silence_failure["text"],
+                    "text_sha256": captured_silence_failure["text_sha256"],
+                    "state_item": captured_silence_failure["state_item"],
+                    "state_item_sha256": _canonical_sha256(
+                        captured_silence_failure["state_item"]
+                    ),
+                    "synthesis_controls_sha256": provenance_sha256,
+                },
+            )
         failed = sum(
             value.get("status") == "failed" for value in state["items"].values()
         )

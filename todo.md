@@ -131,12 +131,10 @@ while one-sentence controls remained below 0.25 seconds.
       cadence than segmentation. Never cut generation at the first long silence
       and publish the prefix: valid words may follow it. A future streaming
       cutoff may only fail the current already-segmented unit for bounded
-      retry/fallback. First add an explicit one-queue-ID, one-attempt evidence
-      sink that preserves a technically rejected raw WAV outside generated
-      output, binds its exact queue/state/control/failure identity and never
-      treats it as generated or reviewable audio; current failed state correctly
-      deletes non-publishable partial WAVs, so no trustworthy real raw corpus is
-      presently available to the comparison publisher.
+      retry/fallback. Use the explicit one-queue-ID, one-attempt evidence sink
+      only for a newly justified retry; current old failures correctly deleted
+      non-publishable partial WAVs and cannot be reconstructed as the same
+      evidence.
 - [ ] Apply the selected repair policy to pending/failed Dobharchú items in a
       new config-addressed workspace. Review every transformed WAV and a
       deterministic clean control sample. Acceptance requires no internal pause

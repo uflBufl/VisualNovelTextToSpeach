@@ -201,6 +201,13 @@ from vntts.authoring.silence_comparison import (
     load_silence_comparison,
     publish_silence_comparison,
 )
+from vntts.authoring.silence_evidence import (
+    SILENCE_FAILURE_EVIDENCE_SCHEMA,
+    SILENCE_FAILURE_EVIDENCE_VERSION,
+    SilenceFailureEvidenceError,
+    load_silence_failure_evidence,
+    publish_silence_failure_evidence,
+)
 from vntts.authoring.source_reference_quality import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,
@@ -361,6 +368,9 @@ __all__ = [
     "SilenceComparisonError",
     "SilenceComparisonResult",
     "SilenceComparisonSample",
+    "SILENCE_FAILURE_EVIDENCE_SCHEMA",
+    "SILENCE_FAILURE_EVIDENCE_VERSION",
+    "SilenceFailureEvidenceError",
     "GenerationQueueBuildError",
     "GenerationQueuePlan",
     "GenerationQueueSummary",
@@ -434,6 +444,7 @@ __all__ = [
     "load_failure_reference_audit",
     "load_failure_reference_decisions",
     "load_silence_comparison",
+    "load_silence_failure_evidence",
     "load_source_reference_plan",
     "load_specialist_failure_plan",
     "load_voice_quality_gate",
@@ -446,6 +457,7 @@ __all__ = [
     "portrait_identity_by_variant",
     "publish_generation_queue",
     "publish_silence_comparison",
+    "publish_silence_failure_evidence",
     "publish_generated_manifest",
     "publish_final_game_pack",
     "publish_failure_reference_audit",

@@ -281,11 +281,36 @@ The existing resumable generator correctly deletes `.partial.wav` after a
 speech-silence validation failure and records only typed diagnostics in state.
 Consequently the current immutable workspaces contain no trustworthy raw WAV
 for the two unpublished long-pause failures: reconstructing one from a later
-seed or another workspace would change the evidence. Before publishing the real
-comparison corpus, add an explicit one-queue-ID, one-attempt evidence sink. It
-must store the technically rejected WAV outside generated output, bind queue,
-state, controls, attempt and failure diagnosis, and keep the artifact impossible
-to review or merge as a generated outcome.
+seed or another workspace would change the evidence.
+
+For a newly authorized exact retry, `generate` therefore supports an explicit
+`--capture-silence-failure EVIDENCE_DIRECTORY` sink. It requires exactly one
+`--queue-id`, `--retries 0`, a new destination outside generated output and an
+actual typed speech-silence rejection. The generator still records a failed
+state item, publishes no production WAV and derives no reviewable manifest
+entry. After state and manifest publication, the sink atomically stores the
+rejected PCM16 mono WAV plus exact queue/state/control/item/failure hashes. Its
+schema marks both `reviewable` and `generated_outcome` false; tampered item or
+WAV bytes fail validation.
+
+```bash
+uv run vntts-pregenerate generate \
+  --workspace WORKSPACE \
+  --queue WORKSPACE/queue.jsonl \
+  --output WORKSPACE/generated-audio \
+  --voice-manifest WORKSPACE/inputs/voice/manifest.json \
+  --backend moss-tts \
+  --model MODEL \
+  --generation-profile natural \
+  --queue-id EXACT_QUEUE_ID \
+  --retries 0 \
+  --capture-silence-failure EVIDENCE_DIRECTORY
+```
+
+Do not run this command merely to reconstruct old evidence. A new render is a
+new attempt and must first be justified by the bounded retry policy. Once a
+captured raw WAV and an independently rendered segmentation control exist, pass
+their exact paths and queue text to `publish_silence_comparison`.
 
 An exact comparison strategy is also available through
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one

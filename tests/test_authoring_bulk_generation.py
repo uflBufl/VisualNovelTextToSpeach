@@ -32,6 +32,10 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.silence_evidence import (
+    SilenceFailureEvidenceError,
+    load_silence_failure_evidence,
+)
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -1332,6 +1336,60 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(failure["kind"], "speech_silence")
         self.assertGreater(failure["speech_quality"]["leading_silence_seconds"], 0.8)
         self.assertIn("leading silence", failure["silence_failures"][0])
+
+    def test_selected_silence_failure_can_be_captured_only_as_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            tone = audio_samples()
+            pcm = np.concatenate((tone, np.zeros(16_000 * 2, dtype=np.float32), tone))
+            evidence = root / "evidence"
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(pcm=pcm),
+                retries=0,
+                include_queue_ids=(item["queue_id"],),
+                silence_failure_evidence=evidence,
+            )
+            document = load_silence_failure_evidence(evidence)
+            state = load_generation_state(result.state, queue)
+            state_sha256 = sha256_file(result.state)
+            published_wavs = list((root / "output").rglob("*.wav"))
+            tampered = json.loads((evidence / "evidence.json").read_text())
+            tampered["metadata"]["state_item"]["seed"] = 999
+            (evidence / "evidence.json").write_text(json.dumps(tampered))
+            with self.assertRaisesRegex(SilenceFailureEvidenceError, "state item"):
+                load_silence_failure_evidence(evidence)
+
+        self.assertEqual(result.generated, 0)
+        self.assertEqual(state["items"][item["queue_id"]]["status"], "failed")
+        self.assertFalse(document["reviewable"])
+        self.assertFalse(document["generated_outcome"])
+        self.assertEqual(document["metadata"]["queue_id"], item["queue_id"])
+        self.assertEqual(document["metadata"]["state_sha256"], state_sha256)
+        self.assertEqual(
+            document["metadata"]["state_item"]["failure"]["kind"],
+            "speech_silence",
+        )
+        self.assertEqual(published_wavs, [])
+
+    def test_silence_failure_capture_requires_exact_one_attempt_scope(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            with self.assertRaisesRegex(BulkGenerationError, "one exact queue ID"):
+                self.run_generation(
+                    queue,
+                    root / "output",
+                    SyntheticRenderer(),
+                    silence_failure_evidence=root / "evidence",
+                )
 
     def test_silence_gate_normalizes_pcm16_before_applying_dbfs_threshold(self):
         with TemporaryDirectory() as directory:

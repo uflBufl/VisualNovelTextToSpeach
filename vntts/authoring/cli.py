@@ -429,6 +429,14 @@ def create_parser():
     generate.add_argument("--limit", type=int)
     generate.add_argument("--retries", type=int, default=2)
     generate.add_argument("--seed", type=int, default=0)
+    generate.add_argument(
+        "--capture-silence-failure",
+        type=Path,
+        help=(
+            "Publish one selected, one-attempt speech-silence rejection as "
+            "non-reviewable checksum-bound evidence outside generated output"
+        ),
+    )
     generate.add_argument("--include-prefer-source", action="store_true")
     generate.add_argument("--character", action="append", dest="characters")
     generate.add_argument(
@@ -1040,6 +1048,7 @@ def main(argv=None):
                         missing_voice_policy=missing_voice_policy.to_document(),
                         narrator_character=arguments.narrator_character,
                         failure_repair_policy=failure_repair_policy.to_document(),
+                        silence_failure_evidence=arguments.capture_silence_failure,
                     )
                 finally:
                     stop = getattr(backend, "stop", None)
