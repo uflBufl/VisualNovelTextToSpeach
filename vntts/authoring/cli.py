@@ -50,6 +50,10 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.authoring.failure_reference_audit import (
+    FailureReferenceAuditError,
+    publish_failure_reference_audit,
+)
 from vntts.authoring.failure_regeneration import (
     FailureRegenerationError,
     build_failure_regeneration_command,
@@ -439,6 +443,13 @@ def create_parser():
         "--workspace", action="append", type=Path, required=True
     )
     specialist_failures.add_argument("--output", type=Path)
+    reference_audit = subparsers.add_parser(
+        "failure-reference-audit",
+        help="Publish a blinded exact-reference audit for speech-quality failures",
+    )
+    reference_audit.add_argument("workspace", type=Path)
+    reference_audit.add_argument("--output", type=Path, required=True)
+    reference_audit.add_argument("--seed", type=int, default=0)
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -1006,6 +1017,14 @@ def main(argv=None):
                 json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
             )
             return 0
+        if arguments.command == "failure-reference-audit":
+            result = publish_failure_reference_audit(
+                arguments.workspace,
+                arguments.output,
+                seed=arguments.seed,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "failure-repair-plan":
             print(
                 json.dumps(
@@ -1282,6 +1301,7 @@ def main(argv=None):
         DeliveryAnnotationError,
         FinalGamePackError,
         FailureRegenerationError,
+        FailureReferenceAuditError,
         LegacyAuthoringImportError,
         ListeningImportError,
         ReferenceSelectionError,

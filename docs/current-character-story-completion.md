@@ -155,6 +155,29 @@ pending. The original version-2 bundle remains the review authority for the
 earlier 99 WAVs; the follow-up bundle does not ask the operator to hear them
 again.
 
+The 29 primary failures classified as `reference_comparison` are one separate
+reference-quality decision, not 29 repeated auditions. Their immutable audit
+groups exact failed-item identities by synthesis control: 23 Narrator cases
+share three copied Centurion candidates, four Rhiannon cases share three
+copied Rhiannon candidates, and the exact Aderyn and Poacher cases each have
+one candidate. `vntts-pregenerate failure-reference-audit WORKSPACE --output
+AUDIT_DIRECTORY` publishes a no-replace audit directory. Public candidate
+labels are opaque; the private mode-0600 key maps them back to the original
+manifest entries. The canonical audit identity binds that private inventory,
+all copied audio hashes, exact failure records, queue, workspace and voice
+manifest. Unrelated state reviews may proceed, while a changed audited failure
+invalidates the task.
+
+`uv run vntts-reference-audit AUDIT_DIRECTORY` provides the operator surface.
+Playback reopens the copied candidate under full audit validation, reads it
+once, verifies its SHA-256 and gives Qt an in-memory buffer. Candidate or
+`Neither candidate is acceptable` decisions are written atomically by a
+background worker and remain checksum-bound to the exact group and affected
+queue IDs. They select reference evidence only: they do not approve generated
+speech, mutate the manifest or authorize regeneration. The initial version-1
+task was rejected before use because its private mapping was not included in
+the public identity; only version 2 or later is valid for an operator decision.
+
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
 WAVs. Every record binds the queue, line, text, state item and audio SHA-256 plus

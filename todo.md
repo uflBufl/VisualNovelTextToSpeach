@@ -22,9 +22,20 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       silence failures, 29 reference-comparison items and one new pending WAV
       in the primary workspace. After terminal bundle decisions, inspect the
       exact source-local evidence before merging outcomes.
-- [ ] Build the 29 reference-comparison cases as a separate blinded,
-      checksum-bound comparison task. It must include original/reference audio
-      when available, identify `neither is acceptable`, and require an explicit
+- [ ] Publish and open the corrected version-2 operator task for all 29
+      reference-comparison failures. The original version-1 audit
+      `7e18a82836e6e79a6f4a50b1e11d04f2fd87cfbae00ccabdf480f3fd3b1b3d8a`
+      is rejected before operator use because its private candidate mapping was
+      not part of the public canonical identity. Version 2 must cover the same
+      four exact control
+      groups: three blinded Centurion candidates for 23 Narrator cases, three
+      blinded Rhiannon candidates for four cases, and one exact candidate each
+      for Aderyn and Poacher. Run `uv run vntts-reference-audit AUDIT_DIRECTORY`:
+      it must play copied checksum-bound bytes without exposing source names,
+      offer every opaque candidate plus `Neither candidate is acceptable`, and
+      save in a background worker without disabling playback. After all four
+      decisions, inspect the canonical decision-set ID and private mapping;
+      these decisions are reference evidence only. Publish a new explicit
       selected reference/control binding before any regeneration.
 - [ ] After the repair WAVs are reviewed, run the checksum-bound
       `merge-workspace-outcomes` command to create one successor containing the

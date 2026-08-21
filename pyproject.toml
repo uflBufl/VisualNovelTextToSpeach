@@ -57,6 +57,7 @@ vntts-preflight-game-pack = "vntts.game_pack:main"
 vntts-pregenerate = "vntts.authoring.cli:main"
 vntts-authoring-workbench = "vntts.authoring.workbench_ui:main"
 vntts-review-bundle = "vntts.authoring.cohort_bundle_ui:main"
+vntts-reference-audit = "vntts.authoring.failure_reference_audit_ui:main"
 
 [tool.uv.sources]
 torch = [
