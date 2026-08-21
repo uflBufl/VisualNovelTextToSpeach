@@ -908,6 +908,60 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(saved["items"][item["queue_id"]]["status"], "approved")
             self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
+    def test_cohort_authority_uses_one_shared_state_and_queue_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = root / "queue.jsonl"
+            queue.write_bytes(b"exact queue bytes\n")
+            queue_sha256 = sha256_file(queue)
+            audio_paths = {}
+            items = {}
+            for index in (1, 2):
+                queue_id = f"queue-{index}"
+                audio = root / f"audio-{index}.wav"
+                audio.write_bytes(f"exact audio {index}".encode())
+                audio_paths[queue_id] = audio
+                items[queue_id] = {
+                    "status": "generated",
+                    "review_status": "pending_review",
+                    "path": audio.name,
+                }
+            state_path = root / "generation-state.json"
+            atomic_write_json(
+                state_path,
+                {"queue_sha256": queue_sha256, "items": items},
+                sort_keys=True,
+            )
+            state_sha256 = sha256_file(state_path)
+            authorities = {
+                queue_id: bulk_module.ReviewAuthority(
+                    queue_sha256=queue_sha256,
+                    state_sha256=state_sha256,
+                    item_sha256=bulk_module._canonical_sha256(item),
+                    audio_sha256=sha256_file(audio_paths[queue_id]),
+                )
+                for queue_id, item in items.items()
+            }
+            reads = []
+            real_read_bytes = Path.read_bytes
+
+            def tracked_read_bytes(path):
+                reads.append(Path(path).resolve())
+                return real_read_bytes(path)
+
+            with patch.object(Path, "read_bytes", tracked_read_bytes):
+                state, snapshots = bulk_module._assert_review_authorities(
+                    state_path, authorities, queue
+                )
+
+            self.assertEqual(state["items"], items)
+            self.assertEqual(set(snapshots), set(items))
+            self.assertEqual(reads.count(state_path.resolve()), 1)
+            self.assertEqual(reads.count(queue.resolve()), 1)
+            audio_paths["queue-1"].write_bytes(b"changed audio")
+            with self.assertRaisesRegex(BulkGenerationError, "authority changed"):
+                bulk_module._assert_review_authorities(state_path, authorities, queue)
+
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

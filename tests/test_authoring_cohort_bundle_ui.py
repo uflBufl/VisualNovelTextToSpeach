@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -65,6 +66,9 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.show()
             self.wait_for(lambda: dialog.table.rowCount() == 1)
 
+            self.assertTrue(dialog.cohort_choice.itemText(0).startswith("Required 1/2"))
+            self.assertIn("Review every listed cohort", dialog.operation.text())
+
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
             self.assertTrue(dialog.replay.isEnabled())
@@ -98,9 +102,13 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
     def test_decision_is_source_local_and_navigation_remains_live_while_saving(self):
         calls = []
+        started = threading.Event()
+        release = threading.Event()
 
         def execute(*arguments):
             calls.append(arguments)
+            started.set()
+            release.wait(2)
             return SimpleNamespace(next_bundle=arguments[0])
 
         with TemporaryDirectory() as directory:
@@ -118,7 +126,13 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog._update_actions()
 
             dialog.apply_decision("accepted")
+            self.wait_for(started.is_set)
+            self.assertTrue(dialog._decision_active)
             self.assertTrue(dialog.replay.isEnabled())
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertTrue(dialog.progress.isVisible())
+            self.assertIn("Saving in background", dialog.operation.text())
+            release.set()
             self.wait_for(lambda: bool(calls) and not dialog._decision_active)
 
         self.assertEqual(calls[0][1], sample.workspace_id)
@@ -136,6 +150,38 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
         self.assertFalse(event.isAccepted())
         self.assertIn("Close deferred", dialog.status.text())
+        self.assertFalse(dialog.progress.isHidden())
+        self.assertIn("Refreshing checksum authority", dialog.operation.text())
+
+    def test_real_decision_removes_completed_cohort_and_selects_next(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(first.item.queue_id)
+            dialog._update_actions()
+
+            dialog.apply_decision("accepted")
+
+            self.wait_for(
+                lambda: (
+                    not dialog._decision_active
+                    and not dialog._load_active
+                    and dialog.cohort_choice.count() == 1
+                ),
+                timeout=5,
+            )
+            self.assertEqual(dialog.cohort_choice.currentIndex(), 0)
+            self.assertTrue(
+                dialog.cohort_choice.currentText().startswith("Required 1/1")
+            )
+            self.assertNotEqual(
+                dialog._selected_sample().workspace_id, first.workspace_id
+            )
+            self.assertIn("Current required cohort: 1/1", dialog.operation.text())
 
     def test_retry_recovers_a_transient_load_error(self):
         calls = []

@@ -114,6 +114,12 @@ operator rows took 0.078 seconds, and an offscreen Qt acceptance showed all 18
 cohorts and the first table in 0.399 seconds. Review decisions use the bound
 state directly instead of rebuilding every full source plan; queue, workspace,
 state, target item, WAV and lease authority remain fail-closed at commit time.
+The reviewer numbers every remaining cohort as required, explains its
+background save and checksum-refresh phases, keeps replay/navigation available
+until authority actually changes, and removes each committed cohort before
+selecting the next one. One shared state/queue snapshot per cohort reduced the
+largest current 22-target authority capture from 0.0364 to 0.0096 seconds while
+retaining exact item/WAV checks and a final source rehash.
 
 The 51 terminal specialist failures were then classified from their exact
 queue, state, typed completion, repair strategy, text-shape and provider

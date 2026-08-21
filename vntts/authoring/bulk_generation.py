@@ -280,6 +280,92 @@ def _assert_review_authority(
     return state, item, audio_bytes
 
 
+def _assert_review_authorities(state_path, authorities, queue_path):
+    """Validate one cohort against one shared state and queue snapshot."""
+    if not isinstance(authorities, dict) or not authorities:
+        raise BulkGenerationError("Cohort review authorities must be a non-empty map")
+    if any(not isinstance(value, ReviewAuthority) for value in authorities.values()):
+        raise BulkGenerationError("Cohort review authority snapshot is invalid")
+    expected_state = {value.state_sha256 for value in authorities.values()}
+    expected_queue = {value.queue_sha256 for value in authorities.values()}
+    if len(expected_state) != 1 or len(expected_queue) != 1:
+        raise BulkGenerationError("Cohort review authorities do not share one snapshot")
+    state_sha256 = next(iter(expected_state))
+    queue_sha256 = next(iter(expected_queue))
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    try:
+        state_payload = state_path.read_bytes()
+        queue_payload = queue_path.read_bytes()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Unable to read cohort review controls: {error}"
+        ) from error
+    if hashlib.sha256(state_payload).hexdigest() != state_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the cohort was displayed; refresh before deciding"
+        )
+    if hashlib.sha256(queue_payload).hexdigest() != queue_sha256:
+        raise BulkGenerationError(
+            "Review queue changed after the cohort was displayed; refresh before deciding"
+        )
+    try:
+        state = json.loads(state_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {state_path}: {error}"
+        ) from error
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("items"), dict)
+        or state.get("queue_sha256") != queue_sha256
+    ):
+        raise BulkGenerationError("Generation state items or queue identity changed")
+    snapshots = {}
+    audio_paths = {}
+    for queue_id, authority in authorities.items():
+        queue_id = _required_text(queue_id, "Cohort review queue ID")
+        item = state["items"].get(queue_id)
+        if not isinstance(item, dict) or item.get("status") not in {
+            "generated",
+            "approved",
+        }:
+            raise BulkGenerationError(
+                f"Generated queue item does not exist: {queue_id}"
+            )
+        if _canonical_sha256(item) != authority.item_sha256:
+            raise BulkGenerationError(
+                "Review authority changed after the cohort was displayed; refresh before deciding"
+            )
+        relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+        audio = _within(state_path.parent, relative, "Generated WAV")
+        try:
+            audio_bytes = audio.read_bytes()
+        except OSError as error:
+            raise BulkGenerationError(
+                f"Generated WAV is unreadable for {queue_id!r}: {error}"
+            ) from error
+        if hashlib.sha256(audio_bytes).hexdigest() != authority.audio_sha256:
+            raise BulkGenerationError(
+                "Review authority changed after the cohort was displayed; refresh before deciding"
+            )
+        snapshots[queue_id] = (item, audio_bytes)
+        audio_paths[queue_id] = audio
+    if (
+        sha256_file(state_path) != state_sha256
+        or sha256_file(queue_path) != queue_sha256
+    ):
+        raise BulkGenerationError(
+            "Review authority changed while the cohort was being validated"
+        )
+    for queue_id, authority in authorities.items():
+        if sha256_file(audio_paths[queue_id]) != authority.audio_sha256:
+            raise BulkGenerationError(
+                "Review authority changed while the cohort was being validated"
+            )
+    return state, snapshots
+
+
 def _load_review_snapshot(
     state_path,
     queue_id,
@@ -2265,14 +2351,10 @@ def _review_generation_cohort(
         authority_values[0].queue_sha256,
         process_checker=process_is_alive,
     ) as lease:
-        state = None
-        for queue_id, authority in authorities.items():
-            queue_id = _required_text(queue_id, "Cohort review queue ID")
-            snapshot, item, _audio = _assert_review_authority(
-                state_path, queue_id, authority, queue_path
-            )
-            if state is None:
-                state = snapshot
+        state, snapshots = _assert_review_authorities(
+            state_path, authorities, queue_path
+        )
+        for queue_id, (item, _audio) in snapshots.items():
             if (item.get("status"), item.get("review_status")) != (
                 "generated",
                 "pending_review",
@@ -2313,8 +2395,7 @@ def _review_generation_cohort(
                 entries=entries,
                 validate_files=False,
             )
-            for queue_id, authority in authorities.items():
-                _assert_review_authority(state_path, queue_id, authority, queue_path)
+            _assert_review_authorities(state_path, authorities, queue_path)
             validated = load_generation_state(state_path, queue_path)
             if sha256_file(state_path) != authority_values[0].state_sha256:
                 raise BulkGenerationError(

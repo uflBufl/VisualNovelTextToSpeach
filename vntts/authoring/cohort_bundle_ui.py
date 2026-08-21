@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -132,6 +133,14 @@ class CohortReviewBundleDialog(QDialog):
         self.summary.setWordWrap(True)
         self.status = QLabel("Loading exact review authorities...")
         self.status.setWordWrap(True)
+        self.operation = QLabel()
+        self.operation.setWordWrap(True)
+        self.operation.setAccessibleName("Cohort review operation status")
+        self.progress = QProgressBar()
+        self.progress.setAccessibleName("Cohort review authority progress")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.hide()
         self.cohort_choice = QComboBox()
         self.cohort_choice.setAccessibleName("Specialist review cohort")
         self.cohort_choice.currentIndexChanged.connect(self._show_current_cohort)
@@ -195,6 +204,8 @@ class CohortReviewBundleDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary)
         layout.addWidget(self.status)
+        layout.addWidget(self.operation)
+        layout.addWidget(self.progress)
         layout.addWidget(self.cohort_choice)
         layout.addWidget(self.table, 1)
         layout.addLayout(navigation)
@@ -292,12 +303,16 @@ class CohortReviewBundleDialog(QDialog):
         previous = self.cohort_choice.currentData()
         self.cohort_choice.blockSignals(True)
         self.cohort_choice.clear()
-        for cohort in self.bundle.document["cohorts"]:
+        available = [
+            cohort
+            for cohort in self.bundle.document["cohorts"]
+            if (cohort["workspace_id"], cohort["cohort_id"]) in self.samples_by_cohort
+        ]
+        for position, cohort in enumerate(available, start=1):
             key = (cohort["workspace_id"], cohort["cohort_id"])
-            if key not in self.samples_by_cohort:
-                continue
             identity = cohort["identity"]
             self.cohort_choice.addItem(
+                f"Required {position}/{len(available)} | "
                 f"{identity['provider']} | {identity['voice_character']} | "
                 f"{len(cohort['samples'])} samples / {cohort['item_count']} WAVs | "
                 f"{cohort['workspace_id'][-8:]}",
@@ -522,13 +537,10 @@ class CohortReviewBundleDialog(QDialog):
             if value["workspace_id"] == key[0]
         )
         current_clean = source["plan"]["policy"]["clean_samples_per_bucket"]
-        assessments = [
-            {
-                "queue_id": queue_id,
-                "assessment": "bad" if queue_id in bad else "acceptable",
-            }
+        assessments = {
+            queue_id: "bad" if queue_id in bad else "acceptable"
             for queue_id in reviewed
-        ]
+        }
         self._decision_active = True
         self._decision_serial += 1
         serial = self._decision_serial
@@ -659,6 +671,43 @@ class CohortReviewBundleDialog(QDialog):
                 f"Current cohort: {len(heard)}/{len(samples)} heard; "
                 f"{len(bad)} marked bad"
             )
+        self._update_operation_status()
+
+    def _update_operation_status(self):
+        if self._decision_active:
+            self.progress.show()
+            self.operation.setText(
+                "Saving in background: Accept, Reject and Mark bad are disabled "
+                "to prevent a second state mutation. Replay and sample navigation "
+                "remain available until the decision commits."
+            )
+            return
+        if self._load_active:
+            self.progress.show()
+            self.operation.setText(
+                "Refreshing checksum authority: replay and review actions are "
+                "temporarily disabled because the state hash changed. The completed "
+                "cohort will disappear and the next required cohort will be selected."
+            )
+            return
+        if self._playback_prepare_active:
+            self.progress.show()
+            self.operation.setText(
+                "Preparing one checksum-bound WAV; review decisions remain disabled "
+                "until the immutable playback buffer is ready."
+            )
+            return
+        self.progress.hide()
+        remaining = self.cohort_choice.count()
+        if remaining:
+            position = self.cohort_choice.currentIndex() + 1
+            self.operation.setText(
+                f"Review every listed cohort. Current required cohort: "
+                f"{position}/{remaining}. A completed cohort disappears after its "
+                "authority refresh."
+            )
+        else:
+            self.operation.setText("All cohorts in this bundle are complete.")
 
     def closeEvent(self, event: QCloseEvent):
         if self._load_active or self._playback_prepare_active or self._decision_active:

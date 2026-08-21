@@ -668,13 +668,27 @@ exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 and no bad marker, `Reject cohort` requires heard evidence, and `Need another
 sample` is enabled only when the exact cohort has an unsampled clean item.
 
+Every cohort still shown in the bundle is required. The selector numbers it as
+`Required N/M`, and the operation status states both why an action is disabled
+and what will happen next. While a decision is being saved, only conflicting
+mutations are disabled; replay and sample navigation remain available. After
+the commit changes the authoritative state hash, the dialog briefly disables
+review and playback while it refreshes checksum authority. The progress/status
+area labels these phases as `Saving decision` and `Refreshing checksum
+authority`. A completed cohort then disappears from the bundle and the first
+remaining cohort is selected automatically.
+
 The real ten-source specialist bundle opened its 81 exact samples in 0.078
 seconds through the targeted loader; an offscreen dialog populated 18 cohorts
-and its first sample table in 0.399 seconds. Accept/Reject no longer rebuild the
-entire source plan: the plan's exact state SHA binds all outcomes, while the
-commit path independently rechecks workspace configuration, queue/state,
-target item/WAV and lease authority. Expansion still rebuilds the selected
-source plan because its sample policy intentionally changes.
+and its first sample table in 0.399 seconds. A read-only benchmark of the
+largest current 22-target cohort reduced authority capture from 0.0364 seconds
+with repeated per-target state/queue reads to 0.0096 seconds with one shared
+state and queue snapshot, a 3.8x improvement. Every target item and WAV digest
+is still checked, followed by a final state/queue/WAV rehash. The full decision
+can remain visibly longer because it also performs the durable state/manifest
+transaction and rebuilds the next checksum-bound bundle; those phases now stay
+off the Qt thread and are explained in the dialog. Expansion still rebuilds
+the selected source plan because its sample policy intentionally changes.
 
 A read-only acceptance on 2026-08-20 against the current 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining
