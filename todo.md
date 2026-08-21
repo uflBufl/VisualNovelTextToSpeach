@@ -121,6 +121,13 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
+- [ ] Listen to the two final bounded seed-2 marker outputs before any further
+      Dobharchú merge. Review exact queue IDs
+      `reverse1999:314608:8:7c5e047cb7785953` (1.12-second internal pause) and
+      `reverse1999:314608:27:8118276567f5deff` (0.96-second internal pause).
+      Approve or reject each exact WAV independently for wording, identity,
+      cadence and natural boundaries; do not infer approval from the technical
+      silence gate or from the two earlier accepted marker samples.
 - [ ] Complete the bounded quality-first path for lines that cannot be segmented
       safely, including two-word clauses such as `What happened? You're hurt.`
       Inline-marker repair is now capped at three cumulative deterministic MOSS

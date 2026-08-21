@@ -329,6 +329,21 @@ fail before state mutation, and changes the deterministic failure plan to
 from becoming an unbounded search and preserves the unchanged speech-quality
 thresholds.
 
+The two initially fail-closed marker workspaces then exercised their final
+allowed seed-2 attempts from clean commit `c4ee30c`. Both became technically
+valid pending-review outputs without any extra retry:
+
+- `reverse1999:314608:8:7c5e047cb7785953`: 1.12-second longest internal
+  silence, 36% silent frames, WAV SHA-256
+  `02d6c1c9d21dba7a7ebacb10e646219da9f9388607a90b9316734832b5b8eb86`;
+- `reverse1999:314608:27:8118276567f5deff`: 0.96-second longest internal
+  silence, 28.12% silent frames, WAV SHA-256
+  `9964ea3e338b9cf113a30205624c2edcf5f186a6842a5fdd356716be80e19bf5`.
+
+Each state records three cumulative MOSS attempts and seed 2, with no active
+attempt, lease or partial WAV. These files still require human listening and
+were not merged or approved automatically.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed
