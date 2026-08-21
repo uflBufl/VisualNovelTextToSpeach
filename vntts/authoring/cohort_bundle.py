@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_plan,
     execute_cohort_review_decision,
 )
+from vntts.authoring.workbench import ReviewItem, list_review_items
 
 COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
 COHORT_REVIEW_BUNDLE_VERSION = 1
@@ -54,6 +56,18 @@ class CohortBundleProjection:
         }
 
 
+@dataclass(frozen=True)
+class CohortBundleSample:
+    """One live source-bound sample presented by a review bundle."""
+
+    workspace: Path
+    workspace_id: str
+    plan_id: str
+    cohort_id: str
+    required_reason: str
+    item: ReviewItem
+
+
 def build_cohort_review_bundle(
     workspace_directories,
     *,
@@ -66,14 +80,22 @@ def build_cohort_review_bundle(
     if len(set(paths)) != len(paths):
         raise CohortReviewError("Review bundle workspaces must be distinct")
 
-    sources = []
-    flattened = []
-    workspace_ids = set()
+    source_plans = []
     for path in sorted(paths, key=str):
         plan = build_cohort_review_plan(
             path,
             clean_samples_per_bucket=clean_samples_per_bucket,
         )
+        source_plans.append((path, plan.document))
+    return _assemble_bundle(source_plans)
+
+
+def _assemble_bundle(source_plans):
+    sources = []
+    flattened = []
+    workspace_ids = set()
+    for path, plan in source_plans:
+        path = Path(path).resolve()
         document = _validated_plan_document(plan)
         workspace_id = document["workspace_id"]
         if workspace_id in workspace_ids:
@@ -100,9 +122,9 @@ def build_cohort_review_bundle(
         "schema": COHORT_REVIEW_BUNDLE_SCHEMA,
         "schema_version": COHORT_REVIEW_BUNDLE_VERSION,
         "policy": {
-            "clean_samples_per_bucket": clean_samples_per_bucket,
             "attention_rule": "all technical flags",
             "projection_scope": "source workspace only",
+            "sample_policy": "retained by each exact source plan",
         },
         "workspace_count": len(sources),
         "cohort_count": len(flattened),
@@ -144,15 +166,80 @@ def load_cohort_review_bundle(path):
 def refresh_cohort_review_bundle(bundle):
     """Rebuild every source plan and require the bundle to remain exact."""
     document = _validated_bundle_document(bundle)
-    current = build_cohort_review_bundle(
-        [source["workspace"] for source in document["sources"]],
-        clean_samples_per_bucket=document["policy"]["clean_samples_per_bucket"],
+    current = _assemble_bundle(
+        [
+            (
+                source["workspace"],
+                build_cohort_review_plan(
+                    source["workspace"],
+                    clean_samples_per_bucket=source["plan"]["policy"][
+                        "clean_samples_per_bucket"
+                    ],
+                ).document,
+            )
+            for source in document["sources"]
+        ]
     )
     if current.bundle_id != document["bundle_id"]:
         raise CohortReviewError(
             "Review bundle authority changed after the bundle was published"
         )
     return current
+
+
+def load_cohort_review_bundle_samples(bundle):
+    """Revalidate a bundle and project its exact samples for an operator UI."""
+    current = refresh_cohort_review_bundle(bundle)
+    samples = []
+    for source in current.document["sources"]:
+        workspace = Path(source["workspace"])
+        review_items = {value.queue_id: value for value in list_review_items(workspace)}
+        flattened = {
+            value["cohort_id"]: value
+            for value in current.document["cohorts"]
+            if value["workspace_id"] == source["workspace_id"]
+        }
+        for cohort in source["plan"]["cohorts"]:
+            bundle_cohort = flattened[cohort["cohort_id"]]
+            for sample in bundle_cohort["samples"]:
+                item = review_items.get(sample["queue_id"])
+                if (
+                    item is None
+                    or item.status != "generated"
+                    or item.review_status != "pending_review"
+                    or item.authority is None
+                ):
+                    raise CohortReviewError(
+                        f"Bundle sample authority is unavailable: {sample['queue_id']}"
+                    )
+                if (
+                    hashlib.sha256(item.text.encode("utf-8")).hexdigest()
+                    != sample["text_sha256"]
+                    or item.authority.audio_sha256 != sample["audio_sha256"]
+                ):
+                    raise CohortReviewError(
+                        f"Bundle sample text or WAV changed: {sample['queue_id']}"
+                    )
+                samples.append(
+                    CohortBundleSample(
+                        workspace=workspace,
+                        workspace_id=source["workspace_id"],
+                        plan_id=source["plan"]["plan_id"],
+                        cohort_id=cohort["cohort_id"],
+                        required_reason=sample["required_reason"],
+                        item=item,
+                    )
+                )
+    samples.sort(
+        key=lambda value: (
+            value.workspace_id,
+            value.cohort_id,
+            value.item.queue_id,
+        )
+    )
+    if len(samples) != current.document["sample_item_count"]:
+        raise CohortReviewError("Review bundle live sample count changed")
+    return current, tuple(samples)
 
 
 def execute_cohort_bundle_decision(
@@ -204,11 +291,26 @@ def execute_cohort_bundle_decision(
     projection = execute_cohort_review_decision(
         source["workspace"], source_plan, cohort_decision
     )
-    next_bundle = build_cohort_review_bundle(
-        [value["workspace"] for value in document["sources"]],
-        clean_samples_per_bucket=document["policy"]["clean_samples_per_bucket"],
-    )
     expanded = not hasattr(projection, "queue_ids")
+    next_sources = []
+    for value in document["sources"]:
+        if value["workspace_id"] != workspace_id:
+            next_sources.append((value["workspace"], value["plan"]))
+            continue
+        next_sources.append(
+            (
+                value["workspace"],
+                projection.document
+                if expanded
+                else build_cohort_review_plan(
+                    value["workspace"],
+                    clean_samples_per_bucket=value["plan"]["policy"][
+                        "clean_samples_per_bucket"
+                    ],
+                ).document,
+            )
+        )
+    next_bundle = _assemble_bundle(next_sources)
     return CohortBundleProjection(
         bundle_id=current.bundle_id,
         workspace_id=workspace_id,
@@ -223,6 +325,20 @@ def _validated_bundle_document(bundle):
     document = bundle.document if isinstance(bundle, CohortReviewBundle) else bundle
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review bundle must be an object")
+    if set(document) != {
+        "schema",
+        "schema_version",
+        "policy",
+        "workspace_count",
+        "cohort_count",
+        "pending_item_count",
+        "sample_item_count",
+        "blocked_item_count",
+        "sources",
+        "cohorts",
+        "bundle_id",
+    }:
+        raise CohortReviewError("Cohort review bundle fields are invalid")
     if document.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA:
         raise CohortReviewError("Unsupported cohort review bundle schema")
     if document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION:
@@ -231,17 +347,16 @@ def _validated_bundle_document(bundle):
     if not isinstance(policy, dict):
         raise CohortReviewError("Cohort review bundle policy must be an object")
     if set(policy) != {
-        "clean_samples_per_bucket",
         "attention_rule",
         "projection_scope",
+        "sample_policy",
     }:
         raise CohortReviewError("Cohort review bundle policy fields are invalid")
     if policy.get("attention_rule") != "all technical flags":
         raise CohortReviewError("Cohort review bundle attention policy is invalid")
     if policy.get("projection_scope") != "source workspace only":
         raise CohortReviewError("Cohort review bundle projection policy is invalid")
-    clean = policy.get("clean_samples_per_bucket")
-    if not isinstance(clean, int) or isinstance(clean, bool):
+    if policy.get("sample_policy") != "retained by each exact source plan":
         raise CohortReviewError("Cohort review bundle sample policy is invalid")
     sources = document.get("sources")
     cohorts = document.get("cohorts")
@@ -253,6 +368,8 @@ def _validated_bundle_document(bundle):
     for source in sources:
         if not isinstance(source, dict):
             raise CohortReviewError("Cohort review bundle source must be an object")
+        if set(source) != {"workspace", "workspace_id", "plan"}:
+            raise CohortReviewError("Cohort review bundle source fields are invalid")
         path = source.get("workspace")
         if not isinstance(path, str) or not path:
             raise CohortReviewError("Cohort review bundle workspace path is invalid")

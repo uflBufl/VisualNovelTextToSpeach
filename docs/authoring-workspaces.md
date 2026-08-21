@@ -628,6 +628,15 @@ The returned next-bundle identity reflects the changed source state. This CLI
 is the shared authority boundary for the unified Qt bundle reviewer; publishing
 a bundle alone remains read-only.
 
+Open the published inventory with `vntts-review-bundle BUNDLE.json`. Loading,
+WAV preparation and decision commits stay off the Qt thread. The dialog keeps
+Previous/Replay/Stop/Next in one fixed row and leaves playback/navigation live
+while a source-local decision is saving. A sample counts as heard only after
+exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
+`Mark sample bad` is reversible, `Accept cohort` requires every current sample
+and no bad marker, `Reject cohort` requires heard evidence, and `Need another
+sample` is enabled only when the exact cohort has an unsampled clean item.
+
 A read-only acceptance on 2026-08-20 against the current 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining
 checksum-bound Centurion cohort. Its one exact sample appeared as

@@ -12,6 +12,7 @@ from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
     execute_cohort_bundle_decision,
     load_cohort_review_bundle,
+    load_cohort_review_bundle_samples,
     refresh_cohort_review_bundle,
     write_cohort_review_bundle,
 )
@@ -112,6 +113,18 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertIsNone(projection.review_status)
         self.assertEqual(projection.queue_ids, ())
+        expanded = next(
+            source
+            for source in projection.next_bundle.document["sources"]
+            if source["workspace_id"] == selected["workspace_id"]
+        )
+        unchanged = next(
+            source
+            for source in projection.next_bundle.document["sources"]
+            if source["workspace_id"] != selected["workspace_id"]
+        )
+        self.assertEqual(expanded["plan"]["policy"]["clean_samples_per_bucket"], 2)
+        self.assertEqual(unchanged["plan"]["policy"]["clean_samples_per_bucket"], 1)
 
     def test_cli_publishes_the_exact_bundle(self):
         with TemporaryDirectory() as directory:
@@ -129,3 +142,18 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             loaded = load_cohort_review_bundle(output)
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue()), loaded.document)
+
+    def test_live_samples_bind_text_audio_and_source_workspace(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+
+            current, samples = load_cohort_review_bundle_samples(bundle)
+
+        self.assertEqual(current, bundle)
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(
+            {sample.workspace for sample in samples},
+            {value[0].resolve() for value in sources},
+        )
+        self.assertTrue(all(sample.item.authority is not None for sample in samples))
