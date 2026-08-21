@@ -340,9 +340,7 @@ class SettingsDialog(QDialog):
         screenshot_layout.addWidget(self.screenshot_directory)
         screenshot_layout.addWidget(browse_button)
         diagnostics_browse_button = QPushButton("Browse...")
-        diagnostics_browse_button.setAccessibleName(
-            "Browse for diagnostics directory"
-        )
+        diagnostics_browse_button.setAccessibleName("Browse for diagnostics directory")
         diagnostics_browse_button.setAccessibleDescription(
             "Choose where uncertain OCR frames are stored"
         )
@@ -352,9 +350,7 @@ class SettingsDialog(QDialog):
         diagnostics_layout.addWidget(diagnostics_browse_button)
         self.diagnostics_browse_button = diagnostics_browse_button
         narrator_reference_button = QPushButton("Browse...")
-        narrator_reference_button.setAccessibleName(
-            "Browse for narrator reference"
-        )
+        narrator_reference_button.setAccessibleName("Browse for narrator reference")
         narrator_reference_button.setAccessibleDescription(
             "Choose a narrator audio reference file"
         )

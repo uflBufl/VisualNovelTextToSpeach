@@ -350,14 +350,10 @@ class AppController:
                     "volume": self.settings.output_volume_percent / 100,
                 }
                 if (
-                    getattr(
-                        backend_factory, "supports_startup_cancellation", False
-                    )
+                    getattr(backend_factory, "supports_startup_cancellation", False)
                     is True
                 ):
-                    backend_options["startup_cancellation"] = (
-                        self.shutdown_requested
-                    )
+                    backend_options["startup_cancellation"] = self.shutdown_requested
                 if self.settings.speech_backend == "moss-tts":
                     backend_options.update(
                         model_name=self.settings.tts_model,

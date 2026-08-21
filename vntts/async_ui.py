@@ -45,9 +45,7 @@ class LatestTaskRunner(QObject):
     def start(self, function, *arguments):
         self._serial += 1
         self._set_active(True)
-        self.thread_pool.start(
-            _Task(self._serial, function, arguments, self._signals)
-        )
+        self.thread_pool.start(_Task(self._serial, function, arguments, self._signals))
         return self._serial
 
     def cancel(self):

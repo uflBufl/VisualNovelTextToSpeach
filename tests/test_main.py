@@ -986,9 +986,7 @@ class MainTest(unittest.TestCase):
             self.assertTrue(controller.start())
 
         self.assertIs(received["registry"], registry)
-        self.assertIs(
-            received["startup_cancellation"], controller.shutdown_requested
-        )
+        self.assertIs(received["startup_cancellation"], controller.shutdown_requested)
         controller.shutdown()
 
     def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):

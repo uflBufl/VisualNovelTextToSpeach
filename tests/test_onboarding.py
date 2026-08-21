@@ -285,9 +285,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 self.tasks.append(task)
 
         diagnostics = Mock()
-        diagnostics.run.return_value = (
-            DiagnosticResult("Capture", "ok", "Ready"),
-        )
+        diagnostics.run.return_value = (DiagnosticResult("Capture", "ok", "Ready"),)
         wizard = OnboardingWizard(AppSettings(), diagnostics=diagnostics)
         pool = ManualThreadPool()
         wizard.diagnostics_page.runner.thread_pool = pool
