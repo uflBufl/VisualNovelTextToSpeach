@@ -121,20 +121,6 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Apply the explicit listening decisions for the isolated
-      `--inline-pause-failed` Dobharchú sample and merge only accepted outcomes.
-      Approve exact queue IDs `reverse1999:314605:40:a15bc2a6e08da13e`
-      (3.52 -> 0.64 seconds) and
-      `reverse1999:314605:95:ebc446c3c6e843bb` (3.12 -> 0.48 seconds), then
-      merge their checksum-bound terminal outcomes non-destructively into a new
-      successor of `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`.
-      Preserve the first 0.96-second result as pending because it was judged
-      acceptable yet slightly unnatural. Preserve the two fail-closed attempts
-      with no WAV as failure evidence. Before calling this step complete, prove
-      that the successor retains all source approvals and unrelated state,
-      derives an approved-only manifest containing the two new exact WAV hashes,
-      leaves every source workspace byte-identical, and has no active attempt,
-      lease or partial file.
 - [ ] Add a bounded quality-first path for lines that cannot be segmented safely,
       including two-word clauses such as `What happened? You're hurt.` Try at
       most three deterministic seeds and accept only a `complete` render that

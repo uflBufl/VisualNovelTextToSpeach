@@ -298,6 +298,27 @@ of five exact attempts passed the technical gate and two did not. The marker
 strategy therefore remains comparison-only until the three published WAVs are
 judged for wording, speaker identity and naturalness.
 
+The user explicitly approved the two additional technically valid WAVs. Their
+source-local review states and approved-only manifests were updated for only
+the exact queue IDs and hashes listed above. Commit `0652bb3` then extended the
+same root-failure, queue, state, WAV and terminal-review authority checks used by
+the outcome merger to the inline-marker strategy.
+
+The two reviewed outcomes were merged non-destructively into successor
+`resume-395a5e5eec0327a3a793b66d-7640ffe9b6f30ef1`. Its authoritative state
+SHA-256 is
+`00f7e76a2210138b2e4a17128a6db3852d56c3885b61018e1e4de82a4945bcbf`.
+It contains six exact approved items: all four prior approvals plus the two new
+marker repairs; its approved-only manifest contains the same six queue IDs and
+both new WAV hashes. It has 214 pending-review items, 151 failures, no active
+attempt, lease or partial WAV. The base and two reviewed source workspaces
+remained byte-identical across the merge at tree SHA-256 values
+`60a19206da51a00ce9471ad594a34611d014e55051fa14e635379d9fd3ec2017`,
+`a92416ca0a0d1f3d4a802b131792036bb90bd686ae1469aca639c6f743102d8b`
+and `e4675c23a510f99188fa17c6477ae8ad7bd9b562515267f40a57b30711decc38`.
+The first slightly unnatural marker result remains pending and the two failed
+marker attempts remain unpublished.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed
