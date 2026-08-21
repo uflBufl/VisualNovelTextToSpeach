@@ -156,3 +156,37 @@ coverage while preserving both source portrait IDs, exact reference WAVs and
 synthesis provenance. The reusable contract is documented in
 [`portrait-expression-aliases.md`](portrait-expression-aliases.md). This
 decision does not include unbound portrait `534705`.
+
+## Internal-silence repair result
+
+Commit `149f895` added a bounded sentence repair for a typed
+`speech_silence` failure only when the text has at least two safe complete
+sentences, leading and trailing silence remain within their existing limits,
+and the internal-pause limit is exceeded. The normal post-render silence gate
+still applies to the joined result.
+
+The repair workspace
+`resume-395a5e5eec0327a3a793b66d-1f38c152d8a1b13e` carried only the exact failed
+outcome for `reverse1999:314605:87:30d3291b0cd792b0` from the natural candidate.
+Its child command selected only that queue ID with `retries=0`. It rendered the
+three exact complete sentence segments with seeds 1, 2 and 3 and inserted the
+configured 180 ms boundary pause. The result is a pending-review mono 48 kHz
+WAV:
+
+- duration: 11.96 seconds;
+- longest internal silence: 0.72 seconds;
+- silence ratio: 19.33%;
+- WAV SHA-256:
+  `aa4d5e0d6313b202c41d7bf7201c67c1166e3c347bb51b61a2904fc68244acf3`.
+
+All 337 unrelated authoritative state items equal the immutable import seed,
+the source natural candidate state remains
+`a3d51aa5a84ec9d07582d2c4ddf6e8bc0c5e7c0097921d2d287272d84ac3959d`,
+and the run ended with no active attempt, lease, partial WAV or approved
+manifest entry. The repaired WAV needs an explicit listen-and-review decision;
+generation success does not approve it automatically.
+
+The other natural failure,
+`reverse1999:314608:29:7be68e27f6d36933`, remains intentionally blocked. Its
+trailing sentence fragment has only two words, below the existing safe segment
+minimum, so it was not retried.

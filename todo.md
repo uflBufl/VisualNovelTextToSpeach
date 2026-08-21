@@ -96,13 +96,16 @@ Follow the evidence-backed order and invariants in
       artifacts. Do not weaken the global silence gate. The checksum-bound
       expression-alias decision for portraits 534703 and 534704 is published and
       preserves both source variants; do not extend it to unbound portrait
-      534705. Repair `reverse1999:314605:87:30d3291b0cd792b0` through its three
-      safe sentence boundaries in a separate config-addressed workspace. The
-      other natural failure, `reverse1999:314608:29:7be68e27f6d36933`, has a
-      two-word trailing sentence fragment and is intentionally rejected by the
-      current minimum-three-word segmentation gate; do not retry it until an
-      exact short-fragment policy and review gate are implemented. After the
-      bounded repair, expand the accepted natural profile only across the
+      534705. Listen to and explicitly approve or reject the pending bounded
+      sentence repair for `reverse1999:314605:87:30d3291b0cd792b0`, WAV SHA-256
+      `aa4d5e0d6313b202c41d7bf7201c67c1166e3c347bb51b61a2904fc68244acf3`.
+      If approved, merge its exact reviewed outcome with the three natural
+      candidate approvals without changing the 15 primary approvals. The other
+      natural failure, `reverse1999:314608:29:7be68e27f6d36933`, has a two-word
+      trailing sentence fragment and is intentionally rejected by the current
+      minimum-three-word segmentation gate; do not retry it until an exact
+      short-fragment policy and review gate are implemented. After the reviewed
+      repair is merged, expand the accepted natural profile only across the
       remaining lines bound to the two approved portrait variants. Verify exact
       queue scope, preserve every unrelated state item, and never alter the
       primary approvals while producing the successor outcome set. Stable failed
