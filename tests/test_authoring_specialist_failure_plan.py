@@ -7,6 +7,7 @@ from vntts.authoring.cohort_review import CohortReviewError
 from vntts.authoring.specialist_failure_plan import (
     OFFLINE_FALLBACK_BACKEND,
     REFERENCE_OR_LIVE,
+    SENTENCE_REPAIR_RETRY,
     build_specialist_failure_plan,
     load_specialist_failure_plan,
     write_specialist_failure_plan,
@@ -78,7 +79,11 @@ class SpecialistFailurePlanTest(unittest.TestCase):
         self.assertEqual(plan.document["item_count"], 2)
         self.assertEqual(
             plan.document["action_counts"],
-            {OFFLINE_FALLBACK_BACKEND: 1, REFERENCE_OR_LIVE: 1},
+            {
+                SENTENCE_REPAIR_RETRY: 0,
+                OFFLINE_FALLBACK_BACKEND: 1,
+                REFERENCE_OR_LIVE: 1,
+            },
         )
 
     def test_published_plan_rejects_identity_tamper(self):
@@ -114,7 +119,28 @@ class SpecialistFailurePlanTest(unittest.TestCase):
 
         self.assertEqual(
             plan.document["action_counts"],
-            {OFFLINE_FALLBACK_BACKEND: 0, REFERENCE_OR_LIVE: 1},
+            {
+                SENTENCE_REPAIR_RETRY: 0,
+                OFFLINE_FALLBACK_BACKEND: 0,
+                REFERENCE_OR_LIVE: 1,
+            },
+        )
+
+    def test_two_attempt_sentence_failure_gets_one_exact_retry_first(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(
+                root, "sentence_boundary_segmentation", "a"
+            )
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            state["items"]["a"]["attempts"] = 2
+            state_path.write_text(json.dumps(state))
+
+            plan = build_specialist_failure_plan((workspace,))
+
+        self.assertEqual(
+            plan.document["items"][0]["next_action"], SENTENCE_REPAIR_RETRY
         )
 
 

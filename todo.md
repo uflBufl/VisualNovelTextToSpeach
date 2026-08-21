@@ -20,16 +20,18 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       terminal specialist failures, 29 reference-comparison items and one new
       pending WAV in the primary workspace. After terminal bundle decisions,
       inspect the exact source-local evidence before merging outcomes.
-- [ ] Run exactly one unseeded Pocket fallback for the 46 checksum-bound
-      sentence-repair failures listed in specialist failure plan
-      version 2, ID
-      `2cecf5cf9c7e1e8b492d56e1dd6937b5079b0db0ecaafcb6613de2d717e18b08`.
-      Create source-local carried workspaces, select only those exact queue
-      IDs, use no retries, preserve every non-target item and do not review or
-      approve generated WAVs automatically. Five complete renders that failed
-      the speech-silence gate are excluded (three MOSS sentence repairs and two
-      Pocket fallbacks): keep them for reference comparison or live fallback
-      rather than another blind generation attempt.
+- [ ] Execute specialist failure plan version 3, ID
+      `ff0b7551b1cfa7575232c985415adddc2e70e5081e16cec8287385847fe4cb27`,
+      in dependency order. Give the
+      nine two-attempt missed-EOS sentence repairs exactly one source-local
+      MOSS sentence retry; then give their remaining failures plus the 37
+      already exhausted missed-EOS items exactly one unseeded Pocket fallback.
+      Use config-addressed carried workspaces, exact queue IDs and no broad
+      retries; preserve every non-target item and never review or approve a WAV
+      automatically. Five complete renders that failed the speech-silence gate
+      are excluded (three MOSS sentence repairs and two Pocket fallbacks): keep
+      them for reference comparison or live fallback rather than another blind
+      generation attempt.
 - [ ] Build the 29 reference-comparison cases as a separate blinded,
       checksum-bound comparison task. It must include original/reference audio
       when available, identify `neither is acceptable`, and require an explicit

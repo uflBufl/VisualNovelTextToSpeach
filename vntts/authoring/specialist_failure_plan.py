@@ -22,6 +22,7 @@ from vntts.authoring.failure_repair import (
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
 SPECIALIST_FAILURE_PLAN_VERSION = 1
 REFERENCE_OR_LIVE = "reference_comparison_or_live_fallback"
+SENTENCE_REPAIR_RETRY = "sentence_boundary_retry"
 
 
 @dataclass(frozen=True)
@@ -175,7 +176,11 @@ def build_specialist_failure_plan(workspace_directories):
         "cluster_count": len(clusters),
         "action_counts": {
             action: sum(item["next_action"] == action for item in items)
-            for action in (OFFLINE_FALLBACK_BACKEND, REFERENCE_OR_LIVE)
+            for action in (
+                SENTENCE_REPAIR_RETRY,
+                OFFLINE_FALLBACK_BACKEND,
+                REFERENCE_OR_LIVE,
+            )
         },
         "sources": sources,
         "clusters": clusters,
@@ -205,6 +210,16 @@ def _next_action(result, repair, failure):
         and failure.get("completion") == "limited"
         and not providers.get("pocket-tts")
     ):
+        attempts = result.get("attempts")
+        if (
+            isinstance(attempts, int)
+            and not isinstance(attempts, bool)
+            and attempts < 3
+        ):
+            return (
+                SENTENCE_REPAIR_RETRY,
+                "Sentence repair has fewer than three cumulative MOSS attempts; one exact retry remains before Pocket",
+            )
         return (
             OFFLINE_FALLBACK_BACKEND,
             "Sentence repair is terminal under MOSS; one unseeded Pocket attempt remains bounded",
