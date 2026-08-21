@@ -24,6 +24,15 @@ as `exact_reference_variant_unbound`. Those two IDs are:
 - `reverse1999:314608:95:965bd814a6e36dbf`
 - `reverse1999:314608:96:5e1fe5bdc801e728`
 
+Both source records use portrait `534705.png`. A read-only audit of the current
+decrypted config tables found no literal `534705` identity or audio route. The
+story records themselves have blank voice IDs and no bank, event or media ID;
+the installed same-speaker evidence covers only the separately reviewed
+`534703` and `534704` portrait groups. There is therefore no exact local source
+fact that can assign either existing reference to `534705`. These two lines
+remain intentionally unbound until a new source asset or an explicit human
+same-voice decision is published.
+
 ## Bounded comparison
 
 The two candidates use the same MOSS model and exact portrait-specific
