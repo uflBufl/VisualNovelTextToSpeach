@@ -143,6 +143,18 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         with self.assertRaisesRegex(CohortReviewError, "integer from 1 to 5"):
             build_cohort_review_plan("unused", clean_samples_per_bucket=0)
 
+    def test_exact_selection_rejects_items_that_are_not_pending(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace, queue_ids=[queue_id])
+            with self.assertRaisesRegex(CohortReviewError, "not pending"):
+                build_cohort_review_plan(workspace, queue_ids=["missing"])
+
+        self.assertEqual(plan.document["policy"]["selected_queue_ids"], [queue_id])
+        self.assertEqual(plan.document["pending_item_count"], 1)
+
     def test_cli_prints_the_same_public_plan(self):
         with TemporaryDirectory() as directory:
             workspace, _state_path, _queue_id = self.create_pending_workspace(

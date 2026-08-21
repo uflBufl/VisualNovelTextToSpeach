@@ -10,28 +10,18 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the published 18-cohort specialist bundle with
-      `uv run vntts-review-bundle BUNDLE.json`: 81 required samples cover 99
-      pending specialist WAVs across ten immutable workspaces (19 sentence
-      repairs and 80 Pocket fallbacks). Every technical-attention WAV remains
-      mandatory; clean short/medium/long items are sampled deterministically.
-      Use sample-level bad markers and `Need another sample` instead of
-      accepting a doubtful cohort. This review intentionally excludes the 51
-      terminal specialist failures, 29 reference-comparison items and one new
-      pending WAV in the primary workspace. After terminal bundle decisions,
-      inspect the exact source-local evidence before merging outcomes.
-- [ ] Execute specialist failure plan version 3, ID
-      `ff0b7551b1cfa7575232c985415adddc2e70e5081e16cec8287385847fe4cb27`,
-      in dependency order. Give the
-      nine two-attempt missed-EOS sentence repairs exactly one source-local
-      MOSS sentence retry; then give their remaining failures plus the 37
-      already exhausted missed-EOS items exactly one unseeded Pocket fallback.
-      Use config-addressed carried workspaces, exact queue IDs and no broad
-      retries; preserve every non-target item and never review or approve a WAV
-      automatically. Five complete renders that failed the speech-silence gate
-      are excluded (three MOSS sentence repairs and two Pocket fallbacks): keep
-      them for reference comparison or live fallback rather than another blind
-      generation attempt.
+- [ ] Review both published checksum-bound specialist bundles with
+      `uv run vntts-review-bundle BUNDLE.json`. Version 2 has 81 required
+      samples for the original 99 pending WAVs; the selected follow-up bundle
+      has 38 required samples for only the 45 newly generated WAVs (one final
+      MOSS sentence repair and 44 Pocket fallbacks), with inherited pending WAVs
+      excluded. Every technical-attention WAV remains mandatory; clean
+      short/medium/long items are sampled deterministically. Use sample-level
+      bad markers and `Need another sample` instead of accepting a doubtful
+      cohort. These reviews intentionally exclude six terminal specialist
+      silence failures, 29 reference-comparison items and one new pending WAV
+      in the primary workspace. After terminal bundle decisions, inspect the
+      exact source-local evidence before merging outcomes.
 - [ ] Build the 29 reference-comparison cases as a separate blinded,
       checksum-bound comparison task. It must include original/reference audio
       when available, identify `neither is acceptable`, and require an explicit

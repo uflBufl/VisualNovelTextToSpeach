@@ -81,6 +81,7 @@ def build_cohort_review_plan(
     workspace_directory,
     *,
     clean_samples_per_bucket=DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
+    queue_ids=None,
 ):
     """Build a read-only exact-WAV review plan for current pending outcomes."""
     if (
@@ -92,6 +93,10 @@ def build_cohort_review_plan(
             "Clean samples per length bucket must be an integer from 1 to "
             f"{MAX_CLEAN_SAMPLES_PER_BUCKET}"
         )
+    selected_queue_ids = _selected_queue_ids(queue_ids)
+    selected_queue_id_set = (
+        set(selected_queue_ids) if selected_queue_ids is not None else None
+    )
     try:
         directory, workspace = _load_workspace(workspace_directory)
         summary = inspect_workspace(directory)
@@ -126,9 +131,16 @@ def build_cohort_review_plan(
 
     cohorts = {}
     blocked = []
+    observed_selected = set()
     for item in projected:
         if item.status != "generated" or item.review_status != "pending_review":
             continue
+        if (
+            selected_queue_id_set is not None
+            and item.queue_id not in selected_queue_id_set
+        ):
+            continue
+        observed_selected.add(item.queue_id)
         if item.authority is None or item.authority.state_sha256 != state_sha256:
             raise CohortReviewError(
                 "Review authority changed while cohort review was being planned"
@@ -204,18 +216,27 @@ def build_cohort_review_plan(
             }
         )
 
+    if selected_queue_id_set is not None:
+        missing = sorted(selected_queue_id_set - observed_selected)
+        if missing:
+            raise CohortReviewError(
+                f"Selected cohort review items are not pending: {missing}"
+            )
+    policy = {
+        "schema_version": COHORT_REVIEW_POLICY_VERSION,
+        "clean_samples_per_bucket": clean_samples_per_bucket,
+        "length_buckets": {
+            "short_max_words": 6,
+            "medium_max_words": 15,
+        },
+        "attention_rule": "all technical flags",
+    }
+    if selected_queue_ids is not None:
+        policy["selected_queue_ids"] = list(selected_queue_ids)
     body = {
         "schema": COHORT_REVIEW_PLAN_SCHEMA,
         "schema_version": COHORT_REVIEW_PLAN_VERSION,
-        "policy": {
-            "schema_version": COHORT_REVIEW_POLICY_VERSION,
-            "clean_samples_per_bucket": clean_samples_per_bucket,
-            "length_buckets": {
-                "short_max_words": 6,
-                "medium_max_words": 15,
-            },
-            "attention_rule": "all technical flags",
-        },
+        "policy": policy,
         "workspace_id": _required_text(workspace.get("workspace_id"), "Workspace ID"),
         "workspace_config_fingerprint": _required_sha256(
             workspace.get("config_fingerprint"), "Workspace config fingerprint"
@@ -493,6 +514,7 @@ def execute_cohort_review_decision(workspace_directory, plan, decision):
         return build_cohort_review_plan(
             workspace,
             clean_samples_per_bucket=decision_document["next_clean_samples_per_bucket"],
+            queue_ids=plan_document["policy"].get("selected_queue_ids"),
         )
     return apply_cohort_review_decision(
         workspace,
@@ -584,7 +606,26 @@ def _plan_identity_and_document(document):
         or not 1 <= clean_samples <= MAX_CLEAN_SAMPLES_PER_BUCKET
     ):
         raise CohortReviewError("Cohort review plan sample count is invalid")
+    _selected_queue_ids(policy.get("selected_queue_ids"))
     return plan_id, document
+
+
+def _selected_queue_ids(queue_ids):
+    if queue_ids is None:
+        return None
+    if not isinstance(queue_ids, (list, tuple)) or not queue_ids:
+        raise CohortReviewError(
+            "Selected cohort review queue IDs must be a non-empty list"
+        )
+    normalized = []
+    for queue_id in queue_ids:
+        queue_id = _required_text(queue_id, "Selected cohort review queue ID")
+        if queue_id in normalized:
+            raise CohortReviewError(
+                f"Selected cohort review queue ID is duplicated: {queue_id}"
+            )
+        normalized.append(queue_id)
+    return tuple(sorted(normalized))
 
 
 def _decision_item(item):

@@ -75,6 +75,51 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             with self.assertRaises(CohortReviewError):
                 refresh_cohort_review_bundle(bundle)
 
+    def test_exact_source_selections_survive_refresh(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            selections = {
+                workspace: [queue_id] for workspace, _state, queue_id in sources
+            }
+            bundle = build_cohort_review_bundle(
+                [value[0] for value in sources],
+                queue_ids_by_workspace=selections,
+            )
+
+            refreshed = refresh_cohort_review_bundle(bundle)
+
+        self.assertEqual(refreshed, bundle)
+        self.assertEqual(
+            {
+                source["workspace_id"]: source["plan"]["policy"]["selected_queue_ids"]
+                for source in bundle.document["sources"]
+            },
+            {workspace.name: [queue_id] for workspace, _state, queue_id in sources},
+        )
+
+    def test_terminal_selected_decision_removes_completed_source(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            selections = {
+                workspace: [queue_id] for workspace, _state, queue_id in sources
+            }
+            bundle = build_cohort_review_bundle(
+                [value[0] for value in sources],
+                queue_ids_by_workspace=selections,
+            )
+            selected = bundle.document["cohorts"][0]
+
+            projection = execute_cohort_bundle_decision(
+                bundle,
+                selected["workspace_id"],
+                selected["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[selected["samples"][0]["queue_id"]],
+            )
+
+        self.assertEqual(projection.next_bundle.document["workspace_count"], 1)
+        self.assertEqual(projection.next_bundle.document["pending_item_count"], 1)
+
     def test_decision_projects_only_selected_source_and_returns_next_bundle(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))

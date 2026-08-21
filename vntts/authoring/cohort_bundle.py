@@ -74,6 +74,7 @@ def build_cohort_review_bundle(
     workspace_directories,
     *,
     clean_samples_per_bucket=DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
+    queue_ids_by_workspace=None,
 ):
     """Build one deterministic review inventory over distinct workspaces."""
     paths = tuple(Path(value).resolve() for value in workspace_directories)
@@ -81,12 +82,22 @@ def build_cohort_review_bundle(
         raise CohortReviewError("A review bundle requires at least one workspace")
     if len(set(paths)) != len(paths):
         raise CohortReviewError("Review bundle workspaces must be distinct")
+    selections = {
+        Path(path).resolve(): queue_ids
+        for path, queue_ids in (queue_ids_by_workspace or {}).items()
+    }
+    unexpected = sorted(set(selections) - set(paths), key=str)
+    if unexpected:
+        raise CohortReviewError(
+            f"Review bundle selections reference unknown workspaces: {unexpected}"
+        )
 
     source_plans = []
     for path in sorted(paths, key=str):
         plan = build_cohort_review_plan(
             path,
             clean_samples_per_bucket=clean_samples_per_bucket,
+            queue_ids=selections.get(path),
         )
         source_plans.append((path, plan.document))
     return _assemble_bundle(source_plans)
@@ -184,6 +195,7 @@ def refresh_cohort_review_bundle(bundle):
                     clean_samples_per_bucket=source["plan"]["policy"][
                         "clean_samples_per_bucket"
                     ],
+                    queue_ids=source["plan"]["policy"].get("selected_queue_ids"),
                 ).document,
             )
             for source in document["sources"]
@@ -480,6 +492,14 @@ def execute_cohort_bundle_decision(
         if value["workspace_id"] != workspace_id:
             next_sources.append((value["workspace"], value["plan"]))
             continue
+        selected_queue_ids = value["plan"]["policy"].get("selected_queue_ids")
+        if not expanded and selected_queue_ids is not None:
+            reviewed = set(projection.queue_ids)
+            selected_queue_ids = [
+                queue_id for queue_id in selected_queue_ids if queue_id not in reviewed
+            ]
+            if not selected_queue_ids:
+                continue
         next_sources.append(
             (
                 value["workspace"],
@@ -490,6 +510,7 @@ def execute_cohort_bundle_decision(
                     clean_samples_per_bucket=value["plan"]["policy"][
                         "clean_samples_per_bucket"
                     ],
+                    queue_ids=selected_queue_ids,
                 ).document,
             )
         )

@@ -134,6 +134,27 @@ quality failures permit only a verified reference comparison or live fallback,
 not another blind render. This classification changes no state, WAV or review
 decision.
 
+Version 3 was executed in dependency order without relaxing either gate. One
+of the nine exact third MOSS sentence attempts produced a validated
+pending-review WAV; eight remained typed failures. Those eight plus the 37
+already exhausted items then received their single unseeded Pocket fallback.
+Pocket produced 44 validated pending-review WAVs and one terminal
+speech-silence failure. Across all seven new branches, every source state and
+non-target item stayed byte-identical, every run ended with `active=null`, and
+no lease or partial artifact remained. No WAV was reviewed or approved.
+
+The 45 new WAVs are isolated from inherited pending results by selected cohort
+plans in
+`authoring/review-bundles/current-character-story-specialist-followups-v1.json`
+with bundle ID
+`73b599327be6b0d837168eb9f190e6311cfac85b02217613cab6451c44f88439`.
+It binds seven source workspaces, nine cohorts, 45 pending items and 38 required
+samples. Selection is part of each source plan identity, is preserved through
+refresh and expansion, and fails closed if an exact selected item is no longer
+pending. The original version-2 bundle remains the review authority for the
+earlier 99 WAVs; the follow-up bundle does not ask the operator to hear them
+again.
+
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
 WAVs. Every record binds the queue, line, text, state item and audio SHA-256 plus
@@ -166,13 +187,11 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 99 completed specialist WAVs through one checksum-bound
-   multi-workspace bundle plus the one newly generated primary WAV. Preserve
+1. Review the 99 original and 45 follow-up specialist WAVs through their two
+   checksum-bound multi-workspace bundles plus the one newly generated primary
+   WAV. Preserve
    source-local review authority and merge only exact terminal outcomes into a
-   successor history. Run only the one permitted unseeded Pocket fallback for
-   the exact 37 already exhausted MOSS sentence failures. First give the nine
-   two-attempt items their one remaining sentence repair, then route only their
-   still-failed results to Pocket. Keep all five complete silence failures for
+   successor history. Keep all six terminal complete silence failures for
    reference/live fallback. Handle the 29 reference
    comparisons as a separate blinded decision task. Do not raise the
    20-second ceiling or run another broad seed sweep.
