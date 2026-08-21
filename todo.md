@@ -20,12 +20,15 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       terminal specialist failures, 29 reference-comparison items and one new
       pending WAV in the primary workspace. After terminal bundle decisions,
       inspect the exact source-local evidence before merging outcomes.
-- [ ] Cluster the 51 terminal specialist failures by typed completion/error,
-      text shape, voice/reference, backend and measured audio diagnostics.
-      Publish a checksum-bound analysis with an explicit next action per
-      cluster: safe text-boundary repair, a different verified reference,
-      manual/live fallback, or terminal unsupported. Do not raise the 20-second
-      ceiling or run another broad seed sweep.
+- [ ] Run exactly one unseeded Pocket fallback for the 49 checksum-bound
+      sentence-repair failures listed in specialist failure plan
+      `0605bda67527973bf86f30deb60f4c186e82ea6087759be8ba08881a4cf17172`.
+      Create source-local carried workspaces, select only those exact queue
+      IDs, use no retries, preserve every non-target item and do not review or
+      approve generated WAVs automatically. The two failures that already
+      reached Pocket and failed the speech-silence gate are excluded: keep
+      them for reference comparison or live fallback rather than another
+      blind generation attempt.
 - [ ] Build the 29 reference-comparison cases as a separate blinded,
       checksum-bound comparison task. It must include original/reference audio
       when available, identify `neither is acceptable`, and require an explicit

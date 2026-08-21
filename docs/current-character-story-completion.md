@@ -115,6 +115,19 @@ cohorts and the first table in 0.399 seconds. Review decisions use the bound
 state directly instead of rebuilding every full source plan; queue, workspace,
 state, target item, WAV and lease authority remain fail-closed at commit time.
 
+The 51 terminal specialist failures were then classified from their exact
+queue, state, typed completion, repair strategy, text-shape and provider
+evidence. The canonical plan is
+`authoring/review-bundles/current-character-story-specialist-failures-v1.json`
+with ID
+`0605bda67527973bf86f30deb60f4c186e82ea6087759be8ba08881a4cf17172`.
+It binds ten source workspaces and 40 diagnostic clusters. Forty-nine items
+are terminal sentence-boundary repairs under MOSS and have never reached
+Pocket, so each permits at most one unseeded Pocket fallback. The remaining
+two already completed in Pocket but failed the speech-silence quality gate;
+they permit only a verified reference comparison or live fallback, not another
+blind render. This classification changes no state, WAV or review decision.
+
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
 WAVs. Every record binds the queue, line, text, state item and audio SHA-256 plus
@@ -150,10 +163,11 @@ inspection output and does not launch generation.
 1. Review the 99 completed specialist WAVs through one checksum-bound
    multi-workspace bundle plus the one newly generated primary WAV. Preserve
    source-local review authority and merge only exact terminal outcomes into a
-   successor history. Cluster the remaining 51 typed failures before choosing
-   another action, and handle the 29 reference comparisons as a separate
-   blinded decision task. Do not raise the 20-second ceiling or run another
-   broad seed sweep.
+   successor history. Run only the one permitted unseeded Pocket fallback for
+   the exact 49 plan-bound MOSS sentence failures; keep the two terminal Pocket
+   silence failures for reference/live fallback. Handle the 29 reference
+   comparisons as a separate blinded decision task. Do not raise the
+   20-second ceiling or run another broad seed sweep.
 2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
    build a successor Dobharchú comparison that addresses slow pacing and
    inter-phrase pauses. Human listening remains the authority for identity,

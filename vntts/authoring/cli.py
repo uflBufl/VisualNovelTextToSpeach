@@ -110,6 +110,10 @@ from vntts.authoring.source_reference_review import (
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
+from vntts.authoring.specialist_failure_plan import (
+    build_specialist_failure_plan,
+    write_specialist_failure_plan,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -427,6 +431,14 @@ def create_parser():
     )
     failures.add_argument("--state", type=Path, required=True)
     failures.add_argument("--queue", type=Path, required=True)
+    specialist_failures = subparsers.add_parser(
+        "specialist-failure-plan",
+        help="Cluster terminal repair failures into checksum-bound next actions",
+    )
+    specialist_failures.add_argument(
+        "--workspace", action="append", type=Path, required=True
+    )
+    specialist_failures.add_argument("--output", type=Path)
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -984,6 +996,14 @@ def main(argv=None):
                     indent=2,
                     sort_keys=True,
                 )
+            )
+            return 0
+        if arguments.command == "specialist-failure-plan":
+            plan = build_specialist_failure_plan(arguments.workspace)
+            if arguments.output is not None:
+                write_specialist_failure_plan(plan, arguments.output)
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
             )
             return 0
         if arguments.command == "failure-repair-plan":

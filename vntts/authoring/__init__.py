@@ -182,6 +182,15 @@ from vntts.authoring.source_reference_review import (
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
+from vntts.authoring.specialist_failure_plan import (
+    REFERENCE_OR_LIVE,
+    SPECIALIST_FAILURE_PLAN_SCHEMA,
+    SPECIALIST_FAILURE_PLAN_VERSION,
+    SpecialistFailurePlan,
+    build_specialist_failure_plan,
+    load_specialist_failure_plan,
+    write_specialist_failure_plan,
+)
 from vntts.authoring.workbench import (
     CollectionSelection,
     ImmutableHistoryTimestamp,
@@ -255,6 +264,10 @@ __all__ = [
     "NARRATOR_ROLES",
     "ReferenceSelectionError",
     "ReferenceSelectionResult",
+    "REFERENCE_OR_LIVE",
+    "SPECIALIST_FAILURE_PLAN_SCHEMA",
+    "SPECIALIST_FAILURE_PLAN_VERSION",
+    "SpecialistFailurePlan",
     "QUALITY_DECISIONS",
     "QUALITY_REVIEW_SCHEMA",
     "QUALITY_REVIEW_VERSION",
@@ -278,6 +291,7 @@ __all__ = [
     "build_cohort_review_plan",
     "build_failure_regeneration_command",
     "build_failure_regeneration_plan",
+    "build_specialist_failure_plan",
     "build_pending_resolution_plan",
     "build_pending_regeneration_command",
     "execute_cohort_review_decision",
@@ -311,6 +325,7 @@ __all__ = [
     "load_generation_state",
     "load_failure_regeneration_plan",
     "load_source_reference_plan",
+    "load_specialist_failure_plan",
     "is_spoken_queue_item",
     "next_pending_trial",
     "plan_generation_queue",
@@ -352,4 +367,5 @@ __all__ = [
     "write_cohort_review_bundle",
     "write_failure_regeneration_plan",
     "write_pending_resolution_plan",
+    "write_specialist_failure_plan",
 ]
