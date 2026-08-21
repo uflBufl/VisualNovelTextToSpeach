@@ -93,3 +93,35 @@ model control and exact sample scope. It contains the five listed queue IDs and
 does not select all pending items. Candidate generation must run only from a
 clean verified source commit, one profile at a time, with the primary workspace
 and every unrelated candidate seed record checked before and after the child.
+
+## Verified candidate run
+
+The two candidates were prepared and run from clean commit `1ab96b8` on
+2026-08-21. Exact preparation was idempotent for both the input bundle and
+workspace. The stable workspace is
+`resume-395a5e5eec0327a3a793b66d-fbdf3d6391ee18ad`; the natural workspace is
+`resume-395a5e5eec0327a3a793b66d-a8643584acb0cd86`. Both began with 338 state
+items, none of the five sample IDs, no active attempt and no lease. Their
+unrelated canonical item digest was
+`cc9fc1b5afda65a1e334210b266bffbad7f38fdf25864ef398594ed44578bcd0`.
+
+The stable profile published no WAVs. Three lines reached their bounded audio
+limit and two completed rendering but failed the speech-silence gate with
+3.20-3.28 seconds of internal silence. All five remained failed.
+
+The natural profile published three pending-review mono 48 kHz WAVs:
+
+| Queue ID | Variant | Duration | Internal silence | WAV SHA-256 |
+| --- | --- | ---: | ---: | --- |
+| `reverse1999:314602:94:bc0c0eaa3b459b09` | `cluster-2f4d52a49d13c24bbd0e74ad-anchor-1` | 4.72 s | 0.64 s | `98036fbbfc14b7ca9874780177471bcbc87286ac525fc0f0c1719c8658dd92dc` |
+| `reverse1999:314608:40:d2a840395a023447` | `cluster-2f4d52a49d13c24bbd0e74ad-anchor-1` | 8.40 s | 0.64 s | `494d0bd50ca4fc4222579f5f6143e392327c08419142b94c3febf498b2b9b981` |
+| `reverse1999:314605:83:36000991eea08abf` | `cluster-e8dcae5254441ab7633ba7d9-anchor-1` | 1.92 s | 0.00 s | `94d38f9366e221aa08d8c8cbf3248cea6dda659d980b372dec3834d102ea91b8` |
+
+The other two natural lines completed rendering but failed the speech-silence
+gate with 1.60 and 1.36 seconds of internal silence, so no WAV was published.
+No candidate was approved or rejected. The primary review-state SHA-256 stayed
+`de93ffd0286be2b41f47689f97025d8290c950c5caf39939b262b26960c4c2d7`,
+the unrelated candidate digest stayed unchanged, and both runs ended with no
+active attempt, lease or partial WAV. Natural is therefore the only candidate
+with listenable evidence, but it is not authorized for expansion until the
+three exact WAVs receive a human voice/pacing decision.

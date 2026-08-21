@@ -92,24 +92,17 @@ Follow the evidence-backed order and invariants in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
       Preserve the 15 exact approvals and do not promote either portrait variant.
       Publish an explicit portrait binding for the two listed absent IDs rather
-      than inferring it from `Dobharchú`. Then create separate config-addressed
-      `stable` and `natural` successor workspaces and generate only the five exact
-      deterministic sample IDs with token-level duration control disabled.
-      Prepare each candidate through a no-replace, self-contained manifest bundle
-      that embeds the exact plan/candidate ID and copies every manifest reference
-      by digest. Create both workspaces from the immutable legacy import rather
-      than mutating or carrying review state from the primary workspace; the five
-      sample IDs are absent in that import, so generation can remain a normal
-      exact-ID run. Verify the child argv contains exactly those five IDs and the
-      candidate profile, then compare the primary state and all unrelated
-      candidate seed records before and after each run. A candidate preparation
-      failure must leave no partial bundle/workspace, and an identical rerun must
-      be an explicit idempotent result.
-      Compare matching lines, review every new technical-attention WAV plus the
-      complete five-line sample, and expand only a variant whose sample finds
-      another substantive defect. Apply the winning exact control only after the
-      comparison decision is checksum-bound; keep the other 15 approvals and all
-      unrelated queue items unchanged.
+      than inferring it from `Dobharchú`; current evidence shows portrait 534705,
+      distinct from both configured variants. Listen to the three exact natural
+      candidate WAVs recorded in the comparison document. The first two require
+      explicit attention to their 0.64-second internal pauses; the third has no
+      silence flag. Stable failed all five samples and must not be retried without
+      a new bounded hypothesis. Record an exact per-variant human decision before
+      expanding natural to any remaining lines. If natural is accepted, plan a
+      separate sentence-boundary repair for its two sample failures and expand
+      only the accepted portrait variant; if it is rejected, retain live fallback
+      rather than applying a weak cohort. Keep the 15 approvals and all unrelated
+      queue items unchanged throughout.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review
