@@ -118,6 +118,13 @@ from vntts.authoring.specialist_failure_plan import (
     build_specialist_failure_plan,
     write_specialist_failure_plan,
 )
+from vntts.authoring.voice_quality_gate import (
+    VoiceQualityGateError,
+    build_voice_quality_gate,
+    inspect_voice_quality_gate,
+    load_voice_quality_gate,
+    write_voice_quality_gate,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -450,6 +457,21 @@ def create_parser():
     reference_audit.add_argument("workspace", type=Path)
     reference_audit.add_argument("--output", type=Path, required=True)
     reference_audit.add_argument("--seed", type=int, default=0)
+    voice_gate = subparsers.add_parser(
+        "voice-quality-gate",
+        help="Publish a reusable accepted voice-control quality gate",
+    )
+    voice_gate.add_argument("workspace", type=Path)
+    voice_gate.add_argument("plan", type=Path)
+    voice_gate.add_argument("decision", type=Path)
+    voice_gate.add_argument("--output", type=Path, required=True)
+    voice_gate_check = subparsers.add_parser(
+        "voice-quality-check",
+        help="Compare one later pending item with a reusable voice-quality gate",
+    )
+    voice_gate_check.add_argument("gate", type=Path)
+    voice_gate_check.add_argument("workspace", type=Path)
+    voice_gate_check.add_argument("queue_id")
     repairs = subparsers.add_parser(
         "failure-repair-plan",
         help="Plan exact-ID bounded repairs without changing generation state",
@@ -1025,6 +1047,23 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "voice-quality-gate":
+            gate = build_voice_quality_gate(
+                arguments.workspace,
+                load_cohort_review_plan(arguments.plan),
+                load_cohort_review_decision(arguments.decision),
+            )
+            write_voice_quality_gate(gate, arguments.output)
+            print(json.dumps(gate.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "voice-quality-check":
+            result = inspect_voice_quality_gate(
+                load_voice_quality_gate(arguments.gate),
+                arguments.workspace,
+                arguments.queue_id,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "failure-repair-plan":
             print(
                 json.dumps(
@@ -1311,6 +1350,7 @@ def main(argv=None):
         StoryIndexError,
         VoiceGenerationQueueError,
         VoiceManifestError,
+        VoiceQualityGateError,
     ) as error:
         create_parser().error(str(error))
     print(

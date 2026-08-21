@@ -194,6 +194,11 @@ the original blocker. Its only permitted action is
 change review state or authorize a render. Loading the plan revalidates its
 schema, exact inventory, counts and canonical identity.
 
+Accepted cohort controls may be carried as a reusable baseline through the
+separate contract in [`voice-quality-gates.md`](voice-quality-gates.md). A
+matching gate still requires the later story's technical-attention and clean
+sample and never carries per-WAV approval.
+
 `vntts-pregenerate pending-regeneration-command WORKSPACE PLAN.json
 --batch-index N [--batch-size 10]` recomputes the current resolution plan and
 prints one bounded exact-ID `--regenerate-existing` child command only when the

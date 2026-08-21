@@ -97,15 +97,6 @@ Follow the evidence-backed order and invariants in
       reviewer-observed inter-phrase pauses missed by the current zero-silence
       metric. Review a deterministic short/medium/long sample per exact portrait
       variant and expand only when that sample finds another substantive defect.
-- [ ] Add an explicit reusable voice-quality gate across later stories. The
-      checksum-bound workbench cohort flow now samples technical and clean WAVs,
-      counts only completed exact-byte playback, records immutable
-      accept/reject/expand evidence and atomically projects terminal per-item
-      decisions. Build a separate reusable gate keyed by exact voice variant,
-      ordered reference hashes, backend/model/profile and synthesis policy, then
-      sample each newly generated story cohort before reusing it. Never silently
-      carry approval across changed controls or an unreviewed age/portrait
-      variant.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review
