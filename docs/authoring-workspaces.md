@@ -88,7 +88,17 @@ Two evidence paths are supported:
   queue annotations, synthesis text and transform, provider, model, profile,
   prompt policy, synthesis-control provenance, character identity and ordered
   character-reference hashes all match. An unrelated manifest addition may
-  differ, but the selected character references may not.
+  differ, but the selected character references may not. When the manifest
+  binds an exact queue ID to a source-reference variant, character cohort
+  selection still uses the base queue character while synthesis identity and
+  reference validation use that exact per-line override. Source and target
+  queue overrides must agree; this permits reviewed outcomes from multiple
+  expression-bound variants of one character without collapsing their voice
+  provenance. The carry validator reconstructs the same synthesis-provenance
+  identity as the child generator, including missing-voice and repair policies,
+  the exact queue-override digest, voice manifest and references, local model
+  artifact and narrator selection. Any real control drift still rejects the
+  copy before publication.
 
 Every carried item records the source workspace, source state/item/WAV hashes,
 character and evidence mode. Approved-only manifests retain this additive

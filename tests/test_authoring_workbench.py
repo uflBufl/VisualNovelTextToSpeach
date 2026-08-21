@@ -34,6 +34,7 @@ from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.reference_selection import select_voice_reference
+from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -148,7 +149,7 @@ def create_test_workspace(root):
     return fixture, imported, workspace
 
 
-def create_carry_source_workspace(root, *, text=None):
+def create_carry_source_workspace(root, *, text=None, queue_voice_override=None):
     kwargs = {} if text is None else {"text": text}
     fixture = write_legacy_fixture(root / "legacy", **kwargs)
     queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
@@ -192,21 +193,39 @@ def create_carry_source_workspace(root, *, text=None):
     ):
         (root / "legacy" / name).write_bytes(payload)
     voice_manifest = Path(fixture["job"]["voice_manifest"])
-    voice_manifest.write_text(
-        json.dumps(
+    voice_document = {
+        "version": 2,
+        "voices": [
             {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "Rhiannon",
-                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
-                    }
-                ],
+                "character": "Rhiannon",
+                "speaker": "Rhiannon",
+                "references": ["rhiannon.wav", "rhiannon-2.wav"],
             }
-        ),
-        encoding="utf-8",
-    )
+        ],
+    }
+    if queue_voice_override is not None:
+        voice_document["voices"].append(
+            {
+                "character": queue_voice_override,
+                "speaker": "bound-variant",
+                "reference": "rhiannon-2.wav",
+            }
+        )
+        overrides = {fixture["queue_id"]: queue_voice_override}
+        voice_document["vntts.authoring.source_reference_bindings"] = {
+            "schema": "vntts.authoring-source-reference-bindings",
+            "schema_version": 1,
+            "source_reference_plan_sha256": "a" * 64,
+            "selected_variants": [
+                {
+                    "variant_id": "bound-variant",
+                    "voice_character": queue_voice_override,
+                }
+            ],
+            "queue_voice_overrides": overrides,
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        }
+    voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
     state = json.loads(fixture["state"].read_text(encoding="utf-8"))
     state["active"] = None
     state["items"][fixture["queue_id"]]["status"] = "generated"
@@ -1182,6 +1201,62 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(target_item["file_sha256"], target_audio_sha256)
         self.assertEqual(target_audio_payload, source_audio)
 
+    def test_full_carry_forward_honors_exact_queue_voice_override(self):
+        variant = "Rhiannon portrait variant"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root, queue_voice_override=variant
+            )
+            source_state_path = (
+                source.directory / "generated-audio/generation-state.json"
+            )
+            source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+            queue_item = VoiceGenerationQueue.load(
+                source.directory / "queue.jsonl"
+            ).items[0]
+            item = source_state["items"][fixture["queue_id"]]
+            audio = source.directory / "generated-audio" / item["path"]
+            write_pcm16_wav(
+                audio,
+                np.sin(np.linspace(0, 6 * np.pi, 6_000, dtype=np.float32)) * 0.2,
+                16_000,
+            )
+            item.update(
+                self._current_carry_fields(
+                    source.directory,
+                    queue_item,
+                    audio,
+                    voice_character=variant,
+                )
+            )
+            source_state["active"] = None
+            source_state_path.write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+
+            carried = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                carry_forward_from=source.directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            target_state = bulk_generation_module.load_generation_state(
+                carried.directory / "generated-audio/generation-state.json",
+                carried.directory / "queue.jsonl",
+            )
+            target_item = target_state["items"][fixture["queue_id"]]
+
+        self.assertEqual(target_item["carry_forward"]["mode"], "full-outcome")
+        self.assertEqual(target_item["voice_character"], variant)
+        self.assertEqual(target_item["status"], "approved")
+
     def test_full_carry_forward_rejects_changed_character_references(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1284,7 +1359,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
         self.assertEqual(remaining, [source.directory.resolve()])
 
-    def _current_carry_fields(self, workspace_directory, queue_item, audio):
+    def _current_carry_fields(
+        self, workspace_directory, queue_item, audio, *, voice_character="Rhiannon"
+    ):
         workspace = json.loads(
             (workspace_directory / "workspace.json").read_text(encoding="utf-8")
         )
@@ -1307,7 +1384,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 workspace_directory, workspace
             ),
             "generation_profile": "stable",
-            "voice_character": "Rhiannon",
+            "voice_character": voice_character,
             "quality": asdict(bulk_generation_module.inspect_generated_wav(audio)),
             "speech_quality": asdict(
                 bulk_generation_module.inspect_generated_speech(audio)

@@ -79,6 +79,7 @@ from vntts.authoring.reference_selection import (
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
+    queue_voice_overrides_sha256,
 )
 from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
@@ -1959,6 +1960,15 @@ def _carry_forward_review_outcomes(
     target_seed = copy.deepcopy(target_state)
     target_registry = _registry_from_staged_voice(staging, voice_config)
     source_registry = _workspace_voice_registry(source_directory, source_document)
+    source_queue_overrides = _queue_voice_overrides_for_manifest(
+        _selected_voice_manifest(source_directory, source_document)
+    )
+    target_manifest = _within(
+        staging,
+        _safe_relative(voice_config.get("path"), "Voice manifest snapshot"),
+        "Voice manifest snapshot",
+    )
+    target_queue_overrides = _queue_voice_overrides_for_manifest(target_manifest)
     source_provenance = None
     source_audio_snapshots = []
     carried = []
@@ -1979,10 +1989,20 @@ def _carry_forward_review_outcomes(
                 source_provenance = _workspace_generation_provenance(
                     source_directory, source_document
                 )
+            source_synthesis_character = source_queue_overrides.get(
+                queue_item.queue_id, character
+            )
+            target_synthesis_character = target_queue_overrides.get(
+                queue_item.queue_id, character
+            )
+            if source_synthesis_character != target_synthesis_character:
+                raise AuthoringWorkbenchError(
+                    f"Carry-forward queue voice differs for {queue_item.queue_id!r}"
+                )
             _validate_full_carry_forward_item(
                 queue_item,
                 result,
-                character,
+                source_synthesis_character,
                 source_document,
                 source_run_config_normalized,
                 source_provenance,
@@ -2271,6 +2291,32 @@ def _workspace_generation_provenance(directory, workspace):
     if manifest is None:
         raise AuthoringWorkbenchError("Carry-forward source has no voice manifest")
     registry = CharacterVoiceRegistry.from_file(manifest)
+    queue = _load_bound_workspace_queue(directory, workspace)
+    queue_overrides = _queue_voice_overrides_for_manifest(manifest)
+    missing_voice_policy = _workspace_missing_voice_policy(workspace)
+    failure_repair_policy = _workspace_failure_repair_policy(workspace)
+    narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
+    narrator_voice = registry.resolve(narrator)
+    narrator_ready = (
+        narrator_voice is not None
+        and bool(narrator_voice.references)
+        and all(reference.is_file() for reference in narrator_voice.references)
+    )
+    synthesis_character_overrides = {}
+    for item in queue.items:
+        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+        voice = registry.resolve(requested)
+        if (
+            requested != "Narrator"
+            and (
+                voice is None
+                or not voice.references
+                or any(not reference.is_file() for reference in voice.references)
+            )
+            and missing_voice_policy.applies_to(requested)
+            and narrator_ready
+        ):
+            synthesis_character_overrides[requested] = "Narrator"
     controls = {"voice_manifest": (manifest, sha256_control_path(manifest))}
     references = sorted(
         {
@@ -2292,8 +2338,6 @@ def _workspace_generation_provenance(directory, workspace):
             model_path,
             sha256_control_path(model_path),
         )
-    narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
-    narrator_voice = registry.resolve(narrator)
     if narrator_voice is not None and narrator_voice.references:
         reference = narrator_voice.references[0]
         controls[f"narrator_selection:{narrator}"] = (
@@ -2304,6 +2348,17 @@ def _workspace_generation_provenance(directory, workspace):
         snapshots = _snapshot_control_files(controls)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
+    synthesis_configuration = {
+        "missing_voice_policy": missing_voice_policy.to_document(),
+        "synthesis_character_overrides": dict(
+            sorted(synthesis_character_overrides.items())
+        ),
+        "failure_repair_policy": failure_repair_policy.to_document(),
+    }
+    if queue_overrides:
+        synthesis_configuration["queue_voice_overrides_sha256"] = (
+            queue_voice_overrides_sha256(queue_overrides)
+        )
     return _canonical_sha256(
         {
             "provider": backend,
@@ -2312,6 +2367,7 @@ def _workspace_generation_provenance(directory, workspace):
             "text_transform": (
                 "short-trailing-ellipsis-v1" if backend == "moss-tts" else None
             ),
+            **synthesis_configuration,
             "controls": [
                 {"role": value["role"], "sha256": value["sha256"]}
                 for value in snapshots
@@ -2358,6 +2414,16 @@ def _voice_reference_identity(registry, character):
         "aliases": list(voice.aliases),
         "references": [sha256_control_path(path) for path in voice.references],
     }
+
+
+def _queue_voice_overrides_for_manifest(manifest):
+    try:
+        document, entries = load_voice_manifest(manifest, allow_legacy=False)
+        return queue_voice_overrides_from_manifest(document, voices=entries)
+    except (SourceReferenceBindingError, VoiceManifestError, OSError) as error:
+        raise AuthoringWorkbenchError(
+            f"Unable to load carry-forward queue voice bindings: {error}"
+        ) from error
 
 
 def _read_file_bytes(path, label):
