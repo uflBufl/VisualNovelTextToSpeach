@@ -341,8 +341,29 @@ valid pending-review outputs without any extra retry:
   `9964ea3e338b9cf113a30205624c2edcf5f186a6842a5fdd356716be80e19bf5`.
 
 Each state records three cumulative MOSS attempts and seed 2, with no active
-attempt, lease or partial WAV. These files still require human listening and
-were not merged or approved automatically.
+attempt, lease or partial WAV. Generation alone did not approve or merge either
+file; the following human listening decision remained authoritative.
+
+Listening produced different decisions despite both WAVs passing the objective
+silence gate. The short line
+`reverse1999:314608:8:7c5e047cb7785953` was rejected because its pauses still
+sounded too large. Its repair workspace keeps the exact WAV and review evidence
+as `(generated, rejected)`, while its manifest remains empty. The longer line
+`reverse1999:314608:27:8118276567f5deff` was approved with exact WAV SHA-256
+`9964ea3e338b9cf113a30205624c2edcf5f186a6842a5fdd356716be80e19bf5`.
+
+Only that approved result was merged, together with the two previously approved
+inline-marker workspaces, from their common immutable base. The resulting
+successor is
+`resume-395a5e5eec0327a3a793b66d-fce430e8b914cf3b`. Its state SHA-256 is
+`4ee521380bc4941e399797855b515342ef3c82d2253074cc2610c0b207f0f8cb` and
+its approved-only manifest SHA-256 is
+`8c3fda5de6e1ff2b2e20c3f5a879058f667b79a72b9b22959dd64ec047ca29d5`.
+The successor contains 7 approved, 214 pending-review and 150 failed items; the
+manifest contains exactly the 7 approved queue IDs and excludes the rejected
+short repair. The common base and all three approved source workspaces remained
+byte-identical across the merge, and the successor has no active attempt,
+generation lease or partial WAV.
 
 ## Internal-silence repair result
 

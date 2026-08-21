@@ -121,13 +121,6 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Listen to the two final bounded seed-2 marker outputs before any further
-      Dobharchú merge. Review exact queue IDs
-      `reverse1999:314608:8:7c5e047cb7785953` (1.12-second internal pause) and
-      `reverse1999:314608:27:8118276567f5deff` (0.96-second internal pause).
-      Approve or reject each exact WAV independently for wording, identity,
-      cadence and natural boundaries; do not infer approval from the technical
-      silence gate or from the two earlier accepted marker samples.
 - [ ] Complete the bounded quality-first path for lines that cannot be segmented
       safely, including two-word clauses such as `What happened? You're hurt.`
       Inline-marker repair is now capped at three cumulative deterministic MOSS
@@ -157,10 +150,11 @@ while one-sentence controls remained below 0.25 seconds.
       boundaries, unchanged speaker identity, exact state/WAV/control hashes,
       approved-only manifest derivation, and no mutation of source workspaces.
       Treat inline markers only as a bounded candidate after the mixed real
-      sample: three of five attempts passed the technical gate, two failed
-      closed, and one passing WAV still sounded slightly unnatural. Never
-      auto-approve marker outputs or replace safe sentence segmentation with
-      marker insertion.
+      sample: all five final outputs eventually passed the technical gate, but
+      only three were approved; one was rejected for perceptually large pauses
+      and one remains unapproved after sounding slightly unnatural. Two lines
+      needed their final allowed seed-2 attempt. Never auto-approve marker
+      outputs or replace safe sentence segmentation with marker insertion.
 - [ ] Reuse the same classifier and safe segmentation in live mode only after
       the offline gate passes. Pre-segment eligible multi-sentence text before
       playback so the UI never waits through a known multi-second silent run;
