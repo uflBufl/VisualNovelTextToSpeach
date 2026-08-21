@@ -118,15 +118,18 @@ state, target item, WAV and lease authority remain fail-closed at commit time.
 The 51 terminal specialist failures were then classified from their exact
 queue, state, typed completion, repair strategy, text-shape and provider
 evidence. The canonical plan is
-`authoring/review-bundles/current-character-story-specialist-failures-v1.json`
+`authoring/review-bundles/current-character-story-specialist-failures-v2.json`
 with ID
-`0605bda67527973bf86f30deb60f4c186e82ea6087759be8ba08881a4cf17172`.
-It binds ten source workspaces and 40 diagnostic clusters. Forty-nine items
-are terminal sentence-boundary repairs under MOSS and have never reached
-Pocket, so each permits at most one unseeded Pocket fallback. The remaining
-two already completed in Pocket but failed the speech-silence quality gate;
-they permit only a verified reference comparison or live fallback, not another
-blind render. This classification changes no state, WAV or review decision.
+`2cecf5cf9c7e1e8b492d56e1dd6937b5079b0db0ecaafcb6613de2d717e18b08`.
+Version 1 was rejected by the existing repair compatibility gate before any
+child launched because it incorrectly grouped three complete MOSS silence
+failures with missed-EOS limits. The corrected version binds ten source
+workspaces. Forty-six items are limited sentence-boundary repairs under MOSS
+and have never reached Pocket, so each permits at most one unseeded Pocket
+fallback. Five complete renders failed the speech-silence quality gate: three
+under MOSS sentence repair and two under Pocket fallback. They permit only a
+verified reference comparison or live fallback, not another blind render.
+This classification changes no state, WAV or review decision.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
@@ -164,7 +167,7 @@ inspection output and does not launch generation.
    multi-workspace bundle plus the one newly generated primary WAV. Preserve
    source-local review authority and merge only exact terminal outcomes into a
    successor history. Run only the one permitted unseeded Pocket fallback for
-   the exact 49 plan-bound MOSS sentence failures; keep the two terminal Pocket
+   the exact 46 plan-bound MOSS sentence failures; keep all five complete
    silence failures for reference/live fallback. Handle the 29 reference
    comparisons as a separate blinded decision task. Do not raise the
    20-second ceiling or run another broad seed sweep.

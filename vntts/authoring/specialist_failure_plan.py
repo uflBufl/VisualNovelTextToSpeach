@@ -199,15 +199,20 @@ def _next_action(result, repair, failure):
     strategy = repair.get("strategy")
     providers = result.get("attempts_by_provider")
     providers = providers if isinstance(providers, dict) else {}
-    if strategy == SENTENCE_BOUNDARY_SEGMENTATION and not providers.get("pocket-tts"):
+    if (
+        strategy == SENTENCE_BOUNDARY_SEGMENTATION
+        and failure.get("kind") == "missed_eos_audio_limit"
+        and failure.get("completion") == "limited"
+        and not providers.get("pocket-tts")
+    ):
         return (
             OFFLINE_FALLBACK_BACKEND,
             "Sentence repair is terminal under MOSS; one unseeded Pocket attempt remains bounded",
         )
-    if strategy == OFFLINE_FALLBACK_BACKEND:
+    if strategy in {SENTENCE_BOUNDARY_SEGMENTATION, OFFLINE_FALLBACK_BACKEND}:
         return (
             REFERENCE_OR_LIVE,
-            "Pocket fallback is already terminal; compare a verified reference or retain live fallback",
+            "A complete render failed speech quality or Pocket is already terminal; compare a verified reference or retain live fallback",
         )
     raise CohortReviewError(
         "Specialist failure has no evidence-backed next action: "

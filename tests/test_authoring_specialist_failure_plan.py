@@ -97,6 +97,26 @@ class SpecialistFailurePlanTest(unittest.TestCase):
             with self.assertRaisesRegex(CohortReviewError, "identity changed"):
                 load_specialist_failure_plan(output)
 
+    def test_complete_sentence_silence_is_not_sent_to_pocket(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(
+                root, "sentence_boundary_segmentation", "a"
+            )
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            failure = state["items"]["a"]["failure"]
+            failure["kind"] = "speech_silence"
+            failure["completion"] = "complete"
+            state_path.write_text(json.dumps(state))
+
+            plan = build_specialist_failure_plan((workspace,))
+
+        self.assertEqual(
+            plan.document["action_counts"],
+            {OFFLINE_FALLBACK_BACKEND: 0, REFERENCE_OR_LIVE: 1},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
