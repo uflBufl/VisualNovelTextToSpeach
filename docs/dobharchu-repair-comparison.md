@@ -277,6 +277,16 @@ small real checksum-bound corpus shows equal words and speaker identity with
 better cadence than segmentation. A rejected or inconclusive comparison leaves
 sentence segmentation as the preferred repair.
 
+The existing resumable generator correctly deletes `.partial.wav` after a
+speech-silence validation failure and records only typed diagnostics in state.
+Consequently the current immutable workspaces contain no trustworthy raw WAV
+for the two unpublished long-pause failures: reconstructing one from a later
+seed or another workspace would change the evidence. Before publishing the real
+comparison corpus, add an explicit one-queue-ID, one-attempt evidence sink. It
+must store the technically rejected WAV outside generated output, bind queue,
+state, controls, attempt and failure diagnosis, and keep the artifact impossible
+to review or merge as a generated outcome.
+
 An exact comparison strategy is also available through
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one
 current checksum-bound internal-silence failure, `moss-tts`, an exact queue-ID
