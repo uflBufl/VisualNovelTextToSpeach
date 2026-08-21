@@ -121,19 +121,20 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Finish listening to the isolated exact `--inline-pause-failed`
-      Dobharchú sample. The first WAV for
-      `reverse1999:314608:29:7be68e27f6d36933` reduced measured internal silence
-      from 1.60 to 0.96 seconds but was judged acceptable yet slightly
-      unnatural. Listen to the two additional technically valid WAVs for
-      `reverse1999:314605:40:a15bc2a6e08da13e` (3.52 -> 0.64 seconds) and
-      `reverse1999:314605:95:ebc446c3c6e843bb` (3.12 -> 0.48 seconds). Reject
-      any word, prosody, speaker-identity or cadence defect. Two other exact
-      attempts failed closed at 2.00 and 1.76 seconds and published no WAV, so
-      do not merge these workspaces or authorize a cohort rollout from the
-      technical gate alone. The short control `What happened? You're hurt.` is
-      not a current typed failure; use a separately declared comparison corpus
-      if a short-line listening comparison is still needed.
+- [ ] Apply the explicit listening decisions for the isolated
+      `--inline-pause-failed` Dobharchú sample and merge only accepted outcomes.
+      Approve exact queue IDs `reverse1999:314605:40:a15bc2a6e08da13e`
+      (3.52 -> 0.64 seconds) and
+      `reverse1999:314605:95:ebc446c3c6e843bb` (3.12 -> 0.48 seconds), then
+      merge their checksum-bound terminal outcomes non-destructively into a new
+      successor of `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`.
+      Preserve the first 0.96-second result as pending because it was judged
+      acceptable yet slightly unnatural. Preserve the two fail-closed attempts
+      with no WAV as failure evidence. Before calling this step complete, prove
+      that the successor retains all source approvals and unrelated state,
+      derives an approved-only manifest containing the two new exact WAV hashes,
+      leaves every source workspace byte-identical, and has no active attempt,
+      lease or partial file.
 - [ ] Add a bounded quality-first path for lines that cannot be segmented safely,
       including two-word clauses such as `What happened? You're hurt.` Try at
       most three deterministic seeds and accept only a `complete` render that
@@ -160,6 +161,11 @@ while one-sentence controls remained below 0.25 seconds.
       above 1.2 seconds, no truncation/repetition/word change, natural perceived
       boundaries, unchanged speaker identity, exact state/WAV/control hashes,
       approved-only manifest derivation, and no mutation of source workspaces.
+      Treat inline markers only as a bounded candidate after the mixed real
+      sample: three of five attempts passed the technical gate, two failed
+      closed, and one passing WAV still sounded slightly unnatural. Never
+      auto-approve marker outputs or replace safe sentence segmentation with
+      marker insertion.
 - [ ] Reuse the same classifier and safe segmentation in live mode only after
       the offline gate passes. Pre-segment eligible multi-sentence text before
       playback so the UI never waits through a known multi-second silent run;

@@ -939,6 +939,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 result.state, repaired.directory / "queue.jsonl"
             )["items"][fixture["queue_id"]]
             inspect_workspace(repaired.directory)
+            review_workspace_item(repaired.directory, fixture["queue_id"], "approved")
+            merged = merge_workspace_outcomes(
+                source.directory, (repaired.directory,), root / "merged-inline"
+            )
+            merged_item = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(merged.directory)
             source_state_after = source_state_path.read_bytes()
 
         self.assertEqual(source_item["failure"]["kind"], "speech_silence")
@@ -949,6 +958,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             final_item["failure_repair"]["strategy"], "inline_pause_marker"
         )
         self.assertEqual(final_item["carry_forward"], carried["carry_forward"])
+        self.assertEqual(merged_item["status"], "approved")
+        self.assertEqual(
+            merged_item["failure_repair"]["strategy"], "inline_pause_marker"
+        )
+        self.assertEqual(
+            merged_item["outcome_merge"]["source_workspace_id"],
+            repaired.directory.name,
+        )
         self.assertEqual(source_state_after, source_state_before)
         self.assertEqual(
             command[command.index("--inline-pause-failed") + 1],
