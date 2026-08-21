@@ -9,8 +9,10 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     from tests import test_authoring_cohort_review
@@ -25,6 +27,7 @@ except ModuleNotFoundError as error:
     QApplication = None
     QCloseEvent = None
     QMediaPlayer = None
+    QTest = None
     CohortReviewBundleDialog = None
 
 
@@ -68,6 +71,23 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
             self.assertTrue(dialog.cohort_choice.itemText(0).startswith("Required 1/2"))
             self.assertIn("Review every listed cohort", dialog.operation.text())
+            self.assertEqual(
+                dialog.overall_progress.format(),
+                "0 of 2 cohorts completed in this review session",
+            )
+            self.assertIn("Play 1 remaining sample", dialog.decision_help.text())
+            self.assertTrue(dialog.table.isColumnHidden(5))
+            self.assertTrue(dialog.table.isColumnHidden(6))
+            self.assertIn("Generated role", dialog.sample_identity.text())
+            self.assertEqual(
+                dialog.sample_text.text(), dialog._selected_sample().item.text
+            )
+
+            dialog.technical_details.setChecked(True)
+            self.assertFalse(dialog.table.isColumnHidden(5))
+            self.assertFalse(dialog.table.isColumnHidden(6))
+            self.assertTrue(dialog.cohort_audit.isVisible())
+            self.assertIn("Provider:", dialog.cohort_audit.text())
 
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
@@ -80,7 +100,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.accept.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
             self.assertTrue(dialog.mark_bad.isEnabled())
-            self.assertEqual(dialog.table.item(0, 0).text(), "yes")
+            self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertIn("All 1 required samples", dialog.decision_help.text())
 
     def test_bad_marker_blocks_accept_but_keeps_reject(self):
         with TemporaryDirectory() as directory:
@@ -98,7 +119,36 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertFalse(dialog.accept.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
             self.assertFalse(dialog.need_another.isEnabled())
-            self.assertEqual(dialog.table.item(0, 1).text(), "bad")
+            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("marked bad", dialog.decision_help.text())
+
+    def test_space_and_bad_shortcuts_work_from_table_at_compact_size(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog.resize(900, 820)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            dialog.table.setFocus()
+
+            QTest.keyClick(dialog.table, Qt.Key.Key_Space)
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            QTest.keyClick(dialog.table, Qt.Key.Key_B)
+            dialog.table.doubleClicked.emit(dialog.table.model().index(0, 0))
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog.stop_playback()
+
+            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertTrue(dialog.heading.isVisible())
+            self.assertTrue(dialog.sample_text.isVisible())
+            self.assertTrue(dialog.reject.isVisible())
+            self.assertIn("press Space to play/replay", dialog.shortcuts_help.text())
+            table_bottom = dialog.table.mapTo(
+                dialog, QPoint(0, dialog.table.height())
+            ).y()
+            decision_top = dialog.decision_help.mapTo(dialog, QPoint(0, 0)).y()
+            self.assertLessEqual(table_bottom, decision_top)
 
     def test_decision_is_source_local_and_navigation_remains_live_while_saving(self):
         calls = []
@@ -125,7 +175,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.heard[key].add(sample.item.queue_id)
             dialog._update_actions()
 
-            dialog.apply_decision("accepted")
+            dialog.table.setFocus()
+            QTest.keyClick(
+                dialog.table,
+                Qt.Key.Key_Return,
+                Qt.KeyboardModifier.ControlModifier,
+            )
             self.wait_for(started.is_set)
             self.assertTrue(dialog._decision_active)
             self.assertTrue(dialog.replay.isEnabled())
@@ -182,6 +237,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 dialog._selected_sample().workspace_id, first.workspace_id
             )
             self.assertIn("Current required cohort: 1/1", dialog.operation.text())
+            self.assertEqual(
+                dialog.overall_progress.format(),
+                "1 of 2 cohorts completed in this review session",
+            )
 
     def test_retry_recovers_a_transient_load_error(self):
         calls = []

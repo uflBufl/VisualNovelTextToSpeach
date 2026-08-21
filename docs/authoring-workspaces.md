@@ -678,6 +678,26 @@ area labels these phases as `Saving decision` and `Refreshing checksum
 authority`. A completed cohort then disappears from the bundle and the first
 remaining cohort is selected automatically.
 
+The reviewer is organized around the operator's three actual steps: play every
+required sample, mark any sample that sounds bad, then accept/reject the cohort
+or request more evidence. Overall cohort progress, current heard/bad counts and
+the exact number of WAVs affected by a terminal decision stay visible. The full
+spoken text has its own selectable card; the sample list keeps source label and
+generated role distinct so `Narrator` is not presented as a character/reference
+name. Line IDs, quality metrics, provider/profile/repair controls and workspace
+identity are hidden until `Show technical details` is enabled. A sample-level
+bad mark is explicitly non-terminal, while confirmation text for Accept/Reject
+states that the action affects every WAV in only the current exact cohort.
+
+Playback is available by button, row double-click or Space. Left/Right changes
+the selected sample, B toggles its bad evidence after a complete listen,
+Ctrl+Enter accepts and Ctrl+Backspace rejects when the same visible gates allow
+the corresponding button. Disabled actions retain an adjacent plain-language
+reason and explanatory tooltip. The layout was rendered against the current
+18-cohort bundle at 1280x820 and at its 900x820 minimum without overlapping the
+sample table, playback controls or decision area; Qt regressions retain those
+geometry, shortcut, detail-toggle, progress and next-cohort gates.
+
 The real ten-source specialist bundle opened its 81 exact samples in 0.078
 seconds through the targeted loader; an offscreen dialog populated 18 cohorts
 and its first sample table in 0.399 seconds. A read-only benchmark of the
