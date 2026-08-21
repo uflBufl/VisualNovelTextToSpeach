@@ -48,7 +48,9 @@ than a mutable UI preference.
 A bounded failure-repair policy is also part of this identity. It contains only
 exact queue IDs authorized for safe sentence-boundary segmentation, edge-only
 silence trimming, bounded same-provider seed retry or a different-backend
-offline fallback. Changing an ID, strategy or sentence pause creates a new
+offline fallback. A fourth comparison-only strategy inserts an upstream MOSS
+inline pause marker into a derived synthesis prompt for exactly one current
+internal-silence failure. Changing an ID, strategy or pause creates a new
 workspace. `generation_command()` automatically emits the identical queue-ID
 selection and refuses a caller-supplied mismatch. The child revalidates that
 every selected item is still a current typed failure in the matching cohort
@@ -146,6 +148,13 @@ up to a cumulative provider maximum of three. Cross-backend Pocket fallback
 keeps the stricter exhausted-attempt and Pocket default requirements below.
 Same-backend and cross-backend strategies cannot share one workspace.
 
+The inline-pause comparison is MOSS-only, accepts exactly one queue ID and one
+attempt, and records the original text hash, derived prompt hash, marker count,
+pause value and synthesis-control digest. It is an experiment boundary rather
+than an automatic repair policy. Create it with
+`--inline-pause-failed QUEUE_ID --inline-pause-ms 180`; the child command must
+also use `--retries 0`.
+
 Both creation and every later workspace load fail closed if the carried item,
 strategy, source configuration, provider-attempt count or exact queue-ID
 selection changes. Sentence and bounded-seed repairs retain the source failure
@@ -224,7 +233,8 @@ uv run vntts-pregenerate merge-workspace-outcomes PRIMARY_WORKSPACE \
 
 The primary workspace supplies the complete base state, including its existing
 approvals and rejections. Every source must share its exact immutable import and
-byte-identical queue and must be a schema-v3 exact-ID failure-repair workspace.
+byte-identical queue and must contain a supported schema-v1 through schema-v4
+exact-ID failure-repair policy.
 Only selected repair items whose current state is `approved/approved` or
 `generated/rejected` are eligible. Pending-review and failed repairs are not
 terminal, are not copied and cannot satisfy a source that has no reviewed

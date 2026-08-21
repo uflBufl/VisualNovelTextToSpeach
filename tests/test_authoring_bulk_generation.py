@@ -1356,6 +1356,146 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertIn("internal silence", raised.exception.failures[0])
 
+    def test_silence_failure_persists_versioned_pause_spans_and_text_shape(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(text="What happened? You're hurt.")
+            queue = write_queue(root / "queue.jsonl", [item])
+            tone = audio_samples()
+            pcm = np.concatenate(
+                (
+                    np.zeros(16_000, dtype=np.float32),
+                    tone,
+                    np.zeros(16_000 * 2, dtype=np.float32),
+                    tone,
+                    np.zeros(16_000, dtype=np.float32),
+                )
+            )
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(pcm=pcm),
+                retries=0,
+            )
+            failed = load_generation_state(result.state, queue)["items"][
+                item["queue_id"]
+            ]
+            tampered = json.loads(result.state.read_text(encoding="utf-8"))
+            tampered["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
+                "attempt_binding"
+            ]["seed"] = 999
+            result.state.write_text(
+                json.dumps(tampered, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(BulkGenerationError, "binding changed"):
+                load_generation_state(result.state, queue)
+
+        diagnosis = failed["failure"]["pause_diagnosis"]
+        self.assertEqual(diagnosis["schema_version"], 1)
+        self.assertEqual(diagnosis["analysis_version"], 2)
+        self.assertEqual(
+            diagnosis["classification"], "sentence_boundary_pause_candidate"
+        )
+        self.assertEqual(diagnosis["sentence_boundary_count"], 2)
+        self.assertFalse(diagnosis["repairable_by_safe_segmentation"])
+        self.assertEqual(
+            diagnosis["attempt_binding"],
+            {
+                "provider": "synthetic",
+                "model": "synthetic-v1",
+                "generation_profile": "stable",
+                "seed": 0,
+                "synthesis_provenance_sha256": failed["synthesis_provenance_sha256"],
+            },
+        )
+        self.assertEqual(
+            [span["kind"] for span in diagnosis["spans"]],
+            ["leading", "internal", "trailing"],
+        )
+        self.assertGreater(diagnosis["spans"][1]["duration_seconds"], 1.2)
+
+    def test_inline_pause_repair_binds_derived_prompt_without_changing_queue_text(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(text="What happened? You're hurt.")
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+            failed_renderer = SyntheticRenderer(
+                pcm=failed_pcm, diagnostics_backend="moss-tts"
+            )
+            failed_renderer.name = "moss-tts"
+            failed_renderer.model_name = "moss-local"
+            run_bulk_generation(
+                queue,
+                output,
+                failed_renderer,
+                provider="moss-tts",
+                model="moss-local",
+                retries=0,
+                seed=0,
+            )
+            plan = generation_failure_repair_plan(
+                output / "generation-state.json", queue
+            )
+            observed_active = {}
+
+            def inspect_active(_request):
+                observed_active.update(
+                    load_generation_state(output / "generation-state.json", queue)[
+                        "active"
+                    ]
+                )
+
+            repair_renderer = SyntheticRenderer(
+                diagnostics_backend="moss-tts", inspect_state=inspect_active
+            )
+            repair_renderer.name = "moss-tts"
+            repair_renderer.model_name = "moss-local"
+            policy = FailureRepairPolicy(
+                inline_pause_queue_ids=(item["queue_id"],),
+                inline_pause_ms=180,
+            )
+
+            repaired = run_bulk_generation(
+                queue,
+                output,
+                repair_renderer,
+                provider="moss-tts",
+                model="moss-local",
+                retries=0,
+                seed=0,
+                include_queue_ids=(item["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            stored = load_generation_state(repaired.state, queue)["items"][
+                item["queue_id"]
+            ]
+
+        self.assertEqual(
+            repair_renderer.requests[0].text,
+            "What happened? [pause 0.18s] You're hurt.",
+        )
+        self.assertEqual(plan["records"][0]["action"], "inline_pause_marker_comparison")
+        self.assertIn("failure_repair", observed_active, observed_active)
+        self.assertEqual(
+            observed_active["failure_repair"]["derived_prompt_sha256"],
+            stored["failure_repair"]["derived_prompt_sha256"],
+        )
+        self.assertEqual(stored["status"], "generated")
+        self.assertEqual(stored["failure_repair"]["strategy"], "inline_pause_marker")
+        self.assertEqual(stored["failure_repair"]["marker_count"], 1)
+        self.assertEqual(stored["failure_repair"]["pause_ms"], 180)
+        self.assertEqual(stored["text_sha256"], item["text_sha256"])
+        self.assertEqual(
+            stored["synthesis_text_sha256"],
+            stored["failure_repair"]["derived_prompt_sha256"],
+        )
+
     def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

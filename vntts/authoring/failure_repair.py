@@ -23,14 +23,17 @@ DEFAULT_EDGE_TRIGGER_SECONDS = 0.8
 DEFAULT_EDGE_PADDING_SECONDS = 0.08
 DEFAULT_SILENCE_DBFS = -45.0
 DEFAULT_SEGMENT_PAUSE_MS = 180
+DEFAULT_INLINE_PAUSE_MS = 180
 DEFAULT_MAX_REPAIRED_AUDIO_SECONDS = 20.0
-FAILURE_REPAIR_POLICY_VERSION = 3
+FAILURE_REPAIR_POLICY_VERSION = 4
 LEGACY_FAILURE_REPAIR_POLICY_VERSION = 1
 BOUNDED_SEED_POLICY_VERSION = 2
+OFFLINE_FALLBACK_POLICY_VERSION = 3
 SENTENCE_BOUNDARY_SEGMENTATION = "sentence_boundary_segmentation"
 EDGE_SILENCE_TRIM = "edge_silence_trim"
 BOUNDED_SEED_RETRY = "bounded_seed_retry"
 OFFLINE_FALLBACK_BACKEND = "offline_fallback_backend"
+INLINE_PAUSE_MARKER = "inline_pause_marker"
 MAX_BOUNDED_TOTAL_ATTEMPTS = 3
 
 
@@ -47,6 +50,8 @@ class FailureRepairPolicy:
     segment_pause_ms: int = DEFAULT_SEGMENT_PAUSE_MS
     bounded_seed_retry_queue_ids: tuple[str, ...] = ()
     offline_fallback_queue_ids: tuple[str, ...] = ()
+    inline_pause_queue_ids: tuple[str, ...] = ()
+    inline_pause_ms: int = DEFAULT_INLINE_PAUSE_MS
 
     def __post_init__(self):
         sentence = _canonical_queue_ids(
@@ -61,6 +66,9 @@ class FailureRepairPolicy:
         fallback = _canonical_queue_ids(
             self.offline_fallback_queue_ids, "Offline-fallback queue IDs"
         )
+        inline = _canonical_queue_ids(
+            self.inline_pause_queue_ids, "Inline-pause queue IDs"
+        )
         overlap = (
             (set(sentence) & set(edge))
             | (set(sentence) & set(seed))
@@ -68,6 +76,10 @@ class FailureRepairPolicy:
             | (set(sentence) & set(fallback))
             | (set(edge) & set(fallback))
             | (set(seed) & set(fallback))
+            | (set(sentence) & set(inline))
+            | (set(edge) & set(inline))
+            | (set(seed) & set(inline))
+            | (set(fallback) & set(inline))
         )
         if overlap:
             raise FailureRepairPolicyError(
@@ -86,10 +98,27 @@ class FailureRepairPolicy:
             raise FailureRepairPolicyError(
                 "A custom sentence pause requires a sentence-repair queue ID"
             )
+        if (
+            not isinstance(self.inline_pause_ms, int)
+            or isinstance(self.inline_pause_ms, bool)
+            or not 50 <= self.inline_pause_ms <= 1000
+        ):
+            raise FailureRepairPolicyError(
+                "Inline pause must be an integer from 50 to 1000 ms"
+            )
+        if not inline and self.inline_pause_ms != DEFAULT_INLINE_PAUSE_MS:
+            raise FailureRepairPolicyError(
+                "A custom inline pause requires an inline-pause queue ID"
+            )
+        if len(inline) > 1:
+            raise FailureRepairPolicyError(
+                "Inline pause comparison requires exactly one queue ID"
+            )
         object.__setattr__(self, "sentence_segment_queue_ids", sentence)
         object.__setattr__(self, "edge_silence_queue_ids", edge)
         object.__setattr__(self, "bounded_seed_retry_queue_ids", seed)
         object.__setattr__(self, "offline_fallback_queue_ids", fallback)
+        object.__setattr__(self, "inline_pause_queue_ids", inline)
 
     @property
     def queue_ids(self):
@@ -99,6 +128,7 @@ class FailureRepairPolicy:
                 + self.edge_silence_queue_ids
                 + self.bounded_seed_retry_queue_ids
                 + self.offline_fallback_queue_ids
+                + self.inline_pause_queue_ids
             )
         )
 
@@ -115,6 +145,8 @@ class FailureRepairPolicy:
             return BOUNDED_SEED_RETRY
         if queue_id in self.offline_fallback_queue_ids:
             return OFFLINE_FALLBACK_BACKEND
+        if queue_id in self.inline_pause_queue_ids:
+            return INLINE_PAUSE_MARKER
         return None
 
     def to_document(self):
@@ -130,6 +162,14 @@ class FailureRepairPolicy:
                 self.bounded_seed_retry_queue_ids
             )
         if self.offline_fallback_queue_ids:
+            document["schema_version"] = OFFLINE_FALLBACK_POLICY_VERSION
+            document["bounded_seed_retry_queue_ids"] = list(
+                self.bounded_seed_retry_queue_ids
+            )
+            document["offline_fallback_queue_ids"] = list(
+                self.offline_fallback_queue_ids
+            )
+        if self.inline_pause_queue_ids:
             document["schema_version"] = FAILURE_REPAIR_POLICY_VERSION
             document["bounded_seed_retry_queue_ids"] = list(
                 self.bounded_seed_retry_queue_ids
@@ -137,6 +177,8 @@ class FailureRepairPolicy:
             document["offline_fallback_queue_ids"] = list(
                 self.offline_fallback_queue_ids
             )
+            document["inline_pause_queue_ids"] = list(self.inline_pause_queue_ids)
+            document["inline_pause_ms"] = self.inline_pause_ms
         return document
 
     @classmethod
@@ -153,7 +195,11 @@ class FailureRepairPolicy:
             "segment_pause_ms",
         }
         bounded_fields = legacy_fields | {"bounded_seed_retry_queue_ids"}
-        current_fields = bounded_fields | {"offline_fallback_queue_ids"}
+        fallback_fields = bounded_fields | {"offline_fallback_queue_ids"}
+        current_fields = fallback_fields | {
+            "inline_pause_queue_ids",
+            "inline_pause_ms",
+        }
         if (
             (
                 version == LEGACY_FAILURE_REPAIR_POLICY_VERSION
@@ -164,6 +210,10 @@ class FailureRepairPolicy:
                 and set(document) != bounded_fields
             )
             or (
+                version == OFFLINE_FALLBACK_POLICY_VERSION
+                and set(document) != fallback_fields
+            )
+            or (
                 version == FAILURE_REPAIR_POLICY_VERSION
                 and set(document) != current_fields
             )
@@ -172,6 +222,7 @@ class FailureRepairPolicy:
         if version not in {
             LEGACY_FAILURE_REPAIR_POLICY_VERSION,
             BOUNDED_SEED_POLICY_VERSION,
+            OFFLINE_FALLBACK_POLICY_VERSION,
             FAILURE_REPAIR_POLICY_VERSION,
         }:
             raise FailureRepairPolicyError("Unsupported failure-repair policy version")
@@ -187,6 +238,8 @@ class FailureRepairPolicy:
             document.get("segment_pause_ms"),
             tuple(document.get("bounded_seed_retry_queue_ids") or ()),
             tuple(document.get("offline_fallback_queue_ids") or ()),
+            tuple(document.get("inline_pause_queue_ids") or ()),
+            document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
         )
 
 
@@ -229,6 +282,25 @@ def safe_sentence_segments(text, *, minimum_words=DEFAULT_MIN_SEGMENT_WORDS):
     if any(len(WORD_PATTERN.findall(value)) < minimum_words for value in segments):
         return (original,)
     return segments
+
+
+def inline_sentence_pause_prompt(text, *, pause_ms=DEFAULT_INLINE_PAUSE_MS):
+    """Insert canonical MOSS pause markers only at exact sentence boundaries."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Repair text must be non-empty text")
+    if (
+        not isinstance(pause_ms, int)
+        or isinstance(pause_ms, bool)
+        or not 50 <= pause_ms <= 1000
+    ):
+        raise ValueError("Inline pause must be an integer from 50 to 1000 ms")
+    original = text.strip()
+    boundaries = tuple(SENTENCE_BOUNDARY_PATTERN.finditer(original))
+    if not boundaries:
+        raise ValueError("Inline pause repair requires a sentence boundary")
+    seconds = f"{pause_ms / 1000:.3f}".rstrip("0").rstrip(".")
+    marker = f" [pause {seconds}s] "
+    return SENTENCE_BOUNDARY_PATTERN.sub(marker, original), len(boundaries)
 
 
 def trim_excess_edge_silence(

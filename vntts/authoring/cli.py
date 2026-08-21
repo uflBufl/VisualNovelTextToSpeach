@@ -238,6 +238,8 @@ def _generation_failure_repair_policy(arguments):
             arguments.segment_pause_ms,
             tuple(arguments.bounded_seed_failed or ()),
             tuple(arguments.offline_fallback_failed or ()),
+            tuple(arguments.inline_pause_failed or ()),
+            arguments.inline_pause_ms,
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
@@ -271,10 +273,24 @@ def _add_failure_repair_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--inline-pause-failed",
+        action="append",
+        help=(
+            "Compare one exact current internal-silence failure with a derived "
+            "MOSS inline pause prompt"
+        ),
+    )
+    parser.add_argument(
         "--segment-pause-ms",
         type=int,
         default=180,
         help="Bounded silence inserted only between authorized sentence segments",
+    )
+    parser.add_argument(
+        "--inline-pause-ms",
+        type=int,
+        default=180,
+        help="MOSS inline pause duration for exact authorized comparison items",
     )
 
 

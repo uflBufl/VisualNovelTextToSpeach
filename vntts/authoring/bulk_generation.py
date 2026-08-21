@@ -48,11 +48,13 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
+    INLINE_PAUSE_MARKER,
     MAX_BOUNDED_TOTAL_ATTEMPTS,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
+    inline_sentence_pause_prompt,
     render_sentence_segments,
     safe_sentence_segments,
     trim_excess_edge_silence,
@@ -82,6 +84,8 @@ MAX_LEADING_SILENCE_SECONDS = 0.8
 MAX_TRAILING_SILENCE_SECONDS = 0.8
 MAX_INTERNAL_SILENCE_SECONDS = 1.2
 MAX_SILENCE_RATIO = 0.5
+NOTABLE_SILENCE_SPAN_SECONDS = 0.5
+PAUSE_DIAGNOSIS_VERSION = 1
 LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION = 1
 SPEECH_QUALITY_ANALYSIS_VERSION = 2
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
@@ -129,9 +133,10 @@ class IncompleteSynthesisError(BulkGenerationError):
 class SpeechSilenceValidationError(BulkGenerationError):
     """Generated speech contains unsafe silence spans."""
 
-    def __init__(self, quality, failures):
+    def __init__(self, quality, failures, diagnosis=None):
         self.quality = quality
         self.failures = tuple(failures)
+        self.diagnosis = diagnosis
         super().__init__(
             "Generated WAV failed speech-silence validation: "
             + ", ".join(self.failures)
@@ -154,6 +159,25 @@ class SpeechQuality:
     trailing_silence_seconds: float
     longest_internal_silence_seconds: float
     analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION
+
+
+@dataclass(frozen=True)
+class SpeechSilenceSpan:
+    kind: str
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class SpeechPauseDiagnosis:
+    schema_version: int
+    analysis_version: int
+    classification: str
+    threshold_seconds: float
+    sentence_boundary_count: int
+    repairable_by_safe_segmentation: bool
+    spans: tuple[SpeechSilenceSpan, ...]
 
 
 @dataclass(frozen=True)
@@ -398,12 +422,13 @@ def measure_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_V
         raise BulkGenerationError(
             f"Unable to analyze generated speech: {error}"
         ) from error
-    return _measure_generated_speech_samples(
+    quality, _spans = _analyze_generated_speech_samples(
         samples,
         sample_rate=info.sample_rate,
         duration_seconds=info.duration_seconds,
         analysis_version=analysis_version,
     )
+    return quality
 
 
 def measure_generated_speech_bytes(
@@ -429,15 +454,28 @@ def measure_generated_speech_bytes(
         raise BulkGenerationError(
             "Unable to analyze generated speech: invalid WAV data"
         )
-    return _measure_generated_speech_samples(
+    quality, _spans = _analyze_generated_speech_samples(
         samples,
         sample_rate=sample_rate,
         duration_seconds=sample_count / sample_rate,
         analysis_version=analysis_version,
     )
+    return quality
 
 
 def _measure_generated_speech_samples(
+    samples, *, sample_rate, duration_seconds, analysis_version
+):
+    quality, _spans = _analyze_generated_speech_samples(
+        samples,
+        sample_rate=sample_rate,
+        duration_seconds=duration_seconds,
+        analysis_version=analysis_version,
+    )
+    return quality
+
+
+def _analyze_generated_speech_samples(
     samples, *, sample_rate, duration_seconds, analysis_version
 ):
     if analysis_version not in {
@@ -492,12 +530,81 @@ def _measure_generated_speech_samples(
             longest_internal_silence_seconds=round(longest_internal * frame_seconds, 3),
             analysis_version=analysis_version,
         )
-    return quality
+    frame_seconds = frame_samples / sample_rate
+    spans = []
+    start = None
+    for index, is_silent in enumerate(silent):
+        if is_silent and start is None:
+            start = index
+        if start is None or (is_silent and index + 1 < len(silent)):
+            continue
+        end = index if is_silent else index - 1
+        start_seconds = start * frame_seconds
+        end_seconds = min((end + 1) * frame_seconds, duration_seconds)
+        span_duration = end_seconds - start_seconds
+        if span_duration >= NOTABLE_SILENCE_SPAN_SECONDS:
+            if not len(active_indices):
+                kind = "all_silent"
+            elif end < int(active_indices[0]):
+                kind = "leading"
+            elif start > int(active_indices[-1]):
+                kind = "trailing"
+            else:
+                kind = "internal"
+            spans.append(
+                SpeechSilenceSpan(
+                    kind=kind,
+                    start_seconds=round(start_seconds, 3),
+                    end_seconds=round(end_seconds, 3),
+                    duration_seconds=round(span_duration, 3),
+                )
+            )
+        start = None
+    return quality, tuple(spans)
 
 
-def inspect_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION):
+def _speech_pause_diagnosis(text, quality, spans):
+    features = _text_failure_features(text)
+    sentence_boundary_count = features["sentence_boundary_count"]
+    internal_exceeded = (
+        quality.longest_internal_silence_seconds > MAX_INTERNAL_SILENCE_SECONDS
+    )
+    classification = (
+        "sentence_boundary_pause_candidate"
+        if internal_exceeded and sentence_boundary_count >= 2
+        else "speech_silence"
+    )
+    try:
+        repairable = len(safe_sentence_segments(text)) >= 2
+    except ValueError:
+        repairable = False
+    return SpeechPauseDiagnosis(
+        schema_version=PAUSE_DIAGNOSIS_VERSION,
+        analysis_version=quality.analysis_version,
+        classification=classification,
+        threshold_seconds=NOTABLE_SILENCE_SPAN_SECONDS,
+        sentence_boundary_count=sentence_boundary_count,
+        repairable_by_safe_segmentation=repairable,
+        spans=tuple(spans),
+    )
+
+
+def inspect_generated_speech(
+    path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION, text=""
+):
     """Reject long silence spans that pass basic peak/duration validation."""
-    quality = measure_generated_speech(path, analysis_version=analysis_version)
+    try:
+        samples, info = read_pcm16_mono_wav(path)
+    except (OSError, Pcm16MonoWavError) as error:
+        raise BulkGenerationError(
+            f"Unable to analyze generated speech: {error}"
+        ) from error
+    quality, spans = _analyze_generated_speech_samples(
+        samples,
+        sample_rate=info.sample_rate,
+        duration_seconds=info.duration_seconds,
+        analysis_version=analysis_version,
+    )
     failures = []
     if quality.leading_silence_seconds > MAX_LEADING_SILENCE_SECONDS:
         failures.append(f"{quality.leading_silence_seconds:.2f}s leading silence")
@@ -510,7 +617,11 @@ def inspect_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_V
     if quality.silence_ratio > MAX_SILENCE_RATIO:
         failures.append(f"{quality.silence_ratio:.0%} silent frames")
     if failures:
-        raise SpeechSilenceValidationError(quality, failures)
+        raise SpeechSilenceValidationError(
+            quality,
+            failures,
+            _speech_pause_diagnosis(text, quality, spans),
+        )
     return quality
 
 
@@ -564,7 +675,7 @@ def _failure_kind(error, completion=None):
     return "backend_error"
 
 
-def _failure_record(error, *, text, completion=None):
+def _failure_record(error, *, text, completion=None, attempt_binding=None):
     record = {
         "schema_version": 1,
         "kind": _failure_kind(error, completion),
@@ -603,6 +714,11 @@ def _failure_record(error, *, text, completion=None):
     if isinstance(error, SpeechSilenceValidationError):
         record["speech_quality"] = asdict(error.quality)
         record["silence_failures"] = list(error.failures)
+        if error.diagnosis is not None:
+            record["pause_diagnosis"] = asdict(error.diagnosis)
+            record["pause_diagnosis"]["attempt_binding"] = copy.deepcopy(
+                attempt_binding
+            )
     return record
 
 
@@ -924,6 +1040,11 @@ def generation_failure_repair_plan(state_path, queue_path):
             if _sentence_repair_matches_failure(failure, record["text"]):
                 action = "sentence_boundary_segmentation"
                 reason = "internal silence between multiple complete sentences"
+            elif _inline_pause_matches_failure(failure, record["text"]):
+                action = "inline_pause_marker_comparison"
+                reason = (
+                    "sentence-boundary silence cannot use safe independent segments"
+                )
             elif edge_only:
                 action = "edge_silence_trim"
                 reason = "only measured boundary silence exceeds the speech gate"
@@ -1066,6 +1187,11 @@ def _validate_failure_repair_selection(
                 raise BulkGenerationError(
                     f"Offline fallback lacks a different bound source backend for {queue_id!r}"
                 )
+        elif strategy == INLINE_PAUSE_MARKER:
+            if not _inline_pause_matches_failure(failure, item.text):
+                raise BulkGenerationError(
+                    f"Inline pause repair no longer matches failure {queue_id!r}"
+                )
 
 
 def _sentence_repair_matches_failure(failure, text):
@@ -1077,6 +1203,39 @@ def _sentence_repair_matches_failure(failure, text):
         return False
     quality = failure.get("speech_quality")
     if not isinstance(quality, dict):
+        return False
+    values = {
+        field: quality.get(field)
+        for field in (
+            "leading_silence_seconds",
+            "trailing_silence_seconds",
+            "longest_internal_silence_seconds",
+        )
+    }
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not np.isfinite(value)
+        or value < 0
+        for value in values.values()
+    ):
+        return False
+    return bool(
+        values["longest_internal_silence_seconds"] > MAX_INTERNAL_SILENCE_SECONDS
+        and values["leading_silence_seconds"] <= MAX_LEADING_SILENCE_SECONDS
+        and values["trailing_silence_seconds"] <= MAX_TRAILING_SILENCE_SECONDS
+    )
+
+
+def _inline_pause_matches_failure(failure, text):
+    if failure.get("kind") != "speech_silence":
+        return False
+    try:
+        _prompt, marker_count = inline_sentence_pause_prompt(text)
+    except ValueError:
+        return False
+    quality = failure.get("speech_quality")
+    if not isinstance(quality, dict) or marker_count < 1:
         return False
     values = {
         field: quality.get(field)
@@ -1116,6 +1275,20 @@ def _failure_repair_document(policy, queue_id, text, *, existing=None):
                     for value in segments
                 ],
                 "pause_ms": policy.segment_pause_ms,
+            }
+        )
+    elif strategy == INLINE_PAUSE_MARKER:
+        prompt, marker_count = inline_sentence_pause_prompt(
+            text, pause_ms=policy.inline_pause_ms
+        )
+        document.update(
+            {
+                "source_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "derived_prompt_sha256": hashlib.sha256(
+                    prompt.encode("utf-8")
+                ).hexdigest(),
+                "pause_ms": policy.inline_pause_ms,
+                "marker_count": marker_count,
             }
         )
     elif strategy == OFFLINE_FALLBACK_BACKEND:
@@ -1209,6 +1382,13 @@ def run_bulk_generation(
     if repair_policy.offline_fallback_queue_ids and retries != 0:
         raise BulkGenerationError(
             "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
+        )
+    if repair_policy.inline_pause_queue_ids and (
+        retries != 0 or provider != "moss-tts"
+    ):
+        raise BulkGenerationError(
+            "Inline pause comparison requires moss-tts and exactly one attempt; "
+            "set retries to 0"
         )
     if backend_name != provider:
         raise BulkGenerationError(
@@ -1460,6 +1640,23 @@ def run_bulk_generation(
                 raise BulkGenerationError(
                     f"Text transform returned no speech for queue item {queue_id!r}"
                 )
+            if repair_strategy == INLINE_PAUSE_MARKER:
+                if synthesis_text != item.text:
+                    raise BulkGenerationError(
+                        "Inline pause comparison requires unchanged source text before "
+                        f"marker insertion for {queue_id!r}"
+                    )
+                synthesis_text, marker_count = inline_sentence_pause_prompt(
+                    synthesis_text, pause_ms=repair_policy.inline_pause_ms
+                )
+                if (
+                    repair_document.get("marker_count") != marker_count
+                    or repair_document.get("derived_prompt_sha256")
+                    != hashlib.sha256(synthesis_text.encode("utf-8")).hexdigest()
+                ):
+                    raise BulkGenerationError(
+                        f"Inline pause provenance changed for {queue_id!r}"
+                    )
             synthesis_text_sha256 = hashlib.sha256(
                 synthesis_text.encode("utf-8")
             ).hexdigest()
@@ -1584,7 +1781,9 @@ def run_bulk_generation(
                         }
                     write_pcm16_wav(partial, output_pcm, rendered.sample_rate)
                     quality = inspect_generated_wav(partial)
-                    speech_quality = inspect_generated_speech(partial)
+                    speech_quality = inspect_generated_speech(
+                        partial, text=synthesis_text
+                    )
                     file_sha256 = sha256_file(partial)
                     _write_active_phase(state_path, state, "publishing")
                     if workspace_output_identity is not None:
@@ -1637,7 +1836,11 @@ def run_bulk_generation(
                         state["items"][queue_id]["failure_repair"] = attempt_repair
                     if (
                         repair_strategy
-                        in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
+                        in {
+                            SENTENCE_BOUNDARY_SEGMENTATION,
+                            INLINE_PAUSE_MARKER,
+                            BOUNDED_SEED_RETRY,
+                        }
                         and isinstance(existing.get("carry_forward"), dict)
                         and existing["carry_forward"].get("mode") == "failed-outcome"
                     ):
@@ -1685,6 +1888,13 @@ def run_bulk_generation(
                                 if is_cancelled
                                 else completion
                             ),
+                            attempt_binding={
+                                "provider": provider,
+                                "model": model,
+                                "generation_profile": generation_profile,
+                                "seed": attempt_seed,
+                                "synthesis_provenance_sha256": provenance_sha256,
+                            },
                         ),
                         "provider": provider,
                         "model": model,
@@ -1716,7 +1926,11 @@ def run_bulk_generation(
                         state["items"][queue_id]["failure_repair"] = attempt_repair
                     if (
                         repair_strategy
-                        in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
+                        in {
+                            SENTENCE_BOUNDARY_SEGMENTATION,
+                            INLINE_PAUSE_MARKER,
+                            BOUNDED_SEED_RETRY,
+                        }
                         and isinstance(existing.get("carry_forward"), dict)
                         and existing["carry_forward"].get("mode") == "failed-outcome"
                     ):
@@ -1885,6 +2099,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "speech_quality",
             "carry_forward",
             "failure_repair",
+            "synthesis_text_sha256",
             "attempts",
             "attempts_by_provider",
             "cohort_review",
@@ -2587,7 +2802,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         )
         if status == "failed":
             if "failure" in result:
-                _validate_failure_record(result["failure"], queue_id)
+                _validate_failure_record(result["failure"], queue_id, result=result)
             _validate_synthesis_identity(
                 result,
                 queue_id,
@@ -2602,7 +2817,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             continue
         if status == "live_fallback":
             if "failure" in result:
-                _validate_failure_record(result["failure"], queue_id)
+                _validate_failure_record(result["failure"], queue_id, result=result)
             _validate_synthesis_identity(
                 result,
                 queue_id,
@@ -2634,7 +2849,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         _validate_active_attempt(active, queue_by_id)
 
 
-def _validate_failure_record(failure, queue_id):
+def _validate_failure_record(failure, queue_id, *, result=None):
     if not isinstance(failure, dict) or failure.get("schema_version") != 1:
         raise BulkGenerationError(f"State item {queue_id!r} typed failure is invalid")
     if failure.get("kind") not in FAILURE_KINDS:
@@ -2663,6 +2878,101 @@ def _validate_failure_record(failure, queue_id):
         raise BulkGenerationError(
             f"State item {queue_id!r} failure completion is invalid"
         )
+    diagnosis = failure.get("pause_diagnosis")
+    if diagnosis is not None:
+        _validate_pause_diagnosis(diagnosis, features, queue_id, result=result)
+
+
+def _validate_pause_diagnosis(diagnosis, features, queue_id, *, result):
+    expected_fields = {
+        "schema_version",
+        "analysis_version",
+        "classification",
+        "threshold_seconds",
+        "sentence_boundary_count",
+        "repairable_by_safe_segmentation",
+        "spans",
+        "attempt_binding",
+    }
+    if (
+        not isinstance(diagnosis, dict)
+        or set(diagnosis) != expected_fields
+        or diagnosis.get("schema_version") != PAUSE_DIAGNOSIS_VERSION
+        or diagnosis.get("analysis_version")
+        not in {
+            LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+            SPEECH_QUALITY_ANALYSIS_VERSION,
+        }
+        or diagnosis.get("classification")
+        not in {"sentence_boundary_pause_candidate", "speech_silence"}
+        or diagnosis.get("threshold_seconds") != NOTABLE_SILENCE_SPAN_SECONDS
+        or diagnosis.get("sentence_boundary_count")
+        != features["sentence_boundary_count"]
+        or not isinstance(diagnosis.get("repairable_by_safe_segmentation"), bool)
+        or not isinstance(diagnosis.get("spans"), list)
+    ):
+        raise BulkGenerationError(f"State item {queue_id!r} pause diagnosis is invalid")
+    binding = diagnosis.get("attempt_binding")
+    binding_fields = {
+        "provider",
+        "model",
+        "generation_profile",
+        "seed",
+        "synthesis_provenance_sha256",
+    }
+    if not isinstance(binding, dict) or set(binding) != binding_fields:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} pause diagnosis binding is invalid"
+        )
+    for field in ("provider", "model", "generation_profile"):
+        _required_text(
+            binding.get(field), f"State item {queue_id!r} pause diagnosis {field}"
+        )
+    _integer(binding.get("seed"), f"State item {queue_id!r} pause diagnosis seed")
+    _required_sha256(
+        binding.get("synthesis_provenance_sha256"),
+        f"State item {queue_id!r} pause diagnosis synthesis provenance",
+    )
+    if result is None or any(
+        binding.get(field) != result.get(field) for field in binding_fields
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} pause diagnosis binding changed"
+        )
+    previous_end = 0.0
+    for span in diagnosis["spans"]:
+        if (
+            not isinstance(span, dict)
+            or set(span) != {"kind", "start_seconds", "end_seconds", "duration_seconds"}
+            or span.get("kind") not in {"leading", "internal", "trailing", "all_silent"}
+        ):
+            raise BulkGenerationError(f"State item {queue_id!r} pause span is invalid")
+        values = [
+            span.get("start_seconds"),
+            span.get("end_seconds"),
+            span.get("duration_seconds"),
+        ]
+        if any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not np.isfinite(value)
+            or value < 0
+            for value in values
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} pause span timing is invalid"
+            )
+        start, end, duration = values
+        if (
+            start < previous_end
+            or end <= start
+            or duration < NOTABLE_SILENCE_SPAN_SECONDS
+            or abs((end - start) - duration) > 0.002
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} pause span timing is inconsistent"
+            )
+        previous_end = end
 
 
 def _validate_live_fallback_decision(result, queue_id, queue_item):
@@ -2997,6 +3307,45 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             raise BulkGenerationError(
                 f"State item {queue_id!r} sentence repair seeds conflict"
             )
+    elif strategy == INLINE_PAUSE_MARKER:
+        if set(repair) != {
+            "schema_version",
+            "strategy",
+            "source_text_sha256",
+            "derived_prompt_sha256",
+            "pause_ms",
+            "marker_count",
+        }:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} inline pause repair is malformed"
+            )
+        if repair.get("pause_ms") != policy.inline_pause_ms:
+            raise BulkGenerationError(f"State item {queue_id!r} inline pause conflicts")
+        _nonnegative_int(
+            repair.get("marker_count"),
+            f"State item {queue_id!r} inline pause marker count",
+        )
+        if repair.get("marker_count", 0) < 1:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} inline pause marker count is invalid"
+            )
+        if queue_item is not None:
+            prompt, marker_count = inline_sentence_pause_prompt(
+                queue_item.text, pause_ms=policy.inline_pause_ms
+            )
+            expected_source = hashlib.sha256(
+                queue_item.text.encode("utf-8")
+            ).hexdigest()
+            expected_prompt = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            if (
+                repair.get("source_text_sha256") != expected_source
+                or repair.get("derived_prompt_sha256") != expected_prompt
+                or repair.get("marker_count") != marker_count
+                or result.get("synthesis_text_sha256") != expected_prompt
+            ):
+                raise BulkGenerationError(
+                    f"State item {queue_id!r} inline pause prompt changed"
+                )
     elif strategy == EDGE_SILENCE_TRIM:
         allowed = {
             "schema_version",
@@ -3197,6 +3546,7 @@ def _validate_active_attempt(active, queue_by_id):
             "synthesis_fallback",
             "narrator_character",
             "failure_repair",
+            "synthesis_text_sha256",
             "attempts",
             "attempts_by_provider",
             "seed_applied",

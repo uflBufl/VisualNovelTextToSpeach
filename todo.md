@@ -90,6 +90,9 @@ Follow the evidence-backed order and invariants in
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
+      Treat the evaluated composite only as a speaker-consistency candidate,
+      never as a pause repair. Compare it with the 2.38-second reference only
+      after both use the selected corrected-pause strategy documented below.
       Review the published bundle
       `current-character-story-dobharchu-natural-expansion-v1.json`: it contains
       exactly 24 pending WAVs in four cohorts, comprising 17 direct natural
@@ -109,6 +112,58 @@ Follow the evidence-backed order and invariants in
       still required for `reverse1999:314608:29:7be68e27f6d36933` and
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist.
+
+### P0 - Make long-pause repair automatic and provenance-safe
+
+Follow the measured Dobharchú attribution in
+[`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
+The composite prompt is not a pacing repair: exact composite/single-reference
+controls both produced roughly three-second silence at sentence boundaries,
+while one-sentence controls remained below 0.25 seconds.
+
+- [ ] Run the implemented exact `--inline-pause-failed` strategy on the measured
+      Dobharchú short and long controls and compare it with the existing safe
+      sentence segmentation under identical reference/profile/seed inputs.
+      Preserve the original story text and text hash. Reject the marker strategy
+      on any word, prosody, speaker-identity or checksum-bound silence regression;
+      do not authorize a cohort rollout from synthetic tests alone.
+- [ ] Add a bounded quality-first path for lines that cannot be segmented safely,
+      including two-word clauses such as `What happened? You're hurt.` Try at
+      most three deterministic seeds and accept only a `complete` render that
+      also passes the unchanged silence gate. If all fail, publish no MOSS WAV
+      and route the exact item to its configured typed offline fallback; when no
+      identity-compatible fallback exists, leave it explicit manual-review work.
+      Do not globally rewrite punctuation, force token-level duration or raise
+      the 1.2-second internal-silence limit. Do not spend the acceptance budget
+      on a broad temperature/top-k/top-p/repetition grid: external reports show
+      the failure is prompt-sensitive and those sweeps are not a reliable cure.
+- [ ] Compare segmentation against a conservative silence-compression candidate
+      on a small checksum-bound corpus before deciding whether waveform repair
+      is worth supporting. Compression may remove only the center of a single
+      punctuation-aligned silent span while retaining measured boundary context;
+      it must fail closed for ambiguous spans, low-level speech, breaths, music
+      or multiple unmatched boundaries. Keep it out of production unless blind
+      review shows equal content/voice and better cadence than re-rendered
+      segments. Never cut generation at the first long silence and publish the
+      prefix: valid words may follow it. A future streaming cutoff may only fail
+      the current already-segmented unit for bounded retry/fallback.
+- [ ] Apply the selected repair policy to pending/failed Dobharchú items in a
+      new config-addressed workspace. Review every transformed WAV and a
+      deterministic clean control sample. Acceptance requires no internal pause
+      above 1.2 seconds, no truncation/repetition/word change, natural perceived
+      boundaries, unchanged speaker identity, exact state/WAV/control hashes,
+      approved-only manifest derivation, and no mutation of source workspaces.
+- [ ] Reuse the same classifier and safe segmentation in live mode only after
+      the offline gate passes. Pre-segment eligible multi-sentence text before
+      playback so the UI never waits through a known multi-second silent run;
+      preserve cancellation and stale-generation guards between segments. Use a
+      previously approved fallback for unsafe short clauses rather than doing
+      audible multi-seed retries during gameplay.
+- [ ] Expose the repair in the workbench as `Long sentence-boundary pause`, show
+      measured raw/repaired pause durations and offer immediate replay of both
+      versions without changing selection. Approval must bind the repaired WAV
+      and transform ledger; rejection must retain the raw failure evidence.
+
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review

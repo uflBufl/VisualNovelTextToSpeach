@@ -157,6 +157,99 @@ synthesis provenance. The reusable contract is documented in
 [`portrait-expression-aliases.md`](portrait-expression-aliases.md). This
 decision does not include unbound portrait `534705`.
 
+## Composite-reference pause attribution
+
+An isolated probe concatenated the accepted 2.38-second `534704` reference and
+1.73-second `534703` reference after trimming only outer silence, with a 150 ms
+neutral gap. The resulting 4.163958-second PCM16 mono prompt has SHA-256
+`158c32792ebed2f75b325ede3785758e63e094d6db1b6554fd7df13161776d39`.
+It was encoded once and rendered with the production `stable` profile, cache
+policy `bypass` and no manifest, state or review mutation.
+
+Checksum-bound controls rendered the same text, selected seed and profile using
+only the accepted 2.38-second reference. Silence was measured in 10 ms windows
+below -40 dBFS:
+
+| Text shape | Composite pause | Single-reference pause |
+| --- | ---: | ---: |
+| `What happened? You're hurt.` | 3.07 s | 3.52 s |
+| one sentence, nine words | 0.15 s | 0.25 s maximum |
+| two complete longer sentences | 2.78 s | 3.01 s |
+
+The prompt itself has only a 0.24-second silent interval at its join. Both
+conditioning variants therefore reproduce the multi-second pause while the
+single-sentence control does not. The composite join is not the cause and does
+not solve the defect. MOSS emits a long run of silent audio tokens at these
+sentence boundaries. Token-level duration control is disabled, and the
+text-derived safety limit only bounds missed EOS; neither forces this pause.
+
+Use the existing bounded sentence-boundary repair when every resulting segment
+meets the safe minimum: render segments independently and join them with the
+declared 180 ms pause before applying the unchanged speech-quality gate. The
+long probe is eligible. The short probe is intentionally not eligible because
+both clauses contain only two words and `safe_sentence_segments` preserves it
+as one unit; use a bounded seed/reference comparison and then the typed offline
+fallback backend if no quality-valid MOSS render exists. Do not force token
+duration, rewrite punctuation globally or weaken the silence gate. The
+composite may still be judged for speaker consistency, but it is not a pacing
+repair.
+
+### External implementation evidence
+
+The upstream MOSS-TTS v1.5 model card documents explicit inline pause markers
+such as `[pause 0.2s]` and token-level duration control. Its reference app keeps
+duration control disabled by default and exposes decoding parameters, but does
+not provide an automatic unwanted-silence repair. This makes one bounded A/B
+useful: compare independent safe sentence rendering with a derived synthesis
+prompt that replaces only the matching sentence boundary with
+`[pause 0.18s]`. The original story text and text hash must remain unchanged,
+and the marker candidate must pass exact content, identity, prosody and silence
+review before it can be used.
+
+The official MOSS-TTS-Nano runtime and the community MOSSTTSKit long-text path
+both split text at sentence-ending punctuation first, then at clause boundaries
+and finally by token budget. They concatenate independently rendered chunks
+with a short declared pause. Although those implementations target Nano rather
+than this repository's Local Transformer 4B backend, they independently support
+sentence/clause chunking as the first repair to test rather than a global
+waveform or punctuation rewrite.
+
+A Sokuji issue for MOSS-TTS-Nano reports the same observable failure class:
+multi-second silence is present in generated PCM, is stochastic and is affected
+by the speaker prompt. Its temperature and repetition-penalty sweeps were not a
+reliable cure. That report calls the behavior a silence-token attractor and
+suggests prompt selection, bounded silence compression and runaway-silence
+handling. It is not direct proof for Local Transformer 4B, so local
+checksum-bound controls remain authoritative. In particular, this project must
+not stop and publish at the first long silence: valid speech can follow it. Any
+streaming cutoff may only fail the current already-segmented unit so that it can
+be retried or routed to a typed fallback without publishing truncated speech.
+
+Sources:
+
+- [MOSS-TTS v1.5 model card](https://github.com/OpenMOSS/MOSS-TTS/blob/main/docs/moss_tts_model_card.md)
+- [MOSS-TTS v1.5 reference app](https://github.com/OpenMOSS/MOSS-TTS/blob/main/clis/moss_tts_app.py)
+- [official MOSS-TTS-Nano sentence/clause splitting](https://github.com/OpenMOSS/MOSS-TTS-Nano/blob/main/onnx_tts_runtime.py)
+- [MOSSTTSKit long-text support](https://github.com/kyinwind/MOSSTTSKit#long-text-support)
+- [Sokuji MOSS-TTS-Nano long-silence investigation](https://github.com/kizuna-ai-lab/sokuji/issues/277)
+
+The authoring implementation now records a versioned pause diagnosis for every
+current speech-silence failure. It binds every notable span of at least 0.5
+seconds as leading, internal, trailing or all-silent, together with the text
+shape, safe-segmentation eligibility, provider, model, profile, seed and exact
+synthesis-control digest. Generic failures are labelled only as a
+`sentence_boundary_pause_candidate`, because PCM silence plus punctuation does
+not prove phoneme alignment. The existing sentence-boundary strategy remains
+the primary deterministic repair for substantial complete clauses.
+
+An exact comparison strategy is also available through
+`--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one
+current checksum-bound internal-silence failure, `moss-tts`, an exact queue-ID
+selection and `--retries 0`. The state preserves the original queue text hash,
+the derived prompt hash, marker count and pause value. This capability is not
+an approval of the marker approach: the measured Dobharchú A/B and listening
+gate remain outstanding.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed

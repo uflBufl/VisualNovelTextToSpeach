@@ -1713,8 +1713,12 @@ def generation_command(
         command.extend(("--bounded-seed-failed", queue_id))
     for queue_id in repair_policy.offline_fallback_queue_ids:
         command.extend(("--offline-fallback-failed", queue_id))
+    for queue_id in repair_policy.inline_pause_queue_ids:
+        command.extend(("--inline-pause-failed", queue_id))
     if repair_policy.segment_pause_ms != 180:
         command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
+    if repair_policy.inline_pause_ms != 180:
+        command.extend(("--inline-pause-ms", str(repair_policy.inline_pause_ms)))
     if queue_ids is not None:
         for queue_id in queue_ids:
             command.extend(("--queue-id", _required_text(queue_id, "Queue ID")))

@@ -5,10 +5,12 @@ import numpy as np
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
+    INLINE_PAUSE_MARKER,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
+    inline_sentence_pause_prompt,
     render_sentence_segments,
     safe_sentence_segments,
     trim_excess_edge_silence,
@@ -28,23 +30,38 @@ from vntts.synthesis import (
 class AuthoringFailureRepairTest(unittest.TestCase):
     def test_policy_is_canonical_exact_and_round_trips(self):
         policy = FailureRepairPolicy(
-            ("line:b", "line:a"), ("line:c",), 200, ("line:d",), ("line:e",)
+            ("line:b", "line:a"),
+            ("line:c",),
+            200,
+            ("line:d",),
+            ("line:e",),
+            ("line:f",),
+            220,
         )
 
         self.assertEqual(
-            policy.queue_ids, ("line:a", "line:b", "line:c", "line:d", "line:e")
+            policy.queue_ids,
+            ("line:a", "line:b", "line:c", "line:d", "line:e", "line:f"),
         )
         self.assertEqual(policy.strategy_for("line:a"), SENTENCE_BOUNDARY_SEGMENTATION)
         self.assertEqual(policy.strategy_for("line:c"), EDGE_SILENCE_TRIM)
         self.assertEqual(policy.strategy_for("line:d"), BOUNDED_SEED_RETRY)
         self.assertEqual(policy.strategy_for("line:e"), OFFLINE_FALLBACK_BACKEND)
+        self.assertEqual(policy.strategy_for("line:f"), INLINE_PAUSE_MARKER)
         self.assertEqual(
             FailureRepairPolicy.from_document(policy.to_document()), policy
         )
         with self.assertRaisesRegex(FailureRepairPolicyError, "two"):
             FailureRepairPolicy(("line:a",), (), 180, ("line:a",))
+        with self.assertRaisesRegex(FailureRepairPolicyError, "two"):
+            FailureRepairPolicy(
+                inline_pause_queue_ids=("line:a",),
+                sentence_segment_queue_ids=("line:a",),
+            )
         with self.assertRaisesRegex(FailureRepairPolicyError, "requires"):
             FailureRepairPolicy(segment_pause_ms=200)
+        with self.assertRaisesRegex(FailureRepairPolicyError, "exactly one"):
+            FailureRepairPolicy(inline_pause_queue_ids=("line:a", "line:b"))
         malformed = policy.to_document()
         malformed["sentence_segment_queue_ids"] = "line:a"
         with self.assertRaisesRegex(FailureRepairPolicyError, "JSON lists"):
@@ -53,10 +70,24 @@ class AuthoringFailureRepairTest(unittest.TestCase):
         legacy["schema_version"] = 1
         legacy.pop("bounded_seed_retry_queue_ids")
         legacy.pop("offline_fallback_queue_ids")
+        legacy.pop("inline_pause_queue_ids")
+        legacy.pop("inline_pause_ms")
         self.assertEqual(
             FailureRepairPolicy.from_document(legacy).bounded_seed_retry_queue_ids,
             (),
         )
+
+    def test_inline_pause_prompt_is_exact_and_bounded(self):
+        prompt, count = inline_sentence_pause_prompt(
+            "What happened? You're hurt.", pause_ms=180
+        )
+
+        self.assertEqual(prompt, "What happened? [pause 0.18s] You're hurt.")
+        self.assertEqual(count, 1)
+        with self.assertRaisesRegex(ValueError, "sentence boundary"):
+            inline_sentence_pause_prompt("Only one complete sentence.")
+        with self.assertRaisesRegex(ValueError, "50 to 1000"):
+            inline_sentence_pause_prompt("First. Second.", pause_ms=10)
 
     def test_sentence_segments_use_distinct_seeds_and_bounded_pause(self):
         requests = []

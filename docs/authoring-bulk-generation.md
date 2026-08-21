@@ -130,7 +130,7 @@ hashes and the output directory identity; a changed reference or directory swap
 therefore fails instead of silently changing synthesis provenance. The
 role-bound narrator selection is part of the control inventory.
 
-Failure repairs add two exact-ID-only controls:
+Failure repairs add exact-ID-only controls:
 
 - `--sentence-segment-failed QUEUE_ID` renders only safe complete-sentence
   segments with successive seeds and a bounded pause before concatenation;
@@ -138,6 +138,11 @@ Failure repairs add two exact-ID-only controls:
   trailing silence before the normal quality gate.
 - `--bounded-seed-failed QUEUE_ID` permits only a current typed missed-EOS
   failure and never exceeds three cumulative attempts for that item.
+- `--inline-pause-failed QUEUE_ID` performs one MOSS-only comparison using a
+  derived, hash-bound inline pause prompt; it requires `--retries 0`, preserves
+  the original queue text hash and does not authorize a cohort rollout.
+- `--offline-fallback-failed QUEUE_ID` moves an exhausted, provenance-bound
+  failure to the configured typed offline fallback without relabeling history.
 
 The flags are workspace configuration, synthesis-control provenance and state
 provenance, not ad-hoc transforms. Their set must exactly match `--queue-id`,
