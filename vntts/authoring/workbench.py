@@ -2120,7 +2120,7 @@ def _carry_forward_review_outcomes(
             raise AuthoringWorkbenchError(
                 f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
             )
-        if strategy == BOUNDED_SEED_RETRY:
+        if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
             provider_attempts = result.get("attempts_by_provider", {}).get(
                 result.get("provider"), attempts
             )
@@ -2130,7 +2130,7 @@ def _carry_forward_review_outcomes(
                 or not 1 <= provider_attempts < 3
             ):
                 raise AuthoringWorkbenchError(
-                    f"Bounded-seed source attempts are exhausted for {queue_id!r}"
+                    f"Bounded repair source attempts are exhausted for {queue_id!r}"
                 )
         source_item_sha256 = _canonical_sha256(result)
         requested_character = synthesis_character_for_line(

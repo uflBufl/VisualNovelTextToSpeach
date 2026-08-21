@@ -865,6 +865,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         from vntts.authoring.bulk_generation import (
             load_generation_state,
+            publish_generated_manifest,
             run_bulk_generation,
         )
 
@@ -874,6 +875,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root, text=text)
             queue_path = source.directory / "queue.jsonl"
             source_output = source.directory / "generated-audio"
+            source_state_path = source_output / "generation-state.json"
+            initial = load_generation_state(source_state_path, queue_path)
+            initial_item = initial["items"].pop(fixture["queue_id"])
+            (source_output / initial_item["path"]).unlink()
+            source_state_path.write_text(
+                json.dumps(initial, sort_keys=True), encoding="utf-8"
+            )
+            publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
                 (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
@@ -895,7 +904,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 include_queue_ids=(fixture["queue_id"],),
                 regenerate_existing=True,
             )
-            source_state_path = source_output / "generation-state.json"
             source_state_before = source_state_path.read_bytes()
             source_item = load_generation_state(source_state_path, queue_path)["items"][
                 fixture["queue_id"]

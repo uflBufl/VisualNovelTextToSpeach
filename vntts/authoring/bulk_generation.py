@@ -1041,10 +1041,18 @@ def generation_failure_repair_plan(state_path, queue_path):
                 action = "sentence_boundary_segmentation"
                 reason = "internal silence between multiple complete sentences"
             elif _inline_pause_matches_failure(failure, record["text"]):
-                action = "inline_pause_marker_comparison"
-                reason = (
-                    "sentence-boundary silence cannot use safe independent segments"
+                provider_attempts = record["attempts_by_provider"].get(
+                    record["provider"], attempts
                 )
+                if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+                    action = "inline_pause_marker_comparison"
+                    reason = (
+                        "sentence-boundary silence cannot use safe independent "
+                        "segments and bounded attempts remain"
+                    )
+                else:
+                    action = "offline_fallback_backend"
+                    reason = "bounded inline-pause attempts are exhausted"
             elif edge_only:
                 action = "edge_silence_trim"
                 reason = "only measured boundary silence exceeds the speech gate"
@@ -1188,7 +1196,17 @@ def _validate_failure_repair_selection(
                     f"Offline fallback lacks a different bound source backend for {queue_id!r}"
                 )
         elif strategy == INLINE_PAUSE_MARKER:
-            if not _inline_pause_matches_failure(failure, item.text):
+            attempts = _nonnegative_int(
+                result.get("attempts", 0), f"State item {queue_id!r} attempts"
+            )
+            provider_attempts = _provider_attempts(
+                result, attempts, default_provider=provider
+            ).get(provider, 0)
+            if (
+                not _inline_pause_matches_failure(failure, item.text)
+                or result.get("provider") != provider
+                or provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+            ):
                 raise BulkGenerationError(
                     f"Inline pause repair no longer matches failure {queue_id!r}"
                 )
@@ -1684,7 +1702,7 @@ def run_bulk_generation(
             provider_attempts = attempts_by_provider.get(provider, 0)
             run_attempts = 0
             attempt_limit = retries + 1
-            if repair_strategy == BOUNDED_SEED_RETRY:
+            if repair_strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
                 attempt_limit = min(
                     attempt_limit,
                     MAX_BOUNDED_TOTAL_ATTEMPTS - provider_attempts,

@@ -319,6 +319,16 @@ and `e4675c23a510f99188fa17c6477ae8ad7bd9b562515267f40a57b30711decc38`.
 The first slightly unnatural marker result remains pending and the two failed
 marker attempts remain unpublished.
 
+Inline-marker retries now share the same hard three-attempt provider budget as
+bounded missed-EOS repair. Each invocation still renders exactly once with
+`retries=0`; cumulative provider attempts determine deterministic seeds 0, 1
+and 2. A technically valid render leaves the normal pending-review gate in
+place. A third typed failure leaves no WAV, makes subsequent marker execution
+fail before state mutation, and changes the deterministic failure plan to
+`offline_fallback_backend`. This prevents repeated prompt-sensitive sampling
+from becoming an unbounded search and preserves the unchanged speech-quality
+thresholds.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed

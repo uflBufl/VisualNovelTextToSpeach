@@ -1496,6 +1496,89 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             stored["failure_repair"]["derived_prompt_sha256"],
         )
 
+    def test_inline_pause_repair_stops_after_three_provider_attempts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(text="What happened? You're hurt.")
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+
+            def renderer():
+                value = SyntheticRenderer(
+                    pcm=failed_pcm, diagnostics_backend="moss-tts"
+                )
+                value.name = "moss-tts"
+                value.model_name = "moss-local"
+                return value
+
+            run_bulk_generation(
+                queue,
+                output,
+                renderer(),
+                provider="moss-tts",
+                model="moss-local",
+                retries=0,
+                seed=0,
+            )
+            policy = FailureRepairPolicy(
+                inline_pause_queue_ids=(item["queue_id"],), inline_pause_ms=180
+            )
+            first = renderer()
+            run_bulk_generation(
+                queue,
+                output,
+                first,
+                provider="moss-tts",
+                model="moss-local",
+                retries=0,
+                seed=0,
+                include_queue_ids=(item["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            second = renderer()
+            result = run_bulk_generation(
+                queue,
+                output,
+                second,
+                provider="moss-tts",
+                model="moss-local",
+                retries=0,
+                seed=0,
+                include_queue_ids=(item["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(result.state, queue)
+            before = result.state.read_bytes()
+            plan = generation_failure_repair_plan(result.state, queue)
+            with self.assertRaisesRegex(BulkGenerationError, "no longer matches"):
+                run_bulk_generation(
+                    queue,
+                    output,
+                    renderer(),
+                    provider="moss-tts",
+                    model="moss-local",
+                    retries=0,
+                    seed=0,
+                    include_queue_ids=(item["queue_id"],),
+                    failure_repair_policy=policy,
+                )
+            after = result.state.read_bytes()
+
+        stored = state["items"][item["queue_id"]]
+        self.assertEqual([request.seed for request in first.requests], [1])
+        self.assertEqual([request.seed for request in second.requests], [2])
+        self.assertEqual(stored["attempts"], 3)
+        self.assertEqual(stored["attempts_by_provider"], {"moss-tts": 3})
+        self.assertEqual(stored["status"], "failed")
+        self.assertEqual(stored["failure_repair"]["strategy"], "inline_pause_marker")
+        self.assertEqual(plan["records"][0]["action"], "offline_fallback_backend")
+        self.assertEqual(after, before)
+        self.assertEqual(list((output / "audio").rglob("*.wav")), [])
+
     def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
