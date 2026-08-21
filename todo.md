@@ -14,12 +14,14 @@ Follow the shared contract, per-surface findings and completion gates in
       workbench. Open the dedicated specialist reviewer for bundles and keep the
       workbench focused on generation/status plus exceptional item repair; do
       not broaden queue, state, WAV, lease or final-review authority.
-- [ ] Normalize dashboard, compact controls, Settings, onboarding, readiness,
-      diagnostics, support, profiles, voice preview, OCR and permissions after
-      the evidence-review UIs are stable. Require one clear primary action,
-      adjacent disabled reasons, inline validation, no forced log scrolling,
-      bounded refresh operations, consistent Save/Cancel/Close placement and
+- [ ] Normalize dashboard, compact controls, Settings, onboarding and readiness.
+      Require one clear primary action, section/step orientation, adjacent
+      disabled reasons, consistent path pickers, inline validation, and compact
       keyboard/screen-reader coverage at 100%, 150% and 200% DPI.
+- [ ] Apply the lighter consistency pass to profiles, voice preview, OCR,
+      permissions and correction/history follow-ups. Preserve exact authority;
+      add consistent Save/Cancel/Close placement, safe preview cancellation,
+      inline row validation and multi-display/DPI coverage where applicable.
 
 ### P0 - Complete the current Character Story in fail-closed order
 

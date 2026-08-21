@@ -1758,6 +1758,11 @@ class TrayApplication(QObject):
             "ZIP archives (*.zip)",
         )
         if not path:
+            if self.support_dialog is not None:
+                self.support_dialog.set_export_result(
+                    None,
+                    "Support report export cancelled.",
+                )
             return
         self.set_status("Creating support bundle...")
 
@@ -1777,6 +1782,8 @@ class TrayApplication(QObject):
         Thread(target=export, daemon=True).start()
 
     def support_export_finished(self, successful, message):
+        if self.support_dialog is not None:
+            self.support_dialog.set_export_result(successful, message)
         if successful:
             self.set_status(f"Support bundle saved to {message}")
         else:

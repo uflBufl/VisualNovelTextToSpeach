@@ -129,6 +129,31 @@ class DiagnosticsTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_refresh_timeout_restores_retry_and_ignores_stale_timer(self):
+        dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+        refresh_requested = Mock()
+        dialog.refresh_requested.connect(refresh_requested)
+
+        dialog.request_refresh()
+        first_generation = dialog.refresh_generation
+
+        self.assertFalse(dialog.refresh_button.isEnabled())
+        self.assertIn("Capturing", dialog.refresh_status.text())
+
+        dialog._refresh_timed_out(first_generation)
+
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        self.assertIn("timed out", dialog.refresh_status.text())
+        dialog.request_refresh()
+        dialog.set_warning("Selected window is unavailable")
+        dialog._refresh_timed_out(first_generation)
+
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        self.assertIn("Refresh failed", dialog.refresh_status.text())
+        self.assertEqual(refresh_requested.call_count, 2)
+        dialog.close()
+        dialog.deleteLater()
+
     def test_macos_permission_warnings_explain_both_permissions(self):
         warnings = macos_permission_warnings(
             platform="darwin",

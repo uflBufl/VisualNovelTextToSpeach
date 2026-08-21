@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -15,11 +15,13 @@ from PySide6.QtWidgets import (
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, refresh_timeout_ms=10_000):
         super().__init__(parent)
         self.setWindowTitle("Live diagnostics")
         self.resize(700, 540)
         self.refresh_in_flight = False
+        self.refresh_timeout_ms = refresh_timeout_ms
+        self.refresh_generation = 0
         self.concealed_for_capture = False
         self.source_pixmap = None
 
@@ -73,8 +75,13 @@ class DiagnosticsDialog(QDialog):
         self.warning.hide()
 
         self.refresh_button = QPushButton("Refresh now")
+        self.refresh_button.setAccessibleName("Refresh live diagnostics")
         self.refresh_button.clicked.connect(self.request_refresh)
+        self.refresh_status = QLabel("Refresh captures one current dialogue snapshot.")
+        self.refresh_status.setAccessibleName("Diagnostics refresh status")
+        self.refresh_status.setWordWrap(True)
         controls = QHBoxLayout()
+        controls.addWidget(self.refresh_status, 1)
         controls.addStretch()
         controls.addWidget(self.refresh_button)
 
@@ -96,8 +103,28 @@ class DiagnosticsDialog(QDialog):
         if self.refresh_in_flight:
             return
         self.refresh_in_flight = True
+        self.refresh_generation += 1
+        generation = self.refresh_generation
         self.refresh_button.setEnabled(False)
+        self.refresh_status.setText("Capturing and inspecting the current dialogue...")
         self.refresh_requested.emit()
+        QTimer.singleShot(
+            self.refresh_timeout_ms,
+            lambda: self._refresh_timed_out(generation),
+        )
+
+    def _refresh_timed_out(self, generation):
+        if not self.refresh_in_flight or generation != self.refresh_generation:
+            return
+        self._finish_refresh(
+            "Refresh timed out. Restore the game window and select Refresh now to retry."
+        )
+
+    def _finish_refresh(self, message):
+        self.refresh_in_flight = False
+        self.refresh_generation += 1
+        self.refresh_button.setEnabled(True)
+        self.refresh_status.setText(message)
 
     def conceal_for_capture(self):
         if not self.isVisible():
@@ -115,8 +142,7 @@ class DiagnosticsDialog(QDialog):
         self.activateWindow()
 
     def set_snapshot(self, snapshot):
-        self.refresh_in_flight = False
-        self.refresh_button.setEnabled(True)
+        self._finish_refresh("Diagnostics refreshed from the latest current snapshot.")
         self.speaker.setText(snapshot.character or "Narrator")
         self.text.setPlainText(snapshot.text)
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
@@ -147,8 +173,10 @@ class DiagnosticsDialog(QDialog):
             self._scale_preview()
 
     def set_warning(self, message):
-        self.refresh_in_flight = False
-        self.refresh_button.setEnabled(True)
+        if self.refresh_in_flight:
+            self._finish_refresh(
+                "Refresh failed. Resolve the warning below, then select Refresh now."
+            )
         self.warning.setText(message)
         self.warning.setVisible(bool(message))
 

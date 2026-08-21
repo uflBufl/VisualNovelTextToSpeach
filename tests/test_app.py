@@ -954,6 +954,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         builder = Mock()
         builder.build.return_value = Path("support.zip")
+        tray_application.support_dialog = Mock()
 
         with (
             patch(
@@ -972,7 +973,31 @@ class TrayApplicationTest(unittest.TestCase):
             generation_timelines=tray_application.generation_timelines,
         )
         builder.build.assert_called_once_with("support.zip")
+        tray_application.support_dialog.set_export_result.assert_called_once_with(
+            True,
+            "support.zip",
+        )
         self.assertIn("Support bundle saved", tray_application.status_action.text())
+        tray_application.shutdown()
+
+    def test_cancelled_support_export_restores_dialog_action(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray_application.support_dialog = Mock()
+
+        with patch(
+            "vntts.app.QFileDialog.getSaveFileName",
+            return_value=("", ""),
+        ):
+            tray_application.export_support_bundle()
+
+        tray_application.support_dialog.set_export_result.assert_called_once_with(
+            None,
+            "Support report export cancelled.",
+        )
         tray_application.shutdown()
 
     def test_settings_reject_duplicate_recorded_hotkeys(self):
