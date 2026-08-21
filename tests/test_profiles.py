@@ -193,6 +193,55 @@ class GameProfilesDialogTest(unittest.TestCase):
         self.assertEqual(dialog.settings().active_profile_id, profile.id)
         self.assertEqual(dialog.settings().game_window_title, "Reverse: 1999")
 
+    def test_active_and_selected_profiles_have_distinct_actions(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            first = store.create("Active game", AppSettings())
+            second = store.create("Other game", AppSettings())
+            dialog = GameProfilesDialog(
+                AppSettings(active_profile_id=first.id),
+                store,
+            )
+
+            self.assertEqual(dialog.active_status.text(), "Active game")
+            self.assertIn("(active)", dialog.summary.text())
+            self.assertFalse(dialog.use_button.isEnabled())
+            self.assertEqual(dialog.use_button.text(), "Already active")
+            self.assertFalse(dialog.remove_button.isEnabled())
+            self.assertIn("Activate another", dialog.remove_button.toolTip())
+
+            dialog.profiles.setCurrentIndex(dialog.profiles.findData(second.id))
+
+            self.assertEqual(dialog.active_status.text(), "Active game")
+            self.assertIn("Other game (not active)", dialog.summary.text())
+            self.assertTrue(dialog.use_button.isEnabled())
+            self.assertEqual(dialog.use_button.text(), "Use selected profile")
+            self.assertTrue(dialog.remove_button.isEnabled())
+            self.assertEqual(
+                dialog.use_button.accessibleName(),
+                "Activate selected game profile",
+            )
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_empty_profile_manager_explains_its_only_available_action(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            dialog = GameProfilesDialog(AppSettings(), store)
+
+            self.assertEqual(
+                dialog.active_status.text(),
+                "No stored profile is active",
+            )
+            self.assertIn("No profiles yet", dialog.summary.text())
+            self.assertTrue(dialog.create_button.isEnabled())
+            self.assertFalse(dialog.duplicate_button.isEnabled())
+            self.assertFalse(dialog.rename_button.isEnabled())
+            self.assertFalse(dialog.remove_button.isEnabled())
+            self.assertFalse(dialog.use_button.isEnabled())
+            dialog.close()
+            dialog.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

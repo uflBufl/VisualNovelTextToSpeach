@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -20,6 +21,7 @@ class GameProfilesDialog(QDialog):
     def __init__(self, settings, store=None, correction_store=None, parent=None):
         super().__init__(parent)
         self.original_settings = settings
+        self.active_profile_id = settings.active_profile_id
         self.store = store or GameProfileStore.load()
         self.correction_store = correction_store
         self.selected_settings = None
@@ -28,37 +30,50 @@ class GameProfilesDialog(QDialog):
 
         self.profiles = QComboBox()
         self.profiles.currentIndexChanged.connect(self.update_summary)
-        create_button = QPushButton("New...")
-        duplicate_button = QPushButton("Duplicate...")
-        rename_button = QPushButton("Rename...")
-        remove_button = QPushButton("Remove")
-        create_button.clicked.connect(self.create_profile)
-        duplicate_button.clicked.connect(self.duplicate_profile)
-        rename_button.clicked.connect(self.rename_profile)
-        remove_button.clicked.connect(self.remove_profile)
+        self.create_button = QPushButton("New...")
+        self.duplicate_button = QPushButton("Duplicate...")
+        self.rename_button = QPushButton("Rename...")
+        self.remove_button = QPushButton("Remove selected profile")
+        self.create_button.clicked.connect(self.create_profile)
+        self.duplicate_button.clicked.connect(self.duplicate_profile)
+        self.rename_button.clicked.connect(self.rename_profile)
+        self.remove_button.clicked.connect(self.remove_profile)
+        self.create_button.setAccessibleName("Create game profile")
+        self.duplicate_button.setAccessibleName("Duplicate selected game profile")
+        self.rename_button.setAccessibleName("Rename selected game profile")
+        self.remove_button.setAccessibleName("Remove selected game profile")
         actions = QHBoxLayout()
-        actions.addWidget(create_button)
-        actions.addWidget(duplicate_button)
-        actions.addWidget(rename_button)
-        actions.addWidget(remove_button)
+        actions.addWidget(self.create_button)
+        actions.addWidget(self.duplicate_button)
+        actions.addWidget(self.rename_button)
+        actions.addStretch()
+        actions.addWidget(self.remove_button)
+        management = QGroupBox("Manage stored profiles")
+        management.setLayout(actions)
 
+        self.active_status = QLabel()
+        self.active_status.setAccessibleName("Active game profile")
+        self.active_status.setWordWrap(True)
         self.summary = QLabel()
+        self.summary.setAccessibleName("Selected game profile settings")
         self.summary.setWordWrap(True)
         form = QFormLayout()
+        form.addRow("Active", self.active_status)
         form.addRow("Profile", self.profiles)
-        form.addRow("", actions)
         form.addRow("Stored settings", self.summary)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.use_button = buttons.addButton(
-            "Use profile",
+            "Use selected profile",
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
+        self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(management)
         layout.addWidget(buttons)
         self.refresh_profiles(settings.active_profile_id)
 
@@ -148,7 +163,31 @@ class GameProfilesDialog(QDialog):
 
     def update_summary(self):
         profile = self.current_profile()
-        self.use_button.setEnabled(profile is not None)
+        active = self.store.get(self.active_profile_id)
+        self.active_status.setText(
+            active.name if active is not None else "No stored profile is active"
+        )
+        selected_is_active = (
+            profile is not None and profile.id == self.active_profile_id
+        )
+        self.use_button.setEnabled(profile is not None and not selected_is_active)
+        self.use_button.setText(
+            "Already active" if selected_is_active else "Use selected profile"
+        )
+        self.use_button.setToolTip(
+            "This profile is already active"
+            if selected_is_active
+            else "Apply the selected stored settings and make this profile active"
+        )
+        has_profile = profile is not None
+        self.duplicate_button.setEnabled(has_profile)
+        self.rename_button.setEnabled(has_profile)
+        self.remove_button.setEnabled(has_profile and not selected_is_active)
+        self.remove_button.setToolTip(
+            "Activate another profile before removing the active profile"
+            if selected_is_active
+            else "Permanently remove the selected stored profile"
+        )
         if profile is None:
             self.summary.setText(
                 "No profiles yet. Create one from the current settings."
@@ -157,6 +196,8 @@ class GameProfilesDialog(QDialog):
         window = profile.game_window_title or "calibrated screen region"
         voice_pack = profile.voice_manifest or "default narrator"
         self.summary.setText(
+            f"Selected: {profile.name}"
+            f"{' (active)' if selected_is_active else ' (not active)'}\n"
             f"Window: {window}\n"
             f"OCR language: {profile.ocr_language}\n"
             f"Voice pack: {voice_pack}"
@@ -173,6 +214,7 @@ class GameProfilesDialog(QDialog):
             return
         save_dialog_region(profile.dialog_region, get_dialog_region_file())
         self.selected_settings = selected_settings
+        self.active_profile_id = profile.id
         self.accept()
 
     def settings(self):
