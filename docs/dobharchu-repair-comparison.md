@@ -182,11 +182,64 @@ WAV:
 All 337 unrelated authoritative state items equal the immutable import seed,
 the source natural candidate state remains
 `a3d51aa5a84ec9d07582d2c4ddf6e8bc0c5e7c0097921d2d287272d84ac3959d`,
-and the run ended with no active attempt, lease, partial WAV or approved
-manifest entry. The repaired WAV needs an explicit listen-and-review decision;
-generation success does not approve it automatically.
+and the run ended with no active attempt, lease or partial WAV.
+
+The exact repaired WAV was then heard and explicitly approved. Its review state
+is `(approved, approved)`, the repair manifest contains exactly that one queue
+ID and WAV digest, and the resulting repair-state SHA-256 is
+`3b47d193207bc459ed8c95d02a9a3d8e3ed5424b00380101041f4d149f884e03`.
+The approval was merged non-destructively with the three accepted natural
+samples into immutable successor
+`resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`. Its authoritative state and
+approved-only manifest contain exactly the four reviewed Dobharchú queue IDs;
+the merge ledger binds the source repair workspace, source state, queue item
+and WAV digest. The natural candidate and repair source states remained
+byte-identical, and the successor has no active attempt or lease. This approval
+is checksum-bound to the listed WAV and does not approve other synthesis
+outcomes automatically.
 
 The other natural failure,
 `reverse1999:314608:29:7be68e27f6d36933`, remains intentionally blocked. Its
 trailing sentence fragment has only two words, below the existing safe segment
 minimum, so it was not retried.
+
+## Natural expansion and unified review gate
+
+The accepted natural profile was expanded from successor
+`resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` to the exact remaining 28
+bound targets. The child command used all and only those queue IDs with
+`retries=0`, base seed 0 and no existing-item regeneration. It produced 17
+pending-review WAVs and 11 typed failures. The four existing approvals, their
+approved-only manifest, all 342 unrelated base items and the merged repaired
+WAV remained unchanged. The resulting source-state SHA-256 is
+`493bd476e57c0723012459427fb30d58e5e98e3cc8d7c08cc14fc2645ae47b62`;
+the run ended with no active attempt, lease or partial WAV.
+
+Ten failures were independently classified as safe sentence-boundary repairs.
+Config-addressed carry-forward workspace
+`resume-395a5e5eec0327a3a793b66d-3e8158ddf2fdb81a` selected exactly those ten
+queue IDs and ran each once. Seven repairs published pending-review WAVs; three
+remained typed failures. The source-state SHA stayed byte-identical, the repair
+manifest remained empty, and its final state SHA-256 is
+`d680335a26f9000522904a3bfe05ecb0a3ee8364df1aeadb0834c3093de3d427`.
+No active attempt, lease or partial WAV remained.
+
+The 17 direct WAVs and seven successful repairs are bound into one immutable
+multi-workspace review bundle:
+
+`current-character-story-dobharchu-natural-expansion-v1.json`
+
+Its bundle ID is
+`d0f42e5eab5476e38a849ac0dcc27acab6ae65efb24ebd35bdc3eedd12779371`.
+It contains two source workspaces, four exact cohorts, 24 pending items, 24
+mandatory samples and zero blocked items. Open it with:
+
+```sh
+uv run --no-sync vntts-review-bundle \
+  "$HOME/Library/Application Support/VisualNovelTextToSpeech/authoring/review-bundles/current-character-story-dobharchu-natural-expansion-v1.json"
+```
+
+Human listening remains required before any cohort decision. No direct or
+repaired WAV from this expansion was approved automatically. Three attempted
+sentence repairs and two reference-comparison cases remain outside the bundle;
+their exact IDs and retry restrictions stay in `todo.md`.

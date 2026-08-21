@@ -90,26 +90,25 @@ Follow the evidence-backed order and invariants in
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
-      Preserve the 15 primary approvals. Record the user's exact approval of the
-      three checksum-bound natural WAVs in the candidate review state; their two
-      0.64-second pauses were heard as natural and are not defects for those exact
-      artifacts. Do not weaken the global silence gate. The checksum-bound
-      expression-alias decision for portraits 534703 and 534704 is published and
-      preserves both source variants; do not extend it to unbound portrait
-      534705. Listen to and explicitly approve or reject the pending bounded
-      sentence repair for `reverse1999:314605:87:30d3291b0cd792b0`, WAV SHA-256
-      `aa4d5e0d6313b202c41d7bf7201c67c1166e3c347bb51b61a2904fc68244acf3`.
-      If approved, merge its exact reviewed outcome with the three natural
-      candidate approvals without changing the 15 primary approvals. The other
-      natural failure, `reverse1999:314608:29:7be68e27f6d36933`, has a two-word
-      trailing sentence fragment and is intentionally rejected by the current
-      minimum-three-word segmentation gate; do not retry it until an exact
-      short-fragment policy and review gate are implemented. After the reviewed
-      repair is merged, expand the accepted natural profile only across the
-      remaining lines bound to the two approved portrait variants. Verify exact
-      queue scope, preserve every unrelated state item, and never alter the
-      primary approvals while producing the successor outcome set. Stable failed
-      all five samples and must not be retried without a new bounded hypothesis.
+      Review the published bundle
+      `current-character-story-dobharchu-natural-expansion-v1.json`: it contains
+      exactly 24 pending WAVs in four cohorts, comprising 17 direct natural
+      outputs and seven bounded sentence repairs. Every item is currently a
+      mandatory sample because it is technical-attention evidence or the
+      deterministic clean sample for its exact portrait/reference cohort. Apply
+      only explicit source-local cohort decisions, then merge terminal reviewed
+      repair outcomes into successor
+      `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`; preserve its four
+      existing approvals, the 15 primary approvals, the two accepted portrait
+      variants and all unrelated state. Do not extend the portrait alias to
+      unbound portrait `534705` or weaken the global silence gate. Five failures
+      remain outside this review: sentence repair still failed for
+      `reverse1999:314605:102:1ab22c5fa4f30490`,
+      `reverse1999:314605:95:ebc446c3c6e843bb` and
+      `reverse1999:314608:8:7c5e047cb7785953`; exact reference comparison is
+      still required for `reverse1999:314608:29:7be68e27f6d36933` and
+      `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
+      until a new bounded, evidence-backed hypothesis and review gate exist.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review
