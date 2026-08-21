@@ -121,16 +121,19 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Listen to the isolated exact `--inline-pause-failed` Dobharchú result for
-      `reverse1999:314608:29:7be68e27f6d36933`. The real config-addressed run
-      reduced measured internal silence from 1.60 to 0.96 seconds with one
-      180 ms marker and preserved the source/reference/text provenance, but it
-      remains pending review. Reject it on any word, prosody, speaker-identity
-      or cadence defect. Do not merge it or authorize a cohort rollout from the
+- [ ] Finish listening to the isolated exact `--inline-pause-failed`
+      Dobharchú sample. The first WAV for
+      `reverse1999:314608:29:7be68e27f6d36933` reduced measured internal silence
+      from 1.60 to 0.96 seconds but was judged acceptable yet slightly
+      unnatural. Listen to the two additional technically valid WAVs for
+      `reverse1999:314605:40:a15bc2a6e08da13e` (3.52 -> 0.64 seconds) and
+      `reverse1999:314605:95:ebc446c3c6e843bb` (3.12 -> 0.48 seconds). Reject
+      any word, prosody, speaker-identity or cadence defect. Two other exact
+      attempts failed closed at 2.00 and 1.76 seconds and published no WAV, so
+      do not merge these workspaces or authorize a cohort rollout from the
       technical gate alone. The short control `What happened? You're hurt.` is
-      not a current typed failure, so the production policy must continue to
-      reject applying this transform to that item; use a separately declared
-      comparison corpus if a short-line listening comparison is still needed.
+      not a current typed failure; use a separately declared comparison corpus
+      if a short-line listening comparison is still needed.
 - [ ] Add a bounded quality-first path for lines that cannot be segmented safely,
       including two-word clauses such as `What happened? You're hurt.` Try at
       most three deterministic seeds and accept only a `complete` render that

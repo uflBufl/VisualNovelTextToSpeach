@@ -273,6 +273,31 @@ workspace state remains
 the isolated run ended with no active attempt, lease or partial WAV. No review
 decision or approved manifest entry was created.
 
+The listening sample was then expanded with four additional exact current
+failures, each in its own config-addressed workspace with the same natural
+profile, Dobharchú reference cluster, one 180 ms marker policy and one seed-1
+attempt. Two produced pending-review WAVs:
+
+- `reverse1999:314605:40:a15bc2a6e08da13e`: internal silence 3.52 ->
+  0.64 seconds; WAV SHA-256
+  `dfa9a47881374558a6ff11e6b930a961e69ebf8f6d4b5e3ed67b0f36fe3edc73`;
+- `reverse1999:314605:95:ebc446c3c6e843bb`: internal silence 3.12 ->
+  0.48 seconds; WAV SHA-256
+  `d10a27df3f59fbece88c374d619a0433912ec1294590795ef9a8023a58a66956`.
+
+Two other attempts failed closed and published no WAV:
+
+- `reverse1999:314608:8:7c5e047cb7785953` retained a 2.00-second internal
+  pause and 51% silent frames;
+- `reverse1999:314608:27:8118276567f5deff` retained a 1.76-second internal
+  pause across a three-marker, four-sentence prompt.
+
+All four runs ended without an active attempt, lease or partial WAV. Together
+with the first technically successful example, this is mixed evidence: three
+of five exact attempts passed the technical gate and two did not. The marker
+strategy therefore remains comparison-only until the three published WAVs are
+judged for wording, speaker identity and naturalness.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed
