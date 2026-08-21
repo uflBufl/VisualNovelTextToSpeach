@@ -134,7 +134,11 @@ while one-sentence controls remained below 0.25 seconds.
       retry/fallback. Use the explicit one-queue-ID, one-attempt evidence sink
       only for a newly justified retry; current old failures correctly deleted
       non-publishable partial WAVs and cannot be reconstructed as the same
-      evidence.
+      evidence. The first authorized capture attempt for
+      `reverse1999:314605:102:1ab22c5fa4f30490` reached the typed audio limit
+      before silence validation, so it published neither production audio nor
+      raw evidence. Do not spend another seed or raise the audio limit without
+      a new bounded hypothesis and explicit authorization.
 - [ ] Apply the selected repair policy to pending/failed Dobharchú items in a
       new config-addressed workspace. Review every transformed WAV and a
       deterministic clean control sample. Acceptance requires no internal pause

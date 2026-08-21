@@ -312,6 +312,20 @@ new attempt and must first be justified by the bounded retry policy. Once a
 captured raw WAV and an independently rendered segmentation control exist, pass
 their exact paths and queue text to `publish_silence_comparison`.
 
+The first authorized evidence-capture attempt used
+`reverse1999:314605:102:1ab22c5fa4f30490` from the unchanged natural-profile
+workspace at cumulative attempt 2 and seed 1. It did not reach the
+speech-silence validator: MOSS returned `limited` at exactly 536,000 samples,
+47 chunks and the 11.1667-second audio limit. The generator therefore published
+no production WAV and correctly did not create an evidence directory. The
+queue SHA-256 remained
+`1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`,
+all 591 unrelated state records remained byte-identical, and the run ended
+without an active attempt, lease or partial WAV. This negative result does not
+justify another seed, a larger limit or an inferred silence-compression
+candidate; a future attempt needs a different bounded hypothesis and explicit
+authorization.
+
 An exact comparison strategy is also available through
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one
 current checksum-bound internal-silence failure, `moss-tts`, an exact queue-ID
