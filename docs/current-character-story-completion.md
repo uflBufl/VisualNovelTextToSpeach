@@ -177,6 +177,14 @@ queue IDs. They select reference evidence only: they do not approve generated
 speech, mutate the manifest or authorize regeneration. The initial version-1
 task was rejected before use because its private mapping was not included in
 the public identity; only version 2 or later is valid for an operator decision.
+The published version-2 directory is
+`authoring/review-bundles/current-character-story-reference-audit-v2`, with
+audit ID
+`52fc3aa6e545109b79bbce7f1842ae5f1428c2f467521f362b3b09832f53223e`.
+It contains 29 exact cases, four control groups, six blinded candidate pairs
+and no decisions at publication time. Its private key is mode 0600. A real
+offscreen UI open validated all source authorities and exposed four groups
+with Play, candidate and Neither actions enabled.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending

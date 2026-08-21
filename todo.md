@@ -22,18 +22,22 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       silence failures, 29 reference-comparison items and one new pending WAV
       in the primary workspace. After terminal bundle decisions, inspect the
       exact source-local evidence before merging outcomes.
-- [ ] Publish and open the corrected version-2 operator task for all 29
-      reference-comparison failures. The original version-1 audit
+- [ ] Review the published version-2 operator task for all 29
+      reference-comparison failures at
+      `authoring/review-bundles/current-character-story-reference-audit-v2`
+      (audit ID
+      `52fc3aa6e545109b79bbce7f1842ae5f1428c2f467521f362b3b09832f53223e`).
+      The original version-1 audit
       `7e18a82836e6e79a6f4a50b1e11d04f2fd87cfbae00ccabdf480f3fd3b1b3d8a`
       is rejected before operator use because its private candidate mapping was
-      not part of the public canonical identity. Version 2 must cover the same
-      four exact control
+      not part of the public canonical identity. Version 2 covers the same four
+      exact control
       groups: three blinded Centurion candidates for 23 Narrator cases, three
       blinded Rhiannon candidates for four cases, and one exact candidate each
       for Aderyn and Poacher. Run `uv run vntts-reference-audit AUDIT_DIRECTORY`:
-      it must play copied checksum-bound bytes without exposing source names,
-      offer every opaque candidate plus `Neither candidate is acceptable`, and
-      save in a background worker without disabling playback. After all four
+      it plays copied checksum-bound bytes without exposing source names,
+      offers every opaque candidate plus `Neither candidate is acceptable`, and
+      saves in a background worker without disabling playback. After all four
       decisions, inspect the canonical decision-set ID and private mapping;
       these decisions are reference evidence only. Publish a new explicit
       selected reference/control binding before any regeneration.
