@@ -124,6 +124,10 @@ while one-sentence controls remained below 0.25 seconds.
 - [ ] Run the implemented exact `--inline-pause-failed` strategy on the measured
       Dobharchú short and long controls and compare it with the existing safe
       sentence segmentation under identical reference/profile/seed inputs.
+      First require config-addressed carry-forward to preserve and validate the
+      exact typed `speech_silence` source failure for this strategy; workspace
+      creation, reopen and post-render validation must reject any source/backend,
+      item, reference or repair-policy mismatch before the real model run.
       Preserve the original story text and text hash. Reject the marker strategy
       on any word, prosody, speaker-identity or checksum-bound silence regression;
       do not authorize a cohort rollout from synthetic tests alone.

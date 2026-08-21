@@ -41,6 +41,7 @@ from vntts.authoring.bulk_generation import (
     ReviewAuthority,
     ReviewCommit,
     _canonical_sha256,
+    _inline_pause_matches_failure,
     _sentence_repair_matches_failure,
     _snapshot_control_files,
     is_spoken_queue_item,
@@ -57,6 +58,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
+    INLINE_PAUSE_MARKER,
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
@@ -1839,13 +1841,18 @@ def _carry_forward_review_outcomes(
     sentence_selected = set(repair_policy.sentence_segment_queue_ids)
     bounded_selected = set(repair_policy.bounded_seed_retry_queue_ids)
     offline_selected = set(repair_policy.offline_fallback_queue_ids)
+    inline_pause_selected = set(repair_policy.inline_pause_queue_ids)
     unsupported_selected = (
-        set(failed_selected) - sentence_selected - bounded_selected - offline_selected
+        set(failed_selected)
+        - sentence_selected
+        - bounded_selected
+        - offline_selected
+        - inline_pause_selected
     )
     if unsupported_selected:
         raise AuthoringWorkbenchError(
             "Carry-forward currently supports only bounded seed, sentence "
-            "segmentation and offline fallback failures"
+            "segmentation, inline pause and offline fallback failures"
         )
     if source_workspace is None:
         if characters is not None or offline_selected:
@@ -1900,7 +1907,7 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward source and target model configuration differs"
         )
-    same_backend_selected = sentence_selected | bounded_selected
+    same_backend_selected = sentence_selected | bounded_selected | inline_pause_selected
     if same_backend_selected and offline_selected:
         raise AuthoringWorkbenchError(
             "One carry-forward workspace cannot mix same-backend failure repair "
@@ -2084,11 +2091,15 @@ def _carry_forward_review_outcomes(
         sentence_mismatch = strategy == SENTENCE_BOUNDARY_SEGMENTATION and not (
             _sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
         )
-        failure_kind_mismatch = (
-            sentence_mismatch
-            if strategy == SENTENCE_BOUNDARY_SEGMENTATION
-            else failure.get("kind") != "missed_eos_audio_limit"
+        inline_pause_mismatch = strategy == INLINE_PAUSE_MARKER and not (
+            _inline_pause_matches_failure(failure, queue_by_id[queue_id].text)
         )
+        if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            failure_kind_mismatch = sentence_mismatch
+        elif strategy == INLINE_PAUSE_MARKER:
+            failure_kind_mismatch = inline_pause_mismatch
+        else:
+            failure_kind_mismatch = failure.get("kind") != "missed_eos_audio_limit"
         if (
             failure_kind_mismatch
             or not isinstance(attempts, int)
@@ -2896,7 +2907,10 @@ def _validate_workspace_carry_forward(directory, workspace):
             sentence_selected = set(repair_policy.sentence_segment_queue_ids)
             bounded_selected = set(repair_policy.bounded_seed_retry_queue_ids)
             offline_selected = set(repair_policy.offline_fallback_queue_ids)
-            same_backend_selected = sentence_selected | bounded_selected
+            inline_pause_selected = set(repair_policy.inline_pause_queue_ids)
+            same_backend_selected = (
+                sentence_selected | bounded_selected | inline_pause_selected
+            )
             if same_backend_selected and offline_selected:
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward mixes incompatible repair backends"
@@ -2985,7 +2999,7 @@ def _validate_workspace_carry_forward(directory, workspace):
                 )
             strategy = repair_policy.strategy_for(queue_id) if version == 3 else None
             allowed_failure_kinds = {"missed_eos_audio_limit"}
-            if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            if strategy in {SENTENCE_BOUNDARY_SEGMENTATION, INLINE_PAUSE_MARKER}:
                 allowed_failure_kinds.add("speech_silence")
             if item.get("source_failure_kind") not in allowed_failure_kinds:
                 raise AuthoringWorkbenchError(
@@ -3074,7 +3088,12 @@ def _validate_workspace_offline_fallback_state(directory, workspace):
                 f"Workspace carried failure source changed for {queue_id!r}"
             )
         transitioned_same_backend_repair = (
-            strategy in {SENTENCE_BOUNDARY_SEGMENTATION, BOUNDED_SEED_RETRY}
+            strategy
+            in {
+                SENTENCE_BOUNDARY_SEGMENTATION,
+                BOUNDED_SEED_RETRY,
+                INLINE_PAUSE_MARKER,
+            }
             and isinstance(repair, dict)
             and repair.get("strategy") == strategy
         )
