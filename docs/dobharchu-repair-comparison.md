@@ -128,9 +128,29 @@ The natural profile published three pending-review mono 48 kHz WAVs:
 
 The other two natural lines completed rendering but failed the speech-silence
 gate with 1.60 and 1.36 seconds of internal silence, so no WAV was published.
-No candidate was approved or rejected. The primary review-state SHA-256 stayed
+The primary review-state SHA-256 stayed
 `de93ffd0286be2b41f47689f97025d8290c950c5caf39939b262b26960c4c2d7`,
 the unrelated candidate digest stayed unchanged, and both runs ended with no
-active attempt, lease or partial WAV. Natural is therefore the only candidate
-with listenable evidence, but it is not authorized for expansion until the
-three exact WAVs receive a human voice/pacing decision.
+active attempt, lease or partial WAV.
+
+## Human decision
+
+On 2026-08-21 the three exact natural WAVs in the table were heard and approved.
+The two 0.64-second pauses were judged natural for these exact performances;
+they are not repair defects. This decision applies only to the three listed WAV
+hashes and does not weaken the general speech-silence gate.
+
+The candidate review state now records all three items as `approved`, and its
+derived manifest contains exactly those three entries. The resulting state
+SHA-256 is
+`a3d51aa5a84ec9d07582d2c4ddf6e8bc0c5e7c0097921d2d287272d84ac3959d`.
+The primary review-state SHA-256 remained unchanged, all unrelated candidate
+items remained byte-identical, and the review ended with no active attempt or
+lease. Natural is the accepted Dobharchú profile for both reviewed portrait
+variants. The two unpublished natural failures still require a separate,
+bounded sentence-boundary repair rather than a global silence-policy change.
+
+Portraits `534703` and `534704` were also confirmed to show the same person with
+different facial expressions. Treat them as expression aliases for review and
+coverage while preserving both source portrait IDs, exact reference WAVs and
+synthesis provenance. This decision does not include unbound portrait `534705`.

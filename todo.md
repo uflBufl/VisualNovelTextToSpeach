@@ -90,19 +90,20 @@ Follow the evidence-backed order and invariants in
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
-      Preserve the 15 exact approvals and do not promote either portrait variant.
-      Publish an explicit portrait binding for the two listed absent IDs rather
-      than inferring it from `Dobharchú`; current evidence shows portrait 534705,
-      distinct from both configured variants. Listen to the three exact natural
-      candidate WAVs recorded in the comparison document. The first two require
-      explicit attention to their 0.64-second internal pauses; the third has no
-      silence flag. Stable failed all five samples and must not be retried without
-      a new bounded hypothesis. Record an exact per-variant human decision before
-      expanding natural to any remaining lines. If natural is accepted, plan a
-      separate sentence-boundary repair for its two sample failures and expand
-      only the accepted portrait variant; if it is rejected, retain live fallback
-      rather than applying a weak cohort. Keep the 15 approvals and all unrelated
-      queue items unchanged throughout.
+      Preserve the 15 primary approvals. Record the user's exact approval of the
+      three checksum-bound natural WAVs in the candidate review state; their two
+      0.64-second pauses were heard as natural and are not defects for those exact
+      artifacts. Do not weaken the global silence gate. Publish an additive,
+      checksum-bound expression-alias contract for portraits 534703 and 534704:
+      they are the same Dobharchú identity with different facial expressions, but
+      their source portrait IDs, reference files and synthesis provenance remain
+      distinct. Do not extend that alias to unbound portrait 534705. Then create a
+      bounded sentence-boundary repair for the two natural sample failures, and
+      expand the accepted natural profile only across the remaining lines bound
+      to the two approved portrait variants. Verify exact queue scope, preserve
+      every unrelated state item, and never alter the primary approvals while
+      producing the successor outcome set. Stable failed all five samples and
+      must not be retried without a new bounded hypothesis.
 - [ ] Generate and review the 1,220 `no_audio` patch 3.7 lines with the approved
       primary model and fallback policy after references are ready. Preserve
       source-audio candidates, invalidate review on changed WAV hashes, review
