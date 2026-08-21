@@ -10,18 +10,16 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Build one checksum-bound multi-workspace review bundle for the completed
-      specialist repairs instead of requiring ten separate workbench windows.
-      The exact inventory is 99 pending specialist WAVs across ten immutable
-      workspaces (19 sentence repairs and 80 Pocket fallbacks), plus one new
-      pending WAV in the primary workspace. The current conservative per-source
-      plans require 81 specialist samples because every technical-attention WAV
-      remains mandatory. The bundle must preserve source workspace/state/item/
-      WAV identity, show why each sample is mandatory, support replay and
-      sample-level bad/needs-another decisions, never project a decision into a
-      different source, and revalidate all source authorities before applying
-      terminal outcomes. Keep the remaining 51 specialist failures and 29
-      reference-comparison items out of this review inventory.
+- [ ] Review the published 18-cohort specialist bundle with
+      `uv run vntts-review-bundle BUNDLE.json`: 81 required samples cover 99
+      pending specialist WAVs across ten immutable workspaces (19 sentence
+      repairs and 80 Pocket fallbacks). Every technical-attention WAV remains
+      mandatory; clean short/medium/long items are sampled deterministically.
+      Use sample-level bad markers and `Need another sample` instead of
+      accepting a doubtful cohort. This review intentionally excludes the 51
+      terminal specialist failures, 29 reference-comparison items and one new
+      pending WAV in the primary workspace. After terminal bundle decisions,
+      inspect the exact source-local evidence before merging outcomes.
 - [ ] Cluster the 51 terminal specialist failures by typed completion/error,
       text shape, voice/reference, backend and measured audio diagnostics.
       Publish a checksum-bound analysis with an explicit next action per

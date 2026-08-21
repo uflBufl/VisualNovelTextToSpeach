@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.bulk_generation import ReviewAuthority, _canonical_sha256
 from vntts.authoring.cohort_review import (
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
@@ -17,7 +19,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_plan,
     execute_cohort_review_decision,
 )
-from vntts.authoring.workbench import ReviewItem, list_review_items
+from vntts.authoring.workbench import ReviewItem
 
 COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
 COHORT_REVIEW_BUNDLE_VERSION = 2
@@ -200,27 +202,12 @@ def load_cohort_review_bundle_samples(bundle):
     current = CohortReviewBundle(document["bundle_id"], document)
     samples = []
     for source in document["sources"]:
-        workspace = Path(source["workspace"])
         source_cohorts = [
             value
             for value in document["cohorts"]
             if value["workspace_id"] == source["workspace_id"]
         ]
-        sample_ids = [
-            sample["queue_id"]
-            for cohort in source_cohorts
-            for sample in cohort["samples"]
-        ]
-        review_items = {
-            value.queue_id: value
-            for value in list_review_items(workspace, queue_ids=sample_ids)
-        }
-        if review_items and {
-            value.authority.state_sha256 for value in review_items.values()
-        } != {source["plan"]["state_sha256"]}:
-            raise CohortReviewError(
-                f"Bundle source state changed: {source['workspace_id']}"
-            )
+        workspace, review_items = _load_source_sample_records(source, source_cohorts)
         flattened = {value["cohort_id"]: value for value in source_cohorts}
         for cohort in source["plan"]["cohorts"]:
             bundle_cohort = flattened[cohort["cohort_id"]]
@@ -263,6 +250,179 @@ def load_cohort_review_bundle_samples(bundle):
     if len(samples) != current.document["sample_item_count"]:
         raise CohortReviewError("Review bundle live sample count changed")
     return current, tuple(samples)
+
+
+def _load_source_sample_records(source, source_cohorts):
+    workspace = Path(source["workspace"])
+    configuration_path = workspace / "workspace.json"
+    if configuration_path.is_symlink():
+        raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
+    configuration_payload = _read_bytes(
+        configuration_path, "bundle workspace configuration"
+    )
+    configuration = _decode_json(
+        configuration_payload, "bundle workspace configuration"
+    )
+    if (
+        not isinstance(configuration, dict)
+        or configuration.get("workspace_id") != source["workspace_id"]
+        or configuration.get("config_fingerprint")
+        != source["plan"]["workspace_config_fingerprint"]
+    ):
+        raise CohortReviewError("Bundle workspace configuration identity changed")
+    queue_path = _contained_source_path(
+        workspace, configuration.get("queue"), "bundle queue"
+    )
+    output = _contained_source_path(
+        workspace, configuration.get("output"), "bundle output"
+    )
+    if not output.is_dir() or output.is_symlink():
+        raise CohortReviewError("Bundle output directory is unavailable or unsafe")
+    state_path = output / "generation-state.json"
+    if queue_path.is_symlink() or state_path.is_symlink():
+        raise CohortReviewError("Bundle queue and state must not be symlinks")
+    queue_payload = _read_bytes(queue_path, "bundle queue")
+    state_payload = _read_bytes(state_path, "bundle state")
+    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
+    state_sha256 = hashlib.sha256(state_payload).hexdigest()
+    if queue_sha256 != source["plan"]["queue_sha256"]:
+        raise CohortReviewError("Bundle source queue changed")
+    if state_sha256 != source["plan"]["state_sha256"]:
+        raise CohortReviewError("Bundle source state changed")
+    state = _decode_json(state_payload, "bundle state")
+    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+        raise CohortReviewError("Bundle source state items are invalid")
+    if state.get("queue_sha256") != queue_sha256:
+        raise CohortReviewError("Bundle source state queue identity changed")
+    queue_records = _decode_queue_records(queue_payload)
+    sample_by_id = {
+        sample["queue_id"]: (cohort, sample)
+        for cohort in source_cohorts
+        for sample in cohort["samples"]
+    }
+    if len(sample_by_id) != sum(len(cohort["samples"]) for cohort in source_cohorts):
+        raise CohortReviewError("Bundle sample queue IDs are duplicated")
+    review_items = {}
+    for queue_id, (cohort, sample) in sample_by_id.items():
+        queue_item = queue_records.get(queue_id)
+        result = state["items"].get(queue_id)
+        if not isinstance(queue_item, dict) or not isinstance(result, dict):
+            raise CohortReviewError(f"Bundle sample disappeared: {queue_id}")
+        text = queue_item.get("text")
+        if (
+            not isinstance(text, str)
+            or hashlib.sha256(text.encode("utf-8")).hexdigest() != sample["text_sha256"]
+            or result.get("status") != "generated"
+            or result.get("review_status") != "pending_review"
+            or result.get("file_sha256") != sample["audio_sha256"]
+        ):
+            raise CohortReviewError(f"Bundle sample authority changed: {queue_id}")
+        audio = _contained_source_path(
+            output, result.get("path"), f"bundle sample {queue_id} WAV"
+        )
+        if not audio.is_file():
+            raise CohortReviewError(f"Bundle sample WAV is missing: {queue_id}")
+        quality = result.get("quality")
+        quality = quality if isinstance(quality, dict) else {}
+        duration = quality.get("duration_seconds")
+        duration = (
+            float(duration)
+            if isinstance(duration, (int, float)) and duration > 0
+            else None
+        )
+        peak = quality.get("peak")
+        peak = float(peak) if isinstance(peak, (int, float)) else None
+        words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
+        review_items[queue_id] = ReviewItem(
+            queue_id=queue_id,
+            line_id=str(queue_item.get("line_id") or sample["line_id"]),
+            speaker=str(queue_item.get("speaker") or "unknown"),
+            voice_character=str(cohort["identity"]["voice_character"]),
+            text=text,
+            status="generated",
+            review_status="pending_review",
+            attempts=int(result.get("attempts") or 0),
+            seed=result.get("seed"),
+            last_error=result.get("last_error"),
+            audio=audio,
+            authority=ReviewAuthority(
+                queue_sha256=queue_sha256,
+                state_sha256=state_sha256,
+                item_sha256=_canonical_sha256(result),
+                audio_sha256=sample["audio_sha256"],
+            ),
+            state=state_path,
+            queue=queue_path,
+            duration_seconds=duration,
+            words_per_minute=(
+                None if duration is None else float(words * 60 / duration)
+            ),
+            peak=peak,
+            technical_flags=tuple(sample["technical_flags"]),
+        )
+    for path, expected, label in (
+        (
+            configuration_path,
+            hashlib.sha256(configuration_payload).hexdigest(),
+            "workspace configuration",
+        ),
+        (queue_path, queue_sha256, "queue"),
+        (state_path, state_sha256, "state"),
+    ):
+        if hashlib.sha256(_read_bytes(path, f"bundle {label}")).hexdigest() != expected:
+            raise CohortReviewError(f"Bundle {label} changed while loading samples")
+    return workspace, review_items
+
+
+def _contained_source_path(root, relative, label):
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or "\\" in relative
+        or any(part in {"", ".", ".."} for part in Path(relative).parts)
+    ):
+        raise CohortReviewError(f"{label.title()} path is unsafe")
+    canonical_root = Path(root).resolve()
+    candidate = (canonical_root / relative).resolve()
+    try:
+        candidate.relative_to(canonical_root)
+    except ValueError as error:
+        raise CohortReviewError(f"{label.title()} leaves its workspace") from error
+    return candidate
+
+
+def _read_bytes(path, label):
+    try:
+        return Path(path).read_bytes()
+    except OSError as error:
+        raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
+
+
+def _decode_json(payload, label):
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(f"Unable to decode {label}: {error}") from error
+
+
+def _decode_queue_records(payload):
+    try:
+        rows = payload.decode("utf-8").splitlines()
+        records = [json.loads(row) for row in rows]
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(f"Unable to decode bundle queue: {error}") from error
+    if not records or not isinstance(records[0], dict):
+        raise CohortReviewError("Bundle queue metadata is invalid")
+    by_id = {}
+    for record in records[1:]:
+        if not isinstance(record, dict):
+            raise CohortReviewError("Bundle queue item is invalid")
+        queue_id = record.get("queue_id")
+        if not isinstance(queue_id, str) or not queue_id or queue_id in by_id:
+            raise CohortReviewError("Bundle queue item identity is invalid")
+        by_id[queue_id] = record
+    return by_id
 
 
 def execute_cohort_bundle_decision(

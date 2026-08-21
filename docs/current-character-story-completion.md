@@ -97,13 +97,23 @@ not yet merge their future review outcomes with the 77 approvals in the
 primary workspace; that merge must be checksum-bound and explicit.
 
 Building the existing conservative cohort plan independently for each final
-workspace produces 20 exact cohorts and 81 required samples for the 99 WAVs.
+workspace produces 18 exact cohorts and 81 required samples for the 99 WAVs.
 The large sample is intentional: every technical-attention WAV is mandatory,
 while only clean short/medium/long buckets are sampled. Opening ten independent
 workbench windows is not an acceptable operator workflow, so the next software
 boundary is a single review bundle that presents those exact source-bound
 samples without weakening their authority or applying a decision across source
 workspaces.
+
+The unified version-2 bundle was published at
+`authoring/review-bundles/current-character-story-specialists-v2.json` with ID
+`f9131e035898a45c4aa36b509d5740ffaeace74ddd8a2a9e52f15a4ac95d8a8f`.
+It contains exactly ten source workspaces, 18 cohorts, 99 pending items, 81
+required samples and 197 unique inherited blocked items. Loading its exact
+operator rows took 0.078 seconds, and an offscreen Qt acceptance showed all 18
+cohorts and the first table in 0.399 seconds. Review decisions use the bound
+state directly instead of rebuilding every full source plan; queue, workspace,
+state, target item, WAV and lease authority remain fail-closed at commit time.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending

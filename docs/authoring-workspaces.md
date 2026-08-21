@@ -637,6 +637,14 @@ exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 and no bad marker, `Reject cohort` requires heard evidence, and `Need another
 sample` is enabled only when the exact cohort has an unsampled clean item.
 
+The real ten-source specialist bundle opened its 81 exact samples in 0.078
+seconds through the targeted loader; an offscreen dialog populated 18 cohorts
+and its first sample table in 0.399 seconds. Accept/Reject no longer rebuild the
+entire source plan: the plan's exact state SHA binds all outcomes, while the
+commit path independently rechecks workspace configuration, queue/state,
+target item/WAV and lease authority. Expansion still rebuilds the selected
+source plan because its sample policy intentionally changes.
+
 A read-only acceptance on 2026-08-20 against the current 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining
 checksum-bound Centurion cohort. Its one exact sample appeared as

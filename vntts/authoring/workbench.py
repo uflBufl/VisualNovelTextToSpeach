@@ -1089,13 +1089,18 @@ def list_review_items(workspace_directory, queue_ids=None):
                     f"Review queue ID is duplicated: {queue_id}"
                 )
             selected_queue_ids.add(queue_id)
-    summary = inspect_workspace(workspace_directory)
-    if summary.state is None:
-        return ()
     directory, workspace = _load_workspace(workspace_directory)
     queue_path = _within(
         directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
     )
+    output = _within(
+        directory,
+        _safe_relative(workspace["output"], "Output"),
+        "Output",
+    )
+    state_path = output / "generation-state.json"
+    if not state_path.is_file():
+        return ()
     queue = _load_bound_workspace_queue(directory, workspace)
     story = _load_bound_story_document(directory, workspace)
     collection_by_record = {
@@ -1103,9 +1108,9 @@ def list_review_items(workspace_directory, queue_ids=None):
         for collection in story.collections
         for record in story.records_for_collection(collection.collection_id)
     }
-    state_sha256 = sha256_file(summary.state)
-    state = load_generation_state(summary.state, queue_path)
-    if sha256_file(summary.state) != state_sha256:
+    state_sha256 = sha256_file(state_path)
+    state = load_generation_state(state_path, queue_path)
+    if sha256_file(state_path) != state_sha256:
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
         )
@@ -1122,7 +1127,7 @@ def list_review_items(workspace_directory, queue_ids=None):
         audio = None
         if result.get("path"):
             audio = _within(
-                summary.output,
+                output,
                 _safe_relative(result["path"], "Generated audio"),
                 "Generated audio",
             )
@@ -1173,7 +1178,7 @@ def list_review_items(workspace_directory, queue_ids=None):
                     if status in {"generated", "approved"}
                     else None
                 ),
-                state=summary.state,
+                state=state_path,
                 queue=queue_path,
                 duration_seconds=duration,
                 words_per_minute=words_per_minute,
