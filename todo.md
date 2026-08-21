@@ -121,16 +121,16 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Run the implemented exact `--inline-pause-failed` strategy on the measured
-      Dobharchú short and long controls and compare it with the existing safe
-      sentence segmentation under identical reference/profile/seed inputs.
-      First require config-addressed carry-forward to preserve and validate the
-      exact typed `speech_silence` source failure for this strategy; workspace
-      creation, reopen and post-render validation must reject any source/backend,
-      item, reference or repair-policy mismatch before the real model run.
-      Preserve the original story text and text hash. Reject the marker strategy
-      on any word, prosody, speaker-identity or checksum-bound silence regression;
-      do not authorize a cohort rollout from synthetic tests alone.
+- [ ] Listen to the isolated exact `--inline-pause-failed` Dobharchú result for
+      `reverse1999:314608:29:7be68e27f6d36933`. The real config-addressed run
+      reduced measured internal silence from 1.60 to 0.96 seconds with one
+      180 ms marker and preserved the source/reference/text provenance, but it
+      remains pending review. Reject it on any word, prosody, speaker-identity
+      or cadence defect. Do not merge it or authorize a cohort rollout from the
+      technical gate alone. The short control `What happened? You're hurt.` is
+      not a current typed failure, so the production policy must continue to
+      reject applying this transform to that item; use a separately declared
+      comparison corpus if a short-line listening comparison is still needed.
 - [ ] Add a bounded quality-first path for lines that cannot be segmented safely,
       including two-word clauses such as `What happened? You're hurt.` Try at
       most three deterministic seeds and accept only a `complete` render that

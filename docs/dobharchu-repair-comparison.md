@@ -250,6 +250,29 @@ the derived prompt hash, marker count and pause value. This capability is not
 an approval of the marker approach: the measured Dobharchú A/B and listening
 gate remain outstanding.
 
+The real carry-forward path was subsequently exercised from clean commit
+`f4e9df2`. The config-addressed workspace
+`resume-395a5e5eec0327a3a793b66d-ecdae3af7bcf7ede` preserved the exact current
+failure for `reverse1999:314608:29:7be68e27f6d36933`: natural MOSS, seed 0,
+one attempt, a 1.60-second internal silence and the single-reference Dobharchú
+binding. Its one-item child command used `retries=0`; the repair attempt used
+seed 1 and inserted one 180 ms marker while retaining the original story text
+and text hash. The pending-review output is mono 48 kHz with:
+
+- duration: 6.00 seconds;
+- longest internal silence: 0.96 seconds;
+- silence ratio: 24%;
+- WAV SHA-256:
+  `f7230beacb3230bb2bab6d5f9009f0d04b19ceaa3f434866843da01e007b8454`.
+
+The unchanged 1.2-second silence gate therefore accepts the file, but this is
+only a technical success. Human listening must still confirm every word,
+speaker identity, cadence and the absence of an unnatural boundary. The source
+workspace state remains
+`493bd476e57c0723012459427fb30d58e5e98e3cc8d7c08cc14fc2645ae47b62`;
+the isolated run ended with no active attempt, lease or partial WAV. No review
+decision or approved manifest entry was created.
+
 ## Internal-silence repair result
 
 Commit `149f895` added a bounded sentence repair for a typed
@@ -291,10 +314,10 @@ byte-identical, and the successor has no active attempt or lease. This approval
 is checksum-bound to the listed WAV and does not approve other synthesis
 outcomes automatically.
 
-The other natural failure,
-`reverse1999:314608:29:7be68e27f6d36933`, remains intentionally blocked. Its
-trailing sentence fragment has only two words, below the existing safe segment
-minimum, so it was not retried.
+The same natural failure cannot use the existing deterministic segmentation
+path: its trailing clause has only two words, below the safe segment minimum.
+It is now represented only by the isolated pending-review marker comparison
+above; it has not been merged or approved.
 
 ## Natural expansion and unified review gate
 
