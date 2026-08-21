@@ -242,6 +242,41 @@ synthesis-control digest. Generic failures are labelled only as a
 not prove phoneme alignment. The existing sentence-boundary strategy remains
 the primary deterministic repair for substantial complete clauses.
 
+### Experimental silence-compression comparison
+
+VNTTS now exposes a comparison-only `compress_single_sentence_boundary_silence`
+primitive and immutable `publish_silence_comparison` bundle. This is not a
+generation strategy and cannot update generation state or a generated-audio
+manifest. It exists only to answer whether a derived waveform can sound as
+natural as independently rendered sentence segments.
+
+The transform fails closed unless all of these conditions hold:
+
+- the exact story text has exactly one safe boundary between two substantial
+  complete sentences;
+- the PCM is finite mono audio with speech before and after exactly one notable
+  internal silent span;
+- the span exceeds the comparison trigger and its removable center stays below
+  a stricter peak threshold than the silence detector;
+- no second notable internal span exists.
+
+Only the center is removed. The default output retains 600 ms of the original
+silent boundary, split across both sides, and records exact source-span and
+removed-sample indices. It does not crossfade, alter active samples, infer word
+timestamps, or claim that PCM silence proves punctuation alignment. Quiet
+speech, breaths, music, multiple pauses and ambiguous text therefore reject the
+candidate rather than being guessed away.
+
+`publish_silence_comparison` copies the raw failing WAV and an independently
+rendered segmentation control, writes the compressed candidate, binds every
+copy and report by SHA-256, validates the two reports through the standard
+blind-listening loader and publishes with atomic no-replace semantics. A
+standard blind session can then be created with
+`create_silence_comparison_session`. Production use remains blocked until a
+small real checksum-bound corpus shows equal words and speaker identity with
+better cadence than segmentation. A rejected or inconclusive comparison leaves
+sentence segmentation as the preferred repair.
+
 An exact comparison strategy is also available through
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one
 current checksum-bound internal-silence failure, `moss-tts`, an exact queue-ID

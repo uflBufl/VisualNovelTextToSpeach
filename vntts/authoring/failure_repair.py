@@ -24,6 +24,11 @@ DEFAULT_EDGE_PADDING_SECONDS = 0.08
 DEFAULT_SILENCE_DBFS = -45.0
 DEFAULT_SEGMENT_PAUSE_MS = 180
 DEFAULT_INLINE_PAUSE_MS = 180
+DEFAULT_INTERNAL_SILENCE_FRAME_MS = 80
+DEFAULT_INTERNAL_SILENCE_TRIGGER_SECONDS = 0.8
+DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS = 0.6
+DEFAULT_INTERNAL_SILENCE_REMOVAL_DBFS = -50.0
+DEFAULT_NOTABLE_SILENCE_SECONDS = 0.5
 DEFAULT_MAX_REPAIRED_AUDIO_SECONDS = 20.0
 FAILURE_REPAIR_POLICY_VERSION = 4
 LEGACY_FAILURE_REPAIR_POLICY_VERSION = 1
@@ -250,6 +255,20 @@ class EdgeSilenceTrim:
     trailing_trimmed_samples: int
 
 
+@dataclass(frozen=True)
+class InternalSilenceCompression:
+    """One fail-closed center-only edit of a unique internal silent span."""
+
+    pcm: np.ndarray
+    source_span_start_sample: int
+    source_span_end_sample: int
+    removed_start_sample: int
+    removed_end_sample: int
+    removed_samples: int
+    source_pause_seconds: float
+    repaired_pause_seconds: float
+
+
 def _canonical_queue_ids(values, label):
     if not isinstance(values, (tuple, list)):
         raise FailureRepairPolicyError(f"{label} must be a list")
@@ -340,6 +359,119 @@ def trim_excess_edge_silence(
     trailing = max(0, trailing_silence - padding) if trailing_silence > trigger else 0
     end = len(samples) - trailing if trailing else len(samples)
     return EdgeSilenceTrim(samples[leading:end].copy(), leading, trailing)
+
+
+def compress_single_sentence_boundary_silence(
+    pcm,
+    sample_rate,
+    text,
+    *,
+    trigger_seconds=DEFAULT_INTERNAL_SILENCE_TRIGGER_SECONDS,
+    target_seconds=DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+    frame_ms=DEFAULT_INTERNAL_SILENCE_FRAME_MS,
+    silence_dbfs=DEFAULT_SILENCE_DBFS,
+    removal_dbfs=DEFAULT_INTERNAL_SILENCE_REMOVAL_DBFS,
+):
+    """Remove only the center of one uniquely matched sentence-boundary silence.
+
+    This is an experimental comparison primitive, not a production repair policy.
+    PCM cannot prove phoneme alignment, so the function requires exactly one safe
+    textual sentence boundary and exactly one notable internal silent run.  The
+    removable center must also stay below a stricter peak threshold; otherwise it
+    may contain a breath, quiet speech, music or other wanted audio and is rejected.
+    """
+    samples = np.asarray(pcm, dtype=np.float32)
+    if samples.ndim != 1 or not samples.size or not np.isfinite(samples).all():
+        raise ValueError("Repair PCM must be finite, non-empty mono samples")
+    if (
+        not isinstance(sample_rate, int)
+        or isinstance(sample_rate, bool)
+        or sample_rate <= 0
+    ):
+        raise ValueError("Repair sample rate must be a positive integer")
+    if len(safe_sentence_segments(text)) != 2:
+        raise ValueError(
+            "Silence compression requires exactly one safe sentence boundary"
+        )
+    if (
+        not isinstance(frame_ms, int)
+        or isinstance(frame_ms, bool)
+        or frame_ms < 10
+        or frame_ms > 200
+    ):
+        raise ValueError("Silence frame size must be an integer from 10 to 200 ms")
+    if (
+        trigger_seconds <= DEFAULT_NOTABLE_SILENCE_SECONDS
+        or target_seconds <= 0
+        or target_seconds >= trigger_seconds
+    ):
+        raise ValueError("Internal silence timing is invalid")
+    if removal_dbfs > silence_dbfs:
+        raise ValueError("Removal threshold must be no louder than silence threshold")
+
+    frame_samples = max(1, round(sample_rate * frame_ms / 1000))
+    frame_rms = np.asarray(
+        [
+            np.sqrt(np.mean(samples[start : start + frame_samples] ** 2))
+            for start in range(0, len(samples), frame_samples)
+        ]
+    )
+    silent = frame_rms <= 10.0 ** (float(silence_dbfs) / 20.0)
+    active = np.flatnonzero(~silent)
+    if not active.size:
+        raise ValueError("Silence compression requires speech on both sides")
+    first_active = int(active[0])
+    last_active = int(active[-1])
+    notable_frames = max(
+        1, int(np.ceil(DEFAULT_NOTABLE_SILENCE_SECONDS * sample_rate / frame_samples))
+    )
+    internal_runs = []
+    run_start = None
+    for index in range(first_active + 1, last_active):
+        if silent[index] and run_start is None:
+            run_start = index
+        if run_start is None:
+            continue
+        if silent[index] and index + 1 < last_active:
+            continue
+        run_end = index + 1 if silent[index] else index
+        if run_end - run_start >= notable_frames:
+            internal_runs.append((run_start, run_end))
+        run_start = None
+    if len(internal_runs) != 1:
+        raise ValueError(
+            "Silence compression requires exactly one notable internal silent span"
+        )
+
+    start_frame, end_frame = internal_runs[0]
+    span_start = start_frame * frame_samples
+    span_end = min(end_frame * frame_samples, len(samples))
+    span_samples = span_end - span_start
+    trigger_samples = round(trigger_seconds * sample_rate)
+    target_samples = round(target_seconds * sample_rate)
+    if span_samples <= trigger_samples:
+        raise ValueError("Internal silent span does not exceed the compression trigger")
+    removed_samples = span_samples - target_samples
+    retained_left = target_samples // 2
+    removed_start = span_start + retained_left
+    removed_end = removed_start + removed_samples
+    removable = samples[removed_start:removed_end]
+    removal_threshold = 10.0 ** (float(removal_dbfs) / 20.0)
+    if not removable.size or float(np.max(np.abs(removable))) > removal_threshold:
+        raise ValueError(
+            "Internal silent center contains audio above the safe removal threshold"
+        )
+    repaired = np.concatenate((samples[:removed_start], samples[removed_end:]))
+    return InternalSilenceCompression(
+        pcm=repaired,
+        source_span_start_sample=span_start,
+        source_span_end_sample=span_end,
+        removed_start_sample=removed_start,
+        removed_end_sample=removed_end,
+        removed_samples=removed_samples,
+        source_pause_seconds=round(span_samples / sample_rate, 6),
+        repaired_pause_seconds=round(target_samples / sample_rate, 6),
+    )
 
 
 def render_sentence_segments(

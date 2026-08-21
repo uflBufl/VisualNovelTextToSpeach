@@ -10,6 +10,7 @@ from vntts.authoring.failure_repair import (
     SENTENCE_BOUNDARY_SEGMENTATION,
     FailureRepairPolicy,
     FailureRepairPolicyError,
+    compress_single_sentence_boundary_silence,
     inline_sentence_pause_prompt,
     render_sentence_segments,
     safe_sentence_segments,
@@ -237,6 +238,57 @@ class AuthoringFailureRepairTest(unittest.TestCase):
         self.assertEqual(untouched.trailing_trimmed_samples, 0)
         self.assertTrue(np.array_equal(untouched.pcm, short))
         self.assertTrue(np.array_equal(silent_result.pcm, silent))
+
+    def test_internal_compression_removes_only_unique_silent_center(self):
+        speech = np.full(800, 0.2, dtype=np.float32)
+        samples = np.concatenate((speech, np.zeros(1_600), speech))
+
+        result = compress_single_sentence_boundary_silence(
+            samples,
+            1_000,
+            "The gate is already open. We should leave before dawn.",
+        )
+
+        self.assertEqual(result.source_span_start_sample, 800)
+        self.assertEqual(result.source_span_end_sample, 2_400)
+        self.assertEqual(result.removed_start_sample, 1_100)
+        self.assertEqual(result.removed_end_sample, 2_100)
+        self.assertEqual(result.removed_samples, 1_000)
+        self.assertEqual(result.source_pause_seconds, 1.6)
+        self.assertEqual(result.repaired_pause_seconds, 0.6)
+        self.assertEqual(len(result.pcm), 2_200)
+        self.assertTrue(np.all(result.pcm[800:1_400] == 0))
+        self.assertTrue(np.array_equal(result.pcm[:800], speech))
+        self.assertTrue(np.array_equal(result.pcm[-800:], speech))
+
+    def test_internal_compression_fails_closed_for_ambiguous_audio_or_text(self):
+        speech = np.full(800, 0.2, dtype=np.float32)
+        one_pause = np.concatenate((speech, np.zeros(1_600), speech))
+        with self.assertRaisesRegex(ValueError, "exactly one safe"):
+            compress_single_sentence_boundary_silence(
+                one_pause,
+                1_000,
+                "The gate is already open. We should leave before dawn. Stay alert.",
+            )
+
+        two_pauses = np.concatenate(
+            (speech, np.zeros(1_600), speech, np.zeros(1_600), speech)
+        )
+        with self.assertRaisesRegex(ValueError, "exactly one notable"):
+            compress_single_sentence_boundary_silence(
+                two_pauses,
+                1_000,
+                "The gate is already open. We should leave before dawn.",
+            )
+
+        quiet_transient = one_pause.copy()
+        quiet_transient[1_500] = 0.01
+        with self.assertRaisesRegex(ValueError, "safe removal threshold"):
+            compress_single_sentence_boundary_silence(
+                quiet_transient,
+                1_000,
+                "The gate is already open. We should leave before dawn.",
+            )
 
 
 if __name__ == "__main__":

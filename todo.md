@@ -121,16 +121,17 @@ The composite prompt is not a pacing repair: exact composite/single-reference
 controls both produced roughly three-second silence at sentence boundaries,
 while one-sentence controls remained below 0.25 seconds.
 
-- [ ] Compare segmentation against a conservative silence-compression candidate
-      on a small checksum-bound corpus before deciding whether waveform repair
-      is worth supporting. Compression may remove only the center of a single
-      punctuation-aligned silent span while retaining measured boundary context;
-      it must fail closed for ambiguous spans, low-level speech, breaths, music
-      or multiple unmatched boundaries. Keep it out of production unless blind
-      review shows equal content/voice and better cadence than re-rendered
-      segments. Never cut generation at the first long silence and publish the
-      prefix: valid words may follow it. A future streaming cutoff may only fail
-      the current already-segmented unit for bounded retry/fallback.
+- [ ] Publish and blind-review a small real checksum-bound corpus comparing
+      independent sentence segmentation with the implemented center-only
+      silence-compression candidate. The comparison primitive already rejects
+      ambiguous text, multiple notable spans and removable centers containing
+      low-level speech, breaths or music; it retains 600 ms of measured boundary
+      context and cannot mutate generation state. Keep it out of production
+      unless blind review shows equal words and speaker identity with better
+      cadence than segmentation. Never cut generation at the first long silence
+      and publish the prefix: valid words may follow it. A future streaming
+      cutoff may only fail the current already-segmented unit for bounded
+      retry/fallback.
 - [ ] Apply the selected repair policy to pending/failed Dobharchú items in a
       new config-addressed workspace. Review every transformed WAV and a
       deterministic clean control sample. Acceptance requires no internal pause
