@@ -19,6 +19,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.cohort_bundle import CohortReviewBundle
 from vntts.authoring.cohort_review import CohortReviewPlan
 from vntts.authoring.workbench import (
     ReviewItem,
@@ -1781,6 +1782,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.cohort_section.setChecked(True)
             dialog.show()
             self.application.processEvents()
+            self.assertFalse(dialog.cohort_section.isVisible())
+            self.assertTrue(dialog.specialist_section.isVisible())
             positions = tuple(
                 widget.pos().x()
                 for widget in (
@@ -1813,7 +1816,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_Left, cohort_modifiers)
             self.assertEqual(
                 dialog._selected_cohort_sample_queue_id,
-                sample_ids[0],
+                sample_ids[1],
             )
             QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_Right, cohort_modifiers)
             self.assertEqual(
@@ -1822,7 +1825,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             dialog.replay_selected_cohort_sample = Mock()
             QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_R, cohort_modifiers)
-            dialog.replay_selected_cohort_sample.assert_called_once_with()
+            dialog.replay_selected_cohort_sample.assert_not_called()
             self.application.processEvents()
 
             self.assertEqual(
@@ -1842,6 +1845,78 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.cohort_samples.item(1, 3).text(),
                 "Narrator -> Rhiannon",
             )
+
+    def test_workbench_builds_and_opens_dedicated_specialist_bundle(self):
+        class FakeSpecialistDialog:
+            def __init__(self):
+                self.finished = FakeSignal()
+                self.modal = None
+                self.open_calls = 0
+
+            def setModal(self, value):
+                self.modal = value
+
+            def open(self):
+                self.open_calls += 1
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            captured = []
+            bundle = CohortReviewBundle(
+                "a" * 64,
+                {"bundle_id": "a" * 64},
+            )
+            specialist = FakeSpecialistDialog()
+
+            def build(paths):
+                captured.append(tuple(paths))
+                return bundle
+
+            factory = Mock(return_value=specialist)
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                cohort_bundle_builder=build,
+                specialist_reviewer_factory=factory,
+            )
+
+            dialog.specialist_review.click()
+            self.wait_for(lambda: not dialog._cohort_active)
+
+            self.assertEqual(captured, [(workspace.resolve(),)])
+            factory.assert_called_once_with(bundle, dialog)
+            self.assertTrue(specialist.modal)
+            self.assertEqual(specialist.open_calls, 1)
+            self.assertFalse(dialog.specialist_review.isEnabled())
+            self.assertIn("aaaaaaaaaaaa", dialog.specialist_review_status.text())
+
+            with patch.object(dialog, "refresh") as refresh:
+                specialist.finished.emit(0)
+
+            refresh.assert_called_once_with()
+            self.assertTrue(dialog.specialist_review.isEnabled())
+
+    def test_specialist_bundle_build_failure_is_retriable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+
+            def fail(_paths):
+                raise RuntimeError("state changed during bundle build")
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                cohort_bundle_builder=fail,
+            )
+
+            dialog.specialist_review.click()
+            self.wait_for(lambda: not dialog._cohort_active)
+
+            self.assertTrue(dialog.specialist_review.isEnabled())
+            self.assertIn("state changed", dialog.specialist_review_status.text())
+            self.assertIn("retry", dialog.specialist_review_status.text().lower())
 
     def test_review_playback_preparation_keeps_qt_heartbeat_responsive(self):
         with TemporaryDirectory() as directory:

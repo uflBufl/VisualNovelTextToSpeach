@@ -11,9 +11,14 @@ Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
 - [ ] Remove duplicate cohort-review responsibility from the authoring
-      workbench. Open the dedicated specialist reviewer for bundles and keep the
-      workbench focused on generation/status plus exceptional item repair; do
-      not broaden queue, state, WAV, lease or final-review authority.
+      workbench. The visible workbench now builds one checksum-bound bundle from
+      the current immutable workspace in a background task, opens the modal
+      specialist reviewer, and refreshes after it closes. Delete the now-hidden
+      legacy cohort widgets, task branches and direct UI tests; retain only the
+      bundle launcher and specialist interface. Keep the workbench focused on
+      generation/status plus exceptional item repair, with exact bundle identity,
+      close/error recovery and no broader queue, state, WAV, lease or final-review
+      authority.
 - [ ] Normalize dashboard, compact controls, Settings, onboarding and readiness.
       Require one clear primary action, section/step orientation, adjacent
       disabled reasons, consistent path pickers, inline validation, and compact

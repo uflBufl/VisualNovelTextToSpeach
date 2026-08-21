@@ -62,6 +62,11 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.cohort_bundle import (
+    CohortReviewBundle,
+    build_cohort_review_bundle,
+)
+from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
 from vntts.authoring.cohort_review import (
     CohortReviewPlan,
     CohortReviewProjection,
@@ -483,6 +488,8 @@ class AuthoringWorkbenchDialog(QDialog):
         projection_thread_pool=None,
         playback_preparer=None,
         synchronous_projection=False,
+        cohort_bundle_builder=None,
+        specialist_reviewer_factory=None,
     ):
         super().__init__(parent)
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
@@ -562,6 +569,13 @@ class AuthoringWorkbenchDialog(QDialog):
         self._cohort_signals.finished.connect(self._cohort_task_finished)
         self._cohort_thread_pool = QThreadPool(self)
         self._cohort_thread_pool.setMaxThreadCount(1)
+        self._cohort_bundle_builder = (
+            cohort_bundle_builder or build_cohort_review_bundle
+        )
+        self._specialist_reviewer_factory = (
+            specialist_reviewer_factory or CohortReviewBundleDialog
+        )
+        self._specialist_reviewer = None
 
         self.setWindowTitle("VNTTS authoring workbench")
         self.setMinimumSize(900, 640)
@@ -789,6 +803,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self.cohort_accept = QPushButton("Accept cohort")
         self.cohort_reject = QPushButton("Reject cohort")
         self.cohort_expand = QPushButton("Expand sample")
+        self.specialist_review = QPushButton("Open specialist cohort reviewer")
+        self.specialist_review_status = AnnouncementLabel(
+            "Cohort decisions belong in the dedicated specialist reviewer."
+        )
+        self.specialist_review_status.setWordWrap(True)
 
         self.review_table = QTableWidget(0, 9)
         self.review_table.setHorizontalHeaderLabels(
@@ -933,6 +952,11 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Expand selected cohort sample",
                 "Record the complete current sample and build a larger bounded sample",
             ),
+            (
+                self.specialist_review,
+                "Open specialist cohort reviewer",
+                "Build one checksum-bound bundle from this workspace and review it in the dedicated interface",
+            ),
         ):
             self._accessible_button(button, name, description)
 
@@ -1011,6 +1035,15 @@ class AuthoringWorkbenchDialog(QDialog):
         self.cohort_section.content_layout.addLayout(cohort_navigation)
         self.cohort_section.content_layout.addLayout(cohort_actions)
         review_layout.addWidget(self.cohort_section)
+        self.cohort_section.hide()
+        self.specialist_section = DisclosureSection("Specialist cohort review")
+        self.specialist_section.setAccessibleName(
+            "Open the dedicated specialist cohort reviewer"
+        )
+        self.specialist_section.content_layout.addWidget(self.specialist_review_status)
+        self.specialist_section.content_layout.addWidget(self.specialist_review)
+        self.specialist_section.setChecked(True)
+        review_layout.addWidget(self.specialist_section)
 
         self.generation_section = DisclosureSection("Generation scope and controls")
         self.generation_section.setAccessibleName(
@@ -1071,6 +1104,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reference_stop.clicked.connect(self.stop_preview)
         self.review_play.clicked.connect(self.play_selected_outcome)
         self.review_stop.clicked.connect(self.stop_preview)
+        self.specialist_review.clicked.connect(self.open_specialist_reviewer)
         self.cohort_load.clicked.connect(self.load_cohort_plan)
         self.cohort_previous.clicked.connect(lambda: self._move_cohort_sample(-1))
         self.cohort_replay.clicked.connect(self.replay_selected_cohort_sample)
@@ -2037,6 +2071,15 @@ class AuthoringWorkbenchDialog(QDialog):
             self.workspace_directory,
         )
 
+    def open_specialist_reviewer(self):
+        if self._cohort_active or self._specialist_reviewer is not None:
+            return
+        self._start_cohort_task(
+            "specialist bundle",
+            self._cohort_bundle_builder,
+            (self.workspace_directory,),
+        )
+
     def _start_cohort_task(self, operation, function, *arguments):
         self._cohort_active = True
         self._cohort_serial += 1
@@ -2044,6 +2087,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.cohort_progress.setText(
             f"Cohort review: {operation} is validating exact workspace authority"
         )
+        if operation == "specialist bundle":
+            self.specialist_review_status.setText(
+                "Building a checksum-bound bundle from the current workspace..."
+            )
         self._update_cohort_actions()
         self._cohort_thread_pool.start(
             _CohortTask(
@@ -2059,6 +2106,41 @@ class AuthoringWorkbenchDialog(QDialog):
         if serial != self._cohort_serial or not self._cohort_active:
             return
         self._cohort_active = False
+        if operation == "specialist bundle":
+            if error is not None:
+                self.specialist_review_status.setText(
+                    f"Specialist review is blocked: {error}. Select Open to retry."
+                )
+                self._update_cohort_actions()
+                return
+            if not isinstance(result, CohortReviewBundle):
+                self.specialist_review_status.setText(
+                    "Specialist review is blocked: bundle builder returned no exact bundle."
+                )
+                self._update_cohort_actions()
+                return
+            try:
+                dialog = self._specialist_reviewer_factory(result, self)
+            except Exception as dialog_error:
+                self.specialist_review_status.setText(
+                    f"Specialist review is blocked: {dialog_error}. Select Open to retry."
+                )
+                self._update_cohort_actions()
+                return
+            self._specialist_reviewer = dialog
+            dialog.setModal(True)
+            dialog.finished.connect(
+                lambda _result, current=dialog: self._specialist_review_finished(
+                    current
+                )
+            )
+            self.specialist_review_status.setText(
+                f"Opened specialist bundle {result.bundle_id[:12]}; "
+                "the workbench will refresh after it closes."
+            )
+            dialog.open()
+            self._update_cohort_actions()
+            return
         if error is not None:
             self.cohort_progress.setText(f"Cohort review blocked: {error}")
             self._update_cohort_actions()
@@ -2088,6 +2170,16 @@ class AuthoringWorkbenchDialog(QDialog):
                 f"Cohort review blocked: unsupported {operation} result"
             )
         self._update_cohort_actions()
+
+    def _specialist_review_finished(self, dialog):
+        if dialog is not self._specialist_reviewer:
+            return
+        self._specialist_reviewer = None
+        self.specialist_review_status.setText(
+            "Specialist reviewer closed. Refreshing workspace outcomes..."
+        )
+        self._update_cohort_actions()
+        self.refresh()
 
     def _populate_cohort_choices(self):
         selected = self.cohort_choice.currentData(256)
@@ -2268,6 +2360,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self._update_cohort_actions()
 
     def _update_cohort_actions(self, *_arguments):
+        if hasattr(self, "specialist_review"):
+            self.specialist_review.setEnabled(
+                not self._cohort_active
+                and self._specialist_reviewer is None
+                and not self._review_save_active
+                and not self._projection_active
+                and not self._playback_prepare_active
+            )
         if not hasattr(self, "cohort_load"):
             return
         cohort = self._selected_cohort()
@@ -3172,30 +3272,6 @@ class AuthoringWorkbenchDialog(QDialog):
                     self.reject, lambda: self.review_selected("rejected")
                 ),
             ),
-            (
-                "Ctrl+Alt+Left",
-                lambda: self._trigger_if_enabled(
-                    self.cohort_previous, lambda: self._move_cohort_sample(-1)
-                ),
-            ),
-            (
-                "Ctrl+Alt+Right",
-                lambda: self._trigger_if_enabled(
-                    self.cohort_next, lambda: self._move_cohort_sample(1)
-                ),
-            ),
-            (
-                "Ctrl+Alt+R",
-                lambda: self._trigger_if_enabled(
-                    self.cohort_replay, lambda: self.replay_selected_cohort_sample()
-                ),
-            ),
-            (
-                "Ctrl+Alt+S",
-                lambda: self._trigger_if_enabled(
-                    self.cohort_stop, lambda: self.stop_preview()
-                ),
-            ),
         )
         for sequence, callback in bindings:
             shortcut = QShortcut(QKeySequence(sequence), self)
@@ -3222,18 +3298,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_stop,
             self.approve,
             self.reject,
-            self.cohort_section.header,
-            self.cohort_choice,
-            self.cohort_load,
-            self.cohort_samples,
-            self.cohort_previous,
-            self.cohort_replay,
-            self.cohort_stop,
-            self.cohort_next,
-            self.cohort_mark_bad,
-            self.cohort_accept,
-            self.cohort_reject,
-            self.cohort_expand,
+            self.specialist_section.header,
+            self.specialist_review,
             self.collection_tree,
             self.retry_failed,
             self.generate,
@@ -3259,8 +3325,8 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent):
         if self._cohort_active:
-            self.cohort_progress.setText(
-                "Close deferred: wait for checksum-bound cohort review work to finish"
+            self.specialist_review_status.setText(
+                "Close deferred: wait for the checksum-bound specialist bundle to finish"
             )
             event.ignore()
             return
