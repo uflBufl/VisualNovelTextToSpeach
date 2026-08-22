@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Give Settings section navigation, consistent browse controls for every
-      filesystem input, inline validation summary and per-setting restart
-      markers. Cover invalid paths, keyboard-only correction and compact layouts
-      at 100%, 150% and 200% DPI.
 - [ ] Add `step N of M`, inline validation summary and a compact-window scroll
       gate to onboarding while preserving its stale-safe diagnostics and guarded
       end-to-end test lifecycle. Verify keyboard and screen-reader operation at

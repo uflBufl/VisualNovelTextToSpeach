@@ -7,6 +7,8 @@ from unittest.mock import ANY, Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
 
 from vntts.app import (  # noqa: E402
@@ -576,7 +578,140 @@ class TrayApplicationTest(unittest.TestCase):
                 for region in dialog.settings_regions
             )
         )
+        self.assertEqual(
+            [
+                dialog.section_navigation.itemText(index)
+                for index in range(dialog.section_navigation.count())
+            ],
+            [region.title() for region in dialog.settings_regions],
+        )
+        dialog.show()
+        dialog.section_navigation.setFocus()
+        QTest.keyClick(dialog.section_navigation, Qt.Key.Key_End)
+        self.application.processEvents()
+        self.assertEqual(dialog.section_navigation.currentIndex(), 4)
+        self.assertGreater(dialog.settings_scroll.verticalScrollBar().value(), 0)
         dialog.deleteLater()
+
+    def test_settings_paths_share_browse_and_accessibility_contract(self):
+        dialog = SettingsDialog(AppSettings())
+        fields_and_buttons = (
+            (dialog.screenshot_directory, dialog.screenshot_browse_button),
+            (dialog.ocr_diagnostics_directory, dialog.diagnostics_browse_button),
+            (dialog.narrator_reference, dialog.narrator_reference_button),
+            (dialog.game_pack, dialog.game_pack_button),
+            (dialog.voice_manifest, dialog.voice_manifest_button),
+            (dialog.story_index, dialog.story_index_button),
+            (dialog.live_speaker_corpus, dialog.live_speaker_corpus_button),
+            (
+                dialog.generated_audio_manifest,
+                dialog.generated_audio_manifest_button,
+            ),
+        )
+
+        for field, button in fields_and_buttons:
+            self.assertTrue(field.accessibleName())
+            self.assertTrue(field.accessibleDescription())
+            self.assertTrue(button.accessibleName())
+            self.assertTrue(button.accessibleDescription())
+
+        with TemporaryDirectory() as temporary_directory:
+            selected = Path(temporary_directory) / "story.jsonl"
+            selected.touch()
+            with patch(
+                "vntts.app.QFileDialog.getOpenFileName",
+                return_value=(str(selected), ""),
+            ):
+                dialog.story_index_button.click()
+            self.assertEqual(dialog.story_index.text(), str(selected))
+        dialog.deleteLater()
+
+    def test_settings_inline_validation_lists_all_errors_and_focuses_first(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            narrator = root / "narrator.wav"
+            narrator.touch()
+            dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            dialog.screenshot_directory.clear()
+            dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
+            dialog.game_window.setCurrentText("")
+            dialog.speech_backend.setCurrentIndex(
+                dialog.speech_backend.findData("moss-tts")
+            )
+            dialog.narrator_reference.clear()
+            dialog.show()
+            self.application.processEvents()
+
+            dialog.validate_and_accept()
+            self.application.processEvents()
+
+            self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
+            self.assertIn("Screenshot directory", dialog.validation_summary.text())
+            self.assertIn("Capture source", dialog.validation_summary.text())
+            self.assertIn("Narrator reference", dialog.validation_summary.text())
+            self.assertEqual(dialog.section_navigation.currentIndex(), 1)
+            self.assertTrue(dialog.screenshot_directory.hasFocus())
+
+            dialog.screenshot_directory.setText(str(root))
+            dialog.game_window.setCurrentText("Reverse: 1999")
+            dialog.narrator_reference.setText(str(narrator))
+            self.assertEqual(
+                dialog.validation_summary.text(), "All settings are valid."
+            )
+            dialog.validate_and_accept()
+            self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
+            dialog.deleteLater()
+
+    def test_settings_restart_fields_are_marked_per_control(self):
+        dialog = SettingsDialog(AppSettings())
+        restart_labels = {
+            label.text()
+            for label in dialog.findChildren(QLabel)
+            if label.text().endswith("(restart required)")
+        }
+
+        self.assertEqual(
+            restart_labels,
+            {
+                "Speech engine (restart required)",
+                "Speech model (restart required)",
+                "TTS language (restart required)",
+                "Narrator reference (restart required)",
+                "Voice manifest (restart required)",
+                "Narrator speaker (restart required)",
+            },
+        )
+        for field in (
+            dialog.speech_backend,
+            dialog.tts_model,
+            dialog.tts_language,
+            dialog.narrator_reference,
+            dialog.voice_manifest,
+            dialog.narrator_speaker,
+        ):
+            self.assertIn("require", field.accessibleDescription().casefold())
+        dialog.deleteLater()
+
+    def test_settings_fit_scaled_fonts_with_navigation_and_validation_visible(self):
+        base_font = QApplication.font()
+        base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0
+        for scale in (1.0, 1.5, 2.0):
+            with self.subTest(scale=scale):
+                font = QFont(base_font)
+                font.setPointSizeF(base_size * scale)
+                dialog = SettingsDialog(AppSettings())
+                dialog.setFont(font)
+                dialog.resize(520, 420)
+                dialog.show()
+                self.application.processEvents()
+
+                self.assertTrue(dialog.section_navigation.isVisibleTo(dialog))
+                self.assertTrue(dialog.validation_summary.isVisibleTo(dialog))
+                self.assertTrue(dialog.settings_scroll.isVisibleTo(dialog))
+                self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+
+                dialog.close()
+                dialog.deleteLater()
 
     def test_settings_expose_output_volume_and_speech_rate(self):
         dialog = SettingsDialog(
@@ -746,7 +881,12 @@ class TrayApplicationTest(unittest.TestCase):
             "Screenshot directory": dialog.screenshot_directory,
             "Game window": dialog.game_window,
             "Diagnostics directory": dialog.ocr_diagnostics_directory,
-            "Narrator reference": dialog.narrator_reference,
+            "Narrator reference (restart required)": dialog.narrator_reference,
+            "Game pack": dialog.game_pack,
+            "Voice manifest (restart required)": dialog.voice_manifest,
+            "Story index": dialog.story_index,
+            "Live speaker corpus": dialog.live_speaker_corpus,
+            "Generated audio manifest": dialog.generated_audio_manifest,
         }
         labels = {
             label.text(): label
@@ -763,6 +903,11 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.refresh_windows_button,
             dialog.diagnostics_browse_button,
             dialog.narrator_reference_button,
+            dialog.game_pack_button,
+            dialog.voice_manifest_button,
+            dialog.story_index_button,
+            dialog.live_speaker_corpus_button,
+            dialog.generated_audio_manifest_button,
         ):
             self.assertTrue(button.accessibleName())
             self.assertTrue(button.accessibleDescription())
@@ -1005,10 +1150,10 @@ class TrayApplicationTest(unittest.TestCase):
         dialog = SettingsDialog(AppSettings())
         dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())
 
-        with patch("vntts.app.QMessageBox.warning") as warning:
-            dialog.validate_and_accept()
+        dialog.validate_and_accept()
 
-        self.assertIn("duplicates", warning.call_args.args[2])
+        self.assertIn("duplicates", dialog.validation_summary.text())
+        self.assertEqual(dialog.section_navigation.currentIndex(), 0)
         self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
         dialog.deleteLater()
 

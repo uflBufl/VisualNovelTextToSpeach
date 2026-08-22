@@ -2,6 +2,7 @@ import argparse
 import sys
 from dataclasses import asdict
 from multiprocessing import freeze_support
+from pathlib import Path
 from threading import Event, Thread
 
 from pynput import keyboard
@@ -330,45 +331,83 @@ class SettingsDialog(QDialog):
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
 
-        browse_button = QPushButton("Browse...")
-        browse_button.setAccessibleName("Browse for screenshot directory")
-        browse_button.setAccessibleDescription(
-            "Choose where captured screenshots are stored"
+        (
+            screenshot_layout,
+            self.screenshot_browse_button,
+        ) = self._path_selector(
+            self.screenshot_directory,
+            "Screenshot directory",
+            "Choose where captured screenshots are stored",
+            directory=True,
         )
-        browse_button.clicked.connect(self.browse_screenshot_directory)
-        screenshot_layout = QHBoxLayout()
-        screenshot_layout.addWidget(self.screenshot_directory)
-        screenshot_layout.addWidget(browse_button)
-        diagnostics_browse_button = QPushButton("Browse...")
-        diagnostics_browse_button.setAccessibleName("Browse for diagnostics directory")
-        diagnostics_browse_button.setAccessibleDescription(
-            "Choose where uncertain OCR frames are stored"
+        (
+            diagnostics_layout,
+            self.diagnostics_browse_button,
+        ) = self._path_selector(
+            self.ocr_diagnostics_directory,
+            "Diagnostics directory",
+            "Choose where uncertain OCR frames are stored",
+            directory=True,
         )
-        diagnostics_browse_button.clicked.connect(self.browse_ocr_diagnostics_directory)
-        diagnostics_layout = QHBoxLayout()
-        diagnostics_layout.addWidget(self.ocr_diagnostics_directory)
-        diagnostics_layout.addWidget(diagnostics_browse_button)
-        self.diagnostics_browse_button = diagnostics_browse_button
-        narrator_reference_button = QPushButton("Browse...")
-        narrator_reference_button.setAccessibleName("Browse for narrator reference")
-        narrator_reference_button.setAccessibleDescription(
-            "Choose a narrator audio reference file"
+        (
+            narrator_reference_layout,
+            self.narrator_reference_button,
+        ) = self._path_selector(
+            self.narrator_reference,
+            "Narrator reference",
+            "Choose an audio reference used for the narrator voice",
+            file_filter="Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
         )
-        narrator_reference_button.clicked.connect(self.browse_narrator_reference)
-        narrator_reference_layout = QHBoxLayout()
-        narrator_reference_layout.addWidget(self.narrator_reference)
-        narrator_reference_layout.addWidget(narrator_reference_button)
-        self.narrator_reference_button = narrator_reference_button
-        self.screenshot_browse_button = browse_button
+        game_pack_layout, self.game_pack_button = self._path_selector(
+            self.game_pack,
+            "Game pack",
+            "Choose a verified game-pack manifest",
+            file_filter="JSON files (*.json);;All files (*)",
+        )
+        voice_manifest_layout, self.voice_manifest_button = self._path_selector(
+            self.voice_manifest,
+            "Voice manifest",
+            "Choose the character voice manifest",
+            file_filter="JSON files (*.json);;All files (*)",
+        )
+        story_index_layout, self.story_index_button = self._path_selector(
+            self.story_index,
+            "Story index",
+            "Choose the story index used for source and generated audio routing",
+            file_filter="Story indexes (*.jsonl *.json);;All files (*)",
+        )
+        (
+            live_speaker_corpus_layout,
+            self.live_speaker_corpus_button,
+        ) = self._path_selector(
+            self.live_speaker_corpus,
+            "Live speaker corpus",
+            "Choose the explicit speaker corpus for sessions without a story index",
+            file_filter="JSON files (*.json);;All files (*)",
+        )
+        (
+            generated_audio_manifest_layout,
+            self.generated_audio_manifest_button,
+        ) = self._path_selector(
+            self.generated_audio_manifest,
+            "Generated audio manifest",
+            "Choose the generated-audio manifest used during live routing",
+            file_filter="JSON files (*.json);;All files (*)",
+        )
+        for field in (
+            self.speech_backend,
+            self.tts_model,
+            self.tts_language,
+            self.narrator_reference,
+            self.voice_manifest,
+            self.narrator_speaker,
+        ):
+            current = field.accessibleDescription().strip()
+            restart_description = (
+                "Changes to this setting require an application restart."
+            )
+            field.setAccessibleDescription(f"{current} {restart_description}".strip())
         self.refresh_windows_button = refresh_windows_button
-        self.screenshot_directory.setAccessibleName("Screenshot directory")
-        self.screenshot_directory.setAccessibleDescription(
-            "Directory where captured screenshots are stored"
-        )
-        self.ocr_diagnostics_directory.setAccessibleName("Diagnostics directory")
-        self.ocr_diagnostics_directory.setAccessibleDescription(
-            "Directory where uncertain OCR frames are stored"
-        )
 
         shortcuts_form = QFormLayout()
         shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
@@ -403,22 +442,41 @@ class SettingsDialog(QDialog):
         )
 
         speech_form = QFormLayout()
-        speech_form.addRow("Speech engine", self.speech_backend)
+        speech_form.addRow("Speech engine (restart required)", self.speech_backend)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
-        speech_form.addRow("Speech model", self.tts_model)
-        speech_form.addRow("TTS language", self.tts_language)
+        speech_form.addRow("Speech model (restart required)", self.tts_model)
+        speech_form.addRow("TTS language (restart required)", self.tts_language)
         _add_composite_form_row(
             speech_form,
-            "Narrator reference",
+            "Narrator reference (restart required)",
             self.narrator_reference,
             narrator_reference_layout,
         )
-        speech_form.addRow("Game pack", self.game_pack)
-        speech_form.addRow("Voice manifest", self.voice_manifest)
-        speech_form.addRow("Story index", self.story_index)
-        speech_form.addRow("Live speaker corpus", self.live_speaker_corpus)
-        speech_form.addRow("Generated audio manifest", self.generated_audio_manifest)
-        speech_form.addRow("Narrator speaker", self.narrator_speaker)
+        _add_composite_form_row(
+            speech_form, "Game pack", self.game_pack, game_pack_layout
+        )
+        _add_composite_form_row(
+            speech_form,
+            "Voice manifest (restart required)",
+            self.voice_manifest,
+            voice_manifest_layout,
+        )
+        _add_composite_form_row(
+            speech_form, "Story index", self.story_index, story_index_layout
+        )
+        _add_composite_form_row(
+            speech_form,
+            "Live speaker corpus",
+            self.live_speaker_corpus,
+            live_speaker_corpus_layout,
+        )
+        _add_composite_form_row(
+            speech_form,
+            "Generated audio manifest",
+            self.generated_audio_manifest,
+            generated_audio_manifest_layout,
+        )
+        speech_form.addRow("Narrator speaker (restart required)", self.narrator_speaker)
         speech_form.addRow("Voice profile", self.tts_profile)
         speech_form.addRow("XTTS license", self.xtts_terms)
 
@@ -458,8 +516,30 @@ class SettingsDialog(QDialog):
         )
         self.settings_scroll.setWidget(settings_content)
 
+        self.section_navigation = QComboBox()
+        self.section_navigation.addItems(
+            region.title() for region in self.settings_regions
+        )
+        self.section_navigation.setAccessibleName("Settings section")
+        self.section_navigation.setAccessibleDescription(
+            "Choose a settings section and scroll directly to it"
+        )
+        section_label = QLabel("Section")
+        section_label.setBuddy(self.section_navigation)
+        section_navigation_layout = QHBoxLayout()
+        section_navigation_layout.addWidget(section_label)
+        section_navigation_layout.addWidget(self.section_navigation, 1)
+
+        self.validation_summary = QLabel()
+        self.validation_summary.setWordWrap(True)
+        self.validation_summary.setAccessibleName("Settings validation summary")
+        self.validation_summary.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
         note_text = (
-            "Voice and model changes take effect after restarting the application."
+            "Fields marked 'restart required' are saved immediately and take "
+            "effect after restarting the application."
         )
         if sys.platform != "darwin":
             note_text = f"Hotkey changes take effect immediately. {note_text}"
@@ -471,8 +551,11 @@ class SettingsDialog(QDialog):
         )
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
 
         layout = QVBoxLayout(self)
+        layout.addLayout(section_navigation_layout)
+        layout.addWidget(self.validation_summary)
         layout.addWidget(self.settings_scroll, 1)
         layout.addWidget(note)
         layout.addWidget(buttons)
@@ -486,10 +569,13 @@ class SettingsDialog(QDialog):
             self.update_ocr_diagnostics_controls
         )
         self.auto_advance.toggled.connect(self.update_auto_advance_controls)
+        self.section_navigation.currentIndexChanged.connect(self.scroll_to_section)
+        self._connect_validation_updates()
         self.update_capture_controls()
         self.update_speech_backend_controls()
         self.update_ocr_diagnostics_controls()
         self.update_auto_advance_controls()
+        self.update_validation_summary()
 
     @staticmethod
     def _settings_region(title, form):
@@ -497,6 +583,194 @@ class SettingsDialog(QDialog):
         region = QGroupBox(title)
         region.setLayout(form)
         return region
+
+    def _path_selector(
+        self,
+        field,
+        name,
+        description,
+        *,
+        directory=False,
+        file_filter="All files (*)",
+    ):
+        field.setAccessibleName(name)
+        field.setAccessibleDescription(description)
+        button = QPushButton("Browse...")
+        button.setAccessibleName(f"Browse for {name.casefold()}")
+        button.setAccessibleDescription(description)
+        button.clicked.connect(
+            lambda _checked=False: self._browse_path(
+                field,
+                name,
+                directory=directory,
+                file_filter=file_filter,
+            )
+        )
+        field_layout = QHBoxLayout()
+        field_layout.addWidget(field)
+        field_layout.addWidget(button)
+        return field_layout, button
+
+    def _browse_path(
+        self,
+        field,
+        name,
+        *,
+        directory=False,
+        file_filter="All files (*)",
+    ):
+        if directory:
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                f"Choose {name.casefold()}",
+                field.text(),
+            )
+        else:
+            selected, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                f"Choose {name.casefold()}",
+                field.text(),
+                file_filter,
+            )
+        if selected:
+            field.setText(selected)
+
+    def scroll_to_section(self, index):
+        if 0 <= index < len(self.settings_regions):
+            self.settings_scroll.ensureWidgetVisible(
+                self.settings_regions[index],
+                0,
+                12,
+            )
+
+    def _connect_validation_updates(self):
+        for recorder in self.hotkey_recorders:
+            recorder.keySequenceChanged.connect(self.update_validation_summary)
+        for field in (
+            self.screenshot_directory,
+            self.ocr_diagnostics_directory,
+            self.tts_model,
+            self.tts_language,
+            self.narrator_reference,
+            self.game_pack,
+            self.voice_manifest,
+            self.story_index,
+            self.live_speaker_corpus,
+            self.generated_audio_manifest,
+            self.narrator_speaker,
+        ):
+            field.textChanged.connect(self.update_validation_summary)
+        for field in (
+            self.capture_mode,
+            self.game_window,
+            self.speech_backend,
+        ):
+            field.currentIndexChanged.connect(self.update_validation_summary)
+        self.game_window.currentTextChanged.connect(self.update_validation_summary)
+        for field in (
+            self.retain_uncertain_frames,
+            self.xtts_terms,
+        ):
+            field.toggled.connect(self.update_validation_summary)
+
+    @staticmethod
+    def _directory_validation_error(label, value):
+        text = value.strip()
+        if not text:
+            return f"{label}: choose a directory."
+        path = Path(text).expanduser()
+        if path.exists() and not path.is_dir():
+            return f"{label}: the selected path is not a directory."
+        parent = path if path.exists() else path.parent
+        if not parent.exists() or not parent.is_dir():
+            return f"{label}: the parent directory does not exist."
+        return None
+
+    @staticmethod
+    def _file_validation_error(label, value):
+        text = value.strip()
+        if not text:
+            return None
+        if not Path(text).expanduser().is_file():
+            return f"{label}: the selected file does not exist."
+        return None
+
+    def validation_errors(self):
+        errors = []
+
+        def add(section, widget, message):
+            if message:
+                errors.append((section, widget, message))
+
+        try:
+            validate_hotkey_assignments(self.hotkey_assignments())
+        except HotkeyValidationError as error:
+            add(0, self.read_hotkey, f"Keyboard shortcuts: {error}.")
+        add(
+            1,
+            self.screenshot_directory,
+            self._directory_validation_error(
+                "Screenshot directory", self.screenshot_directory.text()
+            ),
+        )
+        if self.retain_uncertain_frames.isChecked():
+            add(
+                1,
+                self.ocr_diagnostics_directory,
+                self._directory_validation_error(
+                    "OCR diagnostics directory",
+                    self.ocr_diagnostics_directory.text(),
+                ),
+            )
+        if (
+            self.capture_mode.currentData() == "window"
+            and not self.game_window.currentText().strip()
+        ):
+            add(1, self.game_window, "Capture source: select the game window.")
+        if (
+            self.speech_backend.currentData() == "coqui-xtts"
+            and "xtts" in self.tts_model.text().casefold()
+            and not self.xtts_terms.isChecked()
+        ):
+            add(2, self.xtts_terms, "XTTS license: accept the CPML terms.")
+        narrator_assignment = find_voice_assignment(
+            self.original_settings.voice_assignments,
+            "Narrator",
+        )
+        if (
+            self.speech_backend.currentData() == "moss-tts"
+            and not self.narrator_reference.text().strip()
+            and narrator_assignment is None
+        ):
+            add(
+                2,
+                self.narrator_reference,
+                "Narrator reference: choose a recording or assign an imported "
+                "character voice to Narrator before using MOSS-TTS.",
+            )
+        for label, field in (
+            ("Narrator reference", self.narrator_reference),
+            ("Game pack", self.game_pack),
+            ("Voice manifest", self.voice_manifest),
+            ("Story index", self.story_index),
+            ("Live speaker corpus", self.live_speaker_corpus),
+            ("Generated audio manifest", self.generated_audio_manifest),
+        ):
+            add(2, field, self._file_validation_error(label, field.text()))
+        return tuple(errors)
+
+    def update_validation_summary(self, *_args):
+        errors = self.validation_errors()
+        if errors:
+            self.validation_summary.setText(
+                f"Fix {len(errors)} setting(s) before saving:\n"
+                + "\n".join(f"- {message}" for _section, _widget, message in errors)
+            )
+            self.validation_summary.setStyleSheet("color: #b3261e; font-weight: 600;")
+        else:
+            self.validation_summary.setText("All settings are valid.")
+            self.validation_summary.setStyleSheet("")
+        return errors
 
     def _resize_for_available_screen(self):
         available = self.screen().availableGeometry()
@@ -510,32 +784,25 @@ class SettingsDialog(QDialog):
         )
 
     def browse_screenshot_directory(self):
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            "Choose screenshot directory",
-            self.screenshot_directory.text(),
+        self._browse_path(
+            self.screenshot_directory,
+            "Screenshot directory",
+            directory=True,
         )
-        if selected:
-            self.screenshot_directory.setText(selected)
 
     def browse_ocr_diagnostics_directory(self):
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            "Choose OCR diagnostics directory",
-            self.ocr_diagnostics_directory.text(),
+        self._browse_path(
+            self.ocr_diagnostics_directory,
+            "OCR diagnostics directory",
+            directory=True,
         )
-        if selected:
-            self.ocr_diagnostics_directory.setText(selected)
 
     def browse_narrator_reference(self):
-        path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "Choose narrator voice reference",
-            self.narrator_reference.text(),
-            "Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
+        self._browse_path(
+            self.narrator_reference,
+            "Narrator reference",
+            file_filter="Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
         )
-        if path:
-            self.narrator_reference.setText(path)
 
     def update_ocr_diagnostics_controls(self):
         enabled = self.retain_uncertain_frames.isChecked()
@@ -592,64 +859,12 @@ class SettingsDialog(QDialog):
         self.update_terms_control()
 
     def validate_and_accept(self):
-        try:
-            validate_hotkey_assignments(self.hotkey_assignments())
-        except HotkeyValidationError as error:
-            QMessageBox.warning(self, "Invalid hotkey", str(error))
-            return
-        if not self.screenshot_directory.text().strip():
-            QMessageBox.warning(
-                self,
-                "Invalid screenshot directory",
-                "Choose a directory for captured screenshots.",
-            )
-            return
-        if (
-            self.retain_uncertain_frames.isChecked()
-            and not self.ocr_diagnostics_directory.text().strip()
-        ):
-            QMessageBox.warning(
-                self,
-                "Invalid OCR diagnostics directory",
-                "Choose where uncertain OCR frames should be stored.",
-            )
-            return
-        if (
-            self.capture_mode.currentData() == "window"
-            and not self.game_window.currentText().strip()
-        ):
-            QMessageBox.warning(
-                self,
-                "No game window selected",
-                "Select the game window to capture.",
-            )
-            return
-        if (
-            self.speech_backend.currentData() == "coqui-xtts"
-            and "xtts" in self.tts_model.text().casefold()
-            and not self.xtts_terms.isChecked()
-        ):
-            QMessageBox.warning(
-                self,
-                "Model license not accepted",
-                "Accept the CPML terms before using XTTS.",
-            )
-            return
-        if (
-            self.speech_backend.currentData() == "moss-tts"
-            and not self.narrator_reference.text().strip()
-            and find_voice_assignment(
-                self.original_settings.voice_assignments,
-                "Narrator",
-            )
-            is None
-        ):
-            QMessageBox.warning(
-                self,
-                "Narrator reference required",
-                "Choose a narrator reference recording or assign an imported "
-                "character voice to Narrator before using MOSS-TTS.",
-            )
+        errors = self.update_validation_summary()
+        if errors:
+            section, widget, _message = errors[0]
+            self.section_navigation.setCurrentIndex(section)
+            self.scroll_to_section(section)
+            widget.setFocus(Qt.FocusReason.OtherFocusReason)
             return
         self.accept()
 
