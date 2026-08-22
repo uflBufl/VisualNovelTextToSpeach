@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Give each macOS permission row its own busy/error result and refresh after
-      returning from System Settings where the platform exposes a reliable
-      activation signal. Do not move synchronous platform calls off-thread by
-      pretending they are cancellable.
 - [ ] Add keyboard/accessibility coverage for calibration drawing/retry and
       multi-display/DPI geometry. Preserve frozen-screen capture, normalized
       coordinates and the explicit save-without-preview fallback.

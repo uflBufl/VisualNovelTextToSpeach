@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.macos_ui import MacOSPermissionsDialog, privacy_urls  # noqa: E402
@@ -40,7 +41,7 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
         dialog.deleteLater()
 
     def test_dialog_opens_specific_system_settings_page(self):
-        url_opener = Mock()
+        url_opener = Mock(return_value=True)
         dialog = MacOSPermissionsDialog(
             status_provider=lambda: {
                 "screen_capture": False,
@@ -53,6 +54,76 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
 
         opened_url = url_opener.call_args.args[0]
         self.assertEqual(opened_url.toString(), privacy_urls["accessibility"])
+        self.assertEqual(
+            dialog.accessibility_status.text(),
+            "System Settings opened; status will refresh on return.",
+        )
+        dialog.deleteLater()
+
+    def test_request_shows_row_local_busy_and_error_state(self):
+        dialog_holder = {}
+
+        def failing_request():
+            dialog = dialog_holder["dialog"]
+            self.assertFalse(dialog.request_screen_button.isEnabled())
+            self.assertEqual(dialog.screen_status.text(), "Requesting permission...")
+            raise RuntimeError("native request failed")
+
+        dialog = MacOSPermissionsDialog(
+            status_provider=lambda: {
+                "screen_capture": False,
+                "accessibility": False,
+            },
+            screen_request=failing_request,
+        )
+        dialog_holder["dialog"] = dialog
+
+        dialog.request_screen()
+
+        self.assertTrue(dialog.request_screen_button.isEnabled())
+        self.assertEqual(
+            dialog.screen_status.text(), "Request failed: native request failed"
+        )
+        self.assertEqual(dialog.accessibility_status.text(), "Not granted")
+        self.assertEqual(
+            dialog.screen_status.accessibleName(),
+            "Screen recording permission status",
+        )
+        dialog.deleteLater()
+
+    def test_status_refreshes_after_returning_from_system_settings(self):
+        status_provider = Mock(
+            side_effect=[
+                {"screen_capture": False, "accessibility": False},
+                {"screen_capture": True, "accessibility": False},
+            ]
+        )
+        dialog = MacOSPermissionsDialog(
+            status_provider=status_provider,
+            url_opener=Mock(return_value=True),
+        )
+
+        dialog.open_settings("screen_capture")
+        dialog.changeEvent(QEvent(QEvent.Type.WindowActivate))
+        self.application.processEvents()
+
+        self.assertEqual(dialog.screen_status.text(), "Granted")
+        self.assertEqual(status_provider.call_count, 2)
+        dialog.deleteLater()
+
+    def test_status_provider_failure_is_reported_without_modal_dialog(self):
+        dialog = MacOSPermissionsDialog(
+            status_provider=Mock(side_effect=RuntimeError("status unavailable")),
+        )
+
+        self.assertEqual(
+            dialog.screen_status.text(),
+            "Status check failed: status unavailable",
+        )
+        self.assertEqual(
+            dialog.accessibility_status.text(),
+            "Status check failed: status unavailable",
+        )
         dialog.deleteLater()
 
 
