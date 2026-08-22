@@ -686,6 +686,12 @@ cohort, missing decision, changed queue, state or WAV blocks instead of being
 guessed. Progress files cannot be symlinks and cannot introduce a workspace,
 cohort or item outside the published task.
 
+An `expand` recovery permits only deterministic growth of the cohort's sampled
+membership; line, text and WAV authority must remain exact. The reopened dialog
+restores the previously heard and bad sample ledger from that immutable
+decision, but leaves every newly added sample unheard. Requesting one more
+sample therefore never forces the operator to replay unchanged evidence.
+
 Use the same entry point without Qt to inspect that reconciled state:
 
 ```bash

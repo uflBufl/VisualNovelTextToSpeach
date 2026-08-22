@@ -52,6 +52,7 @@ from vntts.authoring.cohort_bundle import (
     load_cohort_review_bundle_samples,
     load_resumable_cohort_review_bundle,
     load_resumable_cohort_review_bundle_samples,
+    load_resumable_cohort_review_session,
     write_cohort_review_progress,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
@@ -476,7 +477,7 @@ class CohortReviewBundleDialog(QDialog):
         operation = self.sample_loader
         arguments = (self.bundle,)
         if self._resumable_load:
-            operation = load_resumable_cohort_review_bundle_samples
+            operation = load_resumable_cohort_review_session
             arguments = (self.bundle_path,)
         self.thread_pool.start(_Task(serial, operation, arguments, self._load_signals))
 
@@ -494,7 +495,12 @@ class CohortReviewBundleDialog(QDialog):
             return
         self.retry_load.hide()
         if self._resumable_load:
-            _resume, bundle, samples = result
+            _resume, bundle, samples, assessments = result
+            for assessment in assessments:
+                key = (assessment.workspace_id, assessment.cohort_id)
+                self.heard[key].add(assessment.queue_id)
+                if assessment.assessment == "bad":
+                    self.bad[key].add(assessment.queue_id)
             self._resumable_load = False
         else:
             bundle, samples = result

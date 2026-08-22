@@ -20,6 +20,7 @@ try:
     from tests import test_authoring_cohort_review
     from vntts.authoring.cohort_bundle import (
         build_cohort_review_bundle,
+        execute_cohort_bundle_decision,
         load_cohort_review_bundle_samples,
         write_cohort_review_bundle,
     )
@@ -284,6 +285,32 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             )
             self.assertEqual(reopened.bundle.document["cohort_count"], 1)
             self.assertTrue((root / "bundle.progress.json").is_file())
+
+    def test_published_expand_reopens_with_exact_prior_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            selected = bundle.document["cohorts"][0]
+            queue_id = selected["samples"][0]["queue_id"]
+            execute_cohort_bundle_decision(
+                bundle,
+                selected["workspace_id"],
+                selected["cohort_id"],
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={queue_id: "bad"},
+                next_clean_samples_per_bucket=2,
+            )
+
+            dialog = CohortReviewBundleDialog(publication)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+
+            self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("1 heard", dialog.sample_position.text())
 
     def test_published_decision_preloads_next_cohort_without_second_reload(self):
         with TemporaryDirectory() as directory:

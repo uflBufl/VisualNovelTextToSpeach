@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import vntts.authoring.cohort_bundle as cohort_bundle_module
 from tests import test_authoring_cohort_review
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
@@ -16,6 +17,7 @@ from vntts.authoring.cohort_bundle import (
     load_cohort_review_bundle_samples,
     load_resumable_cohort_review_bundle,
     load_resumable_cohort_review_bundle_samples,
+    load_resumable_cohort_review_session,
     refresh_cohort_review_bundle,
     write_cohort_review_bundle,
 )
@@ -195,6 +197,82 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         )
         self.assertEqual(expanded["plan"]["policy"]["clean_samples_per_bucket"], 2)
         self.assertEqual(unchanged["plan"]["policy"]["clean_samples_per_bucket"], 1)
+
+    def test_recovery_allows_only_deterministic_sample_membership_growth(self):
+        item = {
+            "queue_id": "queue-id",
+            "line_id": "line-id",
+            "text_sha256": "a" * 64,
+            "audio_sha256": "b" * 64,
+            "sampled": False,
+        }
+        cohort = {
+            "cohort_id": "c" * 64,
+            "identity": {"voice": "Narrator"},
+            "items": [item],
+            "sample_queue_ids": [],
+        }
+        original = {
+            "workspace_id": "workspace",
+            "plan": {
+                "workspace_config_fingerprint": "d" * 64,
+                "queue_sha256": "e" * 64,
+            },
+        }
+        rebuilt = {
+            "workspace_id": "workspace",
+            "workspace_config_fingerprint": "d" * 64,
+            "queue_sha256": "e" * 64,
+            "cohorts": [
+                {
+                    **cohort,
+                    "items": [{**item, "sampled": True}],
+                    "sample_queue_ids": ["queue-id"],
+                }
+            ],
+        }
+
+        cohort_bundle_module._validate_reconciled_source(
+            original,
+            [cohort],
+            rebuilt,
+        )
+        rebuilt["cohorts"][0]["items"][0]["audio_sha256"] = "f" * 64
+        with self.assertRaisesRegex(CohortReviewError, "authority changed"):
+            cohort_bundle_module._validate_reconciled_source(
+                original,
+                [cohort],
+                rebuilt,
+            )
+
+    def test_resume_restores_exact_expand_sample_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            selected = bundle.document["cohorts"][0]
+            queue_id = selected["samples"][0]["queue_id"]
+            execute_cohort_bundle_decision(
+                bundle,
+                selected["workspace_id"],
+                selected["cohort_id"],
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={queue_id: "bad"},
+                next_clean_samples_per_bucket=2,
+            )
+
+            _resume, _current, _samples, assessments = (
+                load_resumable_cohort_review_session(publication, persist=False)
+            )
+
+        self.assertEqual(len(assessments), 1)
+        self.assertEqual(assessments[0].workspace_id, selected["workspace_id"])
+        self.assertEqual(assessments[0].cohort_id, selected["cohort_id"])
+        self.assertEqual(assessments[0].queue_id, queue_id)
+        self.assertEqual(assessments[0].assessment, "bad")
 
     def test_cli_publishes_the_exact_bundle(self):
         with TemporaryDirectory() as directory:

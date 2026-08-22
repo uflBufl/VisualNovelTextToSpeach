@@ -105,6 +105,16 @@ class CohortReviewResume:
         }
 
 
+@dataclass(frozen=True)
+class CohortReviewRecoveredAssessment:
+    """One exact sample assessment recovered from expansion evidence."""
+
+    workspace_id: str
+    cohort_id: str
+    queue_id: str
+    assessment: str
+
+
 def build_cohort_review_bundle(
     workspace_directories,
     *,
@@ -295,6 +305,16 @@ def load_resumable_cohort_review_bundle_samples(publication, *, persist=True):
     resume = load_resumable_cohort_review_bundle(publication, persist=persist)
     current, samples = load_cohort_review_bundle_samples(resume.current)
     return resume, current, samples
+
+
+def load_resumable_cohort_review_session(publication, *, persist=True):
+    """Recover remaining samples plus exact prior expansion assessments."""
+    resume, current, samples = load_resumable_cohort_review_bundle_samples(
+        publication,
+        persist=persist,
+    )
+    assessments = _recovered_expansion_assessments(current)
+    return resume, current, samples, assessments
 
 
 def write_cohort_review_progress(publication, original, current):
@@ -503,6 +523,50 @@ def _source_cohort_decisions(workspace):
     return tuple(decisions)
 
 
+def _recovered_expansion_assessments(bundle):
+    document = _validated_bundle_document(bundle)
+    recovered = {}
+    for source in document["sources"]:
+        decisions = _source_cohort_decisions(Path(source["workspace"]))
+        clean_samples = source["plan"]["policy"]["clean_samples_per_bucket"]
+        for cohort in source["plan"]["cohorts"]:
+            target_identity = _cohort_target_identity(cohort["items"])
+            expansions = [
+                decision
+                for decision in decisions
+                if decision["decision"] == "expand"
+                and decision["cohort_id"] == cohort["cohort_id"]
+                and decision["next_clean_samples_per_bucket"] == clean_samples
+                and _cohort_target_identity(decision["target_items"]) == target_identity
+            ]
+            for decision in expansions:
+                assessed = {
+                    value["queue_id"]: value["assessment"]
+                    for value in decision["sample_assessments"]
+                }
+                for sample in decision["reviewed_samples"]:
+                    queue_id = sample["queue_id"]
+                    assessment = assessed.get(queue_id, "heard")
+                    is_bad = assessment == "bad"
+                    key = (source["workspace_id"], cohort["cohort_id"], queue_id)
+                    previous = recovered.get(key)
+                    if previous is not None and previous != is_bad:
+                        raise CohortReviewError(
+                            "Expanded cohort evidence has conflicting sample "
+                            f"assessments: {queue_id}"
+                        )
+                    recovered[key] = is_bad
+    return tuple(
+        CohortReviewRecoveredAssessment(
+            workspace_id=workspace_id,
+            cohort_id=cohort_id,
+            queue_id=queue_id,
+            assessment="bad" if is_bad else "heard",
+        )
+        for (workspace_id, cohort_id, queue_id), is_bad in sorted(recovered.items())
+    )
+
+
 def _reconciled_cohort_outcome(cohort, current, decisions):
     target = cohort["items"]
     target_identity = _cohort_target_identity(target)
@@ -613,6 +677,11 @@ def _cohort_target_identity(items):
     )
 
 
+def _cohort_item_authority(item):
+    """Return immutable item authority without mutable sample membership."""
+    return {key: value for key, value in item.items() if key != "sampled"}
+
+
 def _validate_reconciled_source(original, remaining, rebuilt):
     if (
         rebuilt["workspace_id"] != original["workspace_id"]
@@ -627,7 +696,9 @@ def _validate_reconciled_source(original, remaining, rebuilt):
         raise CohortReviewError("Reconciled cohort inventory changed")
     for cohort_id, old in expected.items():
         new = actual[cohort_id]
-        if new["identity"] != old["identity"] or new["items"] != old["items"]:
+        if new["identity"] != old["identity"] or [
+            _cohort_item_authority(value) for value in new["items"]
+        ] != [_cohort_item_authority(value) for value in old["items"]]:
             raise CohortReviewError("Reconciled cohort authority changed")
         if not set(old["sample_queue_ids"]).issubset(new["sample_queue_ids"]):
             raise CohortReviewError("Reconciled cohort lost required samples")

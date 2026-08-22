@@ -22,10 +22,13 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       silence failures, 29 reference-comparison items and one new pending WAV
       in the primary workspace. After terminal bundle decisions, inspect the
       exact source-local evidence before merging outcomes.
-      Read-only reconciliation on 2026-08-22 found 2/18 original cohorts
-      complete, leaving 16 cohorts, 78 samples and 91 items; the follow-up still
-      has all nine cohorts, 38 samples and 45 items. Check either task without
-      opening Qt using `uv run vntts-review-bundle BUNDLE.json --status`.
+      Read-only reconciliation on 2026-08-22 now finds 17/18 original cohorts
+      terminal. The one remaining expanded Narrator cohort covers 22 WAVs with
+      19 required samples: immutable decision evidence restores 18 already
+      heard samples and both prior bad markers, leaving exactly one new sample
+      unheard. The follow-up still has all nine cohorts, 38 samples and 45
+      items. Check either task without opening Qt using
+      `uv run vntts-review-bundle BUNDLE.json --status`.
 - [ ] Review the published version-2 operator task for all 29
       reference-comparison failures at
       `authoring/review-bundles/current-character-story-reference-audit-v2`
