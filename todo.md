@@ -215,7 +215,11 @@ while one-sentence controls remained below 0.25 seconds.
       Character Story/Anecdote, including Rhiannon, Hotelier, Adar Llwch Gwin
       Fledgling, narration, the short `I, erhm ...` line with transient
       nameplate/background OCR noise, an installed source-audio line, and a
-      line that requires live synthesis.
+      line that requires live synthesis. Use `vntts-capture-live-replay` so
+      accepted cropped frames and their SHA-256 ledger are retained, then review
+      every inferred boundary in `capture-report.json` before replaying
+      `corpus.json`; the tool deliberately does not turn capture-time OCR into a
+      declared-observation fixture.
 - [ ] Pass a 20-line real-game acceptance run with no stale or duplicate speech,
       no skipped dialogue, no early advances over original audio, and automatic
       progression of every tested dialogue line.

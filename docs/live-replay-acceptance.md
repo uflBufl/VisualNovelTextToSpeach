@@ -1,5 +1,50 @@
 # Device-free live replay acceptance
 
+## Capture a real session without synthesizing audio
+
+`vntts-capture-live-replay OUTPUT_DIRECTORY` uses the current calibrated
+capture mode, dialog region, OCR language/confidence and correction dictionary,
+but does not initialize TTS or open an audio device. It stores every distinct
+accepted cropped frame as lossless PNG with SHA-256. Duplicate fingerprints and
+low-confidence observations are counted but not substituted for accepted OCR.
+Press Ctrl+C to finish, or bound an unattended diagnostic capture with
+`--duration-seconds` or `--max-accepted-frames`. The output directory must not
+already exist.
+
+Pass `--story-index STORY.jsonl` to bind unique exact/normalized-exact lines to
+their canonical line ID, text and declared source-audio metadata. The index is
+hashed before capture and rechecked before publication. A changed or symlinked
+index, output, frame or result blocks publication. `capture-report.json` is
+written first and `corpus.json` last as the completion marker; interrupted or
+failed sessions deliberately retain their partial frame directory for diagnosis
+but are not replayable until a valid corpus exists.
+
+The recorder groups only same-speaker observations where the old and new text
+are prefix-related, which models a typewriter reveal without fuzzy rewriting.
+An empty observation ends the active group. A speaker change or non-prefix text
+replacement starts a new group and is recorded as an inferred boundary that
+requires operator review. The recorder cannot prove that two consecutive
+identical lines are distinct, so `capture-report.json` must be checked against
+the actual playthrough before the corpus counts as acceptance evidence. Saved
+frame specifications contain path and SHA only: replay reruns OCR on the real
+pixels and never treats capture-time text as a declared observation fixture.
+
+Example:
+
+```bash
+uv run vntts-capture-live-replay \
+  "$HOME/vntts-evidence/rhiannon-20-lines" \
+  --name "Rhiannon Character Story real capture" \
+  --story-index /path/to/story-index.jsonl
+
+uv run vntts-replay-live \
+  "$HOME/vntts-evidence/rhiannon-20-lines/corpus.json"
+```
+
+The capture command makes the real-game gate reproducible; it does not itself
+prove OCR quality, correct dialogue boundaries, source/generated route choice,
+audio-device behavior or the 20-line acceptance target.
+
 `vntts-replay-live` exercises the production split capture/OCR state machine,
 incremental dialogue tracker, exact story resolver, generated-audio verifier,
 route preparation/playback outcome, completion seal and auto-advance state.

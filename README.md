@@ -313,6 +313,14 @@ advance integrity. See
 [live replay acceptance](docs/live-replay-acceptance.md) for the evidence
 boundary and remaining manual/device gates.
 
+To collect the missing real-game evidence without loading TTS, run
+`uv run vntts-capture-live-replay OUTPUT_DIRECTORY --story-index STORY.jsonl`
+and play the target dialogue manually; Ctrl+C validates and publishes the
+captured corpus. The recorder writes lossless checksum-bound cropped frames,
+rerunnable OCR rather than declared observations, exact story matches when
+unique and a separate report of every inferred boundary that still needs human
+confirmation. It never treats the capture alone as a passed gameplay gate.
+
 Run the objective PCM reference preflight before using a cloning reference:
 
 ```sh
