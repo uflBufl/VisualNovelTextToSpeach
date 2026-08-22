@@ -8,11 +8,15 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts_artifacts.atomic_io import atomic_write_json
+
 from vntts.authoring.bulk_generation import ReviewAuthority, _canonical_sha256
 from vntts.authoring.cohort_review import (
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
     _load_document,
+    _validate_decision_against_plan,
+    _validated_decision_document,
     _validated_plan_document,
     _write_document_no_replace,
     build_cohort_review_decision,
@@ -23,6 +27,8 @@ from vntts.authoring.workbench import ReviewItem
 
 COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
 COHORT_REVIEW_BUNDLE_VERSION = 2
+COHORT_REVIEW_PROGRESS_SCHEMA = "vntts.authoring-cohort-review-progress"
+COHORT_REVIEW_PROGRESS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,35 @@ class CohortBundleSample:
     cohort_id: str
     required_reason: str
     item: ReviewItem
+
+
+@dataclass(frozen=True)
+class CohortReviewResume:
+    """One published task reconciled with its exact current source evidence."""
+
+    publication: Path
+    progress: Path
+    original: CohortReviewBundle
+    current: CohortReviewBundle
+    progress_current: bool
+
+    def to_dict(self):
+        original = self.original.document
+        current = self.current.document
+        return {
+            "publication": str(self.publication),
+            "progress": str(self.progress),
+            "root_bundle_id": self.original.bundle_id,
+            "current_bundle_id": self.current.bundle_id,
+            "progress_current": self.progress_current,
+            "original_cohorts": original["cohort_count"],
+            "completed_cohorts": (original["cohort_count"] - current["cohort_count"]),
+            "remaining_cohorts": current["cohort_count"],
+            "original_samples": original["sample_item_count"],
+            "remaining_samples": current["sample_item_count"],
+            "original_items": original["pending_item_count"],
+            "remaining_items": current["pending_item_count"],
+        }
 
 
 def build_cohort_review_bundle(
@@ -183,6 +218,121 @@ def load_cohort_review_bundle(path):
     return CohortReviewBundle(document["bundle_id"], document)
 
 
+def cohort_review_progress_path(publication):
+    """Return the mutable progress sibling for one immutable publication."""
+    path = Path(publication).expanduser().resolve()
+    return path.with_name(f"{path.stem}.progress.json")
+
+
+def reconcile_cohort_review_bundle(bundle):
+    """Project exact terminal cohort evidence onto an immutable publication."""
+    original = (
+        bundle
+        if isinstance(bundle, CohortReviewBundle)
+        else load_cohort_review_bundle(bundle)
+    )
+    document = _validated_bundle_document(original)
+    next_sources = []
+    for source in document["sources"]:
+        reconciled = _reconcile_cohort_source(source)
+        if reconciled is not None:
+            next_sources.append(reconciled)
+    return _assemble_bundle(next_sources)
+
+
+def _reconcile_cohort_source(source):
+    workspace = Path(source["workspace"])
+    current = _current_source_snapshot(source)
+    decisions = _source_cohort_decisions(workspace)
+    remaining = []
+    clean_samples = source["plan"]["policy"]["clean_samples_per_bucket"]
+    for cohort in source["plan"]["cohorts"]:
+        outcome = _reconciled_cohort_outcome(cohort, current, decisions)
+        if outcome["terminal"]:
+            continue
+        remaining.append(cohort)
+        clean_samples = max(clean_samples, outcome["clean_samples_per_bucket"])
+    _assert_current_source_snapshot(current)
+    if not remaining:
+        return None
+    rebuilt = _reconciled_plan_document(
+        source,
+        current,
+        remaining,
+        clean_samples_per_bucket=clean_samples,
+    )
+    _validate_reconciled_source(source, remaining, rebuilt)
+    return workspace, rebuilt
+
+
+def load_resumable_cohort_review_bundle(publication, *, persist=False):
+    """Load or recover the current exact successor of a published bundle."""
+    path = Path(publication).expanduser().resolve()
+    original = load_cohort_review_bundle(path)
+    current = reconcile_cohort_review_bundle(original)
+    progress = cohort_review_progress_path(path)
+    progress_current = False
+    if progress.is_symlink():
+        raise CohortReviewError("Cohort review progress cannot be a symlink")
+    if progress.is_file():
+        saved = _load_document(progress, "cohort review progress")
+        saved_bundle = _validated_progress_document(saved, original)
+        progress_current = saved_bundle.bundle_id == current.bundle_id
+    if persist and not progress_current:
+        write_cohort_review_progress(path, original, current)
+        progress_current = True
+    return CohortReviewResume(
+        path,
+        progress,
+        original,
+        current,
+        progress_current,
+    )
+
+
+def load_resumable_cohort_review_bundle_samples(publication, *, persist=True):
+    """Recover progress and load the exact remaining operator sample."""
+    resume = load_resumable_cohort_review_bundle(publication, persist=persist)
+    current, samples = load_cohort_review_bundle_samples(resume.current)
+    return resume, current, samples
+
+
+def write_cohort_review_progress(publication, original, current):
+    """Atomically checkpoint one source-verified successor bundle."""
+    path = Path(publication).expanduser().resolve()
+    root = (
+        original
+        if isinstance(original, CohortReviewBundle)
+        else load_cohort_review_bundle(path)
+    )
+    candidate = CohortReviewBundle(
+        _validated_bundle_document(current)["bundle_id"],
+        _validated_bundle_document(current),
+    )
+    expected = reconcile_cohort_review_bundle(root)
+    if candidate.bundle_id != expected.bundle_id:
+        raise CohortReviewError(
+            "Cohort review progress does not match current source evidence"
+        )
+    progress = cohort_review_progress_path(path)
+    if progress.is_symlink():
+        raise CohortReviewError("Cohort review progress cannot be a symlink")
+    body = {
+        "schema": COHORT_REVIEW_PROGRESS_SCHEMA,
+        "schema_version": COHORT_REVIEW_PROGRESS_VERSION,
+        "root_bundle_id": root.bundle_id,
+        "current_bundle": candidate.document,
+    }
+    document = {**body, "progress_id": _canonical_sha256(body)}
+    try:
+        atomic_write_json(progress, document, sort_keys=True)
+    except OSError as error:
+        raise CohortReviewError(
+            f"Unable to save cohort review progress {progress}: {error}"
+        ) from error
+    return progress
+
+
 def refresh_cohort_review_bundle(bundle):
     """Rebuild every source plan and require the bundle to remain exact."""
     document = _validated_bundle_document(bundle)
@@ -262,6 +412,321 @@ def load_cohort_review_bundle_samples(bundle):
     if len(samples) != current.document["sample_item_count"]:
         raise CohortReviewError("Review bundle live sample count changed")
     return current, tuple(samples)
+
+
+def _current_source_snapshot(source):
+    workspace = Path(source["workspace"])
+    configuration_path = workspace / "workspace.json"
+    if configuration_path.is_symlink():
+        raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
+    configuration_payload = _read_bytes(
+        configuration_path, "bundle workspace configuration"
+    )
+    configuration = _decode_json(
+        configuration_payload,
+        "bundle workspace configuration",
+    )
+    if (
+        not isinstance(configuration, dict)
+        or configuration.get("workspace_id") != source["workspace_id"]
+        or configuration.get("config_fingerprint")
+        != source["plan"]["workspace_config_fingerprint"]
+    ):
+        raise CohortReviewError("Bundle workspace configuration identity changed")
+    queue_path = _contained_source_path(
+        workspace, configuration.get("queue"), "bundle queue"
+    )
+    output = _contained_source_path(
+        workspace, configuration.get("output"), "bundle output"
+    )
+    state_path = output / "generation-state.json"
+    if (
+        queue_path.is_symlink()
+        or state_path.is_symlink()
+        or output.is_symlink()
+        or not output.is_dir()
+    ):
+        raise CohortReviewError("Bundle queue, state and output must be safe")
+    queue_payload = _read_bytes(queue_path, "bundle queue")
+    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
+    if queue_sha256 != source["plan"]["queue_sha256"]:
+        raise CohortReviewError("Bundle source queue changed")
+    state_payload = _read_bytes(state_path, "bundle state")
+    state = _decode_json(state_payload, "bundle state")
+    if (
+        not isinstance(state, dict)
+        or state.get("queue_sha256") != queue_sha256
+        or not isinstance(state.get("items"), dict)
+    ):
+        raise CohortReviewError("Bundle source state identity changed")
+    return {
+        "output": output,
+        "configuration_path": configuration_path,
+        "configuration_sha256": hashlib.sha256(configuration_payload).hexdigest(),
+        "queue_path": queue_path,
+        "queue_sha256": queue_sha256,
+        "state_path": state_path,
+        "queue": _decode_queue_records(queue_payload),
+        "items": state["items"],
+        "state_sha256": hashlib.sha256(state_payload).hexdigest(),
+        "artifacts": [],
+    }
+
+
+def _source_cohort_decisions(workspace):
+    evidence = workspace / "cohort-reviews"
+    if not evidence.exists():
+        return ()
+    if evidence.is_symlink() or not evidence.is_dir():
+        raise CohortReviewError("Cohort review evidence directory is unsafe")
+    decisions = []
+    seen = set()
+    for path in sorted(evidence.iterdir(), key=lambda value: value.name):
+        if not path.name.startswith("decision-") or path.suffix != ".json":
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise CohortReviewError("Cohort review decision evidence is unsafe")
+        decision = _validated_decision_document(
+            _load_document(path, "cohort review decision")
+        )
+        if path.name != f"decision-{decision['decision_id']}.json":
+            raise CohortReviewError("Cohort review decision filename is inconsistent")
+        if decision["decision_id"] in seen:
+            raise CohortReviewError("Cohort review decision identity is duplicated")
+        seen.add(decision["decision_id"])
+        plan_path = evidence / f"plan-{decision['plan_id']}.json"
+        if plan_path.is_symlink() or not plan_path.is_file():
+            raise CohortReviewError("Cohort review decision plan is unavailable")
+        plan = _validated_plan_document(_load_document(plan_path, "cohort review plan"))
+        _validate_decision_against_plan(plan, decision)
+        decisions.append(decision)
+    return tuple(decisions)
+
+
+def _reconciled_cohort_outcome(cohort, current, decisions):
+    target = cohort["items"]
+    target_identity = _cohort_target_identity(target)
+    matching = [
+        decision
+        for decision in decisions
+        if decision["cohort_id"] == cohort["cohort_id"]
+        and _cohort_target_identity(decision["target_items"]) == target_identity
+    ]
+    expansions = [value for value in matching if value["decision"] == "expand"]
+    terminal = [value for value in matching if value["decision"] != "expand"]
+    terminal_statuses = {value["projection_review_status"] for value in terminal}
+    if len(terminal_statuses) > 1:
+        raise CohortReviewError("Cohort review evidence has conflicting decisions")
+    clean_samples = max(
+        [
+            value["next_clean_samples_per_bucket"]
+            for value in expansions
+            if value["next_clean_samples_per_bucket"] is not None
+        ]
+        or [1]
+    )
+    observed = []
+    for item in target:
+        queue_id = item["queue_id"]
+        queue_item = current["queue"].get(queue_id)
+        result = current["items"].get(queue_id)
+        if not isinstance(queue_item, dict) or not isinstance(result, dict):
+            raise CohortReviewError(f"Bundle cohort item disappeared: {queue_id}")
+        text = queue_item.get("text")
+        if (
+            not isinstance(text, str)
+            or hashlib.sha256(text.encode("utf-8")).hexdigest() != item["text_sha256"]
+            or result.get("file_sha256") != item["audio_sha256"]
+        ):
+            raise CohortReviewError(f"Bundle cohort item identity changed: {queue_id}")
+        audio = _contained_source_path(
+            current["output"], result.get("path"), f"bundle item {queue_id} WAV"
+        )
+        if (
+            not audio.is_file()
+            or hashlib.sha256(
+                _read_bytes(audio, f"bundle item {queue_id} WAV")
+            ).hexdigest()
+            != item["audio_sha256"]
+        ):
+            raise CohortReviewError(f"Bundle cohort WAV changed: {queue_id}")
+        current["artifacts"].append((audio, item["audio_sha256"], queue_id))
+        observed.append((result.get("status"), result.get("review_status")))
+    pending = set(observed) == {("generated", "pending_review")}
+    if pending:
+        if terminal:
+            raise CohortReviewError("Terminal cohort evidence was not fully committed")
+        return {
+            "terminal": False,
+            "clean_samples_per_bucket": clean_samples,
+        }
+    if not terminal or len(terminal_statuses) != 1:
+        raise CohortReviewError("Cohort changed without exact terminal evidence")
+    review_status = next(iter(terminal_statuses))
+    expected = (
+        ("approved", "approved")
+        if review_status == "approved"
+        else ("generated", "rejected")
+    )
+    if set(observed) != {expected}:
+        raise CohortReviewError("Cohort terminal state is mixed or inconsistent")
+    return {"terminal": True, "clean_samples_per_bucket": clean_samples}
+
+
+def _assert_current_source_snapshot(current):
+    if (
+        hashlib.sha256(
+            _read_bytes(current["configuration_path"], "bundle workspace configuration")
+        ).hexdigest()
+        != current["configuration_sha256"]
+        or hashlib.sha256(
+            _read_bytes(current["queue_path"], "bundle queue")
+        ).hexdigest()
+        != current["queue_sha256"]
+        or hashlib.sha256(
+            _read_bytes(current["state_path"], "bundle state")
+        ).hexdigest()
+        != current["state_sha256"]
+    ):
+        raise CohortReviewError("Bundle source changed during progress recovery")
+    for path, expected, queue_id in current["artifacts"]:
+        if (
+            hashlib.sha256(_read_bytes(path, f"bundle item {queue_id} WAV")).hexdigest()
+            != expected
+        ):
+            raise CohortReviewError(
+                f"Bundle cohort WAV changed during recovery: {queue_id}"
+            )
+
+
+def _cohort_target_identity(items):
+    return tuple(
+        sorted(
+            (
+                value.get("queue_id"),
+                value.get("line_id"),
+                value.get("text_sha256"),
+                value.get("audio_sha256"),
+            )
+            for value in items
+        )
+    )
+
+
+def _validate_reconciled_source(original, remaining, rebuilt):
+    if (
+        rebuilt["workspace_id"] != original["workspace_id"]
+        or rebuilt["workspace_config_fingerprint"]
+        != original["plan"]["workspace_config_fingerprint"]
+        or rebuilt["queue_sha256"] != original["plan"]["queue_sha256"]
+    ):
+        raise CohortReviewError("Reconciled source identity changed")
+    expected = {value["cohort_id"]: value for value in remaining}
+    actual = {value["cohort_id"]: value for value in rebuilt["cohorts"]}
+    if set(actual) != set(expected):
+        raise CohortReviewError("Reconciled cohort inventory changed")
+    for cohort_id, old in expected.items():
+        new = actual[cohort_id]
+        if new["identity"] != old["identity"] or new["items"] != old["items"]:
+            raise CohortReviewError("Reconciled cohort authority changed")
+        if not set(old["sample_queue_ids"]).issubset(new["sample_queue_ids"]):
+            raise CohortReviewError("Reconciled cohort lost required samples")
+
+
+def _reconciled_plan_document(
+    source,
+    current,
+    remaining,
+    *,
+    clean_samples_per_bucket,
+):
+    cohorts = []
+    selected = []
+    for old in remaining:
+        items = [{**value, "sampled": False} for value in old["items"]]
+        sampled = {value["queue_id"] for value in items if value["technical_flags"]}
+        for bucket in ("short", "medium", "long"):
+            eligible = [
+                value
+                for value in items
+                if not value["technical_flags"] and value["length_bucket"] == bucket
+            ]
+            eligible.sort(
+                key=lambda value: (
+                    hashlib.sha256(
+                        f"{old['cohort_id']}\0{value['queue_id']}".encode("utf-8")
+                    ).hexdigest(),
+                    value["queue_id"],
+                )
+            )
+            sampled.update(
+                value["queue_id"] for value in eligible[:clean_samples_per_bucket]
+            )
+        selected.extend(value["queue_id"] for value in items)
+        cohorts.append(
+            {
+                **old,
+                "sample_queue_ids": sorted(sampled),
+                "items": [
+                    {**value, "sampled": value["queue_id"] in sampled}
+                    for value in items
+                ],
+            }
+        )
+    policy = {
+        **source["plan"]["policy"],
+        "clean_samples_per_bucket": clean_samples_per_bucket,
+        "selected_queue_ids": sorted(selected),
+    }
+    body = {
+        "schema": source["plan"]["schema"],
+        "schema_version": source["plan"]["schema_version"],
+        "policy": policy,
+        "workspace_id": source["workspace_id"],
+        "workspace_config_fingerprint": source["plan"]["workspace_config_fingerprint"],
+        "queue_sha256": source["plan"]["queue_sha256"],
+        "state_sha256": current["state_sha256"],
+        "cohort_count": len(cohorts),
+        "pending_item_count": len(selected),
+        "sample_item_count": sum(len(value["sample_queue_ids"]) for value in cohorts),
+        "blocked_item_count": 0,
+        "blocked_items": [],
+        "cohorts": sorted(cohorts, key=lambda value: value["cohort_id"]),
+    }
+    document = {**body, "plan_id": _canonical_sha256(body)}
+    return _validated_plan_document(document)
+
+
+def _validated_progress_document(document, original):
+    if (
+        not isinstance(document, dict)
+        or set(document)
+        != {
+            "schema",
+            "schema_version",
+            "root_bundle_id",
+            "current_bundle",
+            "progress_id",
+        }
+        or document.get("schema") != COHORT_REVIEW_PROGRESS_SCHEMA
+        or document.get("schema_version") != COHORT_REVIEW_PROGRESS_VERSION
+        or document.get("root_bundle_id") != original.bundle_id
+    ):
+        raise CohortReviewError("Cohort review progress is malformed")
+    body = {name: value for name, value in document.items() if name != "progress_id"}
+    if document.get("progress_id") != _canonical_sha256(body):
+        raise CohortReviewError("Cohort review progress identity changed")
+    current = _validated_bundle_document(document["current_bundle"])
+    original_workspaces = {
+        value["workspace_id"]: value["workspace"]
+        for value in original.document["sources"]
+    }
+    if any(
+        original_workspaces.get(value["workspace_id"]) != value["workspace"]
+        for value in current["sources"]
+    ):
+        raise CohortReviewError("Cohort review progress source is not in publication")
+    return CohortReviewBundle(current["bundle_id"], current)
 
 
 def _load_source_sample_records(source, source_cohorts):
@@ -448,8 +913,8 @@ def execute_cohort_bundle_decision(
     next_clean_samples_per_bucket=None,
 ):
     """Record and project one exact source-local decision from a bundle."""
-    current = refresh_cohort_review_bundle(bundle)
-    document = current.document
+    document = _validated_bundle_document(bundle)
+    current = CohortReviewBundle(document["bundle_id"], document)
     source = next(
         (
             value
@@ -487,31 +952,33 @@ def execute_cohort_bundle_decision(
         source["workspace"], source_plan, cohort_decision
     )
     expanded = not hasattr(projection, "queue_ids")
+    if not expanded:
+        next_sources = []
+        for value in document["sources"]:
+            if value["workspace_id"] != workspace_id:
+                next_sources.append((value["workspace"], value["plan"]))
+                continue
+            reconciled = _reconcile_cohort_source(value)
+            if reconciled is not None:
+                next_sources.append(reconciled)
+        next_bundle = _assemble_bundle(next_sources)
+        return CohortBundleProjection(
+            bundle_id=current.bundle_id,
+            workspace_id=workspace_id,
+            cohort_id=cohort_id,
+            queue_ids=projection.queue_ids,
+            review_status=projection.review_status,
+            next_bundle=next_bundle,
+        )
     next_sources = []
     for value in document["sources"]:
         if value["workspace_id"] != workspace_id:
             next_sources.append((value["workspace"], value["plan"]))
             continue
-        selected_queue_ids = value["plan"]["policy"].get("selected_queue_ids")
-        if not expanded and selected_queue_ids is not None:
-            reviewed = set(projection.queue_ids)
-            selected_queue_ids = [
-                queue_id for queue_id in selected_queue_ids if queue_id not in reviewed
-            ]
-            if not selected_queue_ids:
-                continue
         next_sources.append(
             (
                 value["workspace"],
-                projection.document
-                if expanded
-                else build_cohort_review_plan(
-                    value["workspace"],
-                    clean_samples_per_bucket=value["plan"]["policy"][
-                        "clean_samples_per_bucket"
-                    ],
-                    queue_ids=selected_queue_ids,
-                ).document,
+                projection.document,
             )
         )
     next_bundle = _assemble_bundle(next_sources)

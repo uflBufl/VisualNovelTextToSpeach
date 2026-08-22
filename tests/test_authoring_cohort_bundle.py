@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests import test_authoring_cohort_review
 from vntts.authoring.cli import main as authoring_main
@@ -13,6 +14,8 @@ from vntts.authoring.cohort_bundle import (
     execute_cohort_bundle_decision,
     load_cohort_review_bundle,
     load_cohort_review_bundle_samples,
+    load_resumable_cohort_review_bundle,
+    load_resumable_cohort_review_bundle_samples,
     refresh_cohort_review_bundle,
     write_cohort_review_bundle,
 )
@@ -142,6 +145,27 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             self.assertEqual(projection.next_bundle.document["pending_item_count"], 1)
             self.assertEqual(other[1].read_bytes(), other_state_before)
 
+    def test_terminal_decision_does_not_rebuild_full_workspace_plans(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            selected = bundle.document["cohorts"][0]
+
+            with patch(
+                "vntts.authoring.cohort_bundle.build_cohort_review_plan",
+                side_effect=AssertionError("terminal decision rebuilt a full plan"),
+            ):
+                projection = execute_cohort_bundle_decision(
+                    bundle,
+                    selected["workspace_id"],
+                    selected["cohort_id"],
+                    "accepted",
+                    reviewed_queue_ids=[selected["samples"][0]["queue_id"]],
+                )
+
+        self.assertEqual(projection.review_status, "approved")
+        self.assertEqual(projection.next_bundle.document["cohort_count"], 1)
+
     def test_expand_is_source_local_and_keeps_pending_authority(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))
@@ -212,3 +236,115 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             _current, samples = load_cohort_review_bundle_samples(bundle)
 
         self.assertEqual(len(samples), 2)
+
+    def test_resume_recovers_terminal_decision_committed_before_checkpoint(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            selected = bundle.document["cohorts"][0]
+            execute_cohort_bundle_decision(
+                bundle,
+                selected["workspace_id"],
+                selected["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[selected["samples"][0]["queue_id"]],
+            )
+
+            resume = load_resumable_cohort_review_bundle(publication, persist=True)
+            progress_before = resume.progress.read_bytes()
+            loaded, current, samples = load_resumable_cohort_review_bundle_samples(
+                publication
+            )
+            repeated = load_resumable_cohort_review_bundle(publication, persist=True)
+            self.assertEqual(resume.to_dict()["completed_cohorts"], 1)
+            self.assertEqual(resume.to_dict()["remaining_cohorts"], 1)
+            self.assertTrue(resume.progress_current)
+            self.assertTrue(resume.progress.is_file())
+            self.assertEqual(loaded.current.bundle_id, current.bundle_id)
+            self.assertEqual(len(samples), 1)
+            self.assertTrue(repeated.progress_current)
+            self.assertEqual(repeated.progress.read_bytes(), progress_before)
+
+    def test_resume_recovers_a_fully_completed_multi_step_session(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            first = bundle.document["cohorts"][0]
+            projection = execute_cohort_bundle_decision(
+                bundle,
+                first["workspace_id"],
+                first["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[first["samples"][0]["queue_id"]],
+            )
+            second = projection.next_bundle.document["cohorts"][0]
+            execute_cohort_bundle_decision(
+                projection.next_bundle,
+                second["workspace_id"],
+                second["cohort_id"],
+                "rejected",
+                reviewed_queue_ids=[second["samples"][0]["queue_id"]],
+            )
+
+            resume = load_resumable_cohort_review_bundle(publication, persist=True)
+            _loaded, current, samples = load_resumable_cohort_review_bundle_samples(
+                publication
+            )
+
+            self.assertEqual(resume.to_dict()["completed_cohorts"], 2)
+            self.assertEqual(resume.to_dict()["remaining_cohorts"], 0)
+            self.assertEqual(current.document["workspace_count"], 0)
+            self.assertEqual(samples, ())
+
+    def test_resume_rejects_state_change_without_exact_decision_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            state_path = sources[0][1]
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = sources[0][2]
+            state["items"][queue_id]["status"] = "approved"
+            state["items"][queue_id]["review_status"] = "approved"
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(CohortReviewError, "without exact terminal"):
+                load_resumable_cohort_review_bundle(publication)
+
+    def test_resume_rejects_changed_wav_and_progress_symlink(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            source = bundle.document["sources"][0]
+            queue_id = source["plan"]["cohorts"][0]["items"][0]["queue_id"]
+            workspace = Path(source["workspace"])
+            state = json.loads(
+                (workspace / "generated-audio/generation-state.json").read_text()
+            )
+            audio = workspace / "generated-audio" / state["items"][queue_id]["path"]
+            audio.write_bytes(b"changed")
+
+            with self.assertRaisesRegex(CohortReviewError, "WAV changed"):
+                load_resumable_cohort_review_bundle(publication)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            progress = root / "bundle.progress.json"
+            progress.symlink_to(root / "outside.json")
+            with self.assertRaisesRegex(CohortReviewError, "cannot be a symlink"):
+                load_resumable_cohort_review_bundle(publication)

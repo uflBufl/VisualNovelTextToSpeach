@@ -161,6 +161,17 @@ pending. The original version-2 bundle remains the review authority for the
 earlier 99 WAVs; the follow-up bundle does not ask the operator to hear them
 again.
 
+The published tasks are resumable through the checksum-bound progress contract
+documented in `authoring-workspaces.md`; use
+`vntts-review-bundle BUNDLE.json --status` rather than inferring completion from
+a past UI session. A read-only
+reconciliation on 2026-08-22 found two of the original 18 specialist cohorts
+terminal, leaving 16 cohorts, 78 required samples and 91 exact pending WAVs.
+The follow-up task still has all nine cohorts, 38 required samples and 45 WAVs
+remaining. The Dobharchú natural-expansion task separately has all four cohorts
+and 24 samples/items remaining. No progress file or review decision was written
+by that census.
+
 The 29 primary failures classified as `reference_comparison` are one separate
 reference-quality decision, not 29 repeated auditions. Their immutable audit
 groups exact failed-item identities by synthesis control: 23 Narrator cases

@@ -2,6 +2,8 @@ import os
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -19,8 +21,10 @@ try:
     from vntts.authoring.cohort_bundle import (
         build_cohort_review_bundle,
         load_cohort_review_bundle_samples,
+        write_cohort_review_bundle,
     )
     from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
+    from vntts.authoring.cohort_bundle_ui import main as review_bundle_main
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
         raise
@@ -242,6 +246,45 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 "1 of 2 cohorts completed in this review session",
             )
 
+    def test_published_bundle_reopens_from_persisted_successor(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(
+                publication,
+                confirmer=lambda *_args: True,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(first.item.queue_id)
+            dialog._update_actions()
+
+            dialog.apply_decision("accepted")
+            self.wait_for(
+                lambda: (
+                    not dialog._decision_active
+                    and not dialog._load_active
+                    and dialog.cohort_choice.count() == 1
+                ),
+                timeout=5,
+            )
+            dialog.close()
+            self.application.processEvents()
+
+            reopened = CohortReviewBundleDialog(publication)
+            reopened.show()
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            self.assertNotEqual(
+                reopened._selected_sample().workspace_id,
+                first.workspace_id,
+            )
+            self.assertEqual(reopened.bundle.document["cohort_count"], 1)
+            self.assertTrue((root / "bundle.progress.json").is_file())
+
     def test_retry_recovers_a_transient_load_error(self):
         calls = []
 
@@ -263,6 +306,28 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertIn("READY", dialog.status.text())
+
+    def test_status_reports_progress_without_opening_a_window(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = review_bundle_main([str(publication), "--status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"remaining_cohorts": 2', stdout.getvalue())
+        self.assertEqual(
+            [
+                widget
+                for widget in self.application.topLevelWidgets()
+                if isinstance(widget, CohortReviewBundleDialog) and widget.isVisible()
+            ],
+            [],
+        )
 
 
 if __name__ == "__main__":

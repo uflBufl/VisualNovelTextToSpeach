@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -45,6 +47,9 @@ from vntts.authoring.cohort_bundle import (
     execute_cohort_bundle_decision,
     load_cohort_review_bundle,
     load_cohort_review_bundle_samples,
+    load_resumable_cohort_review_bundle,
+    load_resumable_cohort_review_bundle_samples,
+    write_cohort_review_progress,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
 
@@ -94,6 +99,37 @@ def _execute_bundle_decision_task(
     )
 
 
+def _execute_and_checkpoint_bundle_decision(
+    publication,
+    original,
+    bundle,
+    workspace_id,
+    cohort_id,
+    decision,
+    reviewed,
+    assessments,
+    next_clean_samples_per_bucket,
+):
+    projection = _execute_bundle_decision_task(
+        bundle,
+        workspace_id,
+        cohort_id,
+        decision,
+        reviewed,
+        assessments,
+        next_clean_samples_per_bucket,
+    )
+    try:
+        write_cohort_review_progress(
+            publication,
+            original,
+            projection.next_bundle,
+        )
+    except Exception as error:
+        return projection, error
+    return projection, None
+
+
 class CohortReviewBundleDialog(QDialog):
     """One non-blocking review surface over several immutable workspaces."""
 
@@ -108,14 +144,25 @@ class CohortReviewBundleDialog(QDialog):
         confirmer=None,
     ):
         super().__init__(parent)
-        self.bundle = (
-            load_cohort_review_bundle(bundle)
-            if not isinstance(bundle, CohortReviewBundle)
-            else bundle
-        )
+        self.bundle_path = None
+        self.original_bundle = None
+        if isinstance(bundle, CohortReviewBundle):
+            self.bundle = bundle
+        else:
+            self.bundle_path = Path(bundle).expanduser().resolve()
+            self.original_bundle = load_cohort_review_bundle(self.bundle_path)
+            self.bundle = self.original_bundle
         self.sample_loader = sample_loader
         self.playback_preparer = playback_preparer
         self.decision_executor = decision_executor
+        self._resumable_load = (
+            self.bundle_path is not None
+            and sample_loader is load_cohort_review_bundle_samples
+        )
+        self._checkpoint_decisions = (
+            self.bundle_path is not None
+            and decision_executor is _execute_bundle_decision_task
+        )
         self.confirmer = confirmer or self._confirm_decision
         self.samples = ()
         self.samples_by_cohort = {}
@@ -373,9 +420,12 @@ class CohortReviewBundleDialog(QDialog):
         serial = self._load_serial
         self.status.setText("Loading and checksum-validating all bundle sources...")
         self._update_actions()
-        self.thread_pool.start(
-            _Task(serial, self.sample_loader, (self.bundle,), self._load_signals)
-        )
+        operation = self.sample_loader
+        arguments = (self.bundle,)
+        if self._resumable_load:
+            operation = load_resumable_cohort_review_bundle_samples
+            arguments = (self.bundle_path,)
+        self.thread_pool.start(_Task(serial, operation, arguments, self._load_signals))
 
     def _load_finished(self, serial, result, error):
         if serial != self._load_serial or not self._load_active:
@@ -390,7 +440,11 @@ class CohortReviewBundleDialog(QDialog):
             self._update_actions()
             return
         self.retry_load.hide()
-        self.bundle, self.samples = result
+        if self._resumable_load:
+            _resume, self.bundle, self.samples = result
+            self._resumable_load = False
+        else:
+            self.bundle, self.samples = result
         grouped = defaultdict(list)
         for sample in self.samples:
             grouped[(sample.workspace_id, sample.cohort_id)].append(sample)
@@ -737,21 +791,25 @@ class CohortReviewBundleDialog(QDialog):
             f"SAVING {decision}: audio replay and navigation remain available"
         )
         self._update_actions()
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.decision_executor,
-                (
-                    self.bundle,
-                    key[0],
-                    key[1],
-                    decision,
-                    reviewed,
-                    assessments,
-                    current_clean + 1 if decision == "expand" else None,
-                ),
-                self._decision_signals,
+        operation = self.decision_executor
+        arguments = (
+            self.bundle,
+            key[0],
+            key[1],
+            decision,
+            reviewed,
+            assessments,
+            current_clean + 1 if decision == "expand" else None,
+        )
+        if self._checkpoint_decisions:
+            operation = _execute_and_checkpoint_bundle_decision
+            arguments = (
+                self.bundle_path,
+                self.original_bundle,
+                *arguments,
             )
+        self.thread_pool.start(
+            _Task(serial, operation, arguments, self._decision_signals)
         )
 
     def _decision_finished(self, serial, result, error):
@@ -764,9 +822,15 @@ class CohortReviewBundleDialog(QDialog):
             )
             self._update_actions()
             return
+        checkpoint_error = None
+        if self._checkpoint_decisions:
+            result, checkpoint_error = result
         self.bundle = result.next_bundle
         self.status.setText(
             "SAVED: source-local authority committed; refreshing exact bundle"
+            if checkpoint_error is None
+            else "SAVED: source authority committed; progress checkpoint will be "
+            f"recovered on reopen ({checkpoint_error})"
         )
         self.reload_bundle()
 
@@ -1005,12 +1069,35 @@ def launch_cohort_review_bundle(bundle_path):
     return application.exec()
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Review or inspect a checksum-bound specialist cohort bundle"
+    )
+    parser.add_argument("bundle", type=Path)
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="print reconciled review progress without opening Qt",
+    )
+    return parser
+
+
 def main(argv=None):
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1:
-        print("usage: vntts-review-bundle BUNDLE.json", file=sys.stderr)
-        return 2
-    return launch_cohort_review_bundle(Path(arguments[0]))
+    arguments = build_parser().parse_args(argv)
+    if arguments.status:
+        try:
+            status = load_resumable_cohort_review_bundle(
+                arguments.bundle,
+                persist=False,
+            )
+        except Exception as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print(
+            json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        return 0
+    return launch_cohort_review_bundle(arguments.bundle)
 
 
 if __name__ == "__main__":
@@ -1019,6 +1106,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "CohortReviewBundleDialog",
+    "build_parser",
     "launch_cohort_review_bundle",
     "main",
 ]

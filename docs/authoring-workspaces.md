@@ -668,6 +668,34 @@ exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 and no bad marker, `Reject cohort` requires heard evidence, and `Need another
 sample` is enabled only when the exact cohort has an unsampled clean item.
 
+The publication remains immutable, while `BUNDLE.progress.json` is its mutable
+checksum-bound continuation pointer. After every terminal or expanded cohort
+decision, the worker commits source-local evidence/state first and then writes
+the exact successor bundle to that sibling. Reopening the original publication
+loads the successor automatically. If the process stops in the narrow window
+after the authoritative review commit but before the progress write, recovery
+scans only immutable `cohort-reviews/plan-*.json` and
+`cohort-reviews/decision-*.json` evidence, requires every target queue/text/WAV
+identity and a uniform terminal state, and reconstructs the successor. A mixed
+cohort, missing decision, changed queue, state or WAV blocks instead of being
+guessed. Progress files cannot be symlinks and cannot introduce a workspace,
+cohort or item outside the published task.
+
+Use the same entry point without Qt to inspect that reconciled state:
+
+```bash
+uv run vntts-review-bundle BUNDLE.json --status
+```
+
+The JSON reports the immutable root/current IDs plus original, completed and
+remaining cohort/sample/item counts. Status is read-only and does not create a
+progress file; ordinary GUI open persists a missing or recovered checkpoint.
+Recovery uses one source-state/queue snapshot and rehashes only the exact WAVs
+published by this task. On the current ten-source 99-item specialist bundle it
+reconciled in about 0.12 seconds and loaded all 78 remaining operator samples in
+another 0.06 seconds; the previous full-workspace rebuild path exceeded 60
+seconds and is deliberately not used.
+
 Every cohort still shown in the bundle is required. The selector numbers it as
 `Required N/M`, and the operation status states both why an action is disabled
 and what will happen next. While a decision is being saved, only conflicting
@@ -705,10 +733,13 @@ largest current 22-target cohort reduced authority capture from 0.0364 seconds
 with repeated per-target state/queue reads to 0.0096 seconds with one shared
 state and queue snapshot, a 3.8x improvement. Every target item and WAV digest
 is still checked, followed by a final state/queue/WAV rehash. The full decision
-can remain visibly longer because it also performs the durable state/manifest
-transaction and rebuilds the next checksum-bound bundle; those phases now stay
-off the Qt thread and are explained in the dialog. Expansion still rebuilds
-the selected source plan because its sample policy intentionally changes.
+performs the durable state/manifest transaction and writes the next
+checksum-bound progress document off the Qt thread. A terminal decision no
+longer rebuilds every workspace before committing or fully projects the
+selected workspace afterwards: its embedded plan and transaction retain
+state/queue/item/WAV/lease authority, then the fast exact-evidence reconciler
+derives the successor. Expansion still rebuilds only the selected source plan
+because its sample policy intentionally changes.
 
 A read-only acceptance on 2026-08-20 against the current 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining

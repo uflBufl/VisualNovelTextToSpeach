@@ -5,11 +5,6 @@ sections after their implementation has been verified and committed.
 
 ## Offline authoring and application responsibility split
 
-### P1 - Audit and normalize every operator interface
-
-Follow the shared contract, per-surface findings and completion gates in
-[`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
-
 ### P0 - Complete the current Character Story in fail-closed order
 
 Follow the checkpoint, dependencies and acceptance boundaries in
@@ -27,6 +22,10 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       silence failures, 29 reference-comparison items and one new pending WAV
       in the primary workspace. After terminal bundle decisions, inspect the
       exact source-local evidence before merging outcomes.
+      Read-only reconciliation on 2026-08-22 found 2/18 original cohorts
+      complete, leaving 16 cohorts, 78 samples and 91 items; the follow-up still
+      has all nine cohorts, 38 samples and 45 items. Check either task without
+      opening Qt using `uv run vntts-review-bundle BUNDLE.json --status`.
 - [ ] Review the published version-2 operator task for all 29
       reference-comparison failures at
       `authoring/review-bundles/current-character-story-reference-audit-v2`
@@ -44,6 +43,8 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       offers every opaque candidate plus `Neither candidate is acceptable`, and
       saves in a background worker without disabling playback. After all four
       decisions, inspect the canonical decision-set ID and private mapping. The
+      2026-08-22 read-only census found 0/4 group decisions, so this task still
+      requires a complete operator pass. The
       UI requires every candidate in the current group to reach end of playback
       before either candidate or Neither becomes available; affected line IDs
       remain collapsed unless technical detail is requested. After all groups,
@@ -106,8 +107,10 @@ Follow the evidence-backed order and invariants in
       exactly 24 pending WAVs in four cohorts, comprising 17 direct natural
       outputs and seven bounded sentence repairs. Every item is currently a
       mandatory sample because it is technical-attention evidence or the
-      deterministic clean sample for its exact portrait/reference cohort. Apply
-      only explicit source-local cohort decisions, then merge terminal reviewed
+      deterministic clean sample for its exact portrait/reference cohort. None
+      of its four cohorts is terminal yet (24/24 samples remain according to the
+      2026-08-22 read-only status reconciliation). Apply only explicit
+      source-local cohort decisions, then merge terminal reviewed
       repair outcomes into successor
       `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`; preserve its four
       existing approvals, the 15 primary approvals, the two accepted portrait
