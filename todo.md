@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Normalize the dashboard and compact controls around one primary live/read
-      mode action, a separate transport group and an adjacent persistent reason
-      whenever initialization or recovery disables an action. Verify keyboard,
-      screen-reader and compact layouts at 100%, 150% and 200% DPI.
 - [ ] Give Settings section navigation, consistent browse controls for every
       filesystem input, inline validation summary and per-setting restart
       markers. Cover invalid paths, keyboard-only correction and compact layouts

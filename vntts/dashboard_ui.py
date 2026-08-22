@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -40,6 +41,7 @@ class ControlDashboard(QMainWindow):
         self.keep_running_on_close = settings.keep_running_on_close
         self._quitting = False
         self._live = False
+        self._ready = False
         self.setWindowTitle("Visual Novel Text to Speech")
         self.setMinimumWidth(620)
         self.setMinimumHeight(340)
@@ -48,6 +50,12 @@ class ControlDashboard(QMainWindow):
         self.status = QLabel("Starting...")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("font-weight: 600; font-size: 15px;")
+        self.action_reason = QLabel()
+        self.action_reason.setWordWrap(True)
+        self.action_reason.setAccessibleName("Reading control availability")
+        self.action_reason.setAccessibleDescription(
+            "Explains why reading controls are available or unavailable"
+        )
         self.mode = QLabel("Stopped")
         self.speaker = QLabel("Narrator")
         self.voice = QLabel("Not loaded")
@@ -94,6 +102,17 @@ class ControlDashboard(QMainWindow):
         self.stop_button.setStyleSheet(
             "QPushButton { color: #a21818; font-weight: 600; }"
         )
+        self.live_button.setDefault(True)
+        self.live_button.setStyleSheet("font-weight: 700;")
+        self.live_button.setAccessibleDescription(
+            "Primary action: start or stop continuous live reading"
+        )
+        self.read_button.setAccessibleDescription(
+            "Read the currently visible dialogue once"
+        )
+        self.stop_button.setAccessibleDescription(
+            "Immediately stop live capture and queued speech"
+        )
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
@@ -101,13 +120,18 @@ class ControlDashboard(QMainWindow):
         self.repeat_button.clicked.connect(self.repeat_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
 
-        primary = QHBoxLayout()
-        primary.addWidget(self.read_button, 2)
-        primary.addWidget(self.live_button, 2)
-        primary.addWidget(self.pause_button)
-        primary.addWidget(self.skip_button)
-        primary.addWidget(self.repeat_button)
-        primary.addWidget(self.stop_button)
+        reading_group = QGroupBox("Reading")
+        reading = QHBoxLayout(reading_group)
+        reading.addWidget(self.live_button, 2)
+        reading.addWidget(self.read_button)
+
+        transport_group = QGroupBox("Playback")
+        transport = QHBoxLayout(transport_group)
+        transport.addWidget(self.pause_button)
+        transport.addWidget(self.skip_button)
+        transport.addWidget(self.repeat_button)
+        transport.addStretch()
+        transport.addWidget(self.stop_button)
 
         setup_buttons = (
             ("Check readiness", self.readiness_requested),
@@ -116,11 +140,14 @@ class ControlDashboard(QMainWindow):
             ("Diagnostics and logs", self.diagnostics_requested),
             ("Settings", self.settings_requested),
         )
-        setup = QHBoxLayout()
+        setup_group = QGroupBox("Setup and support")
+        setup = QHBoxLayout(setup_group)
+        self.setup_buttons = []
         for label, signal in setup_buttons:
             button = QPushButton(label)
             button.clicked.connect(signal.emit)
             setup.addWidget(button)
+            self.setup_buttons.append(button)
         quit_button = QPushButton("Quit VNTTS")
         quit_button.clicked.connect(self.request_quit)
         setup.addWidget(quit_button)
@@ -142,8 +169,10 @@ class ControlDashboard(QMainWindow):
         layout.addLayout(header)
         layout.addLayout(details)
         layout.addWidget(card)
-        layout.addLayout(primary)
-        layout.addLayout(setup)
+        layout.addWidget(self.action_reason)
+        layout.addWidget(reading_group)
+        layout.addWidget(transport_group)
+        layout.addWidget(setup_group)
 
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -186,12 +215,18 @@ class ControlDashboard(QMainWindow):
 
     def set_status(self, message):
         self.status.setText(message)
+        if not self._ready:
+            self._set_action_reason(
+                f"Reading controls are unavailable: {message}. "
+                "Run Check readiness or open Settings to recover."
+            )
 
     def set_dialogue(self, speaker, text):
         self.speaker.setText(speaker or "Narrator")
         self.dialogue.setText(text or "No dialogue detected")
 
-    def set_ready(self, ready):
+    def set_ready(self, ready, *, reason=None):
+        self._ready = bool(ready)
         for button in (
             self.read_button,
             self.live_button,
@@ -200,7 +235,30 @@ class ControlDashboard(QMainWindow):
             self.repeat_button,
             self.stop_button,
         ):
-            button.setEnabled(bool(ready))
+            button.setEnabled(self._ready)
+        if self._ready:
+            self._set_action_reason(
+                "Ready: start live reading, or read the current dialogue once."
+            )
+        else:
+            self._set_action_reason(
+                reason
+                or "Reading controls are unavailable while VNTTS is starting. "
+                "Run Check readiness if this does not clear."
+            )
+
+    def _set_action_reason(self, message):
+        self.action_reason.setText(message)
+        description = message
+        for button in (
+            self.read_button,
+            self.live_button,
+            self.pause_button,
+            self.skip_button,
+            self.repeat_button,
+            self.stop_button,
+        ):
+            button.setToolTip(description)
 
     def set_live(self, running):
         self._live = bool(running)
@@ -208,6 +266,12 @@ class ControlDashboard(QMainWindow):
         self.live_button.setText(
             "Stop live reading" if running else "Start live reading"
         )
+        if self._ready:
+            self._set_action_reason(
+                "Live reading is active; use playback controls or stop live reading."
+                if running
+                else "Ready: start live reading, or read the current dialogue once."
+            )
 
     def set_paused(self, paused):
         self.mode.setText(
@@ -264,6 +328,7 @@ class CompactController(QWidget):
         super().__init__(parent)
         platform = sys.platform if platform is None else platform
         self._live = False
+        self._ready = False
         self.setWindowTitle("VNTTS controls")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -290,6 +355,12 @@ class CompactController(QWidget):
         self.status.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        self.action_reason = QLabel()
+        self.action_reason.setWordWrap(True)
+        self.action_reason.setAccessibleName("Compact control availability")
+        self.action_reason.setAccessibleDescription(
+            "Explains why compact reading controls are available or unavailable"
+        )
         self.speaker = QLabel("Narrator")
         self.speaker.setMinimumWidth(120)
         self.speaker.setWordWrap(True)
@@ -312,6 +383,14 @@ class CompactController(QWidget):
         self.full_button = QPushButton("Full")
         self.stop_button.setStyleSheet(
             "QPushButton { color: #a21818; font-weight: 600; }"
+        )
+        self.live_button.setDefault(True)
+        self.live_button.setStyleSheet("font-weight: 700;")
+        self.live_button.setAccessibleDescription(
+            "Primary action: start or stop continuous live reading"
+        )
+        self.stop_button.setAccessibleDescription(
+            "Immediately stop live capture and queued speech"
         )
         for button in (
             self.read_button,
@@ -343,8 +422,8 @@ class CompactController(QWidget):
         controls = QHBoxLayout()
         controls.setSpacing(6)
         for button in (
-            self.read_button,
             self.live_button,
+            self.read_button,
             self.pause_button,
             self.skip_button,
             self.stop_button,
@@ -353,6 +432,7 @@ class CompactController(QWidget):
             controls.addWidget(button)
         controls.addStretch(1)
         layout.addLayout(information)
+        layout.addWidget(self.action_reason)
         layout.addLayout(controls)
         self.set_ready(False)
 
@@ -393,6 +473,11 @@ class CompactController(QWidget):
         self.status.setText(message)
         self.status.setStyleSheet("")
         self.setToolTip(message)
+        if not self._ready:
+            self._set_action_reason(
+                f"Controls unavailable: {message}. Open Full controls, then "
+                "run Check readiness."
+            )
         self._fit_content()
 
     def set_warning(self, message):
@@ -405,7 +490,8 @@ class CompactController(QWidget):
         self.speaker.setText(speaker or "Narrator")
         self._fit_content()
 
-    def set_ready(self, ready):
+    def set_ready(self, ready, *, reason=None):
+        self._ready = bool(ready)
         for button in (
             self.read_button,
             self.live_button,
@@ -413,12 +499,38 @@ class CompactController(QWidget):
             self.skip_button,
             self.stop_button,
         ):
-            button.setEnabled(bool(ready))
+            button.setEnabled(self._ready)
+        if self._ready:
+            self._set_action_reason("Ready: start live reading or read once.")
+        else:
+            self._set_action_reason(
+                reason
+                or "Controls unavailable while VNTTS is starting. Open Full "
+                "controls if this does not clear."
+            )
+        self._fit_content()
+
+    def _set_action_reason(self, message):
+        self.action_reason.setText(message)
+        for button in (
+            self.read_button,
+            self.live_button,
+            self.pause_button,
+            self.skip_button,
+            self.stop_button,
+        ):
+            button.setToolTip(message)
 
     def set_live(self, running):
         self._live = bool(running)
         self.mode.setText("Live" if running else "Stopped")
         self.live_button.setText("Stop live" if running else "Start live")
+        if self._ready:
+            self._set_action_reason(
+                "Live reading active; playback controls are available."
+                if running
+                else "Ready: start live reading or read once."
+            )
         self._fit_content()
 
     def set_paused(self, paused):

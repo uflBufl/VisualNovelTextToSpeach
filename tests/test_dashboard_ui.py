@@ -4,7 +4,9 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QSizePolicy  # noqa: E402
+from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGroupBox, QSizePolicy  # noqa: E402
 
 from vntts.dashboard_ui import CompactController, ControlDashboard  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
@@ -42,6 +44,40 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertIn("first audio 240 ms", dashboard.latency.text())
         self.assertIn("queue 1", dashboard.latency.text())
+        self.assertTrue(dashboard.live_button.isDefault())
+        self.assertIn("Live reading is active", dashboard.action_reason.text())
+        dashboard.deleteLater()
+
+    def test_disabled_controls_explain_recovery_and_keep_setup_available(self):
+        dashboard = ControlDashboard(AppSettings())
+
+        dashboard.set_status("Speech model failed to load")
+
+        self.assertFalse(dashboard.live_button.isEnabled())
+        self.assertIn("Speech model failed to load", dashboard.action_reason.text())
+        self.assertIn("Check readiness", dashboard.action_reason.text())
+        self.assertEqual(
+            dashboard.live_button.toolTip(), dashboard.action_reason.text()
+        )
+        self.assertTrue(all(button.isEnabled() for button in dashboard.setup_buttons))
+        self.assertEqual(
+            {group.title() for group in dashboard.findChildren(QGroupBox)},
+            {"Reading", "Playback", "Setup and support"},
+        )
+        dashboard.deleteLater()
+
+    def test_primary_live_action_is_keyboard_operable(self):
+        dashboard = ControlDashboard(AppSettings())
+        requests = []
+        dashboard.live_requested.connect(lambda: requests.append("live"))
+        dashboard.set_ready(True)
+        dashboard.live_button.setFocus()
+
+        QTest.keyClick(dashboard.live_button, Qt.Key.Key_Return)
+
+        self.assertEqual(requests, ["live"])
+        self.assertIn("Primary action", dashboard.live_button.accessibleDescription())
+        self.assertTrue(dashboard.action_reason.accessibleName())
         dashboard.deleteLater()
 
     def test_configuration_shows_policy_and_missing_generated_audio(self):
@@ -130,6 +166,57 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(controller.mode.text(), "Paused")
         self.assertEqual(controller.status.text(), "Voice needed: Hotelier")
         controller.deleteLater()
+
+    def test_compact_disabled_controls_show_recovery_beside_controls(self):
+        controller = CompactController(platform="win32")
+
+        controller.set_status("Speech model failed to load")
+
+        self.assertFalse(controller.live_button.isEnabled())
+        self.assertTrue(controller.full_button.isEnabled())
+        self.assertIn("Speech model failed to load", controller.action_reason.text())
+        self.assertIn("Full controls", controller.action_reason.text())
+        self.assertEqual(
+            controller.live_button.toolTip(), controller.action_reason.text()
+        )
+        self.assertTrue(controller.live_button.isDefault())
+        self.assertTrue(controller.action_reason.accessibleName())
+        controller.deleteLater()
+
+    def test_dashboard_and_compact_controls_fit_scaled_fonts(self):
+        base_font = QApplication.font()
+        base_size = base_font.pointSizeF()
+        if base_size <= 0:
+            base_size = 12.0
+        for scale in (1.0, 1.5, 2.0):
+            with self.subTest(scale=scale):
+                font = QFont(base_font)
+                font.setPointSizeF(base_size * scale)
+                dashboard = ControlDashboard(AppSettings())
+                dashboard.setFont(font)
+                dashboard.resize(620, 340)
+                dashboard.show()
+                compact = CompactController(platform="win32")
+                compact.setFont(font)
+                compact.show()
+                compact._fit_content()
+                self.application.processEvents()
+
+                self.assertTrue(dashboard.action_reason.isVisibleTo(dashboard))
+                self.assertGreaterEqual(
+                    dashboard.content_scroll.verticalScrollBar().maximum(), 0
+                )
+                self.assertTrue(compact.action_reason.isVisibleTo(compact))
+                self.assertLessEqual(
+                    compact.full_button.geometry().right(),
+                    compact.contentsRect().right(),
+                )
+
+                dashboard._quitting = True
+                dashboard.close()
+                dashboard.deleteLater()
+                compact.close()
+                compact.deleteLater()
 
     def test_other_platforms_do_not_enable_macos_compact_window_behavior(self):
         controller = CompactController(platform="win32")
