@@ -164,13 +164,15 @@ again.
 The published tasks are resumable through the checksum-bound progress contract
 documented in `authoring-workspaces.md`; use
 `vntts-review-bundle BUNDLE.json --status` rather than inferring completion from
-a past UI session. A read-only
-reconciliation on 2026-08-22 found two of the original 18 specialist cohorts
-terminal, leaving 16 cohorts, 78 required samples and 91 exact pending WAVs.
-The follow-up task still has all nine cohorts, 38 required samples and 45 WAVs
-remaining. The Dobharchú natural-expansion task separately has all four cohorts
-and 24 samples/items remaining. No progress file or review decision was written
-by that census.
+a past UI session. The original version-2 specialist task is now terminal
+`18/18`. Its final expanded Narrator cohort reviewed all 19 exact samples,
+retained two bad-sample assessments and rejected all 22 target WAVs under
+decision
+`8f76b441aed4f9f5f5c393a7df8eef1a406d06f60017a4f85b7efa0e3fe27b05`.
+Read-only reconciliation reports zero remaining cohorts, samples and items for
+that publication. The follow-up task still has all nine cohorts, 38 required
+samples and 45 WAVs remaining. The Dobharchú natural-expansion task separately
+has all four cohorts and 24 samples/items remaining.
 
 The 29 primary failures classified as `reference_comparison` are one separate
 reference-quality decision, not 29 repeated auditions. Their immutable audit

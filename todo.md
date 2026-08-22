@@ -10,24 +10,21 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review both published checksum-bound specialist bundles with
-      `uv run vntts-review-bundle BUNDLE.json`. Version 2 has 81 required
-      samples for the original 99 pending WAVs; the selected follow-up bundle
-      has 38 required samples for only the 45 newly generated WAVs (one final
-      MOSS sentence repair and 44 Pocket fallbacks), with inherited pending WAVs
-      excluded. Every technical-attention WAV remains mandatory; clean
-      short/medium/long items are sampled deterministically. Use sample-level
-      bad markers and `Need another sample` instead of accepting a doubtful
-      cohort. These reviews intentionally exclude six terminal specialist
-      silence failures, 29 reference-comparison items and one new pending WAV
-      in the primary workspace. After terminal bundle decisions, inspect the
-      exact source-local evidence before merging outcomes.
-      Read-only reconciliation on 2026-08-22 now finds 17/18 original cohorts
-      terminal. The one remaining expanded Narrator cohort covers 22 WAVs with
-      19 required samples: immutable decision evidence restores 18 already
-      heard samples and both prior bad markers, leaving exactly one new sample
-      unheard. The follow-up still has all nine cohorts, 38 samples and 45
-      items. Check either task without opening Qt using
+- [ ] Review the remaining published checksum-bound specialist follow-up bundle
+      with `uv run vntts-review-bundle BUNDLE.json`. It has 38 required samples
+      for only the 45 newly generated WAVs (one final MOSS sentence repair and
+      44 Pocket fallbacks), with inherited pending WAVs excluded. Every
+      technical-attention WAV remains mandatory; clean short/medium/long items
+      are sampled deterministically. Use sample-level bad markers and `Need
+      another sample` instead of accepting a doubtful cohort. The original
+      version-2 task is terminal `18/18`; its final expanded Narrator cohort
+      rejected all 22 target WAVs under decision
+      `8f76b441aed4f9f5f5c393a7df8eef1a406d06f60017a4f85b7efa0e3fe27b05`.
+      The follow-up still has all nine cohorts, 38 samples and 45 items. It
+      intentionally excludes six terminal specialist silence failures, 29
+      reference-comparison items and one new pending WAV in the primary
+      workspace. After terminal decisions, inspect the exact source-local
+      evidence before merging outcomes. Check the task without opening Qt using
       `uv run vntts-review-bundle BUNDLE.json --status`.
 - [ ] Review the published version-2 operator task for all 29
       reference-comparison failures at
