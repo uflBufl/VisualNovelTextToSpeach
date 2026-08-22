@@ -41,6 +41,7 @@ class OCRReviewDialog(QDialog):
         self._write_active = False
         self._close_pending = False
         self._write_applies_corrections = False
+        self._resolve_confirmation_sample = None
         self.samples = []
         self.setWindowTitle("Review uncertain OCR")
         self.resize(960, 620)
@@ -48,6 +49,8 @@ class OCRReviewDialog(QDialog):
         self.sample_list = QListWidget()
         self.sample_list.setMinimumWidth(260)
         self.sample_list.currentRowChanged.connect(self.show_sample)
+        self.progress = QLabel("Pending OCR samples: 0")
+        self.progress.setAccessibleName("OCR review progress")
 
         self.preview = QLabel("No uncertain screenshots to review")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -78,7 +81,7 @@ class OCRReviewDialog(QDialog):
         form.addRow("Save correction for", self.scope)
 
         self.save_button = QPushButton("Save correction and resolve")
-        self.resolve_button = QPushButton("Mark resolved")
+        self.resolve_button = QPushButton("Resolve without correction")
         self.save_button.clicked.connect(self.save_correction)
         self.resolve_button.clicked.connect(self.resolve_without_correction)
         actions = QHBoxLayout()
@@ -96,7 +99,10 @@ class OCRReviewDialog(QDialog):
         details.addWidget(self.status)
 
         content = QHBoxLayout()
-        content.addWidget(self.sample_list)
+        sample_navigation = QVBoxLayout()
+        sample_navigation.addWidget(self.progress)
+        sample_navigation.addWidget(self.sample_list, 1)
+        content.addLayout(sample_navigation)
         content.addLayout(details, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -121,6 +127,7 @@ class OCRReviewDialog(QDialog):
                 f"{sample.character} - {sample.confidence:.0f}%\n{preview}"
             )
         if not self.samples:
+            self.progress.setText("Pending OCR samples: 0")
             self.show_sample(-1)
             return
         selected_index = next(
@@ -139,10 +146,12 @@ class OCRReviewDialog(QDialog):
 
     def show_sample(self, row):
         sample = self.samples[row] if 0 <= row < len(self.samples) else None
+        self._reset_resolve_confirmation()
         enabled = sample is not None
         self.save_button.setEnabled(enabled and not self._write_active)
         self.resolve_button.setEnabled(enabled and not self._write_active)
         if sample is None:
+            self.progress.setText(f"Pending OCR samples: {len(self.samples)}")
             self.preview.setText("No uncertain screenshots to review")
             self.preview.setPixmap(QPixmap())
             self.source_character.setText("-")
@@ -151,6 +160,10 @@ class OCRReviewDialog(QDialog):
             self.corrected_character.clear()
             self.corrected_text.clear()
             return
+        self.progress.setText(
+            f"Pending OCR samples: {len(self.samples)} | Current {row + 1} of "
+            f"{len(self.samples)}"
+        )
         pixmap = QPixmap(str(sample.image_path))
         self.preview.setPixmap(
             pixmap.scaled(
@@ -172,6 +185,7 @@ class OCRReviewDialog(QDialog):
         sample = self.current_sample()
         if sample is None or self._write_active:
             return
+        self._reset_resolve_confirmation()
         corrected_character = self.corrected_character.text().strip()
         corrected_text = self.corrected_text.toPlainText().strip()
         entries = {}
@@ -201,11 +215,28 @@ class OCRReviewDialog(QDialog):
         sample = self.current_sample()
         if sample is None or self._write_active:
             return
+        if self._resolve_confirmation_sample != sample.metadata_path:
+            self._resolve_confirmation_sample = sample.metadata_path
+            self.resolve_button.setText("Confirm resolve without correction")
+            self.status.setText(
+                "Confirm to mark this sample resolved without saving any reusable "
+                "speaker or text correction. Change the text and use Save correction "
+                "instead if this OCR result should be fixed next time."
+            )
+            return
+        self._reset_resolve_confirmation()
         self._start_write(
             self.review_store.mark_resolved,
             sample,
             applies_corrections=False,
         )
+
+    def _reset_resolve_confirmation(self):
+        had_confirmation = self._resolve_confirmation_sample is not None
+        self._resolve_confirmation_sample = None
+        self.resolve_button.setText("Resolve without correction")
+        if had_confirmation and not self._write_active:
+            self.status.clear()
 
     @staticmethod
     def _save_and_resolve(correction_store, review_store, sample, entries, profile_id):

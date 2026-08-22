@@ -182,10 +182,19 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog = OCRReviewDialog(review_directory, correction_store)
 
             dialog.resolve_without_correction()
+            self.assertFalse(dialog._write_active)
+            self.assertIn("Confirm", dialog.resolve_button.text())
+            self.assertIn("without saving", dialog.status.text())
+            self.assertEqual(
+                dialog.progress.text(), "Pending OCR samples: 1 | Current 1 of 1"
+            )
+            self.assertEqual(len(OCRReviewStore(review_directory).pending_samples()), 1)
+            dialog.resolve_without_correction()
             self.wait_for(lambda: not dialog._write_active)
 
         self.assertEqual(correction_store.global_entries, {})
         self.assertEqual(dialog.sample_list.count(), 0)
+        self.assertEqual(dialog.progress.text(), "Pending OCR samples: 0")
         dialog.deleteLater()
 
     def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):
@@ -206,6 +215,7 @@ class OCRReviewDialogTest(unittest.TestCase):
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
             before = time.monotonic()
+            dialog.resolve_without_correction()
             dialog.resolve_without_correction()
             elapsed = time.monotonic() - before
             self.wait_for(lambda: started.is_set() and bool(heartbeat))
