@@ -523,6 +523,15 @@ state and final packs preserve and verify that mapping; no existing manifest or
 workspace is rewritten. Generic `vntts-listen` comparisons also expose
 `Neither acceptable`, but they are not source-reference authority.
 
+Experimental long-pause repair comparisons use a separate fail-closed path:
+`vntts-pregenerate silence-comparison-publish` consumes a versioned plan that
+binds the rejected raw WAV and independently segmented control by exact text
+and SHA-256; `silence-comparison-check` revalidates the immutable publication;
+and `silence-comparison-session` creates the ordinary anonymous A/B session.
+This comparison cannot update generation state or enable the transform in
+production. See the
+[Dobharchu pause-repair contract](docs/dobharchu-repair-comparison.md).
+
 After every selected queue item has a terminal approval, rejection or explicit
 live-fallback decision, publish a portable final delivery with
 `vntts-pregenerate publish-pack`. Publication

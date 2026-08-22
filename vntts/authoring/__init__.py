@@ -192,13 +192,17 @@ from vntts.authoring.reference_selection import (
     validate_reference_selection_provenance,
 )
 from vntts.authoring.silence_comparison import (
+    SILENCE_COMPARISON_INPUT_SCHEMA,
+    SILENCE_COMPARISON_INPUT_VERSION,
     SILENCE_COMPARISON_SCHEMA,
     SILENCE_COMPARISON_VERSION,
     SilenceComparisonError,
+    SilenceComparisonInputPlan,
     SilenceComparisonResult,
     SilenceComparisonSample,
     create_silence_comparison_session,
     load_silence_comparison,
+    load_silence_comparison_input_plan,
     publish_silence_comparison,
 )
 from vntts.authoring.silence_evidence import (
@@ -363,9 +367,12 @@ __all__ = [
     "EDGE_SILENCE_TRIM",
     "INLINE_PAUSE_MARKER",
     "SENTENCE_BOUNDARY_SEGMENTATION",
+    "SILENCE_COMPARISON_INPUT_SCHEMA",
+    "SILENCE_COMPARISON_INPUT_VERSION",
     "SILENCE_COMPARISON_SCHEMA",
     "SILENCE_COMPARISON_VERSION",
     "SilenceComparisonError",
+    "SilenceComparisonInputPlan",
     "SilenceComparisonResult",
     "SilenceComparisonSample",
     "SILENCE_FAILURE_EVIDENCE_SCHEMA",
@@ -444,6 +451,7 @@ __all__ = [
     "load_failure_reference_audit",
     "load_failure_reference_decisions",
     "load_silence_comparison",
+    "load_silence_comparison_input_plan",
     "load_silence_failure_evidence",
     "load_source_reference_plan",
     "load_specialist_failure_plan",

@@ -62,6 +62,7 @@ from vntts.authoring.failure_regeneration import (
     write_failure_regeneration_plan,
 )
 from vntts.authoring.failure_repair import (
+    DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
     FailureRepairPolicy,
     FailureRepairPolicyError,
 )
@@ -109,6 +110,13 @@ from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     inspect_voice_reference_candidates,
     select_voice_reference,
+)
+from vntts.authoring.silence_comparison import (
+    SilenceComparisonError,
+    create_silence_comparison_session,
+    load_silence_comparison,
+    load_silence_comparison_input_plan,
+    publish_silence_comparison,
 )
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
@@ -568,6 +576,30 @@ def create_parser():
     )
     repairs.add_argument("--state", type=Path, required=True)
     repairs.add_argument("--queue", type=Path, required=True)
+    silence_publish = subparsers.add_parser(
+        "silence-comparison-publish",
+        help="Publish a checksum-bound segmentation/compression comparison",
+    )
+    silence_publish.add_argument("plan", type=Path)
+    silence_publish.add_argument("--output", type=Path, required=True)
+    silence_publish.add_argument(
+        "--target-seconds",
+        type=float,
+        default=DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+        help="Silent boundary retained in the comparison-only compressed candidate",
+    )
+    silence_check = subparsers.add_parser(
+        "silence-comparison-check",
+        help="Validate a published comparison and every bound artifact",
+    )
+    silence_check.add_argument("comparison", type=Path)
+    silence_session = subparsers.add_parser(
+        "silence-comparison-session",
+        help="Create a blinded A/B session from a verified comparison",
+    )
+    silence_session.add_argument("comparison", type=Path)
+    silence_session.add_argument("--output", type=Path, required=True)
+    silence_session.add_argument("--seed", type=int, default=0)
     cohort_review = subparsers.add_parser(
         "cohort-review-plan",
         help="Plan checksum-bound technical-attention and clean review samples",
@@ -1328,6 +1360,61 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "silence-comparison-publish":
+            plan = load_silence_comparison_input_plan(arguments.plan)
+            result = publish_silence_comparison(
+                plan.samples,
+                arguments.output,
+                target_seconds=arguments.target_seconds,
+                input_plan_sha256=plan.sha256,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "input_plan": str(plan.path),
+                        "input_plan_sha256": plan.sha256,
+                        "sample_count": result.sample_count,
+                        "reports": [str(path) for path in result.report_paths],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "silence-comparison-check":
+            document = load_silence_comparison(arguments.comparison)
+            print(
+                json.dumps(
+                    {
+                        "comparison": str(arguments.comparison.expanduser().resolve()),
+                        "input_plan_sha256": document.get("input_plan_sha256"),
+                        "production_enabled": document["policy"]["production_enabled"],
+                        "requires_blind_review": document["policy"][
+                            "requires_blind_review"
+                        ],
+                        "sample_count": len(document["samples"]),
+                        "target_seconds": document["policy"]["target_seconds"],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "silence-comparison-session":
+            session = create_silence_comparison_session(
+                arguments.comparison,
+                arguments.output,
+                seed=arguments.seed,
+            )
+            print(
+                json.dumps(
+                    {"session": str(session), "comparison": str(arguments.comparison)},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "cohort-review-decision":
             decision = build_cohort_review_decision(
                 load_cohort_review_plan(arguments.plan),
@@ -1495,6 +1582,7 @@ def main(argv=None):
         ListeningImportError,
         PortraitAliasError,
         ReferenceSelectionError,
+        SilenceComparisonError,
         SourceReferenceReviewError,
         SourceReferenceQualityError,
         SourceReferenceBindingError,

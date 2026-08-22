@@ -277,6 +277,51 @@ small real checksum-bound corpus shows equal words and speaker identity with
 better cadence than segmentation. A rejected or inconclusive comparison leaves
 sentence segmentation as the preferred repair.
 
+The same boundary is available without an ad-hoc Python script. Prepare a
+version-1 input plan next to its WAVs; paths may be contained relative paths or
+explicit absolute operator-selected paths. Every path is read as mono PCM16
+WAV and must match its declared SHA-256 before publication starts:
+
+```json
+{
+  "schema": "vntts.authoring-silence-comparison-input",
+  "schema_version": 1,
+  "samples": [
+    {
+      "queue_id": "EXACT_QUEUE_ID",
+      "line_id": "EXACT_LINE_ID",
+      "text": "First complete sentence. Second complete sentence.",
+      "text_sha256": "64_LOWERCASE_HEX_CHARACTERS",
+      "raw_audio": "raw/failed.wav",
+      "raw_audio_sha256": "64_LOWERCASE_HEX_CHARACTERS",
+      "segmented_audio": "controls/segmented.wav",
+      "segmented_audio_sha256": "64_LOWERCASE_HEX_CHARACTERS"
+    }
+  ]
+}
+```
+
+Publish, revalidate, create the blinded session and open it with:
+
+```bash
+uv run vntts-pregenerate silence-comparison-publish INPUT.json \
+  --output COMPARISON
+uv run vntts-pregenerate silence-comparison-check COMPARISON
+uv run vntts-pregenerate silence-comparison-session COMPARISON \
+  --output LISTENING --seed 0
+uv run vntts-listen ui --session LISTENING/session.json
+```
+
+The publisher rejects a changed plan input, changed WAV, symlink, duplicate
+queue ID, identical raw/control audio or an existing destination. The check
+command is read-only and verifies the input-plan SHA-256, complete copied
+artifact inventory, transform ledger, reproduced compressed PCM and both
+report projections. The
+session is still anonymous A/B evidence: use `Neither acceptable` when neither
+cadence is publishable. These commands do not capture a failed render, update a
+generation state, authorize another seed or enable silence compression in
+production.
+
 The authoring workbench projects this evidence conservatively before any raw
 bundle exists. A typed internal-silence failure with safe complete sentence
 boundaries is shown as `Long sentence-boundary pause`, not the generic
