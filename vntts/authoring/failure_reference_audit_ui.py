@@ -527,11 +527,40 @@ def launch_failure_reference_audit(audit_directory):
     return application.exec()
 
 
+def failure_reference_audit_status(audit_directory):
+    """Return validated progress without creating Qt state or writing decisions."""
+    audit, document, decisions = _load_public_document(audit_directory)
+    completed = len(decisions["decisions"])
+    total = len(document["groups"])
+    return {
+        "audit": str(audit.directory),
+        "audit_id": audit.audit_id,
+        "completed_groups": completed,
+        "remaining_groups": total - completed,
+        "total_groups": total,
+        "decision_set_id": decisions["decision_set_id"],
+    }
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1:
-        print("usage: vntts-reference-audit AUDIT_DIRECTORY", file=sys.stderr)
+    status = "--status" in arguments
+    if status:
+        arguments.remove("--status")
+    if len(arguments) != 1 or any(value.startswith("-") for value in arguments):
+        print(
+            "usage: vntts-reference-audit AUDIT_DIRECTORY [--status]",
+            file=sys.stderr,
+        )
         return 2
+    if status:
+        try:
+            progress = failure_reference_audit_status(Path(arguments[0]))
+        except Exception as error:
+            print(f"Unable to inspect failed-reference audit: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps(progress, indent=2, sort_keys=True))
+        return 0
     return launch_failure_reference_audit(Path(arguments[0]))
 
 
@@ -541,6 +570,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "FailureReferenceAuditDialog",
+    "failure_reference_audit_status",
     "launch_failure_reference_audit",
     "main",
 ]

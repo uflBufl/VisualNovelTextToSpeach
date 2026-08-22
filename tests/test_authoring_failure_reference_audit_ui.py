@@ -1,6 +1,9 @@
+import io
+import json
 import os
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,9 +20,8 @@ try:
         prepare_failure_reference_audio,
         publish_failure_reference_audit,
     )
-    from vntts.authoring.failure_reference_audit_ui import (
-        FailureReferenceAuditDialog,
-    )
+    from vntts.authoring.failure_reference_audit_ui import FailureReferenceAuditDialog
+    from vntts.authoring.failure_reference_audit_ui import main as reference_audit_main
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
         raise
@@ -156,6 +158,24 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
 
             self.assertFalse(event.isAccepted())
             self.assertIn("Close deferred", dialog.status.text())
+
+    def test_status_is_read_only_and_does_not_create_qt_state(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reference_audit_main([str(audit), "--status"]),
+                    0,
+                )
+
+            progress = json.loads(output.getvalue())
+            self.assertEqual(progress["completed_groups"], 0)
+            self.assertEqual(progress["remaining_groups"], 1)
+            self.assertEqual(progress["total_groups"], 1)
+            self.assertIsNone(progress["decision_set_id"])
+            self.assertFalse((audit / "decisions.json").exists())
 
 
 if __name__ == "__main__":

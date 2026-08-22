@@ -206,6 +206,10 @@ collapsed by default, records a session-local heard ledger and enables the
 candidate/Neither decisions only after every candidate in the current group
 reaches end of playback. Navigation and playback remain available outside the
 short background decision commit.
+`vntts-reference-audit AUDIT_DIRECTORY --status` performs the same public/key/
+decision validation without constructing a Qt application or writing a missing
+`decisions.json`; it reports the audit ID, completed/remaining group counts and
+the canonical decision-set ID when decisions exist.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending

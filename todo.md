@@ -47,7 +47,9 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       requires a complete operator pass. The
       UI requires every candidate in the current group to reach end of playback
       before either candidate or Neither becomes available; affected line IDs
-      remain collapsed unless technical detail is requested. After all groups,
+      remain collapsed unless technical detail is requested. Check progress
+      without opening Qt using
+      `uv run vntts-reference-audit AUDIT_DIRECTORY --status`. After all groups,
       these decisions are reference evidence only. Publish a new explicit
       selected reference/control binding before any regeneration.
 - [ ] After the repair WAVs are reviewed, run the checksum-bound
