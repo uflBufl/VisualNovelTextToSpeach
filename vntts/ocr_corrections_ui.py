@@ -1,9 +1,10 @@
+from PySide6.QtCore import QEvent, QSignalBlocker, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -32,6 +33,7 @@ class OCRCorrectionsDialog(QDialog):
         self.save_runner.finished.connect(self._save_finished)
         self._save_active = False
         self._close_pending = False
+        self._discard_confirmed = False
         self.setWindowTitle("OCR corrections")
         self.resize(680, 460)
 
@@ -69,6 +71,7 @@ class OCRCorrectionsDialog(QDialog):
         )
         self.buttons.accepted.connect(self.save)
         self.buttons.rejected.connect(self.reject)
+        self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
         self.status = QLabel()
         self.status.setAccessibleName("OCR correction save status")
         self.status.setWordWrap(True)
@@ -78,14 +81,13 @@ class OCRCorrectionsDialog(QDialog):
         layout.addWidget(self.tabs)
         layout.addWidget(self.status)
         layout.addWidget(self.buttons)
+        self._initial_rows = self._all_table_rows()
 
     def save(self):
-        try:
-            global_entries = self._entries_from_table(self.global_table)
-            profile_entries = self._entries_from_table(self.profile_table)
-        except ValueError as error:
-            QMessageBox.warning(self, "Unable to save OCR corrections", str(error))
+        if self.validate_rows():
             return
+        global_entries = self._entries_from_table(self.global_table)
+        profile_entries = self._entries_from_table(self.profile_table)
         self._save_active = True
         self.tabs.setEnabled(False)
         self.buttons.setEnabled(False)
@@ -118,6 +120,8 @@ class OCRCorrectionsDialog(QDialog):
                 "Saving OCR corrections. Close is deferred until the write finishes."
             )
             return
+        if self._guard_unsaved_close():
+            return
         super().reject()
 
     def closeEvent(self, event):
@@ -128,26 +132,31 @@ class OCRCorrectionsDialog(QDialog):
             )
             event.ignore()
             return
+        if self._guard_unsaved_close():
+            event.ignore()
+            return
         super().closeEvent(event)
 
-    @staticmethod
-    def _create_table(entries):
+    def _create_table(self, entries):
         table = QTableWidget(0, 2)
         table.setHorizontalHeaderLabels(["OCR text", "Replace with"])
         table.horizontalHeader().setStretchLastSection(True)
         for source, replacement in entries.items():
             OCRCorrectionsDialog._append_row(table, source, replacement)
+        table.itemChanged.connect(self._mark_changed)
+        table.installEventFilter(self)
         return table
 
-    @staticmethod
-    def _create_table_page(table, description):
+    def _create_table_page(self, table, description):
         page = QWidget()
         add_button = QPushButton("Add")
         remove_button = QPushButton("Remove selected")
-        add_button.clicked.connect(lambda: OCRCorrectionsDialog._append_row(table))
-        remove_button.clicked.connect(
-            lambda: OCRCorrectionsDialog._remove_selected_rows(table)
+        add_button.setAccessibleDescription("Add a new OCR correction row (Insert)")
+        remove_button.setAccessibleDescription(
+            "Remove the selected OCR correction rows (Control+Delete)"
         )
+        add_button.clicked.connect(lambda: self._append_row(table))
+        remove_button.clicked.connect(lambda: self._remove_selected_rows(table))
         actions = QHBoxLayout()
         actions.addWidget(add_button)
         actions.addWidget(remove_button)
@@ -160,6 +169,19 @@ class OCRCorrectionsDialog(QDialog):
         layout.addLayout(actions)
         return page
 
+    def eventFilter(self, watched, event):
+        if isinstance(watched, QTableWidget) and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Insert:
+                self._append_row(watched)
+                return True
+            if (
+                event.key() == Qt.Key.Key_Delete
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            ):
+                self._remove_selected_rows(watched)
+                return True
+        return super().eventFilter(watched, event)
+
     @staticmethod
     def _append_row(table, source="", replacement=""):
         row = table.rowCount()
@@ -170,11 +192,119 @@ class OCRCorrectionsDialog(QDialog):
             table.setCurrentCell(row, 0)
             table.editItem(table.item(row, 0))
 
-    @staticmethod
-    def _remove_selected_rows(table):
+    def _remove_selected_rows(self, table):
         rows = sorted({item.row() for item in table.selectedItems()}, reverse=True)
         for row in rows:
             table.removeRow(row)
+        if rows:
+            self._mark_changed()
+
+    @staticmethod
+    def _table_rows(table):
+        return tuple(
+            tuple(
+                table.item(row, column).text()
+                if table.item(row, column) is not None
+                else ""
+                for column in range(2)
+            )
+            for row in range(table.rowCount())
+        )
+
+    def _all_table_rows(self):
+        return (
+            self._table_rows(self.global_table),
+            self._table_rows(self.profile_table),
+        )
+
+    def _mark_changed(self, *_args):
+        self._discard_confirmed = False
+        self.cancel_button.setText("Cancel")
+        if not self._save_active:
+            self.validate_rows(show_valid=False)
+
+    def _guard_unsaved_close(self):
+        if self._all_table_rows() == self._initial_rows:
+            return False
+        if self._discard_confirmed:
+            return False
+        self._discard_confirmed = True
+        self.cancel_button.setText("Discard changes")
+        self.status.setText(
+            "Unsaved OCR corrections will be lost. Select Discard changes or "
+            "close again to confirm, or choose Save."
+        )
+        return True
+
+    @staticmethod
+    def _clear_validation(table):
+        for row in range(table.rowCount()):
+            for column in range(2):
+                item = table.item(row, column)
+                if item is not None:
+                    item.setBackground(QColor())
+                    item.setToolTip("")
+
+    def validate_rows(self, *, show_valid=True):
+        signal_blockers = (
+            QSignalBlocker(self.global_table),
+            QSignalBlocker(self.profile_table),
+        )
+        errors = []
+        first_item = None
+        for scope, table in (
+            ("Global", self.global_table),
+            ("Profile", self.profile_table),
+        ):
+            self._clear_validation(table)
+            seen = {}
+            for row in range(table.rowCount()):
+                source_item = table.item(row, 0)
+                replacement_item = table.item(row, 1)
+                source = source_item.text().strip() if source_item else ""
+                replacement = (
+                    replacement_item.text().strip() if replacement_item else ""
+                )
+                if not source and not replacement:
+                    continue
+                invalid_items = []
+                message = None
+                if not source or not replacement:
+                    message = f"{scope} row {row + 1}: complete both fields."
+                    invalid_items = [
+                        item
+                        for item, value in (
+                            (source_item, source),
+                            (replacement_item, replacement),
+                        )
+                        if not value and item is not None
+                    ]
+                elif source.casefold() in seen:
+                    message = f"{scope} row {row + 1}: duplicate source '{source}'."
+                    invalid_items = [source_item]
+                    original = seen[source.casefold()]
+                    original.setBackground(QColor("#ffd9d5"))
+                    original.setToolTip("Duplicate OCR correction source")
+                else:
+                    seen[source.casefold()] = source_item
+                if message is None:
+                    continue
+                errors.append(message)
+                for item in invalid_items:
+                    item.setBackground(QColor("#ffd9d5"))
+                    item.setToolTip(message)
+                    first_item = first_item or item
+        if errors:
+            self.status.setText(
+                f"Fix {len(errors)} correction row error(s) before saving:\n"
+                + "\n".join(f"- {message}" for message in errors)
+            )
+            if first_item is not None:
+                first_item.tableWidget().setCurrentItem(first_item)
+        elif show_valid and not self._save_active:
+            self.status.setText("All correction rows are valid.")
+        del signal_blockers
+        return tuple(errors)
 
     @staticmethod
     def _entries_from_table(table):

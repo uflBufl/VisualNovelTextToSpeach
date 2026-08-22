@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Add inline row validation plus keyboard-accessible add/remove to the OCR
-      correction editor, and guard unsaved close without changing global versus
-      profile rule authority. Search/import/export remain optional until real
-      rule sets justify them.
 - [ ] Keep dialogue-history selection and scroll stable while new entries arrive;
       add exact replay Stop only if the typed playback boundary exposes
       request-scoped cancellation. Cover reading an older entry during refresh.

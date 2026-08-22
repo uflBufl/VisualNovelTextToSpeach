@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
@@ -243,6 +243,59 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.assertIn("Select Save to retry", dialog.status.text())
         self.assertTrue(dialog.buttons.isEnabled())
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+
+    def test_row_errors_are_inline_and_all_scopes_are_reported(self):
+        store = Mock(global_entries={}, profile_entries={})
+        dialog = OCRCorrectionsDialog("game", "Game", store)
+        dialog._append_row(dialog.global_table, "Mareus", "")
+        dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+        dialog._append_row(dialog.profile_table, "vertln", "Ms. Vertin")
+
+        dialog.save()
+
+        self.assertFalse(dialog._save_active)
+        self.assertIn("Global row 1", dialog.status.text())
+        self.assertIn("Profile row 2", dialog.status.text())
+        self.assertTrue(dialog.global_table.item(0, 1).toolTip())
+        self.assertTrue(dialog.profile_table.item(1, 0).toolTip())
+        store.replace_entries.assert_not_called()
+        dialog.deleteLater()
+
+    def test_insert_and_delete_shortcuts_edit_the_focused_table(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        dialog.show()
+        dialog.global_table.setFocus()
+
+        QTest.keyClick(dialog.global_table, Qt.Key.Key_Insert)
+        self.application.processEvents()
+        self.assertEqual(dialog.global_table.rowCount(), 1)
+        QTest.keyClick(dialog.global_table, Qt.Key.Key_Escape)
+        dialog.global_table.selectRow(0)
+        QTest.keyClick(
+            dialog.global_table,
+            Qt.Key.Key_Delete,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        self.application.processEvents()
+
+        self.assertEqual(dialog.global_table.rowCount(), 0)
+        dialog.deleteLater()
+
+    def test_unsaved_close_requires_explicit_discard(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+
+        first_close = QCloseEvent()
+        dialog.closeEvent(first_close)
+
+        self.assertFalse(first_close.isAccepted())
+        self.assertEqual(dialog.cancel_button.text(), "Discard changes")
+        self.assertIn("Unsaved", dialog.status.text())
+
+        second_close = QCloseEvent()
+        dialog.closeEvent(second_close)
+        self.assertTrue(second_close.isAccepted())
+        dialog.deleteLater()
 
 
 if __name__ == "__main__":
