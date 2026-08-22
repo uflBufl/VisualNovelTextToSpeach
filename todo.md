@@ -10,9 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Keep dialogue-history selection and scroll stable while new entries arrive;
-      add exact replay Stop only if the typed playback boundary exposes
-      request-scoped cancellation. Cover reading an older entry during refresh.
 - [ ] Give each macOS permission row its own busy/error result and refresh after
       returning from System Settings where the platform exposes a reliable
       activation signal. Do not move synchronous platform calls off-thread by

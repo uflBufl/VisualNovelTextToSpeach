@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QSignalBlocker, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -41,6 +41,7 @@ class DialogueHistoryDialog(QDialog):
         self.search.setPlaceholderText("Search speakers or dialogue...")
         self.search.textChanged.connect(self.refresh)
         self.entries = QListWidget()
+        self.entries.setAccessibleName("Dialogue history entries")
         self.entries.currentRowChanged.connect(self.show_entry)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
@@ -80,10 +81,13 @@ class DialogueHistoryDialog(QDialog):
         entry = self.current_entry()
         if entry is not None:
             selected_id = entry.id
+        scroll_bar = self.entries.verticalScrollBar()
+        previous_scroll = scroll_bar.value()
         latest = self.history.search(self.search.text())
         if latest == self.visible_entries:
             return
         self.visible_entries = latest
+        signal_blocker = QSignalBlocker(self.entries)
         self.entries.clear()
         for entry in self.visible_entries:
             recorded_at = datetime.fromisoformat(entry.recorded_at)
@@ -92,6 +96,7 @@ class DialogueHistoryDialog(QDialog):
                 f"{recorded_at:%H:%M:%S}  {entry.character}\n{preview}"
             )
         if not self.visible_entries:
+            del signal_blocker
             self.show_entry(-1)
             return
         selected_index = next(
@@ -103,6 +108,12 @@ class DialogueHistoryDialog(QDialog):
             len(self.visible_entries) - 1,
         )
         self.entries.setCurrentRow(selected_index)
+        del signal_blocker
+        self.show_entry(selected_index)
+        if selected_id is not None:
+            scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
+        else:
+            scroll_bar.setValue(scroll_bar.maximum())
 
     def current_entry(self):
         row = self.entries.currentRow()

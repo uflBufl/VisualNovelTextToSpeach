@@ -161,6 +161,31 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertIn("Select Replay to retry", dialog.status.text())
         self.assertTrue(dialog.replay_button.isEnabled())
 
+    def test_refresh_preserves_older_selection_and_scroll_position(self):
+        history = DialogueHistory()
+        for index in range(40):
+            history.add(f"Speaker {index}", f"Dialogue line {index}")
+            history.finish_current()
+        dialog = DialogueHistoryDialog(history, Mock())
+        dialog.resize(520, 300)
+        dialog.show()
+        self.application.processEvents()
+        dialog.entries.setCurrentRow(8)
+        selected_id = dialog.current_entry().id
+        scroll_bar = dialog.entries.verticalScrollBar()
+        scroll_bar.setValue(max(1, scroll_bar.maximum() // 3))
+        previous_scroll = scroll_bar.value()
+
+        history.add("New speaker", "A newly captured line")
+        history.finish_current()
+        dialog.refresh()
+
+        self.assertEqual(dialog.current_entry().id, selected_id)
+        self.assertEqual(scroll_bar.value(), previous_scroll)
+        self.assertIn("Speaker 8", dialog.details.toPlainText())
+        dialog.close()
+        dialog.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
