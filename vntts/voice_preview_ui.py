@@ -1,3 +1,5 @@
+from concurrent.futures import CancelledError
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -28,6 +30,7 @@ class VoicePreviewDialog(QDialog):
         *,
         force_live_handler=None,
         current_force_live_handler=None,
+        preview_stop_handler=None,
         initial_character=None,
         parent=None,
     ):
@@ -38,6 +41,11 @@ class VoicePreviewDialog(QDialog):
         self.clear_assignment_handler = clear_assignment_handler
         self.force_live_handler = force_live_handler
         self.current_force_live_handler = current_force_live_handler
+        self.preview_stop_handler = preview_stop_handler
+        self._preview_future = None
+        self._preview_target = None
+        self._stop_requested = False
+        self._close_pending = False
         self.signals = VoicePreviewSignals()
         self.setWindowTitle("Choose narrator or character voice")
         self.setMinimumWidth(560)
@@ -57,9 +65,12 @@ class VoicePreviewDialog(QDialog):
         self.text.setPlainText("The storm has passed. We can continue our journey.")
         self.text.setMinimumHeight(100)
         self.preview_button = QPushButton("Play selected voice")
+        self.stop_button = QPushButton("Stop preview")
+        self.stop_button.setEnabled(False)
         self.assign_button = QPushButton("Use for this character")
         self.automatic_button = QPushButton("Use automatic voice routing")
         self.preview_button.clicked.connect(self.preview)
+        self.stop_button.clicked.connect(self.stop_preview)
         self.assign_button.clicked.connect(self.assign)
         self.automatic_button.clicked.connect(self.clear_assignment)
         self.automatic_button.setVisible(clear_assignment_handler is not None)
@@ -72,6 +83,9 @@ class VoicePreviewDialog(QDialog):
             "Choose a target, listen to candidates, then save the one you prefer."
         )
         self.status.setWordWrap(True)
+        self.preview_identity = QLabel("No preview is active.")
+        self.preview_identity.setAccessibleName("Exact voice preview identity")
+        self.preview_identity.setWordWrap(True)
 
         form = QFormLayout()
         form.addRow("Narrator or character", self.character)
@@ -80,6 +94,8 @@ class VoicePreviewDialog(QDialog):
         form.addRow("", self.description)
         form.addRow("Preview text", self.text)
         form.addRow("", self.preview_button)
+        form.addRow("", self.stop_button)
+        form.addRow("Playing", self.preview_identity)
         form.addRow("", self.assign_button)
         form.addRow("", self.force_live)
         form.addRow("", self.automatic_button)
@@ -132,31 +148,97 @@ class VoicePreviewDialog(QDialog):
         self.select_current_assignment()
 
     def preview(self):
+        if self._preview_future is not None:
+            return
+        target = self.character.currentText().strip() or "Narrator"
+        voice_id = self.voice.currentData()
+        voice_label = self.voice.currentText()
+        text = self.text.toPlainText()
         try:
             future = self.preview_handler(
-                self.voice.currentData(),
-                self.text.toPlainText(),
+                voice_id,
+                text,
             )
         except Exception as error:
             self.preview_finished(False, str(error))
             return
-        self.preview_button.setEnabled(False)
-        self.assign_button.setEnabled(False)
-        self.status.setText("Synthesizing preview...")
+        self._preview_future = future
+        self._preview_target = (target, voice_id, voice_label, text)
+        self._stop_requested = False
+        self._set_preview_controls(False)
+        self.stop_button.setEnabled(True)
+        self.preview_identity.setText(
+            f"{target} using {voice_label}: {text.strip() or '(empty text)'}"
+        )
+        self.status.setText("Synthesizing and playing the exact preview above...")
         future.add_done_callback(self._future_finished)
 
     def _future_finished(self, future):
+        if future is not self._preview_future:
+            return
         try:
             voice, _text = future.result()
+        except CancelledError:
+            self.signals.finished.emit(False, "__stopped__")
         except Exception as error:
-            self.signals.finished.emit(False, str(error))
+            self.signals.finished.emit(
+                False,
+                "__stopped__" if self._stop_requested else str(error),
+            )
         else:
             self.signals.finished.emit(True, f"Played {voice} preview")
 
     def preview_finished(self, successful, message):
-        self.preview_button.setEnabled(True)
-        self.assign_button.setEnabled(True)
-        self.status.setText(message if successful else f"Preview failed: {message}")
+        self._preview_future = None
+        self._stop_requested = False
+        self._set_preview_controls(True)
+        self.stop_button.setEnabled(False)
+        self.status.setText(
+            "Preview stopped."
+            if message == "__stopped__"
+            else message
+            if successful
+            else f"Preview failed: {message}"
+        )
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
+
+    def stop_preview(self):
+        future = self._preview_future
+        if future is None or self._stop_requested:
+            return
+        self._stop_requested = True
+        self.status.setText("Stopping the current preview...")
+        future.cancel()
+        if self.preview_stop_handler is not None:
+            try:
+                self.preview_stop_handler()
+            except Exception as error:
+                self.status.setText(
+                    f"Stop request failed: {error}. Waiting for preview completion."
+                )
+
+    def _set_preview_controls(self, enabled):
+        self.character.setEnabled(enabled)
+        self.voice.setEnabled(enabled)
+        self.text.setEnabled(enabled)
+        self.assign_button.setEnabled(enabled)
+        self.automatic_button.setEnabled(enabled)
+        self.force_live.setEnabled(enabled)
+        self.preview_button.setEnabled(enabled)
+
+    def closeEvent(self, event):
+        if self._preview_future is not None:
+            self._close_pending = True
+            self.stop_preview()
+            if self._preview_future is None:
+                event.accept()
+                return
+            self.status.setText("Close deferred until the exact preview has stopped.")
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def assign(self):
         try:

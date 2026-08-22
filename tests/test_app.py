@@ -858,6 +858,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.clear_voice_assignment,
             force_live_handler=tray_application.set_force_live_narrator,
             current_force_live_handler=ANY,
+            preview_stop_handler=controller.stop_voice_preview,
             initial_character="Narrator",
         )
         dialog.exec.assert_called_once_with()

@@ -23,10 +23,10 @@ Follow the shared contract, per-surface findings and completion gates in
       Require one clear primary action, section/step orientation, adjacent
       disabled reasons, consistent path pickers, inline validation, and compact
       keyboard/screen-reader coverage at 100%, 150% and 200% DPI.
-- [ ] Apply the lighter consistency pass to voice preview, OCR, permissions and
+- [ ] Apply the lighter consistency pass to OCR, permissions and
       correction/history follow-ups. Preserve exact authority; add consistent
-      Save/Cancel/Close placement, safe preview cancellation, inline row
-      validation and multi-display/DPI coverage where applicable.
+      Save/Cancel/Close placement, inline row validation and multi-display/DPI
+      coverage where applicable.
 
 ### P0 - Complete the current Character Story in fail-closed order
 

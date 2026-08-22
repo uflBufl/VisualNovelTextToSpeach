@@ -735,6 +735,18 @@ class AppController:
             text.strip(),
         )
 
+    def stop_voice_preview(self):
+        if self.is_live_running:
+            raise RuntimeError("Stop live reading before stopping a voice preview")
+        backend = self.speech_backend
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            backend = backend.live_backend
+        stop = getattr(backend, "stop", None)
+        if callable(stop):
+            stop()
+            return True
+        return False
+
     def assign_voice(self, character, source_id):
         character = (character or "").strip()
         if not character:

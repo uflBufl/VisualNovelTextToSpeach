@@ -1281,6 +1281,18 @@ class MainTest(unittest.TestCase):
         self.assertEqual(submitted[1].id, "preset:marius")
         self.assertEqual(submitted[2], "Hello.")
 
+    def test_controller_stops_only_the_loaded_preview_backend(self):
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.speech_backend = Mock()
+
+        self.assertTrue(controller.stop_voice_preview())
+
+        controller.speech_backend.stop.assert_called_once_with()
+
     def test_applying_settings_updates_loaded_speech_controls(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.tts = Mock()

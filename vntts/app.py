@@ -1552,6 +1552,7 @@ class TrayApplication(QObject):
             self.clear_voice_assignment,
             force_live_handler=self.set_force_live_narrator,
             current_force_live_handler=lambda: self.settings.force_live_narrator,
+            preview_stop_handler=self.controller.stop_voice_preview,
             initial_character="Narrator",
         )
         try:
@@ -1688,6 +1689,7 @@ class TrayApplication(QObject):
             self.clear_voice_assignment,
             force_live_handler=self.set_force_live_narrator,
             current_force_live_handler=lambda: self.settings.force_live_narrator,
+            preview_stop_handler=self.controller.stop_voice_preview,
             initial_character=initial_character,
         )
         dialog.exec()

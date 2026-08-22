@@ -23,6 +23,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
         clear_assignment_handler=None,
         force_live_handler=None,
         current_force_live_handler=None,
+        preview_stop_handler=None,
     ):
         return VoicePreviewDialog(
             ["Narrator", "Marcus"],
@@ -36,6 +37,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
             clear_assignment_handler,
             force_live_handler=force_live_handler,
             current_force_live_handler=current_force_live_handler,
+            preview_stop_handler=preview_stop_handler,
         )
 
     def test_plays_selected_candidate_and_reports_completion(self):
@@ -52,7 +54,55 @@ class VoicePreviewDialogTest(unittest.TestCase):
         preview_handler.assert_called_once_with("preset:marius", "Hello, Timekeeper.")
         self.assertTrue(dialog.preview_button.isEnabled())
         self.assertEqual(dialog.status.text(), "Played Marius preview")
+        self.assertIn("Narrator using Marius", dialog.preview_identity.text())
         dialog.deleteLater()
+
+    def test_preview_freezes_exact_inputs_and_active_stop_is_call_bound(self):
+        future = Future()
+        future.set_running_or_notify_cancel()
+        stop = Mock()
+        dialog = self.create_dialog(
+            preview_handler=Mock(return_value=future),
+            preview_stop_handler=stop,
+        )
+        dialog.character.setCurrentText("Marcus")
+        dialog.voice.setCurrentIndex(1)
+        dialog.text.setPlainText("Exact preview text.")
+
+        dialog.preview()
+
+        self.assertFalse(dialog.character.isEnabled())
+        self.assertFalse(dialog.voice.isEnabled())
+        self.assertFalse(dialog.text.isEnabled())
+        self.assertFalse(dialog.assign_button.isEnabled())
+        self.assertTrue(dialog.stop_button.isEnabled())
+        self.assertEqual(
+            dialog.preview_identity.text(),
+            "Marcus using Marius: Exact preview text.",
+        )
+
+        dialog.stop_preview()
+        stop.assert_called_once_with()
+        future.set_exception(RuntimeError("playback interrupted"))
+        self.application.processEvents()
+
+        self.assertEqual(dialog.status.text(), "Preview stopped.")
+        self.assertTrue(dialog.character.isEnabled())
+        self.assertTrue(dialog.assign_button.isEnabled())
+        self.assertFalse(dialog.stop_button.isEnabled())
+        dialog.deleteLater()
+
+    def test_queued_preview_cancellation_allows_deferred_close(self):
+        future = Future()
+        dialog = self.create_dialog(preview_handler=Mock(return_value=future))
+        dialog.preview()
+
+        dialog.close()
+        self.application.processEvents()
+
+        self.assertTrue(future.cancelled())
+        self.assertIsNone(dialog._preview_future)
+        self.assertEqual(dialog.status.text(), "Preview stopped.")
 
     def test_assigns_selected_candidate_to_an_editable_character(self):
         assignment_handler = Mock()
