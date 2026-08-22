@@ -8,12 +8,17 @@ from threading import Event
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QRect, Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QTextEdit  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QTextEdit  # noqa: E402
 
-from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay  # noqa: E402
+from vntts.calibration import (  # noqa: E402
+    CalibrationReviewDialog,
+    DialogRegionOverlay,
+    show_calibration_overlay,
+)
 from vntts.ocr import OCRResult  # noqa: E402
+from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
 class DialogRegionOverlayTest(unittest.TestCase):
@@ -111,6 +116,109 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertEqual(dialog.save_button.text(), "Save region without OCR preview")
         self.assertTrue(dialog.save_button.isEnabled())
         dialog.deleteLater()
+
+    def test_review_actions_have_keyboard_and_accessibility_contract(self):
+        result = OCRResult("Selone", "I have returned.", 94.5, "gray", 1)
+        dialog = CalibrationReviewDialog(
+            Image.new("RGB", (640, 180), "black"),
+            recognizer=lambda _image: result,
+        )
+        self.wait_for(lambda: not dialog.runner.active)
+
+        self.assertEqual(dialog.save_button.shortcut().toString(), "Ctrl+Return")
+        self.assertEqual(dialog.retry_button.shortcut().toString(), "Ctrl+R")
+        for widget in (
+            dialog.preview,
+            dialog.result_text,
+            dialog.progress,
+            dialog.save_button,
+            dialog.retry_button,
+            dialog.cancel_button,
+        ):
+            self.assertTrue(widget.accessibleName())
+        rejected = []
+        dialog.rejected.connect(lambda: rejected.append(True))
+        dialog.show()
+        dialog.retry_button.setFocus()
+        QTest.keyClick(dialog.retry_button, Qt.Key.Key_Return)
+        self.application.processEvents()
+
+        self.assertEqual(rejected, [True])
+        dialog.deleteLater()
+
+    def test_overlay_can_select_adjust_retry_and_accept_with_keyboard(self):
+        decisions = iter([QDialog.DialogCode.Rejected, QDialog.DialogCode.Accepted])
+        crop_sizes = []
+
+        class Reviewer:
+            def __init__(self, image):
+                crop_sizes.append(image.size)
+
+            def exec(self):
+                return next(decisions)
+
+        with TemporaryDirectory() as temporary_directory:
+            selected = []
+            overlay = DialogRegionOverlay(
+                Path(temporary_directory) / "region.json",
+                background=Image.new("RGB", (1600, 900), "black"),
+                reviewer=Reviewer,
+            )
+            overlay.selected.connect(selected.append)
+            overlay.resize(800, 450)
+            overlay.show()
+            overlay.activateWindow()
+            overlay.setFocus()
+            self.application.processEvents()
+
+            QTest.keyClick(overlay, Qt.Key.Key_Return)
+            self.assertIsNotNone(overlay.origin)
+            QTest.keyClick(
+                overlay,
+                Qt.Key.Key_Right,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            QTest.keyClick(
+                overlay,
+                Qt.Key.Key_Down,
+                Qt.KeyboardModifier.ShiftModifier,
+            )
+            QTest.keyClick(overlay, Qt.Key.Key_Return)
+            self.assertIsNone(overlay.origin)
+
+            QTest.keyClick(overlay, Qt.Key.Key_Return)
+            QTest.keyClick(overlay, Qt.Key.Key_Return)
+            self.application.processEvents()
+
+            self.assertEqual(len(crop_sizes), 2)
+            self.assertEqual(len(selected), 1)
+            self.assertAlmostEqual(selected[0].left, 0.08, places=2)
+            self.assertAlmostEqual(selected[0].top, 0.62, places=2)
+            self.assertTrue(Path(temporary_directory, "region.json").is_file())
+            overlay.deleteLater()
+
+    def test_negative_monitor_and_scaled_pixels_keep_normalized_geometry(self):
+        background = Image.new("RGB", (1600, 900), "black")
+        geometry = WindowGeometry(-1600, -100, 800, 450)
+        overlay = show_calibration_overlay(geometry, background=background)
+        self.application.processEvents()
+
+        region = overlay._region_from_rectangle(QRect(80, 270, 640, 144))
+        crop = region.crop(background)
+
+        self.assertEqual(overlay.geometry().size().width(), 800)
+        self.assertEqual(overlay.geometry().size().height(), 450)
+        self.assertEqual(overlay.geometry().left(), -1600)
+        self.assertEqual(overlay.geometry().top(), -100)
+        self.assertAlmostEqual(region.left, 0.1)
+        self.assertAlmostEqual(region.top, 0.6)
+        self.assertAlmostEqual(region.width, 0.8)
+        self.assertAlmostEqual(region.height, 0.32)
+        self.assertEqual(crop.size, (1280, 288))
+        self.assertTrue(overlay.accessibleName())
+        self.assertIn("Shift plus arrows", overlay.accessibleDescription())
+        overlay.close()
+        overlay.deleteLater()
 
 
 if __name__ == "__main__":

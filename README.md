@@ -264,6 +264,14 @@ Calibrate the dialog region after changing the game resolution or UI layout:
 uv run vntts-calibrate
 ```
 
+The overlay accepts a mouse drag or a keyboard-only flow. Press Enter to create
+a suggested lower-screen region, move it with the arrow keys, resize it with
+Shift plus the arrow keys, then press Enter to review the frozen crop. Press R
+to clear the selection or Escape to cancel. In the review, `Ctrl+Return` saves
+and `Ctrl+R` returns to drawing. If OCR preview fails, the explicit
+`Save region without OCR preview` fallback still saves only the normalized
+region.
+
 One-time screenshots are retained until manually deleted. Live-mode frames are
 not stored. Generated files under `logs/` are ignored by Git.
 

@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Add keyboard/accessibility coverage for calibration drawing/retry and
-      multi-display/DPI geometry. Preserve frozen-screen capture, normalized
-      coordinates and the explicit save-without-preview fallback.
-
 ### P0 - Complete the current Character Story in fail-closed order
 
 Follow the checkpoint, dependencies and acceptance boundaries in

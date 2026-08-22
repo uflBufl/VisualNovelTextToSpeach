@@ -526,7 +526,9 @@ class CalibrationPage(QWizardPage):
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
             "Open a scene with dialogue, click Calibrate, then drag over the "
-            "speaker name and dialogue text. Press Escape to cancel selection."
+            "speaker name and dialogue text. Keyboard: press Enter for a "
+            "suggested region, use arrows to move it, Shift plus arrows to "
+            "resize it, and Enter again to review. Press Escape to cancel."
         )
         self.instructions.setWordWrap(True)
         self.button = QPushButton("Calibrate...")
