@@ -69,10 +69,13 @@ Each card represents one exact `(character, portrait, source_bank)` cluster. It
 contains the original reference, every checksum-valid generated sample, the
 number of story lines affected and the typed reason for every excluded result.
 The UI exposes `Accept reference`, `Reject reference`, and `Need another
-sample` immediately so a broken playback backend cannot trap the review. It
-shows advisory progress for the original and generated samples instead of
-disabling authority controls. A card without a generated sample cannot be
-accepted. Decisions are
+sample` under an explicit evidence gate. The checksum-verified original must
+reach end of playback before Reject or `Need another sample` is available;
+Accept additionally requires every published generated sample on the card to
+reach its end. The card shows exact original/generated heard counts beside the
+disabled actions. This in-dialog heard ledger is deliberately non-authoritative
+and is not serialized: reopening a pending card requires hearing its evidence
+again. A card without a generated sample cannot be accepted. Decisions are
 serialized through an exclusive lock and copied audio is revalidated whenever
 the review is loaded or played.
 
@@ -80,16 +83,20 @@ Decision persistence runs outside the Qt thread. The current card and
 checksum-verified playback remain available while its decision buttons show a
 saving phase; Close is deferred until the exclusive authority operation
 finishes. A failed write leaves the card current and restores its valid actions,
-so the operator can retry in the same dialog. The existing immediate-decision
-policy remains deliberate: playback progress is advisory and no new heard gate
-is inferred by this responsiveness change.
+so the operator can retry in the same dialog. The old immediate-decision policy
+was retired because it contradicted the operator copy and allowed source quality
+authority without listening evidence. A playback failure therefore fails
+closed and must be repaired before the affected decision can be saved.
 
 When `--portrait-directory` is supplied, a card copies the exact PNG whose
 filename matches its story portrait identity and binds its bytes, dimensions
 and SHA-256 into the immutable review. The UI renders those pixels instead of
 showing an opaque portrait identifier. A card whose exact asset is absent uses
 an explicit `Exact game portrait is not installed` placeholder; it never
-substitutes a similarly named or web-sourced image.
+substitutes a similarly named or web-sourced image. The absent placeholder is
+compact rather than reserving portrait-sized blank space. Excluded generation
+diagnostics are collapsed behind a counted technical toggle, while the selected
+generated sample exposes its kind, duration and full text separately.
 
 `vntts-listen` remains the generic blind model-comparison tool. It now supports
 `Neither acceptable`, but it is not the authority for source-reference

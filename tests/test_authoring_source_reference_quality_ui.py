@@ -149,21 +149,36 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for the Qt worker")
 
-    def test_decisions_are_immediately_available_and_playback_is_advisory(self):
+    @staticmethod
+    def finish_audio(dialog, token):
+        dialog._playing_token = token
+        dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+    def authorize_accept(self, dialog):
+        self.finish_audio(dialog, "reference")
+        for sample in dialog.current["generated_samples"]:
+            self.finish_audio(dialog, sample["queue_id"])
+
+    def test_decisions_require_exact_completed_audio_evidence(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
             dialog = SourceReferenceQualityDialog(session)
 
-            self.assertTrue(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
-            self.assertTrue(dialog.needs_sample.isEnabled())
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.needs_sample.isEnabled())
+            self.assertIn("original 0/1", dialog.evidence_progress.text())
             self.assertFalse(dialog.portrait_image.pixmap().isNull())
             self.assertNotIn("534704", dialog.identity.text())
-            dialog._playing_token = "reference"
-            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            for sample in dialog.current["generated_samples"]:
-                dialog._playing_token = sample["queue_id"]
-                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertIn("Text: Generated sample 1.", dialog.generated_details.text())
+
+            self.finish_audio(dialog, "reference")
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.needs_sample.isEnabled())
+            self.finish_audio(dialog, "queue-1")
+            self.assertFalse(dialog.accept.isEnabled())
+            self.finish_audio(dialog, "queue-2")
             self.assertTrue(dialog.accept.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
@@ -196,9 +211,81 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog = SourceReferenceQualityDialog(session)
 
             message = dialog.portrait_image.text()
+            maximum_height = dialog.portrait_image.maximumHeight()
             dialog.close()
 
         self.assertEqual(message, "Exact game portrait is not installed")
+        self.assertLessEqual(maximum_height, 48)
+
+    def test_empty_generated_evidence_and_technical_failures_stay_compact(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            document = json.loads(session.read_text(encoding="utf-8"))
+            document["variants"][0]["generated_samples"] = []
+            text = "Generation failed."
+            document["variants"][0]["excluded_results"] = [
+                {
+                    "queue_id": "queue-failed",
+                    "evaluation_kind": "fixed-1",
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "status": "failed",
+                    "attempts": 1,
+                    "failure_kind": "limited",
+                    "error": "No WAV was published",
+                }
+            ]
+            session.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+            dialog = SourceReferenceQualityDialog(session)
+
+            self.assertTrue(dialog.generated.isHidden())
+            self.assertIn("No published generated", dialog.generated_details.text())
+            self.assertEqual(dialog.technical_toggle.text(), "Technical exclusions (1)")
+            self.assertTrue(dialog.failures.isHidden())
+            dialog.technical_toggle.setChecked(True)
+            self.assertFalse(dialog.failures.isHidden())
+            self.assertIn("No WAV was published", dialog.failures.text())
+            self.finish_audio(dialog, "reference")
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.needs_sample.isEnabled())
+            dialog.close()
+
+    def test_keyboard_accessibility_and_compact_layout(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            dialog = SourceReferenceQualityDialog(session)
+            dialog.resize(700, 500)
+            dialog.layout().activate()
+
+            for widget in (
+                dialog.progress,
+                dialog.portrait_image,
+                dialog.identity,
+                dialog.reference_details,
+                dialog.generated,
+                dialog.generated_details,
+                dialog.play_reference,
+                dialog.play_generated,
+                dialog.stop,
+                dialog.evidence_progress,
+                dialog.technical_toggle,
+                dialog.failures,
+                dialog.status,
+                dialog.accept,
+                dialog.reject,
+                dialog.needs_sample,
+            ):
+                self.assertTrue(widget.accessibleName(), type(widget).__name__)
+            self.assertEqual(dialog.play_reference.shortcut().toString(), "Ctrl+O")
+            self.assertEqual(dialog.play_generated.shortcut().toString(), "Ctrl+G")
+            self.assertEqual(dialog.accept.shortcut().toString(), "Ctrl+Return")
+            self.assertEqual(dialog.size().width(), 700)
+            self.assertEqual(dialog.size().height(), 500)
+            self.assertIs(
+                dialog.play_reference.nextInFocusChain(), dialog.play_generated
+            )
+            dialog.close()
 
     def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:
@@ -219,6 +306,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog = SourceReferenceQualityDialog(
                 session, decision_recorder=slow_recorder
             )
+            self.authorize_accept(dialog)
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
@@ -261,6 +349,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog = SourceReferenceQualityDialog(
                 session, decision_recorder=flaky_recorder
             )
+            self.authorize_accept(dialog)
             dialog._decide("accept")
             self.wait_for(lambda: not dialog._decision_active)
             self.assertIn("Choose again to retry", dialog.status.text())

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QUrl
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
 )
 
@@ -55,25 +56,42 @@ class SourceReferenceQualityDialog(QDialog):
         self._playing_token = None
 
         self.setWindowTitle("Source-reference quality review")
-        self.setMinimumSize(780, 540)
+        self.setMinimumSize(700, 500)
         self.progress = QLabel()
+        self.progress.setAccessibleName("Source reference review progress")
         self.portrait_image = QLabel()
         self.portrait_image.setAccessibleName("Exact game portrait")
         self.portrait_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.portrait_image.setMinimumHeight(150)
         self.identity = QLabel()
         self.identity.setWordWrap(True)
+        self.identity.setAccessibleName("Current source reference identity")
         self.reference_details = QLabel()
+        self.reference_details.setAccessibleName("Original source reference details")
         self.play_reference = QPushButton("Play original reference")
         self.play_reference.setAccessibleName("Play original source reference")
+        self.play_reference.setAccessibleDescription(
+            "Play the checksum-verified original until its end"
+        )
+        self.play_reference.setShortcut(QKeySequence("Ctrl+O"))
         self.play_reference.clicked.connect(self._play_reference)
 
         self.generated = QListWidget()
         self.generated.setAccessibleName("Generated samples for this reference")
-        self.generated.currentRowChanged.connect(self._update_play_enabled)
+        self.generated.currentRowChanged.connect(self._generated_selection_changed)
+        self.generated_details = QLabel()
+        self.generated_details.setWordWrap(True)
+        self.generated_details.setAccessibleName("Selected generated sample details")
         self.play_generated = QPushButton("Play selected generated sample")
+        self.play_generated.setAccessibleName("Play selected generated sample")
+        self.play_generated.setAccessibleDescription(
+            "Play the selected checksum-verified generated sample until its end"
+        )
+        self.play_generated.setShortcut(QKeySequence("Ctrl+G"))
         self.play_generated.clicked.connect(self._play_generated)
         self.stop = QPushButton("Stop audio")
+        self.stop.setAccessibleName("Stop source reference review audio")
+        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
         playback = QHBoxLayout()
         playback.addWidget(self.play_reference)
@@ -82,11 +100,28 @@ class SourceReferenceQualityDialog(QDialog):
 
         self.failures = QLabel()
         self.failures.setWordWrap(True)
+        self.failures.setAccessibleName("Excluded generation diagnostics")
+        self.technical_toggle = QToolButton()
+        self.technical_toggle.setCheckable(True)
+        self.technical_toggle.setChecked(False)
+        self.technical_toggle.setAccessibleName("Show excluded technical diagnostics")
+        self.technical_toggle.toggled.connect(self.failures.setVisible)
+        self.failures.setVisible(False)
+        self.evidence_progress = QLabel()
+        self.evidence_progress.setWordWrap(True)
+        self.evidence_progress.setAccessibleName("Required listening evidence")
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.status.setAccessibleName("Source reference review status")
         self.accept = QPushButton("Accept reference")
         self.reject = QPushButton("Reject reference")
         self.needs_sample = QPushButton("Need another sample")
+        self.accept.setAccessibleName("Accept exact source reference")
+        self.reject.setAccessibleName("Reject exact source reference")
+        self.needs_sample.setAccessibleName("Request another source reference sample")
+        self.accept.setShortcut(QKeySequence("Ctrl+Return"))
+        self.reject.setShortcut(QKeySequence("Ctrl+Backspace"))
+        self.needs_sample.setShortcut(QKeySequence("Ctrl+N"))
         self.accept.clicked.connect(lambda: self._decide("accept"))
         self.reject.clicked.connect(lambda: self._decide("reject"))
         self.needs_sample.clicked.connect(lambda: self._decide("needs_sample"))
@@ -103,11 +138,21 @@ class SourceReferenceQualityDialog(QDialog):
         layout.addWidget(self.identity)
         layout.addWidget(self.reference_details)
         layout.addWidget(self.generated, 1)
+        layout.addWidget(self.generated_details)
         layout.addLayout(playback)
+        layout.addWidget(self.evidence_progress)
+        layout.addWidget(self.technical_toggle)
         layout.addWidget(self.failures)
         layout.addWidget(self.status)
         layout.addLayout(decisions)
         layout.addWidget(buttons)
+        self.setTabOrder(self.generated, self.play_reference)
+        self.setTabOrder(self.play_reference, self.play_generated)
+        self.setTabOrder(self.play_generated, self.stop)
+        self.setTabOrder(self.stop, self.technical_toggle)
+        self.setTabOrder(self.technical_toggle, self.accept)
+        self.setTabOrder(self.accept, self.reject)
+        self.setTabOrder(self.reject, self.needs_sample)
 
         self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
@@ -127,9 +172,13 @@ class SourceReferenceQualityDialog(QDialog):
         self.generated.clear()
         if self.current is None:
             self.portrait_image.clear()
+            self.portrait_image.setVisible(False)
             self.identity.setText("Review complete")
             self.reference_details.clear()
+            self.generated_details.clear()
             self.failures.clear()
+            self.technical_toggle.setVisible(False)
+            self.evidence_progress.setText("All required decisions are saved.")
             self.status.setText(
                 "All cluster decisions are saved. Only accepted references may be "
                 "published into queue bindings."
@@ -144,6 +193,7 @@ class SourceReferenceQualityDialog(QDialog):
             f"Original media: {self.current['media_id']} | "
             f"Affected story lines: {self.current['affected_queue_item_count']}"
         )
+        self.portrait_image.setVisible(True)
         self._load_portrait()
         reference = self.current["reference"]
         self.reference_details.setText(
@@ -152,11 +202,15 @@ class SourceReferenceQualityDialog(QDialog):
         )
         for sample in self.current["generated_samples"]:
             self.generated.addItem(
-                f"{sample['evaluation_kind']} | {sample['text']} | "
-                f"{sample['duration_seconds']:.2f}s"
+                f"{sample['evaluation_kind']} | {sample['duration_seconds']:.2f}s"
             )
+        self.generated.setVisible(bool(self.generated.count()))
         if self.generated.count():
             self.generated.setCurrentRow(0)
+        else:
+            self.generated_details.setText(
+                "No published generated sample is available for this reference."
+            )
         failure_lines = []
         for sample in self.current["excluded_results"]:
             reason = sample.get("failure_kind") or sample.get("completion") or "failed"
@@ -169,15 +223,19 @@ class SourceReferenceQualityDialog(QDialog):
             if failure_lines
             else "No excluded generation results for this cluster."
         )
+        self.failures.setVisible(False)
+        self.technical_toggle.setChecked(False)
+        self.technical_toggle.setVisible(bool(failure_lines))
+        self.technical_toggle.setText(f"Technical exclusions ({len(failure_lines)})")
         if self.generated.count():
             self.status.setText(
-                "Decisions are available now. Listen to the original and generated "
-                "samples before choosing; playback progress is advisory."
+                "Listen through the original and generated evidence. Playback must "
+                "reach the end before it authorizes a decision."
             )
         else:
             self.status.setText(
-                "No generated sample is available. Listen to the original, then request "
-                "another sample."
+                "No generated sample is available. Finish the original before rejecting "
+                "it or requesting another sample."
             )
         self.play_reference.setEnabled(True)
         self._update_play_enabled()
@@ -186,26 +244,24 @@ class SourceReferenceQualityDialog(QDialog):
     def _load_portrait(self):
         record = self.current.get("portrait_image")
         if record is None:
-            self.portrait_image.setPixmap(QPixmap())
-            self.portrait_image.setText("Exact game portrait is not installed")
+            self._set_portrait_message("Exact game portrait is not installed")
             return
         path = (self.session_path.parent / record["image"]).resolve()
         try:
             path.relative_to(self.session_path.parent)
             payload = path.read_bytes()
         except (OSError, ValueError) as error:
-            self.portrait_image.setPixmap(QPixmap())
-            self.portrait_image.setText(f"Portrait unavailable: {error}")
+            self._set_portrait_message(f"Portrait unavailable: {error}")
             return
         if hashlib.sha256(payload).hexdigest() != record["image_sha256"]:
-            self.portrait_image.setPixmap(QPixmap())
-            self.portrait_image.setText("Portrait blocked: checksum changed")
+            self._set_portrait_message("Portrait blocked: checksum changed")
             return
         pixmap = QPixmap()
         if not pixmap.loadFromData(payload, "PNG"):
-            self.portrait_image.setPixmap(QPixmap())
-            self.portrait_image.setText("Portrait blocked: invalid PNG")
+            self._set_portrait_message("Portrait blocked: invalid PNG")
             return
+        self.portrait_image.setMinimumHeight(150)
+        self.portrait_image.setMaximumHeight(220)
         self.portrait_image.setText("")
         self.portrait_image.setPixmap(
             pixmap.scaled(
@@ -216,6 +272,26 @@ class SourceReferenceQualityDialog(QDialog):
             )
         )
 
+    def _set_portrait_message(self, message):
+        self.portrait_image.setPixmap(QPixmap())
+        self.portrait_image.setText(message)
+        self.portrait_image.setMinimumHeight(36)
+        self.portrait_image.setMaximumHeight(48)
+
+    def _generated_selection_changed(self, row):
+        self._update_play_enabled()
+        if self.current is None or not 0 <= row < len(
+            self.current["generated_samples"]
+        ):
+            return
+        sample = self.current["generated_samples"][row]
+        self.generated_details.setText(
+            f"Sample {row + 1} of {len(self.current['generated_samples'])}\n"
+            f"Kind: {sample['evaluation_kind']}\n"
+            f"Duration: {sample['duration_seconds']:.2f}s\n"
+            f"Text: {sample['text']}"
+        )
+
     def _update_play_enabled(self):
         self.play_generated.setEnabled(
             self.current is not None
@@ -223,18 +299,55 @@ class SourceReferenceQualityDialog(QDialog):
             and bool(self.current["generated_samples"])
         )
 
-    def _set_actions_enabled(self, enabled):
+    def _set_actions_enabled(self, enabled, reason=None):
         self.accept.setEnabled(enabled)
         self.reject.setEnabled(enabled)
         self.needs_sample.setEnabled(enabled)
+        if reason is not None:
+            self.evidence_progress.setText(reason)
+        for button, action in (
+            (self.accept, "accept this exact reference"),
+            (self.reject, "reject this exact reference"),
+            (self.needs_sample, "request another sample"),
+        ):
+            button.setAccessibleDescription(
+                f"Ready to {action}"
+                if button.isEnabled()
+                else f"Unavailable: {self.evidence_progress.text()}"
+            )
 
     def _update_decision_enabled(self):
         if self.current is None:
-            self._set_actions_enabled(False)
+            self._set_actions_enabled(False, "Review complete.")
             return
-        self.accept.setEnabled(bool(self.current["generated_samples"]))
-        self.reject.setEnabled(True)
-        self.needs_sample.setEnabled(True)
+        generated_tokens = {
+            sample["queue_id"] for sample in self.current["generated_samples"]
+        }
+        reference_finished = "reference" in self.completed_audio
+        generated_finished = len(generated_tokens & self.completed_audio)
+        all_generated_finished = bool(generated_tokens) and generated_tokens.issubset(
+            self.completed_audio
+        )
+        self.accept.setEnabled(reference_finished and all_generated_finished)
+        self.reject.setEnabled(reference_finished)
+        self.needs_sample.setEnabled(reference_finished)
+        self.evidence_progress.setText(
+            "Required evidence: original "
+            f"{'1/1' if reference_finished else '0/1'} | generated "
+            f"{generated_finished}/{len(generated_tokens)}. "
+            "Reject and Need another require the original; Accept requires all "
+            "published generated samples too."
+        )
+        for button, action in (
+            (self.accept, "accept this exact reference"),
+            (self.reject, "reject this exact reference"),
+            (self.needs_sample, "request another sample"),
+        ):
+            button.setAccessibleDescription(
+                f"Ready to {action}"
+                if button.isEnabled()
+                else f"Unavailable: {self.evidence_progress.text()}"
+            )
 
     def _play_reference(self):
         if self.current is not None:
@@ -321,7 +434,10 @@ class SourceReferenceQualityDialog(QDialog):
             self.status.setText("This decision is unavailable for the current card.")
             return
         self._decision_active = True
-        self._set_actions_enabled(False)
+        self._set_actions_enabled(
+            False,
+            "Saving the exact variant-local decision; playback remains available.",
+        )
         self.status.setText(
             "Saving the exact reference decision... Playback remains available."
         )

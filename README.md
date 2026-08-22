@@ -501,6 +501,10 @@ separate mutable directory until source/result review is complete.
 character/portrait/bank cluster, including its original reference, all valid
 generated samples and every excluded failure reason. Its UI records `Accept`,
 `Reject`, or `Need another sample` without comparing unrelated characters.
+Reject and Need another unlock only after the original reaches end of playback;
+Accept additionally requires every published generated sample on that card to
+finish. Missing portraits and excluded diagnostics stay compact, while the
+selected generated sample shows its full text and duration separately.
 After all cards are decided, `vntts-pregenerate build-reference-bindings`
 accepts that exact completed review and publishes a new self-contained partial
 manifest that maps only accepted variants to their exact queue IDs. Generation
