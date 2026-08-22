@@ -1,7 +1,8 @@
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,9 +16,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
+    QWidget,
     QWizardPage,
 )
 
@@ -165,6 +168,14 @@ class ConfigurationPage(QWizardPage):
         self.macos_permissions_button = QPushButton("Check macOS permissions...")
         self.macos_permissions_button.setVisible(sys.platform == "darwin")
         self.macos_permissions_button.clicked.connect(self.open_macos_permissions)
+        self.validation_summary = QLabel()
+        self.validation_summary.setWordWrap(True)
+        self.validation_summary.setAccessibleName(
+            "Onboarding configuration validation summary"
+        )
+        self.validation_summary.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.addRow("Capture source", self.capture_mode)
@@ -194,14 +205,27 @@ class ConfigurationPage(QWizardPage):
         form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
             form.addRow("Permissions", self.macos_permissions_button)
-        self.setLayout(form)
+        form_content = QWidget()
+        form_content.setLayout(form)
+        self.configuration_scroll = QScrollArea()
+        self.configuration_scroll.setWidgetResizable(True)
+        self.configuration_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.configuration_scroll.setWidget(form_content)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.validation_summary)
+        layout.addWidget(self.configuration_scroll, 1)
 
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(self.update_backend_controls)
+        self._connect_validation_updates()
         self.update_capture_controls()
         self.update_backend_controls()
         self.update_terms_control()
+        self.update_validation_summary()
 
     def refresh_windows(self):
         selected = self.game_window.currentText().strip()
@@ -274,53 +298,101 @@ class ConfigurationPage(QWizardPage):
         self.narrator_speaker.setEnabled(uses_xtts)
         self.update_terms_control()
 
-    def validatePage(self):
+    def _connect_validation_updates(self):
+        for recorder in (self.read_hotkey, self.live_hotkey):
+            recorder.keySequenceChanged.connect(self.update_validation_summary)
+        for field in (
+            self.tts_model,
+            self.ocr_language,
+            self.tts_language,
+            self.narrator_reference,
+            self.voice_manifest,
+            self.narrator_speaker,
+        ):
+            field.textChanged.connect(self.update_validation_summary)
+        self.capture_mode.currentIndexChanged.connect(self.update_validation_summary)
+        self.game_window.currentTextChanged.connect(self.update_validation_summary)
+        self.speech_backend.currentIndexChanged.connect(self.update_validation_summary)
+        self.terms.toggled.connect(self.update_validation_summary)
+
+    def validation_errors(self):
+        errors = []
+
+        def add(widget, message):
+            if message:
+                errors.append((widget, message))
+
         try:
             validate_hotkey_assignments(self.hotkey_assignments())
         except HotkeyValidationError as error:
-            QMessageBox.warning(self, "Invalid hotkey", str(error))
-            return False
+            add(self.read_hotkey, f"Keyboard shortcuts: {error}.")
         if (
             self.capture_mode.currentData() == "window"
             and not self.game_window.currentText().strip()
         ):
-            QMessageBox.warning(
-                self,
-                "No game window selected",
-                "Start the game, refresh the list, and select its window.",
+            add(
+                self.game_window,
+                "Game window: start the game, refresh the list, and select its window.",
             )
-            return False
+        backend = self.speech_backend.currentData()
+        if backend in {"coqui-xtts", "moss-tts"} and not self.tts_model.text().strip():
+            add(self.tts_model, "Speech model: choose a model.")
         if (
-            self.speech_backend.currentData() == "coqui-xtts"
-            and not self.tts_model.text().strip()
+            backend in {"coqui-xtts", "moss-tts"}
+            and not self.tts_language.text().strip()
         ):
-            QMessageBox.warning(self, "No speech model", "Configure a TTS model.")
-            return False
-        if (
-            self.speech_backend.currentData() == "coqui-xtts"
-            and not self.terms.isChecked()
-        ):
-            QMessageBox.warning(
-                self,
-                "Model license not accepted",
-                "Accept the CPML terms before using XTTS.",
+            add(self.tts_language, "TTS language: enter a language code.")
+        if not self.ocr_language.text().strip():
+            add(self.ocr_language, "OCR language: enter a Tesseract language code.")
+        if backend == "coqui-xtts" and not self.terms.isChecked():
+            add(self.terms, "XTTS license: accept the CPML terms.")
+        narrator_reference = self.narrator_reference.text().strip()
+        if narrator_reference and not Path(narrator_reference).expanduser().is_file():
+            add(
+                self.narrator_reference,
+                "Narrator reference: the selected file does not exist.",
             )
-            return False
         if (
-            self.speech_backend.currentData() == "moss-tts"
-            and not self.narrator_reference.text().strip()
+            backend == "moss-tts"
+            and not narrator_reference
             and find_voice_assignment(
                 self.original_settings.voice_assignments,
                 "Narrator",
             )
             is None
         ):
-            QMessageBox.warning(
-                self,
-                "Narrator reference required",
-                "Choose a narrator reference recording or assign an imported "
+            add(
+                self.narrator_reference,
+                "Narrator reference: choose a recording or assign an imported "
                 "character voice to Narrator before using MOSS-TTS.",
             )
+        manifest = self.voice_manifest.text().strip()
+        if manifest and not Path(manifest).expanduser().is_file():
+            add(
+                self.voice_manifest,
+                "Voice manifest: the selected file does not exist.",
+            )
+        return tuple(errors)
+
+    def update_validation_summary(self, *_args):
+        errors = self.validation_errors()
+        if errors:
+            self.validation_summary.setText(
+                f"Fix {len(errors)} setting(s) before continuing:\n"
+                + "\n".join(f"- {message}" for _widget, message in errors)
+            )
+            self.validation_summary.setStyleSheet("color: #b3261e; font-weight: 600;")
+        else:
+            self.validation_summary.setText("Configuration is ready.")
+            self.validation_summary.setStyleSheet("")
+        return errors
+
+    def validatePage(self):
+        errors = self.update_validation_summary()
+        if errors:
+            widget, _message = errors[0]
+            self.configuration_scroll.ensureWidgetVisible(widget, 0, 16)
+            widget.setFocus(Qt.FocusReason.OtherFocusReason)
             return False
 
         self.flow.draft_settings = self.settings()
@@ -605,8 +677,8 @@ class OnboardingWizard(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Visual Novel Text to Speech setup")
-        self.setMinimumSize(760, 580)
-        self.resize(920, 680)
+        self.setMinimumSize(520, 420)
+        self.resize(820, 620)
         self.draft_settings = settings
         self.completed_settings = None
         self.pages = []
@@ -643,6 +715,9 @@ class OnboardingWizard(QDialog):
             self.stack.addWidget(page)
             page.completeChanged.connect(self.update_navigation)
 
+        self.step_label = QLabel()
+        self.step_label.setAccessibleName("Onboarding progress")
+        self.step_label.setStyleSheet("font-weight: 600;")
         self.page_title = QLabel()
         self.page_title.setStyleSheet("font-size: 22px; font-weight: 600;")
         self.page_subtitle = QLabel()
@@ -662,6 +737,7 @@ class OnboardingWizard(QDialog):
         navigation.addWidget(self.next_button)
         navigation.addWidget(self.finish_button)
         layout = QVBoxLayout(self)
+        layout.addWidget(self.step_label)
         layout.addWidget(self.page_title)
         layout.addWidget(self.page_subtitle)
         layout.addWidget(self.stack, 1)
@@ -677,6 +753,9 @@ class OnboardingWizard(QDialog):
         self.current_page_index = max(0, min(index, len(self.pages) - 1))
         page = self.pages[self.current_page_index]
         self.stack.setCurrentWidget(page)
+        self.step_label.setText(
+            f"Step {self.current_page_index + 1} of {len(self.pages)}"
+        )
         self.page_title.setText(page.title())
         self.page_subtitle.setText(page.subTitle())
         initializer = getattr(page, "initializePage", None)

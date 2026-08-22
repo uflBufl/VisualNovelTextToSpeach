@@ -10,10 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Add `step N of M`, inline validation summary and a compact-window scroll
-      gate to onboarding while preserving its stale-safe diagnostics and guarded
-      end-to-end test lifecycle. Verify keyboard and screen-reader operation at
-      100%, 150% and 200% DPI.
 - [ ] Apply the lighter consistency pass to OCR, permissions and
       correction/history follow-ups. Preserve exact authority; add consistent
       Save/Cancel/Close placement, inline row validation and multi-display/DPI

@@ -7,6 +7,9 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy  # noqa: E402
 
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
@@ -267,8 +270,9 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.configuration_page
 
-        self.assertGreaterEqual(wizard.width(), 920)
-        self.assertGreaterEqual(wizard.height(), 680)
+        self.assertTrue(page.configuration_scroll.widgetResizable())
+        self.assertEqual(wizard.minimumWidth(), 520)
+        self.assertEqual(wizard.minimumHeight(), 420)
         self.assertEqual(page.window_layout.stretch(0), 1)
         self.assertEqual(page.manifest_layout.stretch(0), 1)
         self.assertGreaterEqual(page.refresh_button.minimumWidth(), 120)
@@ -278,6 +282,72 @@ class OnboardingWizardTest(unittest.TestCase):
             QSizePolicy.Policy.Expanding,
         )
         wizard.deleteLater()
+
+    def test_step_progress_and_navigation_are_keyboard_accessible(self):
+        wizard = OnboardingWizard(AppSettings())
+        wizard.show()
+        wizard.next_button.setFocus()
+
+        self.assertEqual(wizard.step_label.text(), "Step 1 of 5")
+        self.assertTrue(wizard.step_label.accessibleName())
+        QTest.keyClick(wizard.next_button, Qt.Key.Key_Return)
+
+        self.assertEqual(wizard.current_page_index, 1)
+        self.assertEqual(wizard.step_label.text(), "Step 2 of 5")
+        wizard.deleteLater()
+
+    def test_configuration_validation_lists_all_errors_and_focuses_first(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.configuration_page
+        wizard.show_page(1)
+        wizard.show()
+        page.speech_backend.setCurrentIndex(page.speech_backend.findData("coqui-xtts"))
+        page.tts_model.clear()
+        page.ocr_language.clear()
+        page.tts_language.clear()
+        page.terms.setChecked(False)
+
+        self.assertFalse(page.validatePage())
+        self.application.processEvents()
+
+        self.assertIn("Game window", page.validation_summary.text())
+        self.assertIn("Speech model", page.validation_summary.text())
+        self.assertIn("OCR language", page.validation_summary.text())
+        self.assertIn("TTS language", page.validation_summary.text())
+        self.assertIn("XTTS license", page.validation_summary.text())
+        self.assertTrue(page.game_window.hasFocus())
+
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        page.speech_backend.setCurrentIndex(page.speech_backend.findData("pocket-tts"))
+        page.ocr_language.setText("eng")
+        self.assertEqual(page.validation_summary.text(), "Configuration is ready.")
+        self.assertTrue(page.validatePage())
+        wizard.deleteLater()
+
+    def test_configuration_scrolls_at_scaled_fonts(self):
+        base_font = QApplication.font()
+        base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0
+        for scale in (1.0, 1.5, 2.0):
+            with self.subTest(scale=scale):
+                font = QFont(base_font)
+                font.setPointSizeF(base_size * scale)
+                wizard = OnboardingWizard(AppSettings())
+                wizard.setFont(font)
+                wizard.resize(520, 420)
+                wizard.show_page(1)
+                wizard.show()
+                self.application.processEvents()
+
+                page = wizard.configuration_page
+                self.assertTrue(page.validation_summary.isVisibleTo(wizard))
+                self.assertTrue(page.configuration_scroll.isVisibleTo(wizard))
+                self.assertGreater(
+                    page.configuration_scroll.verticalScrollBar().maximum(), 0
+                )
+                self.assertTrue(wizard.next_button.isVisibleTo(wizard))
+
+                wizard.close()
+                wizard.deleteLater()
 
     def test_diagnostics_page_is_async_cancellable_and_stale_safe(self):
         class ManualThreadPool:
