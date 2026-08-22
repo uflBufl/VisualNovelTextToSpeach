@@ -12,10 +12,13 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSlider,
     QStyle,
@@ -90,17 +93,48 @@ class ModelListeningDialog(QDialog):
         self.active_side = None
         self.started_sides = set()
         self.setWindowTitle("Blind voice-model listening workbench")
-        self.setMinimumSize(760, 430)
+        self.setMinimumSize(640, 400)
         self.resize(900, 520)
 
         self.progress = QLabel()
+        self.progress.setAccessibleName("Blind listening progress")
+        self.progress.setAccessibleDescription(
+            "Completed and remaining trials in the current blind session"
+        )
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setAccessibleName("Completed blind listening trials")
+        self.trial_heading = QLabel()
+        self.trial_heading.setWordWrap(True)
+        self.trial_heading.setAccessibleName("Current blind trial")
         self.dialogue = QPlainTextEdit()
         self.dialogue.setReadOnly(True)
+        self.dialogue.setAccessibleName("Current blind trial text")
+        self.dialogue.setAccessibleDescription(
+            "Exact dialogue text shared by anonymous samples A and B"
+        )
         self.dialogue.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.dialogue.setMinimumHeight(160)
+        self.dialogue.setMinimumHeight(90)
+        current_trial_layout = QVBoxLayout()
+        current_trial_layout.addWidget(self.trial_heading)
+        current_trial_layout.addWidget(self.dialogue, 1)
+        self.current_trial_card = QGroupBox("Current blind trial")
+        self.current_trial_card.setAccessibleName("Current blind trial evidence")
+        self.current_trial_card.setLayout(current_trial_layout)
         self.play_a = QPushButton("Play A")
         self.play_b = QPushButton("Play B")
         self.stop = QPushButton("Stop")
+        self.play_a.setShortcut(QKeySequence("Ctrl+1"))
+        self.play_b.setShortcut(QKeySequence("Ctrl+2"))
+        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
+        self.play_a.setAccessibleName("Play anonymous sample A")
+        self.play_b.setAccessibleName("Play anonymous sample B")
+        self.stop.setAccessibleName("Control active anonymous sample")
+        self.play_a.setAccessibleDescription("Play anonymous sample A")
+        self.play_b.setAccessibleDescription("Play anonymous sample B")
+        self.stop.setAccessibleDescription(
+            "Pause, continue or restart the active anonymous sample"
+        )
         width = max(
             self.stop.fontMetrics().horizontalAdvance(label)
             for label in ("Stop", "Continue", "Start again")
@@ -113,15 +147,22 @@ class ModelListeningDialog(QDialog):
         self.now_playing = QLabel()
         self.now_playing.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.now_playing.setMinimumHeight(46)
+        self.now_playing.setAccessibleName("Blind sample playback status")
         playback = QHBoxLayout()
         playback.addWidget(self.play_a)
         playback.addWidget(self.play_b)
         self.playback_controls = playback
 
         self.skip_back = QPushButton("-5s")
+        self.skip_back.setAccessibleName("Skip anonymous sample back five seconds")
         self.seek = SeekSlider(Qt.Orientation.Horizontal)
+        self.seek.setAccessibleName("Anonymous sample playback position")
         self.skip_forward = QPushButton("+5s")
+        self.skip_forward.setAccessibleName(
+            "Skip anonymous sample forward five seconds"
+        )
         self.time = QLabel("0:00 / 0:00")
+        self.time.setAccessibleName("Anonymous sample playback time")
         self.time.setMinimumWidth(90)
         self.skip_back.clicked.connect(lambda: self.skip_by(-5_000))
         self.skip_forward.clicked.connect(lambda: self.skip_by(5_000))
@@ -138,9 +179,15 @@ class ModelListeningDialog(QDialog):
         self.prefer_a = QPushButton("A is better")
         self.tie = QPushButton("Both acceptable / no preference")
         self.neither = QPushButton("Neither acceptable")
+        self.prefer_b = QPushButton("B is better")
+        self.prefer_a.setAccessibleName("Anonymous sample A is better")
+        self.tie.setAccessibleName("Both anonymous samples are acceptable")
+        self.prefer_a.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.tie.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.neither.setAccessibleName("Neither sample is acceptable")
         self.neither.setShortcut(QKeySequence("Ctrl+Shift+N"))
-        self.prefer_b = QPushButton("B is better")
+        self.prefer_b.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        self.prefer_b.setAccessibleName("Anonymous sample B is better")
         self.apply_side_button_style(self.prefer_a, "a")
         self.tie.setStyleSheet(
             "QPushButton { background-color: #52525b; color: white;"
@@ -157,25 +204,41 @@ class ModelListeningDialog(QDialog):
         self.tie.clicked.connect(lambda: self.save_preference("tie"))
         self.neither.clicked.connect(lambda: self.save_preference("neither"))
         self.prefer_b.clicked.connect(lambda: self.save_preference("b"))
-        decisions = QHBoxLayout()
-        decisions.addWidget(self.prefer_a)
-        decisions.addWidget(self.tie)
-        decisions.addWidget(self.neither)
-        decisions.addWidget(self.prefer_b)
+        decisions = QGridLayout()
+        decisions.addWidget(self.prefer_a, 0, 0)
+        decisions.addWidget(self.prefer_b, 0, 1)
+        decisions.addWidget(self.tie, 1, 0)
+        decisions.addWidget(self.neither, 1, 1)
+        self.decision_reason = QLabel()
+        self.decision_reason.setWordWrap(True)
+        self.decision_reason.setAccessibleName("Blind decision availability")
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.status.setAccessibleName("Blind listening operation status")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
-        layout.addWidget(self.dialogue, 1)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.current_trial_card, 1)
         layout.addWidget(self.now_playing)
         layout.addLayout(playback)
         layout.addLayout(seek_controls)
+        layout.addWidget(self.decision_reason)
         layout.addLayout(decisions)
         layout.addWidget(self.status)
         layout.addWidget(buttons)
+        self.setTabOrder(self.dialogue, self.play_a)
+        self.setTabOrder(self.play_a, self.play_b)
+        self.setTabOrder(self.play_b, self.skip_back)
+        self.setTabOrder(self.skip_back, self.seek)
+        self.setTabOrder(self.seek, self.skip_forward)
+        self.setTabOrder(self.skip_forward, self.stop)
+        self.setTabOrder(self.stop, self.prefer_a)
+        self.setTabOrder(self.prefer_a, self.tie)
+        self.setTabOrder(self.tie, self.neither)
+        self.setTabOrder(self.neither, self.prefer_b)
 
         self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
@@ -186,9 +249,45 @@ class ModelListeningDialog(QDialog):
         self.player.positionChanged.connect(self.position_changed)
         self.load_next_trial()
 
-    def set_preference_buttons_enabled(self, enabled):
-        for button in (self.prefer_a, self.tie, self.neither, self.prefer_b):
+    def set_preference_buttons_enabled(self, enabled, reason=None):
+        decisions = (
+            (self.prefer_a, "Record anonymous sample A as better"),
+            (self.tie, "Record both samples as acceptable with no preference"),
+            (self.neither, "Record that neither anonymous sample is acceptable"),
+            (self.prefer_b, "Record anonymous sample B as better"),
+        )
+        if reason is None:
+            reason = (
+                "Decision ready: choose one result."
+                if enabled
+                else "Decision locked: start both anonymous samples first."
+            )
+        self.decision_reason.setText(reason)
+        for button, description in decisions:
             button.setEnabled(enabled)
+            button.setAccessibleDescription(
+                description if enabled else f"Unavailable. {reason}"
+            )
+
+    def update_trial_context(self):
+        completed, total = listening_progress(self.session)
+        remaining = total - completed
+        self.progress.setText(
+            f"Completed {completed} of {total} | Remaining {remaining}"
+        )
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(completed)
+        if self.current_trial is None:
+            self.trial_heading.setText(f"All {total} trials reviewed")
+            return
+        trial_id = self.current_trial["trial_id"]
+        position = next(
+            index
+            for index, trial in enumerate(self.session["trials"], start=1)
+            if trial["trial_id"] == trial_id
+        )
+        identity = self.current_trial.get("line_id") or self.current_trial["queue_id"]
+        self.trial_heading.setText(f"Trial {position} of {total} | {identity}")
 
     def apply_side_button_style(self, button, side, *, active=False):
         colors = self.side_colors[side]
@@ -236,18 +335,21 @@ class ModelListeningDialog(QDialog):
 
     def load_next_trial(self):
         self.session = load_listening_session(self.session_path)
-        completed, total = listening_progress(self.session)
-        self.progress.setText(f"Progress: {completed}/{total}")
         self.current_trial = next_pending_trial(self.session)
+        self.update_trial_context()
         self.auto_play_pending_b = False
         self.active_side = None
         self.started_sides.clear()
         self.seek.setRange(0, 0)
         self.seek.setValue(0)
         self.time.setText("0:00 / 0:00")
-        self.set_preference_buttons_enabled(False)
+        self.set_preference_buttons_enabled(
+            False,
+            "Decision locked: start both anonymous samples before choosing.",
+        )
         if self.current_trial is None:
             self.set_playback_indicator("complete")
+            self.set_preference_buttons_enabled(False, "Session complete.")
             report_path = self.session_path.with_name("report.json")
             report = ensure_listening_report(self.session_path, report_path)
             leader = report["models"][0]["model_id"] if report["models"] else "none"
@@ -274,12 +376,10 @@ class ModelListeningDialog(QDialog):
             self.skip_forward,
         ):
             widget.setEnabled(True)
-        self.dialogue.setPlainText(
-            f"{self.current_trial.get('line_id') or self.current_trial['queue_id']}\n\n"
-            f"{self.current_trial.get('text', '')}"
-        )
+        self.dialogue.setPlainText(self.current_trial.get("text", ""))
         self.status.setText(
-            "Starting A, then B automatically. Preference unlocks after both have started."
+            "Starting A, then B automatically. Shortcuts: Ctrl+1 plays A; "
+            "Ctrl+2 plays B; Ctrl+Space controls the active sample."
         )
         if self.auto_play:
             QTimer.singleShot(0, self.start_auto_playback)
@@ -310,7 +410,10 @@ class ModelListeningDialog(QDialog):
             self.set_playback_indicator("playing", self.active_side)
             self.started_sides.add(self.active_side)
             if self.started_sides == {"a", "b"}:
-                self.set_preference_buttons_enabled(True)
+                self.set_preference_buttons_enabled(
+                    True,
+                    "Decision ready: choose A, both acceptable, neither acceptable, or B.",
+                )
                 self.status.setText("Both samples have started. Choose a preference.")
 
     def media_status_changed(self, status):
@@ -382,7 +485,10 @@ class ModelListeningDialog(QDialog):
             return
         trial_id = self.current_trial["trial_id"]
         self._preference_active = True
-        self.set_preference_buttons_enabled(False)
+        self.set_preference_buttons_enabled(
+            False,
+            "Decision saving: playback remains available.",
+        )
         self.status.setText(
             "Saving preference and updating the blinded report... "
             "Playback remains available."
@@ -404,7 +510,8 @@ class ModelListeningDialog(QDialog):
             self._show_persisted_score_with_report_error(str(error))
         else:
             self.set_preference_buttons_enabled(
-                self.current_trial is not None and self.started_sides == {"a", "b"}
+                self.current_trial is not None and self.started_sides == {"a", "b"},
+                "Decision ready: the previous save failed; choose again to retry.",
             )
             self.status.setText(
                 f"Preference was not saved: {error}. Choose again to retry."
@@ -416,14 +523,13 @@ class ModelListeningDialog(QDialog):
     def _show_persisted_score_with_report_error(self, message):
         self.stop_audio()
         self.session = load_listening_session(self.session_path)
-        completed, total = listening_progress(self.session)
-        self.progress.setText(f"Progress: {completed}/{total}")
         self.current_trial = next_pending_trial(self.session)
+        self.update_trial_context()
         if self.current_trial is not None:
             self.load_next_trial()
         else:
             self.set_playback_indicator("complete")
-            self.set_preference_buttons_enabled(False)
+            self.set_preference_buttons_enabled(False, "Session complete.")
             self.dialogue.setPlainText("Listening session complete.")
             for widget in (
                 self.play_a,

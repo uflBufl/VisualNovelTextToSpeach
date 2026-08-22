@@ -460,8 +460,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         self.fail("Timed out waiting for the Qt worker")
 
     def create_dialog(self, root, **kwargs):
+        item_count = kwargs.pop("item_count", 1)
         session = create_listening_session_from_reports(
-            write_model_reports(root, item_count=1), root / "session"
+            write_model_reports(root, item_count=item_count), root / "session"
         )
         dialog = ModelListeningDialog(session, auto_play=False, **kwargs)
         dialog.player = Mock()
@@ -483,7 +484,70 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
             self.assertEqual(load_listening_session(session)["completed_count"], 1)
             self.assertIsNone(dialog.current_trial)
+            self.assertEqual(dialog.progress.text(), "Completed 1 of 1 | Remaining 0")
+            self.assertEqual(dialog.trial_heading.text(), "All 1 trials reviewed")
             self.assertTrue(session.with_name("report.json").is_file())
+            dialog.deleteLater()
+
+    def test_trial_hierarchy_keyboard_accessibility_and_compact_layout(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory), item_count=3)
+            dialog.show()
+            dialog.resize(640, 400)
+            dialog.activateWindow()
+            self.application.processEvents()
+
+            self.assertEqual(dialog.progress.text(), "Completed 0 of 3 | Remaining 3")
+            self.assertEqual(dialog.progress_bar.maximum(), 3)
+            self.assertEqual(dialog.progress_bar.value(), 0)
+            self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
+            self.assertEqual(
+                dialog.dialogue.toPlainText(), "Shared listening line 0 ..."
+            )
+            self.assertIn("Decision locked", dialog.decision_reason.text())
+            self.assertEqual(dialog.play_a.shortcut().toString(), "Ctrl+1")
+            self.assertEqual(dialog.play_b.shortcut().toString(), "Ctrl+2")
+            self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
+            for widget in (
+                dialog.progress,
+                dialog.progress_bar,
+                dialog.trial_heading,
+                dialog.dialogue,
+                dialog.current_trial_card,
+                dialog.now_playing,
+                dialog.play_a,
+                dialog.play_b,
+                dialog.stop,
+                dialog.seek,
+                dialog.time,
+                dialog.prefer_a,
+                dialog.prefer_b,
+                dialog.tie,
+                dialog.neither,
+                dialog.decision_reason,
+                dialog.status,
+            ):
+                self.assertTrue(widget.accessibleName(), type(widget).__name__)
+
+            dialog.play_a.setFocus()
+            QTest.keyClick(dialog.play_a, Qt.Key.Key_Return)
+            dialog.player.play.assert_called_once_with()
+            dialog.play("b")
+            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.active_side = "a"
+            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertTrue(dialog.prefer_a.isEnabled())
+            self.assertIn("Decision ready", dialog.decision_reason.text())
+            dialog.save_preference = Mock()
+            dialog.prefer_a.setFocus()
+            QTest.keyClick(dialog.prefer_a, Qt.Key.Key_Return)
+            dialog.save_preference.assert_called_once_with("a")
+
+            self.assertEqual(dialog.size().width(), 640)
+            self.assertEqual(dialog.size().height(), 400)
+            self.assertLessEqual(
+                dialog.neither.geometry().bottom(), dialog.contentsRect().bottom()
+            )
             dialog.deleteLater()
 
     def test_neither_acceptable_button_persists_distinct_verdict(self):

@@ -221,6 +221,15 @@ uv run vntts-listen report --session /path/to/session.json
 uv run vntts-listen ui --session /path/to/session.json
 ```
 
+The workbench keeps one anonymous trial visually dominant and shows
+`Trial N of M`, completed and remaining counts, plus the exact reason decisions
+are locked, ready or saving. Use `Ctrl+1` and `Ctrl+2` to play A and B,
+`Ctrl+Space` to pause/continue/restart the active sample, and
+`Ctrl+Shift+A`, `Ctrl+Shift+B`, `Ctrl+Shift+T` or `Ctrl+Shift+N` for A, B,
+both acceptable/no preference, or neither acceptable. Decisions remain locked
+until both anonymous samples have started. The four choices use a compact
+two-row layout without exposing model identities.
+
 Scoring is append-safe by default: rating an already completed trial requires
 explicit `--overwrite`. Reports rank models by preference rate, then wins, then
 model ID and include the same sorted pairwise totals as the legacy workflow.
