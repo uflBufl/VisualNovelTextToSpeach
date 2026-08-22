@@ -10,22 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the remaining published checksum-bound specialist follow-up bundle
-      with `uv run vntts-review-bundle BUNDLE.json`. It has 38 required samples
-      for only the 45 newly generated WAVs (one final MOSS sentence repair and
-      44 Pocket fallbacks), with inherited pending WAVs excluded. Every
-      technical-attention WAV remains mandatory; clean short/medium/long items
-      are sampled deterministically. Use sample-level bad markers and `Need
-      another sample` instead of accepting a doubtful cohort. The original
-      version-2 task is terminal `18/18`; its final expanded Narrator cohort
-      rejected all 22 target WAVs under decision
-      `8f76b441aed4f9f5f5c393a7df8eef1a406d06f60017a4f85b7efa0e3fe27b05`.
-      The follow-up still has all nine cohorts, 38 samples and 45 items. It
-      intentionally excludes six terminal specialist silence failures, 29
-      reference-comparison items and one new pending WAV in the primary
-      workspace. After terminal decisions, inspect the exact source-local
-      evidence before merging outcomes. Check the task without opening Qt using
-      `uv run vntts-review-bundle BUNDLE.json --status`.
 - [ ] Review the published version-2 operator task for all 29
       reference-comparison failures at
       `authoring/review-bundles/current-character-story-reference-audit-v2`
@@ -55,8 +39,14 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 - [ ] After the repair WAVs are reviewed, run the checksum-bound
       `merge-workspace-outcomes` command to create one successor containing the
       77 primary approvals plus only exact approved/rejected sentence and
-      Pocket repair outcomes. Inspect its source-state/item/WAV ledger and
-      approved-only manifest before using the successor for generation.
+      Pocket repair outcomes. Both bundles are now terminal: 102 repair WAVs
+      are approved and 42 repair outcomes are rejected. The isolated 17-source
+      preflight was idempotent and produced expected successor ID
+      `resume-395a5e5eec0327a3a793b66d-d4fbbae41bdd4810`, with 179 approved-only
+      manifest entries. Publish the same exact merge to the real authoring root
+      after filesystem escalation is approved, then inspect its
+      source-state/item/WAV ledger and approved-only manifest before using the
+      successor for generation.
 - [ ] Generate newly unblocked reference lines under immutable controls as
       references become available, then apply the same risk-based cohort review
       and exact outcome merge. The previous ten ready lines are complete: one

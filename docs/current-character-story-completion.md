@@ -170,9 +170,15 @@ retained two bad-sample assessments and rejected all 22 target WAVs under
 decision
 `8f76b441aed4f9f5f5c393a7df8eef1a406d06f60017a4f85b7efa0e3fe27b05`.
 Read-only reconciliation reports zero remaining cohorts, samples and items for
-that publication. The follow-up task still has all nine cohorts, 38 required
-samples and 45 WAVs remaining. The Dobharchú natural-expansion task separately
-has all four cohorts and 24 samples/items remaining.
+that publication. The follow-up task is also terminal `9/9`: all 45 repair WAVs
+were accepted across its nine exact cohorts. The two specialist publications
+therefore contribute 102 approved and 42 rejected repair outcomes in total.
+An isolated exact merge preflight over the 17 distinct source workspaces was
+idempotent and produced expected successor
+`resume-395a5e5eec0327a3a793b66d-d4fbbae41bdd4810`: 179 approved, 78 rejected,
+129 pending-review and 35 failed state items, with 179 approved-only manifest
+entries. Real publication has not run yet. The Dobharchú natural-expansion task
+separately has all four cohorts and 24 samples/items remaining.
 
 The 29 primary failures classified as `reference_comparison` are one separate
 reference-quality decision, not 29 repeated auditions. Their immutable audit
