@@ -3,7 +3,9 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.support_ui import SupportCenterDialog  # noqa: E402
@@ -98,6 +100,50 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.set_export_result(True, "/tmp/support.zip")
         self.assertTrue(dialog.export_button.isEnabled())
         self.assertIn("/tmp/support.zip", dialog.operation_status.text())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_launchers_have_independent_local_result_and_retry_states(self):
+        dialog = SupportCenterDialog(FakeEventLog())
+        diagnostics = []
+        settings = []
+        dialog.diagnostics_requested.connect(lambda: diagnostics.append(True))
+        dialog.settings_folder_requested.connect(lambda: settings.append(True))
+        dialog.resize(620, 420)
+        dialog.layout().activate()
+
+        dialog.diagnostics_button.setFocus()
+        QTest.keyClick(dialog.diagnostics_button, Qt.Key.Key_Return)
+
+        self.assertEqual(diagnostics, [True])
+        self.assertFalse(dialog.diagnostics_button.isEnabled())
+        self.assertTrue(dialog.export_button.isEnabled())
+        self.assertTrue(dialog.settings_button.isEnabled())
+        self.assertIn("Opening live diagnostics", dialog.operation_status.text())
+        dialog.set_launcher_result(
+            "diagnostics", False, "Unable to open live diagnostics"
+        )
+        self.assertTrue(dialog.diagnostics_button.isEnabled())
+        self.assertIn("retry", dialog.operation_status.text())
+
+        dialog.settings_button.click()
+        self.assertEqual(settings, [True])
+        self.assertFalse(dialog.settings_button.isEnabled())
+        self.assertTrue(dialog.diagnostics_button.isEnabled())
+        dialog.set_launcher_result(
+            "settings-folder", True, "Settings folder opened: /tmp/settings"
+        )
+        self.assertTrue(dialog.settings_button.isEnabled())
+        self.assertIn("/tmp/settings", dialog.operation_status.text())
+        for button in (
+            dialog.diagnostics_button,
+            dialog.export_button,
+            dialog.settings_button,
+        ):
+            self.assertTrue(button.accessibleName())
+            self.assertFalse(button.shortcut().isEmpty())
+        self.assertEqual(dialog.size().width(), 620)
+        self.assertEqual(dialog.size().height(), 420)
         dialog.close()
         dialog.deleteLater()
 

@@ -1146,6 +1146,41 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_support_launch_results_return_to_the_support_dialog(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray_application.support_dialog = Mock()
+
+        with patch.object(
+            tray_application,
+            "open_diagnostics",
+            side_effect=OSError("capture unavailable"),
+        ):
+            tray_application.open_support_diagnostics()
+        tray_application.support_dialog.set_launcher_result.assert_called_with(
+            "diagnostics",
+            False,
+            "Unable to open live diagnostics: capture unavailable",
+        )
+
+        tray_application.support_dialog.reset_mock()
+        settings_path = Path("/tmp/vntts-settings")
+        with patch.object(
+            tray_application,
+            "open_settings_folder",
+            return_value=settings_path,
+        ):
+            tray_application.open_support_settings_folder()
+        tray_application.support_dialog.set_launcher_result.assert_called_once_with(
+            "settings-folder",
+            True,
+            f"Settings folder opened: {settings_path}",
+        )
+        tray_application.shutdown()
+
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())
         dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())

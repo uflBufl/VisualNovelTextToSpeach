@@ -1937,14 +1937,46 @@ class TrayApplication(QObject):
     def open_support_center(self):
         if self.support_dialog is None:
             self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
-            self.support_dialog.diagnostics_requested.connect(self.open_diagnostics)
+            self.support_dialog.diagnostics_requested.connect(
+                self.open_support_diagnostics
+            )
             self.support_dialog.export_requested.connect(self.export_support_bundle)
             self.support_dialog.settings_folder_requested.connect(
-                self.open_settings_folder
+                self.open_support_settings_folder
             )
         self.support_dialog.show()
         self.support_dialog.raise_()
         self.support_dialog.activateWindow()
+
+    def open_support_diagnostics(self):
+        try:
+            self.open_diagnostics()
+        except Exception as error:
+            if self.support_dialog is not None:
+                self.support_dialog.set_launcher_result(
+                    "diagnostics", False, f"Unable to open live diagnostics: {error}"
+                )
+            return
+        if self.support_dialog is not None:
+            self.support_dialog.set_launcher_result(
+                "diagnostics", True, "Live diagnostics opened in a separate window."
+            )
+
+    def open_support_settings_folder(self):
+        try:
+            path = self.open_settings_folder()
+        except Exception as error:
+            if self.support_dialog is not None:
+                self.support_dialog.set_launcher_result(
+                    "settings-folder",
+                    False,
+                    f"Unable to open the settings folder: {error}",
+                )
+            return
+        if self.support_dialog is not None:
+            self.support_dialog.set_launcher_result(
+                "settings-folder", True, f"Settings folder opened: {path}"
+            )
 
     def open_history(self):
         dialog = DialogueHistoryDialog(
@@ -2017,7 +2049,9 @@ class TrayApplication(QObject):
     def open_settings_folder(self):
         path = get_settings_path().parent
         path.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            raise OSError("the operating system refused the folder-open request")
+        return path
 
     def set_status(self, message):
         self.support_log.add("status", message)

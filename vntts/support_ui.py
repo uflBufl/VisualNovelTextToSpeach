@@ -1,5 +1,5 @@
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -22,6 +22,7 @@ class SupportCenterDialog(QDialog):
         super().__init__(parent)
         self.event_log = event_log
         self.setWindowTitle("Diagnostics and logs")
+        self.setMinimumSize(620, 420)
         self.resize(760, 520)
 
         self.events = QTextEdit()
@@ -62,9 +63,21 @@ class SupportCenterDialog(QDialog):
         self.diagnostics_button = QPushButton("Live diagnostics")
         self.export_button = QPushButton("Export support report")
         self.settings_button = QPushButton("Open settings folder")
-        self.diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
+        self.diagnostics_button.setAccessibleName("Open live diagnostics")
+        self.diagnostics_button.setAccessibleDescription(
+            "Open the latest capture, OCR, routing and latency diagnostics"
+        )
+        self.diagnostics_button.setShortcut(QKeySequence("Ctrl+D"))
+        self.export_button.setAccessibleName("Export privacy-safe support report")
+        self.export_button.setShortcut(QKeySequence("Ctrl+E"))
+        self.settings_button.setAccessibleName("Open application settings folder")
+        self.settings_button.setAccessibleDescription(
+            "Open the local folder containing application settings"
+        )
+        self.settings_button.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.diagnostics_button.clicked.connect(self.request_diagnostics)
         self.export_button.clicked.connect(self.request_export)
-        self.settings_button.clicked.connect(self.settings_folder_requested.emit)
+        self.settings_button.clicked.connect(self.request_settings_folder)
         actions.addWidget(self.diagnostics_button)
         actions.addWidget(self.export_button)
         actions.addWidget(self.settings_button)
@@ -79,9 +92,39 @@ class SupportCenterDialog(QDialog):
         layout.addLayout(actions)
         layout.addWidget(self.operation_status)
         layout.addWidget(buttons)
+        self.setTabOrder(self.events, self.new_events_button)
+        self.setTabOrder(self.new_events_button, self.diagnostics_button)
+        self.setTabOrder(self.diagnostics_button, self.export_button)
+        self.setTabOrder(self.export_button, self.settings_button)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
+
+    def request_diagnostics(self):
+        if not self.diagnostics_button.isEnabled():
+            return
+        self.diagnostics_button.setEnabled(False)
+        self.operation_status.setText("Opening live diagnostics...")
+        self.diagnostics_requested.emit()
+
+    def request_settings_folder(self):
+        if not self.settings_button.isEnabled():
+            return
+        self.settings_button.setEnabled(False)
+        self.operation_status.setText("Opening the application settings folder...")
+        self.settings_folder_requested.emit()
+
+    def set_launcher_result(self, launcher, successful, message):
+        buttons = {
+            "diagnostics": self.diagnostics_button,
+            "settings-folder": self.settings_button,
+        }
+        button = buttons[launcher]
+        button.setEnabled(True)
+        if successful:
+            self.operation_status.setText(message)
+        else:
+            self.operation_status.setText(f"{message}. Select the action to retry.")
 
     def showEvent(self, event):
         super().showEvent(event)
