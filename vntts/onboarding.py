@@ -17,6 +17,7 @@ class DiagnosticResult:
     name: str
     status: str
     message: str
+    remediation: str | None = None
 
     @property
     def passed(self):
@@ -70,6 +71,7 @@ class OnboardingDiagnostics:
                 "error",
                 f"Missing {', '.join(missing)}. Allow the terminal or VNTTS "
                 "under System Settings -> Privacy & Security, then restart it.",
+                "permissions",
             )
         if screen_capture is None or (
             settings.auto_advance_enabled and accessibility is None
@@ -78,6 +80,7 @@ class OnboardingDiagnostics:
                 "macOS permissions",
                 "warning",
                 "One or more permission states could not be checked",
+                "permissions",
             )
         message = "Screen Recording is granted"
         if settings.auto_advance_enabled:
@@ -93,7 +96,7 @@ class OnboardingDiagnostics:
                 }
             )
         except HotkeyValidationError as error:
-            return DiagnosticResult("Hotkeys", "error", str(error))
+            return DiagnosticResult("Hotkeys", "error", str(error), "settings")
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
 
     def _check_capture_source(self, settings):
@@ -102,6 +105,7 @@ class OnboardingDiagnostics:
                 "Capture source",
                 "error",
                 "No game window has been selected",
+                "settings",
             )
         description = (
             settings.game_window_title
@@ -138,16 +142,18 @@ class OnboardingDiagnostics:
             try:
                 runtime = probe()
             except Exception as error:
-                return DiagnosticResult(name, "error", str(error))
+                return DiagnosticResult(name, "error", str(error), "settings")
             return DiagnosticResult(name, "ok", f"Installed at {runtime}")
 
         model_name = settings.tts_model
         if not model_name:
-            return DiagnosticResult("Speech model", "error", "No model configured")
+            return DiagnosticResult(
+                "Speech model", "error", "No model configured", "settings"
+            )
         try:
             model_path = self.model_path_resolver(model_name)
         except Exception as error:
-            return DiagnosticResult("Speech model", "error", str(error))
+            return DiagnosticResult("Speech model", "error", str(error), "settings")
         if Path(model_path).is_dir():
             return DiagnosticResult("Speech model", "ok", f"Cached at {model_path}")
         return DiagnosticResult(
@@ -167,16 +173,18 @@ class OnboardingDiagnostics:
                     "Character voices",
                     "error",
                     "XTTS requires a narrator speaker or a voice pack",
+                    "settings",
                 )
             return DiagnosticResult(
                 "Character voices",
                 "warning",
                 "No voice pack selected; unknown speakers will use the narrator",
+                "settings",
             )
         try:
             registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
         except VoiceManifestError as error:
-            return DiagnosticResult("Character voices", "error", str(error))
+            return DiagnosticResult("Character voices", "error", str(error), "settings")
 
         voices = {id(voice): voice for voice in registry.voices.values()}.values()
         missing = [
@@ -190,6 +198,7 @@ class OnboardingDiagnostics:
                 "Character voices",
                 "error",
                 f"Missing voice reference: {missing[0]}",
+                "voices",
             )
         return DiagnosticResult(
             "Character voices",

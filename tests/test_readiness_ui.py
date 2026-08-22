@@ -3,6 +3,8 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.onboarding import DiagnosticResult  # noqa: E402
@@ -86,6 +88,111 @@ class ReadinessDialogTest(unittest.TestCase):
 
         self.assertEqual(dialog.table.rowCount(), 0)
         self.assertIn("No readiness result", dialog.summary.text())
+        self.assertFalse(dialog.remediation_button.isEnabled())
+        dialog.deleteLater()
+
+    def test_selects_first_actionable_error_and_emits_only_its_remediation(self):
+        pool = ManualThreadPool()
+        diagnostics = type(
+            "Diagnostics",
+            (),
+            {
+                "run": lambda _self, _settings: (
+                    DiagnosticResult("Tesseract OCR", "error", "Install it"),
+                    DiagnosticResult(
+                        "Character voices",
+                        "warning",
+                        "Missing reference",
+                        "voices",
+                    ),
+                    DiagnosticResult(
+                        "Capture source",
+                        "error",
+                        "Select a window",
+                        "settings",
+                    ),
+                )
+            },
+        )()
+        settings_requests = []
+        voice_requests = []
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        dialog.settings_requested.connect(lambda: settings_requests.append(True))
+        dialog.voices_requested.connect(lambda: voice_requests.append(True))
+
+        self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertIn("Wait", dialog.remediation_reason.text())
+        pool.run_next()
+        self.application.processEvents()
+
+        self.assertEqual(dialog.table.currentRow(), 2)
+        self.assertEqual(dialog.remediation_button.text(), "Open Settings")
+        self.assertTrue(dialog.remediation_button.isEnabled())
+        dialog.remediation_button.click()
+        self.assertEqual(settings_requests, [True])
+        self.assertEqual(voice_requests, [])
+
+        dialog.table.setFocus()
+        QTest.keyClick(dialog.table, Qt.Key.Key_Up)
+        self.assertEqual(dialog.table.currentRow(), 1)
+        self.assertEqual(dialog.remediation_button.text(), "Open Voice mappings")
+        dialog.remediation_button.setFocus()
+        QTest.keyClick(dialog.remediation_button, Qt.Key.Key_Return)
+        self.assertEqual(voice_requests, [True])
+
+        dialog.table.selectRow(0)
+        self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertIn("No in-app fix", dialog.remediation_reason.text())
+        dialog.deleteLater()
+
+    def test_ready_row_explains_that_no_action_is_needed(self):
+        pool = ManualThreadPool()
+        diagnostics = type(
+            "Diagnostics",
+            (),
+            {
+                "run": lambda _self, _settings: (
+                    DiagnosticResult("Audio output", "ok", "Speakers"),
+                )
+            },
+        )()
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+
+        pool.run_next()
+        self.application.processEvents()
+
+        self.assertEqual(dialog.table.currentRow(), 0)
+        self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertIn("no remediation is needed", dialog.remediation_reason.text())
+        self.assertTrue(dialog.table.accessibleName())
+        self.assertTrue(dialog.remediation_reason.accessibleName())
+        self.assertTrue(dialog.remediation_button.accessibleName())
+        dialog.resize(520, 360)
+        dialog.show()
+        self.application.processEvents()
+        self.assertTrue(dialog.table.isVisibleTo(dialog))
+        self.assertTrue(dialog.remediation_reason.isVisibleTo(dialog))
+        self.assertLessEqual(
+            dialog.remediation_button.geometry().right(),
+            dialog.contentsRect().right(),
+        )
+        dialog.deleteLater()
+
+    def test_failed_probe_has_recovery_without_stale_action(self):
+        pool = ManualThreadPool()
+
+        class Diagnostics:
+            def run(self, _settings):
+                raise RuntimeError("device probe failed")
+
+        dialog = ReadinessDialog(AppSettings(), Diagnostics(), thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+
+        self.assertIn("device probe failed", dialog.summary.text())
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertIn("Select a warning or error", dialog.remediation_reason.text())
         dialog.deleteLater()
 
 

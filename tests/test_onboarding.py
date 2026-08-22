@@ -123,6 +123,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(voice_result.status, "error")
         self.assertIn("missing.wav", voice_result.message)
+        self.assertEqual(voice_result.remediation, "voices")
 
     def test_xtts_without_voice_pack_requires_narrator(self):
         diagnostics = OnboardingDiagnostics(
@@ -139,6 +140,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(voice_result.status, "error")
         self.assertIn("narrator speaker", voice_result.message)
+        self.assertEqual(voice_result.remediation, "settings")
 
     def test_missing_macos_permissions_block_setup_with_actionable_guidance(self):
         diagnostics = OnboardingDiagnostics(
@@ -167,6 +169,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         self.assertIn("Screen Recording", permission.message)
         self.assertIn("Accessibility", permission.message)
         self.assertIn("System Settings", permission.message)
+        self.assertEqual(permission.remediation, "permissions")
 
     def test_accessibility_is_optional_without_auto_advance(self):
         diagnostics = OnboardingDiagnostics(

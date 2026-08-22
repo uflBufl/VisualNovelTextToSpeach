@@ -10,10 +10,18 @@ sections after their implementation has been verified and committed.
 Follow the shared contract, per-surface findings and completion gates in
 [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md).
 
-- [ ] Normalize dashboard, compact controls, Settings, onboarding and readiness.
-      Require one clear primary action, section/step orientation, adjacent
-      disabled reasons, consistent path pickers, inline validation, and compact
-      keyboard/screen-reader coverage at 100%, 150% and 200% DPI.
+- [ ] Normalize the dashboard and compact controls around one primary live/read
+      mode action, a separate transport group and an adjacent persistent reason
+      whenever initialization or recovery disables an action. Verify keyboard,
+      screen-reader and compact layouts at 100%, 150% and 200% DPI.
+- [ ] Give Settings section navigation, consistent browse controls for every
+      filesystem input, inline validation summary and per-setting restart
+      markers. Cover invalid paths, keyboard-only correction and compact layouts
+      at 100%, 150% and 200% DPI.
+- [ ] Add `step N of M`, inline validation summary and a compact-window scroll
+      gate to onboarding while preserving its stale-safe diagnostics and guarded
+      end-to-end test lifecycle. Verify keyboard and screen-reader operation at
+      100%, 150% and 200% DPI.
 - [ ] Apply the lighter consistency pass to OCR, permissions and
       correction/history follow-ups. Preserve exact authority; add consistent
       Save/Cancel/Close placement, inline row validation and multi-display/DPI
