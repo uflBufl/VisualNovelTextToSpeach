@@ -67,13 +67,6 @@ from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
 )
 from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
-from vntts.authoring.cohort_review import (
-    CohortReviewPlan,
-    CohortReviewProjection,
-    build_cohort_review_decision,
-    build_cohort_review_plan,
-    execute_cohort_review_decision,
-)
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -446,15 +439,14 @@ class _ReviewTask(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
-class _CohortTaskSignals(QObject):
-    finished = Signal(int, str, object, object)
+class _SpecialistTaskSignals(QObject):
+    finished = Signal(int, object, object)
 
 
-class _CohortTask(QRunnable):
-    def __init__(self, serial, operation, function, arguments, signals):
+class _SpecialistTask(QRunnable):
+    def __init__(self, serial, function, arguments, signals):
         super().__init__()
         self.serial = serial
-        self.operation = operation
         self.function = function
         self.arguments = arguments
         self.signals = signals
@@ -463,9 +455,9 @@ class _CohortTask(QRunnable):
         try:
             result = self.function(*self.arguments)
         except Exception as error:
-            self.signals.finished.emit(self.serial, self.operation, None, error)
+            self.signals.finished.emit(self.serial, None, error)
         else:
-            self.signals.finished.emit(self.serial, self.operation, result, None)
+            self.signals.finished.emit(self.serial, result, None)
 
 
 class AuthoringWorkbenchDialog(QDialog):
@@ -558,17 +550,12 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_thread_pool = review_thread_pool or QThreadPool(self)
         self._review_thread_pool.setMaxThreadCount(1)
         self._review_shortcuts = []
-        self._cohort_plan = None
-        self._cohort_played = set()
-        self._cohort_bad_samples = set()
-        self._cohort_playback_target = None
-        self._selected_cohort_sample_queue_id = None
-        self._cohort_active = False
-        self._cohort_serial = 0
-        self._cohort_signals = _CohortTaskSignals(self)
-        self._cohort_signals.finished.connect(self._cohort_task_finished)
-        self._cohort_thread_pool = QThreadPool(self)
-        self._cohort_thread_pool.setMaxThreadCount(1)
+        self._specialist_active = False
+        self._specialist_serial = 0
+        self._specialist_signals = _SpecialistTaskSignals(self)
+        self._specialist_signals.finished.connect(self._specialist_task_finished)
+        self._specialist_thread_pool = QThreadPool(self)
+        self._specialist_thread_pool.setMaxThreadCount(1)
         self._cohort_bundle_builder = (
             cohort_bundle_builder or build_cohort_review_bundle
         )
@@ -751,58 +738,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_action_reason = AnnouncementLabel("Select an awaiting-review line")
         self.review_action_reason.setAccessibleName("Review action availability reason")
         self.review_action_reason.setWordWrap(True)
-        self.cohort_choice = QComboBox()
-        self.cohort_choice.setAccessibleName("Checksum-bound review cohort")
-        self.cohort_progress = AnnouncementLabel(
-            "Cohort review: build a current sample"
-        )
-        self.cohort_progress.setAccessibleName("Cohort sample playback progress")
-        self.cohort_progress.setWordWrap(True)
-        self.cohort_load = QPushButton("Build cohort sample")
-        self.cohort_samples = QTableWidget(0, 6)
-        self.cohort_samples.setHorizontalHeaderLabels(
-            [
-                "Playback",
-                "Assessment",
-                "Line",
-                "Speaker -> voice",
-                "Duration",
-                "Text",
-            ]
-        )
-        self.cohort_samples.setAccessibleName("Ordered checksum-bound cohort samples")
-        self.cohort_samples.setAccessibleDescription(
-            "Select any exact sample to replay; completed playback evidence remains visible"
-        )
-        self.cohort_samples.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.cohort_samples.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self.cohort_samples.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        self.cohort_samples.setSortingEnabled(False)
-        self.cohort_samples.verticalHeader().setVisible(False)
-        self.cohort_samples.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.Stretch
-        )
-        for column, width in enumerate((100, 120, 220, 180, 90)):
-            self.cohort_samples.setColumnWidth(column, width)
-        self.cohort_samples.setMinimumHeight(140)
-        self.cohort_previous = QPushButton("Previous sample")
-        self.cohort_replay = QPushButton("Replay selected sample")
-        self.cohort_stop = QPushButton("Stop sample")
-        self.cohort_next = QPushButton("Next sample")
-        self.cohort_mark_bad = QPushButton("Mark sample bad")
-        self.cohort_previous.setToolTip("Previous sample (Ctrl+Alt+Left)")
-        self.cohort_replay.setToolTip("Replay selected sample (Ctrl+Alt+R)")
-        self.cohort_stop.setToolTip("Stop sample (Ctrl+Alt+S)")
-        self.cohort_next.setToolTip("Next sample (Ctrl+Alt+Right)")
-        self.cohort_accept = QPushButton("Accept cohort")
-        self.cohort_reject = QPushButton("Reject cohort")
-        self.cohort_expand = QPushButton("Expand sample")
         self.specialist_review = QPushButton("Open specialist cohort reviewer")
         self.specialist_review_status = AnnouncementLabel(
             "Cohort decisions belong in the dedicated specialist reviewer."
@@ -908,51 +843,6 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Restore review-first splitter sizes and collapse secondary details",
             ),
             (
-                self.cohort_load,
-                "Build checksum-bound cohort sample",
-                "Plan exact technical-attention and clean sample WAVs in the background",
-            ),
-            (
-                self.cohort_previous,
-                "Previous cohort sample",
-                "Select the previous exact WAV without starting playback",
-            ),
-            (
-                self.cohort_replay,
-                "Replay selected cohort sample",
-                "Replay the selected exact WAV any number of times without losing completed-playback evidence",
-            ),
-            (
-                self.cohort_stop,
-                "Stop cohort sample",
-                "Stop the current cohort sample without counting an incomplete playback as heard",
-            ),
-            (
-                self.cohort_next,
-                "Next cohort sample",
-                "Select the next exact WAV without starting playback",
-            ),
-            (
-                self.cohort_mark_bad,
-                "Mark selected sample bad",
-                "Record a reversible sample-level problem without rejecting the entire cohort",
-            ),
-            (
-                self.cohort_accept,
-                "Accept selected cohort",
-                "Approve the exact cohort only after every sampled WAV finishes playback",
-            ),
-            (
-                self.cohort_reject,
-                "Reject selected cohort",
-                "Reject the exact cohort using at least one finished sampled WAV as evidence",
-            ),
-            (
-                self.cohort_expand,
-                "Expand selected cohort sample",
-                "Record the complete current sample and build a larger bounded sample",
-            ),
-            (
                 self.specialist_review,
                 "Open specialist cohort reviewer",
                 "Build one checksum-bound bundle from this workspace and review it in the dedicated interface",
@@ -1010,32 +900,6 @@ class AuthoringWorkbenchDialog(QDialog):
         review_layout.addWidget(self.review_table, 1)
         review_layout.addWidget(self.review_action_reason)
         review_layout.addLayout(review_actions)
-        cohort_navigation = QHBoxLayout()
-        for widget in (
-            self.cohort_previous,
-            self.cohort_replay,
-            self.cohort_stop,
-            self.cohort_next,
-            self.cohort_mark_bad,
-        ):
-            cohort_navigation.addWidget(widget)
-        cohort_actions = QHBoxLayout()
-        for widget in (
-            self.cohort_load,
-            self.cohort_accept,
-            self.cohort_reject,
-            self.cohort_expand,
-        ):
-            cohort_actions.addWidget(widget)
-        self.cohort_section = DisclosureSection("Checksum-bound cohort review")
-        self.cohort_section.setAccessibleName("Checksum-bound cohort review controls")
-        self.cohort_section.content_layout.addWidget(self.cohort_choice)
-        self.cohort_section.content_layout.addWidget(self.cohort_progress)
-        self.cohort_section.content_layout.addWidget(self.cohort_samples)
-        self.cohort_section.content_layout.addLayout(cohort_navigation)
-        self.cohort_section.content_layout.addLayout(cohort_actions)
-        review_layout.addWidget(self.cohort_section)
-        self.cohort_section.hide()
         self.specialist_section = DisclosureSection("Specialist cohort review")
         self.specialist_section.setAccessibleName(
             "Open the dedicated specialist cohort reviewer"
@@ -1105,22 +969,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_play.clicked.connect(self.play_selected_outcome)
         self.review_stop.clicked.connect(self.stop_preview)
         self.specialist_review.clicked.connect(self.open_specialist_reviewer)
-        self.cohort_load.clicked.connect(self.load_cohort_plan)
-        self.cohort_previous.clicked.connect(lambda: self._move_cohort_sample(-1))
-        self.cohort_replay.clicked.connect(self.replay_selected_cohort_sample)
-        self.cohort_stop.clicked.connect(self.stop_preview)
-        self.cohort_next.clicked.connect(lambda: self._move_cohort_sample(1))
-        self.cohort_mark_bad.clicked.connect(self._toggle_cohort_sample_bad)
-        self.cohort_accept.clicked.connect(lambda: self.decide_cohort("accepted"))
-        self.cohort_reject.clicked.connect(lambda: self.decide_cohort("rejected"))
-        self.cohort_expand.clicked.connect(lambda: self.decide_cohort("expand"))
-        self.cohort_choice.currentIndexChanged.connect(self._cohort_choice_changed)
-        self.cohort_samples.currentCellChanged.connect(
-            self._cohort_sample_selection_changed
-        )
-        self.cohort_samples.cellDoubleClicked.connect(
-            lambda _row, _column: self.replay_selected_cohort_sample()
-        )
         self.reload_authority.clicked.connect(self.refresh)
         self.approve.clicked.connect(lambda: self.review_selected("approved"))
         self.reject.clicked.connect(lambda: self.review_selected("rejected"))
@@ -1291,13 +1139,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_controller = None
         self._current_reference_key = None
         self._selected_review_identity = None
-        self._cohort_plan = None
-        self._cohort_played.clear()
-        self._cohort_bad_samples.clear()
-        self._cohort_playback_target = None
-        self._selected_cohort_sample_queue_id = None
-        self.cohort_choice.clear()
-        self.cohort_samples.setRowCount(0)
         self.status.setText(f"BLOCKED: {error}")
         self.status.setToolTip(str(error))
         self.review_table.setRowCount(0)
@@ -1332,13 +1173,6 @@ class AuthoringWorkbenchDialog(QDialog):
         )
 
     def _apply_projection(self, projection):
-        self._cohort_plan = None
-        self._cohort_played.clear()
-        self._cohort_bad_samples.clear()
-        self._cohort_playback_target = None
-        self._selected_cohort_sample_queue_id = None
-        self.cohort_choice.clear()
-        self.cohort_samples.setRowCount(0)
         self.summary = projection.summary
         reviews = projection.reviews
         self._workspace = projection.workspace
@@ -1888,7 +1722,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
 
     def _media_error(self, _error, message=""):
-        self._cohort_playback_target = None
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW ERROR: " + (
@@ -1901,27 +1734,20 @@ class AuthoringWorkbenchDialog(QDialog):
     def _media_status_changed(self, status):
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
-        target = self._cohort_playback_target
-        self._cohort_playback_target = None
-        if target is not None and self._cohort_sample_matches(*target):
-            self._cohort_played.add(target[0])
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW FINISHED"
         if self.summary is not None:
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
-        self._update_cohort_actions()
 
     def stop_preview(self):
-        self._cohort_playback_target = None
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW STOPPED"
         if self.summary is not None:
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
-        self._update_cohort_actions()
 
     def _populate_reviews(self, reviews):
         reviews = tuple(reviews)
@@ -2062,114 +1888,66 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._update_review_actions(preserve_queue_id=True)
 
-    def load_cohort_plan(self):
-        if self._cohort_active:
-            return
-        self._start_cohort_task(
-            "plan",
-            build_cohort_review_plan,
-            self.workspace_directory,
-        )
-
     def open_specialist_reviewer(self):
-        if self._cohort_active or self._specialist_reviewer is not None:
+        if self._specialist_active or self._specialist_reviewer is not None:
             return
-        self._start_cohort_task(
-            "specialist bundle",
+        self._start_specialist_task(
             self._cohort_bundle_builder,
             (self.workspace_directory,),
         )
 
-    def _start_cohort_task(self, operation, function, *arguments):
-        self._cohort_active = True
-        self._cohort_serial += 1
-        serial = self._cohort_serial
-        self.cohort_progress.setText(
-            f"Cohort review: {operation} is validating exact workspace authority"
+    def _start_specialist_task(self, function, *arguments):
+        self._specialist_active = True
+        self._specialist_serial += 1
+        serial = self._specialist_serial
+        self.specialist_review_status.setText(
+            "Building a checksum-bound bundle from the current workspace..."
         )
-        if operation == "specialist bundle":
-            self.specialist_review_status.setText(
-                "Building a checksum-bound bundle from the current workspace..."
-            )
-        self._update_cohort_actions()
-        self._cohort_thread_pool.start(
-            _CohortTask(
+        self._update_specialist_action()
+        self._specialist_thread_pool.start(
+            _SpecialistTask(
                 serial,
-                operation,
                 function,
                 arguments,
-                self._cohort_signals,
+                self._specialist_signals,
             )
         )
 
-    def _cohort_task_finished(self, serial, operation, result, error):
-        if serial != self._cohort_serial or not self._cohort_active:
+    def _specialist_task_finished(self, serial, result, error):
+        if serial != self._specialist_serial or not self._specialist_active:
             return
-        self._cohort_active = False
-        if operation == "specialist bundle":
-            if error is not None:
-                self.specialist_review_status.setText(
-                    f"Specialist review is blocked: {error}. Select Open to retry."
-                )
-                self._update_cohort_actions()
-                return
-            if not isinstance(result, CohortReviewBundle):
-                self.specialist_review_status.setText(
-                    "Specialist review is blocked: bundle builder returned no exact bundle."
-                )
-                self._update_cohort_actions()
-                return
-            try:
-                dialog = self._specialist_reviewer_factory(result, self)
-            except Exception as dialog_error:
-                self.specialist_review_status.setText(
-                    f"Specialist review is blocked: {dialog_error}. Select Open to retry."
-                )
-                self._update_cohort_actions()
-                return
-            self._specialist_reviewer = dialog
-            dialog.setModal(True)
-            dialog.finished.connect(
-                lambda _result, current=dialog: self._specialist_review_finished(
-                    current
-                )
-            )
-            self.specialist_review_status.setText(
-                f"Opened specialist bundle {result.bundle_id[:12]}; "
-                "the workbench will refresh after it closes."
-            )
-            dialog.open()
-            self._update_cohort_actions()
-            return
+        self._specialist_active = False
         if error is not None:
-            self.cohort_progress.setText(f"Cohort review blocked: {error}")
-            self._update_cohort_actions()
+            self.specialist_review_status.setText(
+                f"Specialist review is blocked: {error}. Select Open to retry."
+            )
+            self._update_specialist_action()
             return
-        if isinstance(result, CohortReviewPlan):
-            self._cohort_plan = result
-            self._cohort_played.clear()
-            self._cohort_bad_samples.clear()
-            self._selected_cohort_sample_queue_id = None
-            self._populate_cohort_choices()
-            self.cohort_progress.setText(
-                f"Cohort plan {result.plan_id[:12]} loaded; choose a cohort and select any sample to replay"
+        if not isinstance(result, CohortReviewBundle):
+            self.specialist_review_status.setText(
+                "Specialist review is blocked: bundle builder returned no exact bundle."
             )
-        elif isinstance(result, CohortReviewProjection):
-            self.cohort_progress.setText(
-                f"Cohort {result.review_status}: {len(result.queue_ids)} exact items saved"
+            self._update_specialist_action()
+            return
+        try:
+            dialog = self._specialist_reviewer_factory(result, self)
+        except Exception as dialog_error:
+            self.specialist_review_status.setText(
+                f"Specialist review is blocked: {dialog_error}. Select Open to retry."
             )
-            self._cohort_plan = None
-            self._cohort_played.clear()
-            self._cohort_bad_samples.clear()
-            self._selected_cohort_sample_queue_id = None
-            self.cohort_choice.clear()
-            self.cohort_samples.setRowCount(0)
-            QTimer.singleShot(0, self.refresh)
-        else:
-            self.cohort_progress.setText(
-                f"Cohort review blocked: unsupported {operation} result"
-            )
-        self._update_cohort_actions()
+            self._update_specialist_action()
+            return
+        self._specialist_reviewer = dialog
+        dialog.setModal(True)
+        dialog.finished.connect(
+            lambda _result, current=dialog: self._specialist_review_finished(current)
+        )
+        self.specialist_review_status.setText(
+            f"Opened specialist bundle {result.bundle_id[:12]}; "
+            "the workbench will refresh after it closes."
+        )
+        dialog.open()
+        self._update_specialist_action()
 
     def _specialist_review_finished(self, dialog):
         if dialog is not self._specialist_reviewer:
@@ -2178,78 +1956,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.specialist_review_status.setText(
             "Specialist reviewer closed. Refreshing workspace outcomes..."
         )
-        self._update_cohort_actions()
+        self._update_specialist_action()
         self.refresh()
-
-    def _populate_cohort_choices(self):
-        selected = self.cohort_choice.currentData(256)
-        self.cohort_choice.blockSignals(True)
-        self.cohort_choice.clear()
-        if self._cohort_plan is not None:
-            for cohort in self._cohort_plan.document["cohorts"]:
-                identity = cohort["identity"]
-                label = (
-                    f"{identity['voice_character']} | seed {identity['seed']} | "
-                    f"{cohort['item_count']} items / "
-                    f"{len(cohort['sample_queue_ids'])} samples"
-                )
-                self.cohort_choice.addItem(label, cohort["cohort_id"])
-        if selected is not None:
-            index = self.cohort_choice.findData(selected, 256)
-            if index >= 0:
-                self.cohort_choice.setCurrentIndex(index)
-        self.cohort_choice.blockSignals(False)
-        self._cohort_choice_changed()
-
-    def _selected_cohort(self):
-        if self._cohort_plan is None:
-            return None
-        cohort_id = self.cohort_choice.currentData(256)
-        return next(
-            (
-                cohort
-                for cohort in self._cohort_plan.document["cohorts"]
-                if cohort["cohort_id"] == cohort_id
-            ),
-            None,
-        )
-
-    def _cohort_sample_matches(self, queue_id, audio_sha256):
-        if self._cohort_plan is None:
-            return False
-        for cohort in self._cohort_plan.document["cohorts"]:
-            if queue_id not in cohort["sample_queue_ids"]:
-                continue
-            return any(
-                item["queue_id"] == queue_id and item["audio_sha256"] == audio_sha256
-                for item in cohort["items"]
-            )
-        return False
-
-    def _cohort_choice_changed(self, *_arguments):
-        cohort = self._selected_cohort()
-        samples = () if cohort is None else tuple(cohort["sample_queue_ids"])
-        if self._selected_cohort_sample_queue_id not in samples:
-            self._selected_cohort_sample_queue_id = next(
-                (value for value in samples if value not in self._cohort_played),
-                samples[0] if samples else None,
-            )
-        self._populate_cohort_samples()
-        self._update_cohort_actions()
-
-    def _cohort_review_item(self, queue_id):
-        return next(
-            (item for item in self._all_reviews if item.queue_id == queue_id),
-            None,
-        )
-
-    def _cohort_voice_label(self, item):
-        if item is None:
-            return "Unavailable"
-        effective = self._effective_review_voice(item)
-        if item.speaker.casefold() == effective.casefold():
-            return effective
-        return f"{item.speaker} -> {effective}"
 
     def _effective_review_voice(self, item):
         effective = item.voice_character
@@ -2257,309 +1965,13 @@ class AuthoringWorkbenchDialog(QDialog):
             return self._workspace["narrator_character"]
         return effective
 
-    def _populate_cohort_samples(self):
-        cohort = self._selected_cohort()
-        samples = () if cohort is None else tuple(cohort["sample_queue_ids"])
-        selected = self._selected_cohort_sample_queue_id
-        self.cohort_samples.blockSignals(True)
-        try:
-            self.cohort_samples.setRowCount(len(samples))
-            selected_row = -1
-            for row, queue_id in enumerate(samples):
-                item = self._cohort_review_item(queue_id)
-                playing = (
-                    self._preview_active
-                    and self._cohort_playback_target is not None
-                    and self._cohort_playback_target[0] == queue_id
-                )
-                playback = (
-                    "Playing"
-                    if playing
-                    else "Heard"
-                    if queue_id in self._cohort_played
-                    else "Not heard"
-                )
-                assessment = (
-                    "Sounds bad"
-                    if queue_id in self._cohort_bad_samples
-                    else "No issue marked"
-                    if queue_id in self._cohort_played
-                    else "Listen first"
-                )
-                duration = (
-                    "Unknown"
-                    if item is None or item.duration_seconds is None
-                    else f"{item.duration_seconds:.2f} s"
-                )
-                values = (
-                    playback,
-                    assessment,
-                    "Unavailable" if item is None else item.line_id,
-                    self._cohort_voice_label(item),
-                    duration,
-                    "Unavailable" if item is None else item.text,
-                )
-                for column, value in enumerate(values):
-                    cell = QTableWidgetItem(str(value))
-                    if column == 0:
-                        cell.setData(256, queue_id)
-                        cell.setToolTip(queue_id)
-                    self.cohort_samples.setItem(row, column, cell)
-                if queue_id == selected:
-                    selected_row = row
-            if selected_row < 0 and samples:
-                selected_row = 0
-                self._selected_cohort_sample_queue_id = samples[0]
-            if selected_row >= 0:
-                self.cohort_samples.setCurrentCell(selected_row, 0)
-        finally:
-            self.cohort_samples.blockSignals(False)
-
-    def _selected_cohort_sample(self):
-        row = self.cohort_samples.currentRow()
-        cell = self.cohort_samples.item(row, 0) if row >= 0 else None
-        queue_id = cell.data(256) if cell is not None else None
-        return queue_id if isinstance(queue_id, str) and queue_id else None
-
-    def _cohort_sample_selection_changed(self, *_arguments):
-        queue_id = self._selected_cohort_sample()
-        if queue_id is not None:
-            self._selected_cohort_sample_queue_id = queue_id
-        self._update_cohort_actions()
-
-    def _move_cohort_sample(self, offset):
-        cohort = self._selected_cohort()
-        samples = () if cohort is None else tuple(cohort["sample_queue_ids"])
-        if not samples:
-            self.cohort_progress.setText(
-                "Cohort navigation unavailable: this cohort has no exact samples"
-            )
-            return
-        current = self._selected_cohort_sample_queue_id
-        try:
-            position = samples.index(current)
-        except ValueError:
-            position = 0
-        self._selected_cohort_sample_queue_id = samples[
-            (position + int(offset)) % len(samples)
-        ]
-        self._populate_cohort_samples()
-        self._update_cohort_actions()
-
-    def _toggle_cohort_sample_bad(self):
-        queue_id = self._selected_cohort_sample_queue_id
-        if queue_id is None or queue_id not in self._cohort_played:
-            self.cohort_progress.setText(
-                "Sample assessment unavailable: finish this exact playback first"
-            )
-            return
-        if queue_id in self._cohort_bad_samples:
-            self._cohort_bad_samples.remove(queue_id)
-        else:
-            self._cohort_bad_samples.add(queue_id)
-        self._update_cohort_actions()
-
-    def _update_cohort_actions(self, *_arguments):
-        if hasattr(self, "specialist_review"):
-            self.specialist_review.setEnabled(
-                not self._cohort_active
-                and self._specialist_reviewer is None
-                and not self._review_save_active
-                and not self._projection_active
-                and not self._playback_prepare_active
-            )
-        if not hasattr(self, "cohort_load"):
-            return
-        cohort = self._selected_cohort()
-        samples = () if cohort is None else tuple(cohort["sample_queue_ids"])
-        played = tuple(value for value in samples if value in self._cohort_played)
-        authority_busy = (
-            self._cohort_active
-            or self._review_save_active
-            or self._projection_active
-            or self._playback_prepare_active
-        )
-        cohort_playing = (
-            self._preview_active
-            and self._cohort_playback_target is not None
-            and self._cohort_sample_matches(*self._cohort_playback_target)
-        )
-        busy = authority_busy or cohort_playing
-        selected = self._selected_cohort_sample_queue_id
-        selected_available = (
-            selected in samples and self._cohort_review_item(selected) is not None
-        )
-        complete = bool(samples) and len(played) == len(samples)
-        bad_samples = tuple(
-            value for value in samples if value in self._cohort_bad_samples
-        )
-        self.cohort_load.setEnabled(not busy)
-        self.cohort_choice.setEnabled(not busy and self._cohort_plan is not None)
-        self.cohort_samples.setEnabled(not busy and bool(samples))
-        self.cohort_previous.setEnabled(not busy and len(samples) > 1)
-        self.cohort_replay.setEnabled(not busy and selected_available)
-        self.cohort_stop.setEnabled(cohort_playing)
-        self.cohort_next.setEnabled(not busy and len(samples) > 1)
-        self.cohort_mark_bad.setEnabled(
-            not busy and selected_available and selected in self._cohort_played
-        )
-        self.cohort_mark_bad.setText(
-            "Clear sample issue"
-            if selected in self._cohort_bad_samples
-            else "Mark sample bad"
-        )
-        self.cohort_accept.setEnabled(not busy and complete and not bad_samples)
-        self.cohort_reject.setEnabled(not busy and bool(played))
-        current_count = (
-            0
-            if self._cohort_plan is None
-            else self._cohort_plan.document["policy"]["clean_samples_per_bucket"]
-        )
-        self.cohort_expand.setEnabled(not busy and complete and current_count < 5)
-        self._populate_cohort_samples()
-        if cohort is not None and not self._cohort_active:
-            remaining = len(samples) - len(played)
-            selected_state = (
-                "none"
-                if selected is None
-                else "heard"
-                if selected in self._cohort_played
-                else "not heard"
-            )
-            self.cohort_progress.setText(
-                f"Cohort sample: {len(played)}/{len(samples)} heard, {remaining} remaining; "
-                f"selected {selected_state}; {len(bad_samples)} marked bad; "
-                f"{cohort['item_count']} exact WAVs will be affected by a cohort decision"
-            )
-
-        accept_reason = (
-            "Ready to accept this exact cohort"
-            if complete and not bad_samples
-            else f"Accept disabled: clear or reject {len(bad_samples)} bad sample assessment(s)"
-            if bad_samples
-            else f"Accept disabled: finish {len(samples) - len(played)} required sample playback(s)"
-        )
-        reject_reason = (
-            "Ready to reject this exact cohort using completed sample evidence"
-            if played
-            else "Reject disabled: finish at least one exact sample playback"
-        )
-        replay_reason = (
-            "Replay the selected sample (Ctrl+Alt+R); prior heard evidence is retained"
-            if selected_available
-            else "Replay disabled: select an available exact sample"
-        )
-        self.cohort_accept.setToolTip(accept_reason)
-        self.cohort_reject.setToolTip(reject_reason)
-        self.cohort_replay.setToolTip(replay_reason)
-        self.cohort_stop.setToolTip(
-            "Stop (Ctrl+Alt+S) without counting an incomplete playback as heard"
-            if cohort_playing
-            else "No cohort sample is currently playing"
-        )
-        self.cohort_mark_bad.setToolTip(
-            "Clear this reversible sample-level problem marker"
-            if selected in self._cohort_bad_samples
-            else "Mark this listened sample as bad without rejecting the cohort"
-            if selected in self._cohort_played
-            else "Sample assessment disabled: finish this exact playback first"
-        )
-
-    def play_next_cohort_sample(self):
-        """Compatibility helper: select the next unheard sample and play it."""
-        cohort = self._selected_cohort()
-        if cohort is None:
-            return
-        queue_id = next(
-            (
-                value
-                for value in cohort["sample_queue_ids"]
-                if value not in self._cohort_played
-            ),
-            None,
-        )
-        if queue_id is None:
-            queue_id = self._selected_cohort_sample_queue_id
-        self._selected_cohort_sample_queue_id = queue_id
-        self._populate_cohort_samples()
-        self.replay_selected_cohort_sample()
-
-    def replay_selected_cohort_sample(self):
-        queue_id = self._selected_cohort_sample_queue_id
-        if queue_id is None:
-            self.cohort_progress.setText(
-                "Cohort replay unavailable: select one exact sample"
-            )
-            return
-        self.review_character.setCurrentText("All characters")
-        self.review_status.setCurrentText("Awaiting review")
-        self.review_collection.setCurrentText("All collections")
-        self.review_search.setText(queue_id)
-        self.exclude_narrator.setChecked(False)
-        self._apply_review_filters()
-        row = self._row_for_queue_id(queue_id)
-        if row < 0:
-            self.cohort_progress.setText(
-                f"Cohort review blocked: sampled queue item is not reviewable: {queue_id}"
-            )
-            return
-        self.review_table.setCurrentCell(row, 0)
-        self.review_table.scrollToItem(self.review_table.item(row, 0))
-        self.play_selected_outcome()
-
-    def decide_cohort(self, decision):
-        if self._cohort_active or self._cohort_plan is None:
-            return
-        cohort = self._selected_cohort()
-        if cohort is None:
-            return
-        reviewed = [
-            value
-            for value in cohort["sample_queue_ids"]
-            if value in self._cohort_played
-        ]
-        next_count = None
-        if decision == "expand":
-            next_count = (
-                self._cohort_plan.document["policy"]["clean_samples_per_bucket"] + 1
-            )
-        try:
-            document = build_cohort_review_decision(
-                self._cohort_plan,
-                cohort["cohort_id"],
-                decision,
-                reviewed_queue_ids=reviewed,
-                sample_assessments={
-                    queue_id: (
-                        "bad" if queue_id in self._cohort_bad_samples else "acceptable"
-                    )
-                    for queue_id in reviewed
-                },
-                next_clean_samples_per_bucket=next_count,
-            )
-        except Exception as error:
-            self.cohort_progress.setText(f"Cohort review blocked: {error}")
-            return
-        if decision in {"accepted", "rejected"}:
-            bad_count = sum(
-                queue_id in self._cohort_bad_samples for queue_id in reviewed
-            )
-            answer = QMessageBox.question(
-                self,
-                f"{decision.title()} exact cohort?",
-                f"This will save {decision} for {cohort['item_count']} exact WAVs "
-                f"using {len(reviewed)} heard sample(s), {bad_count} marked bad. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        self._start_cohort_task(
-            decision,
-            execute_cohort_review_decision,
-            self.workspace_directory,
-            self._cohort_plan,
-            document,
+    def _update_specialist_action(self):
+        self.specialist_review.setEnabled(
+            not self._specialist_active
+            and self._specialist_reviewer is None
+            and not self._review_save_active
+            and not self._projection_active
+            and not self._playback_prepare_active
         )
 
     def _discard_review_playback_copy(self):
@@ -2673,7 +2085,6 @@ class AuthoringWorkbenchDialog(QDialog):
             if self._playback_prepare_active:
                 self._playback_prepare_serial += 1
                 self._playback_prepare_active = False
-            self._cohort_playback_target = None
             self._discard_review_playback_copy()
             self._preview_active = False
             self.media_outcome = None
@@ -2755,7 +2166,6 @@ class AuthoringWorkbenchDialog(QDialog):
                 f"attempts {selected.attempts} | "
                 f"{review_technical_summary(selected)}"
             )
-        self._update_cohort_actions()
 
     def play_selected_outcome(self):
         if self._playback_prepare_active:
@@ -2819,10 +2229,6 @@ class AuthoringWorkbenchDialog(QDialog):
             )
             return
         self._review_playback_buffer = playback
-        self._cohort_playback_target = (
-            current.queue_id,
-            selected.authority.audio_sha256,
-        )
         self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
         self.player.play()
         self._preview_active = True
@@ -2887,13 +2293,6 @@ class AuthoringWorkbenchDialog(QDialog):
         if result is None or queue_id is None or decision is None:
             self._fail_closed("Review worker returned no authoritative result")
             return
-        self._cohort_plan = None
-        self._cohort_played.clear()
-        self._cohort_bad_samples.clear()
-        self._cohort_playback_target = None
-        self._selected_cohort_sample_queue_id = None
-        self.cohort_choice.clear()
-        self.cohort_samples.setRowCount(0)
         if isinstance(result, WorkspaceSummary):
             self.summary = result
             committed = None
@@ -3324,7 +2723,7 @@ class AuthoringWorkbenchDialog(QDialog):
             QWidget.setTabOrder(first, second)
 
     def closeEvent(self, event: QCloseEvent):
-        if self._cohort_active:
+        if self._specialist_active:
             self.specialist_review_status.setText(
                 "Close deferred: wait for the checksum-bound specialist bundle to finish"
             )

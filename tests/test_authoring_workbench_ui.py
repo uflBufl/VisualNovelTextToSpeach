@@ -20,7 +20,6 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
-from vntts.authoring.cohort_review import CohortReviewPlan
 from vntts.authoring.workbench import (
     ReviewItem,
     list_review_items,
@@ -1623,229 +1622,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog._review_playback_buffer.data().data(), expected)
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
 
-    def test_cohort_accept_requires_finished_exact_sample_playback(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            workspace = self.create_workspace(root)
-            queue_id = self.mark_fixture_pending_review(workspace)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            state["items"][queue_id].update(
-                {
-                    "generation_profile": "stable",
-                    "voice_character": "Rhiannon",
-                    "prompt_applied": False,
-                    "synthesis_provenance_sha256": "b" * 64,
-                }
-            )
-            atomic_write_json(state_path, state, sort_keys=True)
-            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
-            dialog.player = Mock()
-
-            dialog.load_cohort_plan()
-            self.wait_for(lambda: not dialog._cohort_active)
-            self.assertEqual(dialog.cohort_choice.count(), 1)
-            self.assertEqual(dialog.cohort_samples.rowCount(), 1)
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")
-            self.assertEqual(
-                dialog.review_table.horizontalHeaderItem(1).text(),
-                "Source speaker",
-            )
-            self.assertEqual(
-                dialog.review_table.horizontalHeaderItem(2).text(),
-                "Effective voice",
-            )
-            self.assertEqual(dialog.review_table.item(0, 2).text(), "Rhiannon")
-            self.assertIn("effective voice Rhiannon", dialog.current_review.text())
-            self.assertTrue(dialog.cohort_replay.isEnabled())
-            self.assertFalse(dialog.cohort_accept.isEnabled())
-            self.assertFalse(dialog.cohort_reject.isEnabled())
-
-            dialog.replay_selected_cohort_sample()
-            self.wait_for(lambda: not dialog._playback_prepare_active)
-            self.assertEqual(dialog.review_search.text(), queue_id)
-            self.assertEqual(dialog.review_table.rowCount(), 1)
-            self.assertTrue(dialog.cohort_stop.isEnabled())
-            dialog.stop_preview()
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")
-            self.assertTrue(dialog.cohort_replay.isEnabled())
-            self.assertFalse(dialog.cohort_accept.isEnabled())
-            self.assertFalse(dialog.cohort_reject.isEnabled())
-
-            dialog.replay_selected_cohort_sample()
-            self.wait_for(lambda: not dialog._playback_prepare_active)
-            dialog._media_error(None, "simulated cohort playback failure")
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Not heard")
-            self.assertTrue(dialog.cohort_replay.isEnabled())
-            self.assertFalse(dialog.cohort_accept.isEnabled())
-            self.assertFalse(dialog.cohort_reject.isEnabled())
-            self.assertIn("AUDIO PREVIEW ERROR", dialog.status.text())
-
-            dialog.replay_selected_cohort_sample()
-            self.wait_for(lambda: not dialog._playback_prepare_active)
-            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Heard")
-            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "No issue marked")
-            self.assertTrue(dialog.cohort_replay.isEnabled())
-            self.assertTrue(dialog.cohort_accept.isEnabled())
-
-            dialog.cohort_mark_bad.click()
-            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "Sounds bad")
-            self.assertEqual(dialog.cohort_mark_bad.text(), "Clear sample issue")
-            self.assertFalse(dialog.cohort_accept.isEnabled())
-            self.assertTrue(dialog.cohort_reject.isEnabled())
-            dialog.cohort_mark_bad.click()
-            self.assertEqual(dialog.cohort_samples.item(0, 1).text(), "No issue marked")
-            self.assertTrue(dialog.cohort_accept.isEnabled())
-            self.assertTrue(dialog.cohort_reject.isEnabled())
-            self.assertIn("1/1 heard", dialog.cohort_progress.text())
-
-            dialog.replay_selected_cohort_sample()
-            self.wait_for(lambda: not dialog._playback_prepare_active)
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Playing")
-            self.assertFalse(dialog.cohort_accept.isEnabled())
-            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.assertEqual(dialog.cohort_samples.item(0, 0).text(), "Heard")
-            self.assertTrue(dialog.cohort_accept.isEnabled())
-
-            with patch.object(
-                QMessageBox,
-                "question",
-                return_value=QMessageBox.StandardButton.Yes,
-            ):
-                dialog.decide_cohort("accepted")
-            self.wait_for(lambda: not dialog._cohort_active)
-            committed = json.loads(state_path.read_text(encoding="utf-8"))
-
-        self.assertEqual(committed["items"][queue_id]["review_status"], "approved")
-        self.assertEqual(
-            committed["items"][queue_id]["cohort_review"]["decision"],
-            "accepted",
-        )
-
-    def test_cohort_sample_navigation_is_stable_and_never_autoplays(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            workspace = self.create_workspace(root)
-            queue_id = self.mark_fixture_pending_review(workspace)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            state["items"][queue_id].update(
-                {
-                    "generation_profile": "stable",
-                    "voice_character": "Narrator",
-                    "prompt_applied": False,
-                    "synthesis_provenance_sha256": "b" * 64,
-                }
-            )
-            atomic_write_json(state_path, state, sort_keys=True)
-            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
-            dialog.player = Mock()
-            dialog.load_cohort_plan()
-            self.wait_for(lambda: not dialog._cohort_active)
-
-            first = replace(
-                dialog._all_reviews[0],
-                speaker="Narrator",
-                voice_character="Narrator",
-            )
-            sample_ids = (queue_id, f"{queue_id}-two", f"{queue_id}-three")
-            dialog._all_reviews = (
-                first,
-                replace(
-                    first,
-                    queue_id=sample_ids[1],
-                    line_id="line-two",
-                    text="Second exact sample.",
-                ),
-                replace(
-                    first,
-                    queue_id=sample_ids[2],
-                    line_id="line-three",
-                    text="Third exact sample.",
-                ),
-            )
-            document = json.loads(json.dumps(dialog._cohort_plan.document))
-            cohort = document["cohorts"][0]
-            template = cohort["items"][0]
-            cohort["sample_queue_ids"] = list(sample_ids)
-            cohort["item_count"] = 3
-            cohort["items"] = [
-                {**template, "queue_id": value, "sampled": True} for value in sample_ids
-            ]
-            dialog._cohort_plan = CohortReviewPlan(
-                dialog._cohort_plan.plan_id,
-                document,
-            )
-            dialog._selected_cohort_sample_queue_id = sample_ids[0]
-            dialog._cohort_choice_changed()
-            dialog.cohort_section.setChecked(True)
-            dialog.show()
-            self.application.processEvents()
-            self.assertFalse(dialog.cohort_section.isVisible())
-            self.assertTrue(dialog.specialist_section.isVisible())
-            positions = tuple(
-                widget.pos().x()
-                for widget in (
-                    dialog.cohort_previous,
-                    dialog.cohort_replay,
-                    dialog.cohort_stop,
-                    dialog.cohort_next,
-                )
-            )
-
-            dialog.cohort_next.click()
-            self.assertEqual(
-                dialog._selected_cohort_sample_queue_id,
-                sample_ids[1],
-            )
-            dialog.player.play.assert_not_called()
-            dialog.cohort_next.click()
-            self.assertEqual(
-                dialog._selected_cohort_sample_queue_id,
-                sample_ids[2],
-            )
-            dialog.cohort_previous.click()
-            self.assertEqual(
-                dialog._selected_cohort_sample_queue_id,
-                sample_ids[1],
-            )
-            cohort_modifiers = (
-                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
-            )
-            QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_Left, cohort_modifiers)
-            self.assertEqual(
-                dialog._selected_cohort_sample_queue_id,
-                sample_ids[1],
-            )
-            QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_Right, cohort_modifiers)
-            self.assertEqual(
-                dialog._selected_cohort_sample_queue_id,
-                sample_ids[1],
-            )
-            dialog.replay_selected_cohort_sample = Mock()
-            QTest.keyClick(dialog.cohort_samples, Qt.Key.Key_R, cohort_modifiers)
-            dialog.replay_selected_cohort_sample.assert_not_called()
-            self.application.processEvents()
-
-            self.assertEqual(
-                tuple(
-                    widget.pos().x()
-                    for widget in (
-                        dialog.cohort_previous,
-                        dialog.cohort_replay,
-                        dialog.cohort_stop,
-                        dialog.cohort_next,
-                    )
-                ),
-                positions,
-            )
-            self.assertEqual(dialog.cohort_samples.rowCount(), 3)
-            self.assertEqual(
-                dialog.cohort_samples.item(1, 3).text(),
-                "Narrator -> Rhiannon",
-            )
-
     def test_workbench_builds_and_opens_dedicated_specialist_bundle(self):
         class FakeSpecialistDialog:
             def __init__(self):
@@ -1882,7 +1658,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
 
             dialog.specialist_review.click()
-            self.wait_for(lambda: not dialog._cohort_active)
+            self.wait_for(lambda: not dialog._specialist_active)
 
             self.assertEqual(captured, [(workspace.resolve(),)])
             factory.assert_called_once_with(bundle, dialog)
@@ -1912,7 +1688,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
 
             dialog.specialist_review.click()
-            self.wait_for(lambda: not dialog._cohort_active)
+            self.wait_for(lambda: not dialog._specialist_active)
 
             self.assertTrue(dialog.specialist_review.isEnabled())
             self.assertIn("state changed", dialog.specialist_review_status.text())
