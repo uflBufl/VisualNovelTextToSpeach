@@ -180,28 +180,113 @@ class AssetManagerDialog(QDialog):
     def _create_voices_tab(self):
         tab = QWidget()
         self.voice_manifest = QLineEdit(self.settings_value.voice_manifest or "")
+        self.voice_manifest.setAccessibleName("Active voice manifest")
+        self.voice_manifest.setAccessibleDescription(
+            "Path to the active character voice manifest JSON file"
+        )
         self.voice_status = QLabel(
             "Import an existing manifest or add local references for one character."
         )
         self.voice_status.setWordWrap(True)
+        self.voice_status.setAccessibleName("Voice manifest and import status")
         self.voice_progress = QProgressBar()
         self.voice_progress.setRange(0, 100)
         self.voice_progress.setValue(0)
         self.import_pack_button = QPushButton("Import voice pack...")
         self.add_voice_button = QPushButton("Add character voice...")
+        self.browse_manifest_button = QPushButton("Browse...")
+        self.validate_manifest_button = QPushButton("Validate")
+        self.browse_manifest_button.setAccessibleName(
+            "Browse for active voice manifest"
+        )
+        self.browse_manifest_button.setAccessibleDescription(
+            "Choose an existing voice manifest JSON file"
+        )
+        self.validate_manifest_button.setAccessibleName(
+            "Validate active voice manifest"
+        )
+        self.validate_manifest_button.setAccessibleDescription(
+            "Checksum-validate the selected manifest and all referenced voice files"
+        )
         self.import_pack_button.clicked.connect(self.import_voice_pack)
         self.add_voice_button.clicked.connect(self.add_character_voice)
+        self.browse_manifest_button.clicked.connect(self.browse_voice_manifest)
+        self.validate_manifest_button.clicked.connect(self.validate_voice_manifest)
+        self.voice_manifest.textChanged.connect(self._voice_manifest_edited)
+        manifest_selector = QHBoxLayout()
+        manifest_selector.addWidget(self.voice_manifest, 1)
+        manifest_selector.addWidget(self.browse_manifest_button)
+        manifest_selector.addWidget(self.validate_manifest_button)
         actions = QHBoxLayout()
         actions.addWidget(self.import_pack_button)
         actions.addWidget(self.add_voice_button)
         layout = QVBoxLayout(tab)
-        layout.addWidget(QLabel("Active voice manifest"))
-        layout.addWidget(self.voice_manifest)
+        manifest_label = QLabel("Active voice manifest")
+        manifest_label.setBuddy(self.voice_manifest)
+        layout.addWidget(manifest_label)
+        layout.addLayout(manifest_selector)
         layout.addWidget(self.voice_status)
         layout.addWidget(self.voice_progress)
         layout.addLayout(actions)
         layout.addStretch()
+        self.validate_manifest_button.setEnabled(
+            bool(self.voice_manifest.text().strip())
+        )
+        self.setTabOrder(self.voice_manifest, self.browse_manifest_button)
+        self.setTabOrder(self.browse_manifest_button, self.validate_manifest_button)
+        self.setTabOrder(self.validate_manifest_button, self.import_pack_button)
+        self.setTabOrder(self.import_pack_button, self.add_voice_button)
         return tab
+
+    def _voice_manifest_edited(self):
+        manifest = self.voice_manifest.text().strip()
+        self.validate_manifest_button.setEnabled(
+            bool(manifest) and not self.operation_running
+        )
+        if manifest:
+            self.voice_status.setText(
+                "Manifest path changed. Validate it before saving."
+            )
+        else:
+            self.voice_status.setText(
+                "No active voice manifest selected. Live voice assignments are disabled."
+            )
+
+    def browse_voice_manifest(self):
+        current = self.voice_manifest.text().strip()
+        start = ""
+        if current:
+            candidate = Path(current).expanduser()
+            start = str(candidate if candidate.is_dir() else candidate.parent)
+        source, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose active voice manifest",
+            start,
+            "JSON files (*.json);;All files (*)",
+        )
+        if not source:
+            return
+        self.voice_manifest.setText(source)
+        self.validate_voice_manifest()
+
+    def validate_voice_manifest(self):
+        manifest = self.voice_manifest.text().strip()
+        if not manifest:
+            self.voice_status.setText(
+                "No active voice manifest selected. Live voice assignments are disabled."
+            )
+            return True
+        try:
+            validated = self.voice_manager.validate(manifest)
+        except Exception as error:
+            self.voice_status.setText(f"Voice manifest is invalid: {error}")
+            self.voice_manifest.setFocus()
+            self.voice_manifest.selectAll()
+            return False
+        self.voice_status.setText(
+            f"Voice manifest passed checksum validation: {validated}"
+        )
+        return True
 
     def model_name(self):
         return self.model.currentText().strip()
@@ -293,6 +378,10 @@ class AssetManagerDialog(QDialog):
         self.import_pack_button.setEnabled(not running)
         self.add_voice_button.setEnabled(not running)
         self.voice_manifest.setEnabled(not running)
+        self.browse_manifest_button.setEnabled(not running)
+        self.validate_manifest_button.setEnabled(
+            not running and bool(self.voice_manifest.text().strip())
+        )
         self.buttons.setEnabled(not running)
 
     def import_voice_pack(self):
@@ -360,12 +449,8 @@ class AssetManagerDialog(QDialog):
         if self.operation_running:
             return
         manifest = self.voice_manifest.text().strip() or None
-        if manifest:
-            try:
-                self.voice_manager.validate(manifest)
-            except Exception as error:
-                QMessageBox.warning(self, "Invalid voice manifest", str(error))
-                return
+        if not self.validate_voice_manifest():
+            return
         self.settings_value = self.settings_value.updated(
             tts_model=self.model_name() or None,
             voice_manifest=manifest,

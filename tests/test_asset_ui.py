@@ -8,10 +8,15 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QFileDialog  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QMessageBox,
+)
 
 from vntts.asset_ui import AssetManagerDialog, default_model  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -150,6 +155,90 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertIn("Choose the source again to retry", dialog.voice_status.text())
         self.assertTrue(dialog.import_pack_button.isEnabled())
         self.assertTrue(dialog.buttons.isEnabled())
+
+    def test_manifest_browse_validates_inline_and_supports_keyboard(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            model_manager = Mock()
+            model_manager.model_path.return_value = Path("managed/model")
+            voice_manager = Mock()
+            voice_manager.validate.return_value = manifest
+            dialog = AssetManagerDialog(
+                AppSettings(),
+                model_manager=model_manager,
+                voice_manager=voice_manager,
+            )
+
+            with patch.object(
+                QFileDialog,
+                "getOpenFileName",
+                return_value=(str(manifest), "JSON files (*.json)"),
+            ):
+                dialog.browse_manifest_button.click()
+
+            self.assertEqual(dialog.voice_manifest.text(), str(manifest))
+            voice_manager.validate.assert_called_once_with(str(manifest))
+            self.assertIn("passed checksum validation", dialog.voice_status.text())
+            self.assertTrue(dialog.voice_manifest.accessibleName())
+            self.assertTrue(dialog.browse_manifest_button.accessibleDescription())
+            self.assertTrue(dialog.validate_manifest_button.accessibleDescription())
+            self.assertIs(
+                dialog.browse_manifest_button.nextInFocusChain(),
+                dialog.validate_manifest_button,
+            )
+
+            voice_manager.validate.reset_mock()
+            dialog.validate_manifest_button.setFocus()
+            QTest.keyClick(dialog.validate_manifest_button, Qt.Key.Key_Return)
+            voice_manager.validate.assert_called_once_with(str(manifest))
+
+    def test_invalid_manifest_stays_inline_and_focuses_field_on_save(self):
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        voice_manager = Mock()
+        voice_manager.validate.side_effect = ValueError("checksum mismatch")
+        dialog = AssetManagerDialog(
+            AppSettings(voice_manifest="broken.json"),
+            model_manager=model_manager,
+            voice_manager=voice_manager,
+        )
+
+        with patch.object(QMessageBox, "warning") as warning:
+            dialog.accept_settings()
+
+        warning.assert_not_called()
+        self.assertIn("checksum mismatch", dialog.voice_status.text())
+        self.assertEqual(dialog.voice_manifest.selectedText(), "broken.json")
+        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_manifest_controls_follow_operation_state_and_empty_is_valid(self):
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        voice_manager = Mock()
+        dialog = AssetManagerDialog(
+            AppSettings(),
+            model_manager=model_manager,
+            voice_manager=voice_manager,
+        )
+
+        self.assertFalse(dialog.validate_manifest_button.isEnabled())
+        self.assertTrue(dialog.validate_voice_manifest())
+        voice_manager.validate.assert_not_called()
+        dialog.voice_manifest.setText("voices.json")
+        dialog.set_operation_running(True, "voice-import")
+        self.assertFalse(dialog.voice_manifest.isEnabled())
+        self.assertFalse(dialog.browse_manifest_button.isEnabled())
+        self.assertFalse(dialog.validate_manifest_button.isEnabled())
+        dialog.set_operation_running(False)
+        self.assertTrue(dialog.voice_manifest.isEnabled())
+        self.assertTrue(dialog.browse_manifest_button.isEnabled())
+        self.assertTrue(dialog.validate_manifest_button.isEnabled())
+
+        dialog.resize(680, 440)
+        dialog.layout().activate()
+        self.assertEqual(dialog.size().width(), 680)
+        self.assertEqual(dialog.size().height(), 440)
 
 
 if __name__ == "__main__":

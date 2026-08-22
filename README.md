@@ -72,6 +72,9 @@ fallback, and atomic publication. On first launch, complete the setup
 wizard to select the game, verify OCR and audio, calibrate the dialogue area,
 and run an OCR-to-speech test. Use **Manage models and voices** in the app to
 download or verify the speech model and import local character voice references.
+The Character voices tab also lets you Browse to an existing active manifest
+and checksum-validate it inline before Save; an invalid path remains selected
+for correction instead of being reported in a separate modal dialog.
 After the speech engine is ready, use **Choose voices** to compare candidates
 with the same sample text and assign the preferred voice to the narrator or any
 character. The character field is editable, so an OCR name that is missing from
