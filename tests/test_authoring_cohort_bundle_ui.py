@@ -285,6 +285,38 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(reopened.bundle.document["cohort_count"], 1)
             self.assertTrue((root / "bundle.progress.json").is_file())
 
+    def test_published_decision_preloads_next_cohort_without_second_reload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(
+                publication,
+                confirmer=lambda *_args: True,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(first.item.queue_id)
+            dialog._update_actions()
+            reloads = []
+            dialog.reload_bundle = lambda: reloads.append(None)
+
+            dialog.apply_decision("accepted")
+            self.wait_for(
+                lambda: not dialog._decision_active,
+                timeout=5,
+            )
+
+            self.assertEqual(reloads, [])
+            self.assertFalse(dialog._load_active)
+            self.assertEqual(dialog.cohort_choice.count(), 1)
+            self.assertIn("commit", dialog.status.text())
+            self.assertIn("checkpoint", dialog.status.text())
+            self.assertIn("next cohort", dialog.status.text())
+
     def test_retry_recovers_a_transient_load_error(self):
         calls = []
 

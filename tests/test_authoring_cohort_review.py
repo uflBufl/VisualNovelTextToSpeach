@@ -216,9 +216,15 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 reviewed_queue_ids=[queue_id],
             )
 
-            with patch(
-                "vntts.authoring.cohort_review.build_cohort_review_plan",
-                side_effect=AssertionError("full plan rescan"),
+            with (
+                patch(
+                    "vntts.authoring.cohort_review.build_cohort_review_plan",
+                    side_effect=AssertionError("full plan rescan"),
+                ),
+                patch(
+                    "vntts.authoring.cohort_review.inspect_workspace",
+                    side_effect=AssertionError("broad workspace inspection"),
+                ),
             ):
                 projection = apply_cohort_review_decision(workspace, plan, decision)
 
@@ -422,10 +428,35 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             audio = state_path.parent / state["items"][queue_id]["path"]
             audio.write_bytes(audio.read_bytes() + b"changed")
 
-            with self.assertRaisesRegex(CohortReviewError, "checksum mismatch"):
+            with self.assertRaisesRegex(
+                CohortReviewError, "checksum mismatch|authority changed"
+            ):
                 apply_cohort_review_decision(workspace, plan, decision)
 
             self.assertEqual(state_path.read_bytes(), before)
+
+    def test_changed_workspace_configuration_blocks_projection(self):
+        with TemporaryDirectory() as directory:
+            workspace, state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            state_before = state_path.read_bytes()
+            workspace_path = workspace / "workspace.json"
+            document = json.loads(workspace_path.read_text(encoding="utf-8"))
+            document["narrator_character"] = "Changed narrator"
+            workspace_path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(CohortReviewError, "configuration changed"):
+                apply_cohort_review_decision(workspace, plan, decision)
+
+            self.assertEqual(state_path.read_bytes(), state_before)
 
     def test_expand_decision_never_changes_generation_state(self):
         with TemporaryDirectory() as directory:

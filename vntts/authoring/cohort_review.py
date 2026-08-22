@@ -17,8 +17,11 @@ from vntts.authoring.bulk_generation import (
     _review_generation_cohort,
 )
 from vntts.authoring.workbench import (
+    WORKSPACE_SCHEMA,
+    WORKSPACE_VERSION,
     AuthoringWorkbenchError,
     _load_workspace,
+    _workspace_config_fingerprint,
     inspect_workspace,
     list_review_items,
 )
@@ -393,6 +396,115 @@ def load_cohort_review_decision(path):
     return CohortReviewDecision(document["decision_id"], document)
 
 
+def _load_bound_review_workspace(workspace_directory, plan_document):
+    """Load only controls bound by one exact cohort plan.
+
+    Pregeneration input/reference validation is intentionally absent here: it
+    was part of planning and cannot affect already-generated review bytes. The
+    state transaction independently rechecks queue, state, item, WAV and lease
+    authority before either canonical file is replaced.
+    """
+    directory = Path(workspace_directory).expanduser().resolve()
+    workspace_path = directory / "workspace.json"
+    if workspace_path.is_symlink() or not workspace_path.is_file():
+        raise CohortReviewError("Workspace document is missing or unsafe")
+    try:
+        workspace_payload = workspace_path.read_bytes()
+        workspace = json.loads(workspace_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(
+            f"Unable to read authoring workspace {workspace_path}: {error}"
+        ) from error
+    if not isinstance(workspace, dict):
+        raise CohortReviewError("Authoring workspace must be an object")
+    if (
+        workspace.get("schema") != WORKSPACE_SCHEMA
+        or workspace.get("schema_version") != WORKSPACE_VERSION
+    ):
+        raise CohortReviewError("Unsupported authoring workspace")
+    if workspace.get("workspace_id") != plan_document["workspace_id"]:
+        raise CohortReviewError(
+            "Workspace identity changed after the cohort plan was published"
+        )
+    if directory.name != workspace["workspace_id"]:
+        raise CohortReviewError("Workspace identity does not match its directory")
+    if workspace.get("queue") != "queue.jsonl" or workspace.get("output") != (
+        "generated-audio"
+    ):
+        raise CohortReviewError("Workspace core paths were modified")
+    source = workspace.get("source")
+    import_id = source.get("import_id") if isinstance(source, dict) else None
+    narrator = workspace.get("narrator_character")
+    run_config = workspace.get("run_config")
+    if (
+        not isinstance(import_id, str)
+        or not import_id
+        or not isinstance(narrator, str)
+        or not narrator.strip()
+        or not isinstance(run_config, dict)
+    ):
+        raise CohortReviewError("Workspace configuration is malformed")
+    try:
+        current_fingerprint = _workspace_config_fingerprint(
+            import_id,
+            workspace.get("story_index"),
+            workspace.get("voice_manifest"),
+            narrator.strip(),
+            run_config,
+            workspace.get("carry_forward"),
+            workspace.get("outcome_merge"),
+        )
+    except (TypeError, ValueError) as error:
+        raise CohortReviewError("Workspace configuration is malformed") from error
+    if (
+        workspace.get("config_fingerprint") != current_fingerprint
+        or current_fingerprint != plan_document["workspace_config_fingerprint"]
+    ):
+        raise CohortReviewError(
+            "Workspace configuration changed after the cohort plan was published"
+        )
+    queue_path = directory / "queue.jsonl"
+    output = directory / "generated-audio"
+    state_path = output / "generation-state.json"
+    if (
+        queue_path.is_symlink()
+        or not queue_path.is_file()
+        or queue_path.resolve().parent != directory
+    ):
+        raise CohortReviewError("Workspace immutable queue is missing or unsafe")
+    if (
+        output.is_symlink()
+        or not output.is_dir()
+        or output.resolve().parent != directory
+    ):
+        raise CohortReviewError(
+            "Workspace generated-audio directory leaves its canonical root"
+        )
+    if state_path.is_symlink() or not state_path.is_file():
+        raise CohortReviewError("Workspace has no generation state to review")
+    try:
+        queue_payload = queue_path.read_bytes()
+        state_payload = state_path.read_bytes()
+        state = json.loads(state_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CohortReviewError(
+            f"Unable to read cohort review controls: {error}"
+        ) from error
+    if hashlib.sha256(queue_payload).hexdigest() != plan_document["queue_sha256"]:
+        raise CohortReviewError("Cohort review queue changed before projection")
+    if hashlib.sha256(state_payload).hexdigest() != plan_document["state_sha256"]:
+        raise CohortReviewError("Cohort review state changed before projection")
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("items"), dict)
+        or state.get("queue_sha256") != plan_document["queue_sha256"]
+    ):
+        raise CohortReviewError(
+            "Cohort review queue identity changed before projection"
+        )
+    return directory, workspace, queue_path, state_path, state
+
+
 def apply_cohort_review_decision(workspace_directory, plan, decision):
     """Project one exact terminal cohort decision in one state transaction."""
     plan_document = _validated_plan_document(plan)
@@ -408,33 +520,9 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         raise CohortReviewError(
             "Expand decisions create a new plan and cannot be applied"
         )
-    try:
-        _directory, workspace = _load_workspace(workspace_directory)
-        summary = inspect_workspace(workspace_directory)
-    except AuthoringWorkbenchError as error:
-        raise CohortReviewError(str(error)) from error
-    if (
-        workspace.get("config_fingerprint")
-        != plan_document["workspace_config_fingerprint"]
-    ):
-        raise CohortReviewError(
-            "Workspace configuration changed after the cohort plan was published"
-        )
-    if summary.state is None:
-        raise CohortReviewError("Workspace has no generation state to review")
-    try:
-        state_payload = summary.state.read_bytes()
-        state = json.loads(state_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise CohortReviewError(
-            f"Unable to read generation state {summary.state}: {error}"
-        ) from error
-    if hashlib.sha256(state_payload).hexdigest() != plan_document["state_sha256"]:
-        raise CohortReviewError("Cohort review state changed before projection")
-    if state.get("queue_sha256") != plan_document["queue_sha256"]:
-        raise CohortReviewError(
-            "Cohort review queue identity changed before projection"
-        )
+    _directory, _workspace, queue_path, state_path, state = (
+        _load_bound_review_workspace(workspace_directory, plan_document)
+    )
     authorities = {}
     for target in decision_document["target_items"]:
         queue_id = target["queue_id"]
@@ -461,8 +549,8 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     }
     try:
         commits = _review_generation_cohort(
-            summary.state,
-            summary.queue,
+            state_path,
+            queue_path,
             authorities,
             decision_document["projection_review_status"],
             provenance=provenance,
@@ -487,10 +575,9 @@ def execute_cohort_review_decision(workspace_directory, plan, decision):
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(decision_document)
     _validate_decision_against_plan(plan_document, decision_document)
-    try:
-        workspace, _configuration = _load_workspace(workspace_directory)
-    except AuthoringWorkbenchError as error:
-        raise CohortReviewError(str(error)) from error
+    workspace, _configuration, _queue, _state_path, _state = (
+        _load_bound_review_workspace(workspace_directory, plan_document)
+    )
     evidence_directory = workspace / "cohort-reviews"
     if evidence_directory.is_symlink():
         raise CohortReviewError("Cohort review evidence directory cannot be a symlink")

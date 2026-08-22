@@ -962,6 +962,44 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with self.assertRaisesRegex(BulkGenerationError, "authority changed"):
                 bulk_module._assert_review_authorities(state_path, authorities, queue)
 
+    def test_cohort_commit_still_validates_every_approved_manifest_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            first_authority = generation_review_authority(
+                result.state, first["queue_id"]
+            )
+            review_generation_item(
+                result.state,
+                first["queue_id"],
+                "approved",
+                expected_authority=first_authority,
+                queue_path=queue,
+            )
+            second_authority = generation_review_authority(
+                result.state, second["queue_id"]
+            )
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            first_wav = result.state.parent / state["items"][first["queue_id"]]["path"]
+            write_pcm16_wav(first_wav, audio_samples() * 0.5, 16_000)
+            state_before = result.state.read_bytes()
+            manifest_before = result.manifest.read_bytes()
+
+            with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
+                bulk_module._review_generation_cohort(
+                    result.state,
+                    queue,
+                    {second["queue_id"]: second_authority},
+                    "approved",
+                    provenance={"test": "approved-manifest-integrity"},
+                )
+
+            self.assertEqual(result.state.read_bytes(), state_before)
+            self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

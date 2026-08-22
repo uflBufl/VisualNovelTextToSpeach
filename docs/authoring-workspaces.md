@@ -606,8 +606,9 @@ plan/cohort identity, every reviewed sample and every target line/text/WAV hash.
 It records human evidence only: it does not change generation state, approvals,
 the derived manifest or any real workspace. After inspecting that immutable
 decision, `vntts-pregenerate cohort-review-apply WORKSPACE PLAN.json
-DECISION.json` recomputes the current plan, rejects any changed state, queue,
-item or WAV authority, and commits every target item in one leased state
+DECISION.json` reloads only the controls bound by the exact plan, rejects any
+changed workspace/configuration identity, state, queue, item or WAV authority,
+and commits every target item in one leased state
 transaction. Approved-manifest projection retains the decision, sample and
 target-audio provenance. `expand` decisions cannot be applied.
 
@@ -671,8 +672,12 @@ sample` is enabled only when the exact cohort has an unsampled clean item.
 The publication remains immutable, while `BUNDLE.progress.json` is its mutable
 checksum-bound continuation pointer. After every terminal or expanded cohort
 decision, the worker commits source-local evidence/state first and then writes
-the exact successor bundle to that sibling. Reopening the original publication
-loads the successor automatically. If the process stops in the narrow window
+the exact successor bundle to that sibling. The same worker checksum-loads the
+next cohort and returns its already validated samples to Qt; a successful save
+never starts a second bundle reconciliation/reload. The UI shows live elapsed
+time while saving and reports commit, checkpoint and next-cohort phase times
+after completion. Reopening the original publication loads the successor
+automatically. If the process stops in the narrow window
 after the authoritative review commit but before the progress write, recovery
 scans only immutable `cohort-reviews/plan-*.json` and
 `cohort-reviews/decision-*.json` evidence, requires every target queue/text/WAV
@@ -696,15 +701,27 @@ reconciled in about 0.12 seconds and loaded all 78 remaining operator samples in
 another 0.06 seconds; the previous full-workspace rebuild path exceeded 60
 seconds and is deliberately not used.
 
+Terminal save follows the same narrow authority boundary. A read-only
+2026-08-22 profile of a real 592-item source measured the former broad workspace
+inspection at 2.707 seconds and its redundant full state/WAV validation at
+1.268 seconds. Exact plan-bound workspace/queue/state loading now took 0.002
+seconds, approved-only manifest validation stayed below 0.04 seconds, and the
+ten-source reconciliation plus 78-sample preload took about 0.25 seconds. A
+complete accept/checkpoint/next-cohort transaction on an APFS clone of a real
+source took 0.087 seconds (0.062 commit, 0.017 checkpoint, 0.008 preload). The
+clone was isolated; no real review state or decision was changed by the timing
+run. Unrelated pending WAVs are no longer decoded during another cohort's
+commit, but every already-approved manifest WAV and every target cohort WAV is
+still checksum/PCM validated before canonical replacement.
+
 Every cohort still shown in the bundle is required. The selector numbers it as
 `Required N/M`, and the operation status states both why an action is disabled
 and what will happen next. While a decision is being saved, only conflicting
 mutations are disabled; replay and sample navigation remain available. After
-the commit changes the authoritative state hash, the dialog briefly disables
-review and playback while it refreshes checksum authority. The progress/status
-area labels these phases as `Saving decision` and `Refreshing checksum
-authority`. A completed cohort then disappears from the bundle and the first
-remaining cohort is selected automatically.
+the commit changes the authoritative state hash, the already preloaded exact
+successor replaces the old table without a second loading phase. A completed
+cohort then disappears from the bundle and the first remaining cohort is
+selected automatically.
 
 The reviewer is organized around the operator's three actual steps: play every
 required sample, mark any sample that sounds bad, then accept/reject the cohort

@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -17,6 +19,7 @@ from PySide6.QtCore import (
     QRunnable,
     Qt,
     QThreadPool,
+    QTimer,
     QUrl,
     Signal,
 )
@@ -75,6 +78,18 @@ class _Task(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
+@dataclass(frozen=True)
+class _DecisionTaskResult:
+    projection: object
+    checkpoint_error: Exception | None
+    bundle: CohortReviewBundle | None
+    samples: tuple[CohortBundleSample, ...]
+    refresh_error: Exception | None
+    commit_seconds: float
+    checkpoint_seconds: float
+    refresh_seconds: float
+
+
 def _prepare_sample(sample):
     return sample, prepare_review_audio(sample.item)
 
@@ -110,6 +125,7 @@ def _execute_and_checkpoint_bundle_decision(
     assessments,
     next_clean_samples_per_bucket,
 ):
+    started = time.perf_counter()
     projection = _execute_bundle_decision_task(
         bundle,
         workspace_id,
@@ -119,6 +135,9 @@ def _execute_and_checkpoint_bundle_decision(
         assessments,
         next_clean_samples_per_bucket,
     )
+    commit_seconds = time.perf_counter() - started
+    checkpoint_started = time.perf_counter()
+    checkpoint_error = None
     try:
         write_cohort_review_progress(
             publication,
@@ -126,8 +145,38 @@ def _execute_and_checkpoint_bundle_decision(
             projection.next_bundle,
         )
     except Exception as error:
-        return projection, error
-    return projection, None
+        checkpoint_error = error
+    checkpoint_seconds = time.perf_counter() - checkpoint_started
+    refresh_started = time.perf_counter()
+    try:
+        if checkpoint_error is None:
+            bundle, samples = load_cohort_review_bundle_samples(projection.next_bundle)
+        else:
+            _resume, bundle, samples = load_resumable_cohort_review_bundle_samples(
+                publication,
+                persist=False,
+            )
+    except Exception as error:
+        return _DecisionTaskResult(
+            projection,
+            checkpoint_error,
+            None,
+            (),
+            error,
+            commit_seconds,
+            checkpoint_seconds,
+            time.perf_counter() - refresh_started,
+        )
+    return _DecisionTaskResult(
+        projection,
+        checkpoint_error,
+        bundle,
+        tuple(samples),
+        None,
+        commit_seconds,
+        checkpoint_seconds,
+        time.perf_counter() - refresh_started,
+    )
 
 
 class CohortReviewBundleDialog(QDialog):
@@ -174,6 +223,7 @@ class CohortReviewBundleDialog(QDialog):
         self._load_serial = 0
         self._playback_serial = 0
         self._decision_serial = 0
+        self._decision_started_at = None
         self._playback_target = None
         self._playback_buffer = None
         self._initial_cohort_count = self.bundle.document["cohort_count"]
@@ -381,6 +431,9 @@ class CohortReviewBundleDialog(QDialog):
         self._decision_signals.finished.connect(self._decision_finished)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(2)
+        self._operation_timer = QTimer(self)
+        self._operation_timer.setInterval(250)
+        self._operation_timer.timeout.connect(self._update_operation_status)
 
         previous_shortcut = QShortcut(
             QKeySequence("Left"), self.table, activated=lambda: self._move(-1)
@@ -441,10 +494,15 @@ class CohortReviewBundleDialog(QDialog):
             return
         self.retry_load.hide()
         if self._resumable_load:
-            _resume, self.bundle, self.samples = result
+            _resume, bundle, samples = result
             self._resumable_load = False
         else:
-            self.bundle, self.samples = result
+            bundle, samples = result
+        self._apply_loaded_bundle(bundle, samples)
+
+    def _apply_loaded_bundle(self, bundle, samples, *, status=None):
+        self.bundle = bundle
+        self.samples = tuple(samples)
         grouped = defaultdict(list)
         for sample in self.samples:
             grouped[(sample.workspace_id, sample.cohort_id)].append(sample)
@@ -485,7 +543,7 @@ class CohortReviewBundleDialog(QDialog):
             f"{self.bundle.document['blocked_item_count']} inherited blocked items "
             "are excluded from this review."
         )
-        self.status.setText("READY: play the selected sample")
+        self.status.setText(status or "READY: play the selected sample")
         self._populate_cohorts()
 
     def _populate_cohorts(self):
@@ -786,6 +844,8 @@ class CohortReviewBundleDialog(QDialog):
         }
         self._decision_active = True
         self._decision_serial += 1
+        self._decision_started_at = time.perf_counter()
+        self._operation_timer.start()
         serial = self._decision_serial
         self.status.setText(
             f"SAVING {decision}: audio replay and navigation remain available"
@@ -816,21 +876,56 @@ class CohortReviewBundleDialog(QDialog):
         if serial != self._decision_serial or not self._decision_active:
             return
         self._decision_active = False
+        self._operation_timer.stop()
+        self._decision_started_at = None
         if error is not None:
             self.status.setText(
                 f"SAVE FAILED: {error}. Review evidence was not assumed."
             )
             self._update_actions()
             return
-        checkpoint_error = None
         if self._checkpoint_decisions:
-            result, checkpoint_error = result
+            task_result = result
+            if task_result.refresh_error is not None or task_result.bundle is None:
+                self.bundle = task_result.projection.next_bundle
+                self.samples = ()
+                self.samples_by_cohort = {}
+                self._resumable_load = True
+                self.status.setText(
+                    "SAVED, BUT REFRESH BLOCKED: source authority committed; "
+                    f"press Retry after resolving {task_result.refresh_error}"
+                )
+                self.retry_load.show()
+                self._populate_cohorts()
+                self._update_actions()
+                return
+            total = (
+                task_result.commit_seconds
+                + task_result.checkpoint_seconds
+                + task_result.refresh_seconds
+            )
+            timing = (
+                f"{total:.2f}s total: commit {task_result.commit_seconds:.2f}s, "
+                f"checkpoint {task_result.checkpoint_seconds:.2f}s, "
+                f"next cohort {task_result.refresh_seconds:.2f}s"
+            )
+            status = (
+                f"SAVED: {timing}"
+                if task_result.checkpoint_error is None
+                else "SAVED: source authority committed; progress checkpoint will "
+                f"be recovered on reopen ({task_result.checkpoint_error}); {timing}"
+            )
+            self._resumable_load = task_result.checkpoint_error is not None
+            self.retry_load.hide()
+            self._apply_loaded_bundle(
+                task_result.bundle,
+                task_result.samples,
+                status=status,
+            )
+            return
         self.bundle = result.next_bundle
         self.status.setText(
             "SAVED: source-local authority committed; refreshing exact bundle"
-            if checkpoint_error is None
-            else "SAVED: source authority committed; progress checkpoint will be "
-            f"recovered on reopen ({checkpoint_error})"
         )
         self.reload_bundle()
 
@@ -1014,8 +1109,14 @@ class CohortReviewBundleDialog(QDialog):
     def _update_operation_status(self):
         if self._decision_active:
             self.progress.show()
+            elapsed = (
+                time.perf_counter() - self._decision_started_at
+                if self._decision_started_at is not None
+                else 0.0
+            )
             self.operation.setText(
-                "Saving in background: Accept, Reject and Mark bad are disabled "
+                f"Saving in background ({elapsed:.1f}s): Accept, Reject and Mark "
+                "bad are disabled "
                 "to prevent a second state mutation. Replay and sample navigation "
                 "remain available until the decision commits."
             )
@@ -1036,6 +1137,12 @@ class CohortReviewBundleDialog(QDialog):
             )
             return
         self.progress.hide()
+        if self.retry_load.isVisible():
+            self.operation.setText(
+                "The saved or loaded authority could not be projected. Press Retry "
+                "bundle load; no additional cohort decision is allowed meanwhile."
+            )
+            return
         remaining = self.cohort_choice.count()
         if remaining:
             position = self.cohort_choice.currentIndex() + 1

@@ -2396,12 +2396,20 @@ def _review_generation_cohort(
                 validate_files=False,
             )
             _assert_review_authorities(state_path, authorities, queue_path)
-            validated = load_generation_state(state_path, queue_path)
+            validated_entries = _approved_manifest_entries(
+                proposed,
+                state_path.parent,
+                validate_files=True,
+            )
+            if validated_entries != entries:
+                raise BulkGenerationError(
+                    "Approved cohort manifest authority changed before the final commit"
+                )
             if sha256_file(state_path) != authority_values[0].state_sha256:
                 raise BulkGenerationError(
                     "Cohort review state changed before the final commit"
                 )
-            if validated.get("queue_sha256") != authority_values[0].queue_sha256:
+            if sha256_file(queue_path) != authority_values[0].queue_sha256:
                 raise BulkGenerationError(
                     "Cohort review queue changed before the final commit"
                 )
