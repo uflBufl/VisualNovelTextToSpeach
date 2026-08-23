@@ -164,8 +164,9 @@ reports is ready at
 It contains ten shared COMPLETE trials chosen from asymmetric silence failures,
 large duration differences and all three corpus groups. Non-complete outputs
 remain automatic technical losses and are not fabricated as blind pairs. The
-public session contains no model names; its private key is mode 0600. Keep this
-session at `0/10` while Delay 8B remains absent, then either use it as the local
-pairwise component or publish a new three-model finalist task from the exact
-CUDA report. The earlier `v1` session is bound to the pre-snapshot v2 reports
-and must not replace this session.
+public session contains no model names; its private key is mode 0600. No CUDA
+host is currently available, so use this `0/10` Local4B/XTTS session to select
+the best locally runnable candidate instead of blocking on Delay 8B. If Delay
+8B becomes available later, compare it only against that local winner in a new
+bounded follow-up. The earlier `v1` session is bound to the pre-snapshot v2
+reports and must not replace this session.

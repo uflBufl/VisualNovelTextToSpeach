@@ -178,8 +178,11 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P0 - Establish a MOSS quality and latency gate
 
-- [ ] Run the installed checksum-bound offline bake-off on a CUDA host with
-      enough memory for MOSS Delay 8B weights. Use the current exact 46-line
+- [ ] When a suitable CUDA host becomes available, run the installed
+      checksum-bound offline bake-off with MOSS Delay 8B. No CUDA host is
+      currently available, so this is a deferred optional candidate rather
+      than a blocker for choosing between the two locally runnable models. Use
+      the current exact 46-line
       corpus (22 unresolved MOSS failures, 12 MOSS-to-Pocket recoveries and 12
       MOSS controls), MOSS Local 4B MLX int8 as baseline, MOSS Delay 8B and
       XTTS v2 with explicit CPML acceptance. Retain all three transactional
@@ -199,8 +202,9 @@ while one-sentence controls remained below 0.25 seconds.
       invalid because of speaker fallback, while `v2` established exact speaker
       identity but did not snapshot reference bytes. Delay 8B on CUDA remains
       the only missing automatic model report.
-- [ ] Blind-review only a small stratified finalist sample after the automatic
-      comparison passes. Compare speaker identity, exact words, pronunciation,
+- [ ] Blind-review the current small Local4B/XTTS finalist sample now; do not
+      wait indefinitely for optional Delay 8B hardware. Compare speaker
+      identity, exact words, pronunciation,
       pacing, pauses, repetitions and contamination. Do not change the
       production authoring default from MOSS Local 4B or regenerate approved
       WAVs until one candidate has a lower technical failure rate, acceptable
@@ -208,10 +212,12 @@ while one-sentence controls remained below 0.25 seconds.
       and live winners may differ; Pocket remains the bounded live/final
       fallback unless a separate hardware gate replaces it. A preliminary
       ten-trial Local4B/XTTS session from v3 is already published at
-      `offline-local-4b-vs-xtts-finalists-20260823-v2`, progress `0/10`; keep it
-      pending until the Delay 8B report determines whether the final task should
-      be a three-model comparison. Non-complete outputs are technical losses,
-      not synthetic listening pairs.
+      `offline-local-4b-vs-xtts-finalists-20260823-v2`, progress `0/10`. Allow
+      A, B, no preference when both are acceptable, and neither acceptable when
+      both are bad. Non-complete outputs are technical losses, not synthetic
+      listening pairs. If Delay 8B is tested later, compare it only against the
+      local winner in a new bounded follow-up rather than repeating this full
+      review.
 - [ ] Run `vntts-benchmark-tts` on the completed exact Rhiannon replay corpus,
       add generated/original game-audio route timing, and retain the report as
       acceptance evidence. The reported-line regression already covers fresh,
