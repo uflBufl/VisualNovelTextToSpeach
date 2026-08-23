@@ -53,6 +53,7 @@ class MossTTSDelayVoiceRouterBackend:
         language="English",
         model_name=None,
         generation_profile="expressive",
+        require_cuda=False,
         model=None,
         processor=None,
         torch_module=None,
@@ -83,6 +84,10 @@ class MossTTSDelayVoiceRouterBackend:
             torch_module = torch
         self.torch = torch_module
         self.device = self._select_device(torch_module)
+        if require_cuda and self.device != "cuda":
+            raise TTSConfigurationError(
+                "MOSS Delay comparison requires CUDA; refusing CPU model loading"
+            )
         self.dtype = (
             torch_module.bfloat16 if self.device == "cuda" else torch_module.float32
         )

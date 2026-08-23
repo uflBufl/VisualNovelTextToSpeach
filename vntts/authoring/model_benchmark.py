@@ -16,9 +16,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_write_bytes, atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_manifest import VoiceManifestError, validate_voice_manifest
 
 from vntts.authoring.bulk_generation import (
     load_generation_state,
@@ -32,7 +33,12 @@ from vntts.synthesis import (
     SynthesisRequest,
 )
 from vntts.tts_benchmark import create_backend
-from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
+from vntts.voices import (
+    CharacterVoice,
+    CharacterVoiceRegistry,
+    find_default_voice_manifest,
+    is_narrator,
+)
 
 CORPUS_SCHEMA = "vntts.tts-benchmark-corpus"
 MODEL_REPORT_SCHEMA = "vntts.voice-model-report"
@@ -53,6 +59,7 @@ class ModelVariant:
     generation_profile: str = "stable"
     voice: str | None = None
     terms_accepted: bool = False
+    require_cuda: bool = False
 
 
 def select_representative_items(items, sample_size=24):
@@ -126,6 +133,8 @@ def build_failure_comparison_corpus(
     pocket_sample_size=12,
     control_sample_size=12,
     name=None,
+    manifest_path=None,
+    narrator_character=None,
     state_loader=load_generation_state,
 ):
     """Bind failures, Pocket recoveries and MOSS controls into one exact corpus."""
@@ -148,6 +157,11 @@ def build_failure_comparison_corpus(
             "Validated generation state does not match its captured bytes"
         )
     queue_by_id = {item.queue_id: item.document for item in queue.items}
+    voice_context = (
+        _comparison_voice_context(manifest_path, narrator_character)
+        if manifest_path is not None
+        else None
+    )
     failed = []
     recovered = []
     controls = []
@@ -204,6 +218,14 @@ def build_failure_comparison_corpus(
             or item.get("speaker")
             or "Narrator"
         )
+        prior_synthesis_voice = character
+        if voice_context is not None:
+            character = _resolve_comparison_voice(
+                queue_id,
+                item,
+                result,
+                voice_context,
+            )
         failure = result.get("failure")
         samples.append(
             {
@@ -215,6 +237,7 @@ def build_failure_comparison_corpus(
                 "comparison_group": group,
                 "prior_status": str(result.get("status") or "unknown"),
                 "prior_provider": str(result.get("provider") or "unknown"),
+                "prior_synthesis_voice": prior_synthesis_voice,
                 "prior_failure_kind": (
                     str(failure.get("kind"))
                     if isinstance(failure, dict) and failure.get("kind")
@@ -238,6 +261,15 @@ def build_failure_comparison_corpus(
         "source_queue_sha256": queue_sha256,
         "source_state": str(state_path),
         "source_state_sha256": state_sha256,
+        **(
+            {
+                "source_voice_manifest": str(voice_context["path"]),
+                "source_voice_manifest_sha256": voice_context["sha256"],
+                "narrator_character": voice_context["narrator_character"],
+            }
+            if voice_context is not None
+            else {}
+        ),
         "selection": {
             "unresolved_moss_failures": len(failed),
             "moss_to_pocket_recoveries": sum(
@@ -253,14 +285,125 @@ def build_failure_comparison_corpus(
     if (
         _sha256_file(queue_path) != queue_sha256
         or _sha256_file(state_path) != state_sha256
+        or (
+            voice_context is not None
+            and _sha256_file(voice_context["path"]) != voice_context["sha256"]
+        )
     ):
         raise ModelBenchmarkError(
-            "Queue or generation state changed while the corpus was built"
+            "Queue, generation state or voice manifest changed while the corpus "
+            "was built"
         )
     output_path = Path(output_path).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output_path, document, sort_keys=True)
     return document
+
+
+def _comparison_voice_context(manifest_path, narrator_character):
+    manifest_path = Path(manifest_path).expanduser().resolve()
+    try:
+        payload = manifest_path.read_bytes()
+        document = json.loads(payload)
+        entries = validate_voice_manifest(document)
+    except (OSError, json.JSONDecodeError, VoiceManifestError) as error:
+        raise ModelBenchmarkError(
+            f"Unable to capture comparison voice manifest: {error}"
+        ) from error
+    if not isinstance(document, dict):
+        raise ModelBenchmarkError("Comparison voice manifest must be an object")
+    registry = CharacterVoiceRegistry(
+        CharacterVoice(
+            character=entry.character,
+            speaker=entry.speaker,
+            reference=(manifest_path.parent / entry.references[0]).resolve()
+            if entry.references
+            else None,
+            aliases=entry.aliases,
+            references=tuple(
+                (manifest_path.parent / reference).resolve()
+                for reference in entry.references
+            ),
+        )
+        for entry in entries
+    )
+    narrator_character = (
+        str(narrator_character).strip() if narrator_character is not None else None
+    )
+    if narrator_character and registry.resolve(narrator_character) is None:
+        raise ModelBenchmarkError(
+            f"Comparison narrator voice is not in the manifest: {narrator_character!r}"
+        )
+    queue_overrides = {}
+    bindings = document.get("vntts.authoring.source_reference_bindings")
+    selected_variants = (
+        bindings.get("selected_variants") if isinstance(bindings, dict) else ()
+    )
+    if selected_variants is None:
+        selected_variants = ()
+    if not isinstance(selected_variants, list):
+        raise ModelBenchmarkError(
+            "Comparison voice manifest source reference bindings are invalid"
+        )
+    for variant in selected_variants:
+        if not isinstance(variant, dict):
+            raise ModelBenchmarkError(
+                "Comparison voice manifest selected variant is invalid"
+            )
+        voice_character = variant.get("voice_character")
+        queue_ids = variant.get("queue_ids")
+        if (
+            not isinstance(voice_character, str)
+            or not voice_character.strip()
+            or not isinstance(queue_ids, list)
+            or registry.resolve(voice_character) is None
+        ):
+            raise ModelBenchmarkError(
+                "Comparison voice manifest selected variant cannot be resolved"
+            )
+        for queue_id in queue_ids:
+            if not isinstance(queue_id, str) or not queue_id.strip():
+                raise ModelBenchmarkError(
+                    "Comparison voice manifest selected queue ID is invalid"
+                )
+            existing = queue_overrides.get(queue_id)
+            if existing is not None and existing != voice_character:
+                raise ModelBenchmarkError(
+                    f"Comparison queue ID has conflicting voice bindings: {queue_id}"
+                )
+            queue_overrides[queue_id] = voice_character
+    return {
+        "path": manifest_path,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "registry": registry,
+        "queue_overrides": queue_overrides,
+        "narrator_character": narrator_character,
+    }
+
+
+def _resolve_comparison_voice(queue_id, item, result, context):
+    binding = result.get("source_reference_binding")
+    source_voice = (
+        binding.get("source_voice_character") if isinstance(binding, dict) else None
+    )
+    source_voice = str(
+        source_voice
+        or result.get("requested_voice_character")
+        or item.get("voice_character")
+        or item.get("speaker")
+        or "Narrator"
+    )
+    if is_narrator(source_voice):
+        candidate = context["narrator_character"] or source_voice
+    else:
+        candidate = context["queue_overrides"].get(queue_id, source_voice)
+    voice = context["registry"].resolve(candidate)
+    if voice is None:
+        raise ModelBenchmarkError(
+            f"Comparison sample {queue_id!r} has no exact manifest voice for "
+            f"{source_voice!r}"
+        )
+    return voice.character
 
 
 def _round_robin_state_items(values, queue_by_id, limit):
@@ -347,6 +490,7 @@ def benchmark_renderer(
     *,
     seed=0,
     reported_output_directory=None,
+    voice_controls_sha256=None,
 ):
     """Render a common corpus through one typed backend without playback."""
     output_directory = Path(output_directory).expanduser().resolve()
@@ -371,6 +515,7 @@ def benchmark_renderer(
             staging,
             reported_output_directory=reported_output_directory,
             seed=seed,
+            voice_controls_sha256=voice_controls_sha256,
         )
         try:
             if output_directory.exists():
@@ -391,6 +536,7 @@ def _benchmark_renderer_staged(
     *,
     reported_output_directory,
     seed,
+    voice_controls_sha256,
 ):
     render = getattr(backend, "render", None)
     if not callable(render):
@@ -516,6 +662,8 @@ def _benchmark_renderer_staged(
         "generation_profile": variant.generation_profile,
         "voice_override": variant.voice,
         "terms_accepted": variant.terms_accepted,
+        "require_cuda": variant.require_cuda,
+        "voice_controls_sha256": voice_controls_sha256,
         "seed_policy": ("unsupported" if variant.backend == "coqui-xtts" else "shared"),
         "runtime": _runtime_identity(backend),
         "summary": {"total": len(rendered_samples), **outcomes},
@@ -552,6 +700,20 @@ def benchmark_model_variants(
                 "XTTS v2 requires explicit CPML acceptance in the "
                 "model-variant document"
             )
+        if variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}:
+            unresolved = sorted(
+                {
+                    variant.voice or sample["character"]
+                    for sample in corpus["samples"]
+                    if registry.resolve(variant.voice or sample["character"]) is None
+                },
+                key=str.casefold,
+            )
+            if unresolved:
+                raise ModelBenchmarkError(
+                    "Model comparison has unresolved manifest voices: "
+                    + ", ".join(unresolved)
+                )
     output_directory = Path(output_directory).expanduser().resolve()
     if output_directory.exists() and (
         not output_directory.is_dir() or any(output_directory.iterdir())
@@ -569,6 +731,29 @@ def benchmark_model_variants(
         cache_root = Path(cache).resolve()
         staging_root = Path(temporary_output).resolve() / output_directory.name
         staging_root.mkdir(parents=True)
+        published_corpus = staging_root / "benchmark-corpus.json"
+        atomic_write_json(published_corpus, corpus, sort_keys=True)
+        requires_voice_controls = any(
+            variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}
+            for variant in variants
+        )
+        if requires_voice_controls:
+            used_characters = {
+                variant.voice or sample["character"]
+                for variant in variants
+                if variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}
+                for sample in corpus["samples"]
+            }
+            snapshot_registry, voice_controls = _snapshot_voice_registry(
+                registry,
+                used_characters,
+                staging_root / "voice-controls",
+                output_directory / "voice-controls",
+            )
+        else:
+            snapshot_registry = registry
+            voice_controls = []
+        voice_controls_sha256 = _canonical_sha256(voice_controls)
         reports = []
         model_summaries = []
         for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
@@ -580,12 +765,17 @@ def benchmark_model_variants(
             try:
                 backend = backend_factory(
                     variant.backend,
-                    registry,
+                    snapshot_registry,
                     cache_directory,
                     model_name=variant.model,
                     **(
                         {"terms_accepted": True}
                         if variant.backend == "coqui-xtts"
+                        else {}
+                    ),
+                    **(
+                        {"require_cuda": True}
+                        if variant.backend == "moss-tts-delay" and variant.require_cuda
                         else {}
                     ),
                 )
@@ -599,6 +789,7 @@ def benchmark_model_variants(
                     model_output,
                     seed=seed,
                     reported_output_directory=reported_model_output,
+                    voice_controls_sha256=voice_controls_sha256,
                 )
                 reports.append(str(reported_model_output / "report.json"))
                 model_summaries.append(
@@ -617,7 +808,10 @@ def benchmark_model_variants(
             "schema": BENCHMARK_SCHEMA,
             "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "corpus": str(Path(corpus_path).expanduser().resolve()),
+            "corpus": str(output_directory / "benchmark-corpus.json"),
+            "corpus_sha256": _sha256_file(published_corpus),
+            "voice_controls": voice_controls,
+            "voice_controls_sha256": voice_controls_sha256,
             "sample_count": len(corpus["samples"]),
             "manual_review_required": True,
             "models": model_summaries,
@@ -633,6 +827,80 @@ def benchmark_model_variants(
                 f"Unable to publish benchmark output {output_directory}: {error}"
             ) from error
     return aggregate
+
+
+def _snapshot_voice_registry(
+    registry,
+    used_characters,
+    staging_root,
+    reported_root,
+):
+    staging_root = Path(staging_root).resolve()
+    reported_root = Path(reported_root).resolve()
+    voices = {}
+    for character in sorted(used_characters, key=str.casefold):
+        voice = registry.resolve(character)
+        if voice is None:
+            raise ModelBenchmarkError(
+                f"Model comparison has unresolved manifest voice: {character}"
+            )
+        if not voice.references:
+            raise ModelBenchmarkError(
+                f"Model comparison voice has no reference audio: {character}"
+            )
+        voices[id(voice)] = voice
+    snapshot_voices = []
+    inventory = []
+    for voice_index, voice in enumerate(
+        sorted(voices.values(), key=lambda value: value.character.casefold()),
+        start=1,
+    ):
+        references = []
+        for reference_index, source in enumerate(voice.references, start=1):
+            source = Path(source).expanduser().resolve()
+            try:
+                payload = source.read_bytes()
+            except OSError as error:
+                raise ModelBenchmarkError(
+                    f"Unable to capture comparison voice reference {source}: {error}"
+                ) from error
+            suffix = source.suffix.lower() or ".audio"
+            relative = Path(f"voice-{voice_index:03d}") / (
+                f"reference-{reference_index:03d}{suffix}"
+            )
+            destination = _contained_child(
+                staging_root,
+                relative,
+                "voice control",
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(destination, payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            if _sha256_file(destination) != digest:
+                raise ModelBenchmarkError(
+                    f"Captured comparison voice reference changed: {source}"
+                )
+            references.append(destination)
+            inventory.append(
+                {
+                    "character": voice.character,
+                    "speaker": voice.speaker,
+                    "reference_index": reference_index,
+                    "source": str(source),
+                    "audio": str(reported_root / relative),
+                    "sha256": digest,
+                    "size": len(payload),
+                }
+            )
+        snapshot_voices.append(
+            CharacterVoice(
+                character=voice.character,
+                speaker=voice.speaker,
+                aliases=voice.aliases,
+                references=tuple(references),
+            )
+        )
+    return CharacterVoiceRegistry(snapshot_voices), inventory
 
 
 def load_model_variants(path):
@@ -672,6 +940,15 @@ def load_model_variants(path):
             raise ModelBenchmarkError(
                 f"Model variant {index} terms_accepted applies only to coqui-xtts"
             )
+        require_cuda = item.get("require_cuda", False)
+        if not isinstance(require_cuda, bool):
+            raise ModelBenchmarkError(
+                f"Model variant {index} require_cuda must be true or false"
+            )
+        if require_cuda and item["backend"] != "moss-tts-delay":
+            raise ModelBenchmarkError(
+                f"Model variant {index} require_cuda applies only to moss-tts-delay"
+            )
         variants.append(
             ModelVariant(
                 model_id=item["model_id"],
@@ -680,6 +957,7 @@ def load_model_variants(path):
                 generation_profile=str(item.get("generation_profile") or "stable"),
                 voice=voice.strip() if isinstance(voice, str) else None,
                 terms_accepted=terms_accepted,
+                require_cuda=require_cuda,
             )
         )
     return variants
@@ -723,6 +1001,17 @@ def _sha256_file(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _canonical_sha256(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _mono_pcm(value):
     pcm = np.asarray(value, dtype=np.float32)
     if pcm.ndim == 1:
@@ -744,6 +1033,10 @@ def _runtime_identity(backend):
             "interpreter": health.get("interpreter"),
             "prefix": health.get("prefix"),
             "modules": health.get("modules"),
+            "platform": health.get("platform"),
+            "machine": health.get("machine"),
+            "device": health.get("device"),
+            "accelerator": health.get("accelerator"),
         }
     return {
         "kind": "current-process",
@@ -765,6 +1058,7 @@ def create_parser():
     parser.add_argument("--control-samples", type=int, default=12)
     parser.add_argument("--models", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--narrator-character")
     parser.add_argument("--output", type=Path, default=default_output)
     parser.add_argument("--seed", type=int, default=0)
     return parser
@@ -780,30 +1074,33 @@ def main(argv=None):
     if manifest is None:
         return cli_error("No complete voice manifest is available")
     try:
-        corpus = arguments.corpus
-        if corpus is None:
-            corpus = arguments.output / "benchmark-corpus.json"
-            if arguments.state is not None:
-                build_failure_comparison_corpus(
-                    arguments.queue,
-                    arguments.state,
-                    corpus,
-                    pocket_sample_size=arguments.pocket_samples,
-                    control_sample_size=arguments.control_samples,
-                )
-            else:
-                build_benchmark_corpus(
-                    arguments.queue,
-                    corpus,
-                    sample_size=arguments.sample_size,
-                )
-        aggregate = benchmark_model_variants(
-            corpus,
-            load_model_variants(arguments.models),
-            CharacterVoiceRegistry.from_file(manifest),
-            arguments.output,
-            seed=arguments.seed,
-        )
+        with TemporaryDirectory(prefix="vntts-model-corpus-") as temporary_corpus:
+            corpus = arguments.corpus
+            if corpus is None:
+                corpus = Path(temporary_corpus) / "benchmark-corpus.json"
+                if arguments.state is not None:
+                    build_failure_comparison_corpus(
+                        arguments.queue,
+                        arguments.state,
+                        corpus,
+                        pocket_sample_size=arguments.pocket_samples,
+                        control_sample_size=arguments.control_samples,
+                        manifest_path=manifest,
+                        narrator_character=arguments.narrator_character,
+                    )
+                else:
+                    build_benchmark_corpus(
+                        arguments.queue,
+                        corpus,
+                        sample_size=arguments.sample_size,
+                    )
+            aggregate = benchmark_model_variants(
+                corpus,
+                load_model_variants(arguments.models),
+                CharacterVoiceRegistry.from_file(manifest),
+                arguments.output,
+                seed=arguments.seed,
+            )
     except (ModelBenchmarkError, OSError, ValueError) as error:
         return cli_error(error)
     return cli_messages((arguments.output / "benchmark.json", *aggregate["reports"]))

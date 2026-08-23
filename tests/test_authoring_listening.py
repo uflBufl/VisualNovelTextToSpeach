@@ -137,6 +137,36 @@ class AuthoringListeningTest(unittest.TestCase):
 
         self.assertEqual(trial_count, 1)
 
+    def test_skips_noncomplete_outputs_and_filters_exact_sample_ids(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=3)
+            first = json.loads(reports[0].read_text(encoding="utf-8"))
+            first["samples"][2] = {
+                key: value
+                for key, value in first["samples"][2].items()
+                if key not in {"audio", "audio_sha256"}
+            }
+            first["samples"][2]["outcome"] = "limited"
+            reports[0].write_text(json.dumps(first), encoding="utf-8")
+
+            session = create_listening_session_from_reports(
+                reports,
+                root / "session",
+                seed=3,
+                sample_ids=("sample-1",),
+            )
+            trials = load_listening_session(session)["trials"]
+
+            self.assertEqual(len(trials), 1)
+            self.assertIn("sample-1", trials[0]["queue_id"])
+            with self.assertRaisesRegex(ModelListeningError, "complete audio"):
+                create_listening_session_from_reports(
+                    reports,
+                    root / "rejected",
+                    sample_ids=("sample-2",),
+                )
+
     def test_starts_from_strict_single_backend_tts_reports(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -182,7 +182,10 @@ from its final app-data path. Its 17 recorded source-state hashes still match,
 the outcome ledger contains exactly 144 terminal repairs, and the manifest is
 the exact 179-item approved state subset. Generation, additional review and
 final-pack publication did not run. The Dobharchú natural-expansion task
-separately has all four cohorts and 24 samples/items remaining.
+separately reports `2/4` terminal cohorts and 17 exact samples/items remaining
+in its two unresolved reference cohorts after a later read-only reconciliation.
+Its progress document is current and no decision was inferred for those
+remaining WAVs.
 
 The 29 primary failures classified as `reference_comparison` are one separate
 reference-quality decision, not 29 repeated auditions. Their immutable audit

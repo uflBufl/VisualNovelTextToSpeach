@@ -33,6 +33,13 @@ profile. Model IDs are converted to contained output/cache directory names;
 dot paths, path escape and case-insensitive destination collisions are rejected.
 The aggregate `vntts.voice-model-benchmark` version 1 document records the exact
 corpus and per-model report paths; model selection remains a manual decision.
+For any voice-cloning backend, every used manifest reference is captured once
+into the staged output before model construction. All variants read those same
+immutable copies. The aggregate retains the original path, published copy,
+byte size and SHA-256 for each control plus a canonical inventory digest, and
+each model report binds that same digest. A missing or unreadable reference
+fails the whole comparison before a backend is created. Fake-only test variants
+use an explicitly empty control inventory.
 
 A model variant may set an explicit `voice` override. This changes only the
 voice passed to synthesis: the corpus character, line identity, exact text,
@@ -194,6 +201,12 @@ uv run vntts-listen start-reports \
   --output /path/to/listening-session \
   --seed 42
 ```
+
+Use repeated `--sample-id EXACT_ID` arguments to publish only a small
+preselected finalist set. Non-complete model outcomes remain in the technical
+benchmark report but are never turned into blind audio trials; an explicitly
+selected ID fails closed unless at least two reports contain complete,
+checksum-valid audio for it.
 
 The single-backend `vntts-benchmark-tts` command publishes the strict
 `vntts.tts-benchmark-report` version 1 adapter schema with stable line/text

@@ -58,9 +58,10 @@ Follow the evidence-backed order and invariants in
       exactly 24 pending WAVs in four cohorts, comprising 17 direct natural
       outputs and seven bounded sentence repairs. Every item is currently a
       mandatory sample because it is technical-attention evidence or the
-      deterministic clean sample for its exact portrait/reference cohort. None
-      of its four cohorts is terminal yet (24/24 samples remain according to the
-      2026-08-22 read-only status reconciliation). Apply only explicit
+      deterministic clean sample for its exact portrait/reference cohort. The
+      current checksum-bound progress is `2/4` terminal cohorts, with 17 exact
+      samples/items remaining in the two unresolved reference cohorts according
+      to the 2026-08-23 read-only status reconciliation. Apply only explicit
       source-local cohort decisions, then merge terminal reviewed
       repair outcomes into successor
       `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`; preserve its four
@@ -186,7 +187,18 @@ while one-sentence controls remained below 0.25 seconds.
       exact WAV hashes, timing/RTF, duration, silence/quality and runtime/model
       provenance. Do not treat the verified one-line Local/XTTS wiring smoke as
       the model verdict, and do not attempt the 8B corpus on the current
-      CPU-only PyTorch path merely to claim completion.
+      CPU-only PyTorch path merely to claim completion. The corrected full local
+      phase is complete at
+      `offline-local-4b-vs-xtts-20260823-v3`: exact manifest resolution maps
+      Narrator to Centurion, both reports share all 46 ordered identities and
+      bind the same 12 copied voice controls with canonical SHA-256
+      `a41a40b7457e9d5c8e50ef0f646991c3107e4c43380a578ebe3f707705e85192`.
+      MOSS produced 44 complete/43 silence-gate-passing results and XTTS
+      produced 46 complete/46 gate-passing results; XTTS has unsupported shared
+      seeding, so retain this as one stochastic run. The earlier `v1` run is
+      invalid because of speaker fallback, while `v2` established exact speaker
+      identity but did not snapshot reference bytes. Delay 8B on CUDA remains
+      the only missing automatic model report.
 - [ ] Blind-review only a small stratified finalist sample after the automatic
       comparison passes. Compare speaker identity, exact words, pronunciation,
       pacing, pauses, repetitions and contamination. Do not change the
@@ -194,7 +206,12 @@ while one-sentence controls remained below 0.25 seconds.
       WAVs until one candidate has a lower technical failure rate, acceptable
       resource use and non-inferior human quality on the exact corpus. Offline
       and live winners may differ; Pocket remains the bounded live/final
-      fallback unless a separate hardware gate replaces it.
+      fallback unless a separate hardware gate replaces it. A preliminary
+      ten-trial Local4B/XTTS session from v3 is already published at
+      `offline-local-4b-vs-xtts-finalists-20260823-v2`, progress `0/10`; keep it
+      pending until the Delay 8B report determines whether the final task should
+      be a three-model comparison. Non-complete outputs are technical losses,
+      not synthetic listening pairs.
 - [ ] Run `vntts-benchmark-tts` on the completed exact Rhiannon replay corpus,
       add generated/original game-audio route timing, and retain the report as
       acceptance evidence. The reported-line regression already covers fresh,

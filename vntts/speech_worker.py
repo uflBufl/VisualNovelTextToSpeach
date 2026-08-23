@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import platform
 import queue
 import site
 import struct
@@ -280,6 +281,36 @@ def _module_health(runtime_site, names):
     return modules
 
 
+def _backend_runtime_metadata(backend):
+    device = str(getattr(backend, "device", "unknown"))
+    metadata = {
+        "device": device,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+    }
+    torch_module = getattr(backend, "torch", None)
+    if device != "cuda" or torch_module is None:
+        return metadata
+    accelerator = {
+        "runtime": str(getattr(getattr(torch_module, "version", None), "cuda", None)),
+    }
+    try:
+        index = int(torch_module.cuda.current_device())
+        properties = torch_module.cuda.get_device_properties(index)
+        accelerator.update(
+            {
+                "device_index": index,
+                "name": str(properties.name),
+                "total_memory_bytes": int(properties.total_memory),
+                "capability": list(torch_module.cuda.get_device_capability(index)),
+            }
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        accelerator["inspection"] = "unavailable"
+    metadata["accelerator"] = accelerator
+    return metadata
+
+
 def worker_main(
     *,
     input_stream=None,
@@ -318,6 +349,7 @@ def worker_main(
                 "runtime_site": str(runtime_site),
                 "sample_rate": backend.sample_rate,
                 "modules": modules,
+                **_backend_runtime_metadata(backend),
             },
         )
         while True:

@@ -66,11 +66,29 @@ def _link_blind_audio(source, destination):
         shutil.copy2(source, destination)
 
 
-def create_listening_session_from_reports(report_paths, output_directory, *, seed=0):
+def create_listening_session_from_reports(
+    report_paths,
+    output_directory,
+    *,
+    seed=0,
+    sample_ids=None,
+):
     """Create blind trials from two or more generic per-model reports."""
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
     if len(resolved_paths) < 2:
         raise ModelListeningError("At least two model reports are required")
+    selected_ids = None
+    if sample_ids is not None:
+        selected_ids = tuple(sample_ids)
+        if not selected_ids or any(
+            not isinstance(value, str) or not value.strip() for value in selected_ids
+        ):
+            raise ModelListeningError(
+                "Selected model-report sample IDs must be non-empty text"
+            )
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ModelListeningError("Selected model-report sample IDs are duplicated")
+        selected_ids = frozenset(selected_ids)
     model_metadata = {}
     audio_by_model = defaultdict(dict)
     corpus_items = {}
@@ -91,6 +109,8 @@ def create_listening_session_from_reports(report_paths, output_directory, *, see
         if report_name not in metadata["reports"]:
             metadata["reports"].append(report_name)
         for sample in samples:
+            if selected_ids is not None and sample["id"] not in selected_ids:
+                continue
             text = sample["text"]
             normalized = _normalized_text(text)
             audio = sample["resolved_audio"]
@@ -120,6 +140,22 @@ def create_listening_session_from_reports(report_paths, output_directory, *, see
                     f"Model reports disagree on shared sample {identity!r}"
                 )
             corpus_items.setdefault(queue_id, item)
+    if selected_ids is not None:
+        shared_ids = {
+            item["queue_id"].removeprefix("corpus:").rsplit(":", 1)[0]
+            for item in corpus_items.values()
+            if sum(
+                item["queue_id"] in audio_by_model[model_id]
+                for model_id in model_metadata
+            )
+            >= 2
+        }
+        missing = sorted(selected_ids - shared_ids)
+        if missing:
+            raise ModelListeningError(
+                "Selected samples do not have complete audio from two models: "
+                + ", ".join(missing)
+            )
     sources, source_sha256 = _source_digest(resolved_paths)
     return _write_listening_session(
         output_directory,
@@ -700,6 +736,11 @@ def _load_model_report(path):
             raise ModelListeningError(
                 f"Model report sample {index} text_sha256 does not match exact text"
             )
+        outcome = sample.get("outcome", "complete")
+        if outcome not in {"complete", "limited", "cancelled", "error"}:
+            raise ModelListeningError(f"Model report sample {index} outcome is invalid")
+        if outcome != "complete":
+            continue
         if not _is_sha256(audio_hash):
             raise ModelListeningError(
                 f"Model report sample {index} audio_sha256 is invalid"
@@ -877,6 +918,12 @@ def create_parser():
     start_reports.add_argument("--reports", type=Path, nargs="+", required=True)
     start_reports.add_argument("--output", type=Path, default=default_session_directory)
     start_reports.add_argument("--seed", type=int, default=0)
+    start_reports.add_argument(
+        "--sample-id",
+        action="append",
+        dest="sample_ids",
+        help="Include only this exact shared complete sample ID; repeat as needed",
+    )
     for command in ("status", "next", "report", "ui"):
         child = subparsers.add_parser(command)
         child.add_argument(
@@ -906,7 +953,10 @@ def main(argv=None):
             return cli_success(f"Created blind listening session: {path}")
         if options.command == "start-reports":
             path = create_listening_session_from_reports(
-                options.reports, options.output, seed=options.seed
+                options.reports,
+                options.output,
+                seed=options.seed,
+                sample_ids=options.sample_ids,
             )
             return cli_success(f"Created blind listening session: {path}")
         if options.command == "ui":

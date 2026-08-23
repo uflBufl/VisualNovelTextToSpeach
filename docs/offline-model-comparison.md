@@ -35,8 +35,10 @@ uv sync --project backends/moss-tts-delay
 Upstream currently selects CUDA when available and otherwise CPU. It does not
 advertise an MPS path. The 8B model is therefore intended for a sufficiently
 large CUDA host; a CPU-only Apple Silicon run is a compatibility path, not a
-practical throughput claim. Model weights are downloaded only when the backend
-is first constructed.
+practical throughput claim. Keep `require_cuda: true` on the Delay variant: the
+isolated backend then rejects a non-CUDA host before downloading or loading the
+8B weights. Model weights are downloaded only when the backend is first
+constructed on a qualifying host.
 
 XTTS is installed with the main project. XTTS v2 is distributed under the
 Coqui Public Model License (CPML). Read and accept those terms yourself before
@@ -54,6 +56,7 @@ uv run --no-sync vntts-benchmark-models \
   --queue /absolute/workspace/queue.jsonl \
   --state /absolute/workspace/generated-audio/generation-state.json \
   --manifest /absolute/workspace/inputs/voice/manifest.json \
+  --narrator-character Centurion \
   --models /absolute/private/model-variants.json \
   --output /absolute/new/model-comparison
 ```
@@ -61,8 +64,12 @@ uv run --no-sync vntts-benchmark-models \
 The state-backed corpus includes every unresolved item previously attempted by
 MOSS, then round-robin samples accepted/generated through Pocket after a MOSS
 attempt and technically valid MOSS controls. It binds exact queue and state
-SHA-256 values, line/text identities, the selected synthesis voice, the prior
-provider/status/failure kind and a canonical digest of each source state item.
+SHA-256 values, line/text identities, the current exact manifest-resolved
+synthesis voice, the prior synthesis voice/provider/status/failure kind and a
+canonical digest of each source state item. Narration requires an explicit
+manifest character such as `Centurion`; an unresolved source-reference binding
+or model voice fails before either backend is constructed rather than silently
+falling back to a default speaker.
 Use `--pocket-samples` and `--control-samples` to change only the two bounded
 control groups; failures are never sampled away.
 
@@ -74,7 +81,10 @@ partial report nor a partial WAV directory.
 Each report records exact WAV SHA-256, sample rate/count, duration, peak,
 speech-silence measurements, first-PCM and total render timing, real-time
 factor, request/result seed policy, generation profile, backend/model identity
-and Python or isolated-worker module provenance.
+and Python or isolated-worker module provenance. Isolated workers also report
+their platform, machine, selected device and, on inspectable CUDA runtimes, the
+CUDA runtime, device name, total memory and compute capability. Compare timing
+or resource claims only when this hardware provenance is compatible.
 
 ## Decision gate
 
@@ -105,3 +115,57 @@ state-backed builder selected 46 current lines: 22 unresolved MOSS failures,
 12 MOSS-to-Pocket recoveries and 12 MOSS controls. Delay 8B weights were not
 downloaded or run on the CPU-only PyTorch runtime, so the three-way corpus gate
 remains open.
+
+## Full local 46-line comparison
+
+The first full local attempt on 2026-08-23 is retained as diagnostic evidence
+at `authoring/model-comparisons/offline-local-4b-vs-xtts-20260823-v1`, but it is
+not a model verdict. It exposed two comparison-boundary defects: Narrator was
+not explicitly bound to Centurion for MOSS, while unresolved synthetic state
+voice labels could silently reach XTTS's default voice. Its audio and outcome
+counts must not be compared as if they represented the same speakers.
+
+The corrected builder resolves every selected queue ID through the exact
+captured voice manifest, its source-reference queue bindings and explicit
+`--narrator-character Centurion`. It records both the current comparison voice
+and the previous state voice, rejects any unresolved identity before model
+construction, and publishes the canonical corpus atomically with the reports.
+The intermediate `offline-local-4b-vs-xtts-20260823-v2` run established that
+identity boundary, but did not retain immutable copies of the reference WAVs.
+Keep it as diagnostic evidence rather than the final local verdict.
+
+The authoritative local result is
+`authoring/model-comparisons/offline-local-4b-vs-xtts-20260823-v3`. Its corpus
+SHA-256 is
+`09c4d1dd58c9123e25b49811f1edafd691c4ab8650d9a678a3f07c870021c192`,
+and its 12 exact voice-control files have canonical inventory SHA-256
+`a41a40b7457e9d5c8e50ef0f646991c3107e4c43380a578ebe3f707705e85192`.
+The copied bytes were rehashed after publication, both model reports bind the
+same control digest, and both contain the same ordered 46 IDs, character
+identities and synthesis voices.
+
+| Backend | Complete | Current authoring silence gate | Render wall sum | Mean RTF |
+|---|---:|---:|---:|---:|
+| MOSS Local 4B MLX int8 | 44/46 | 43/46 | 201 s | 0.867 |
+| XTTS v2, Apple CPU | 46/46 | 46/46 | 233 s | 0.930 |
+
+MOSS reached its typed audio limit on the same two prior MOSS-to-Pocket recovery
+lines. Its only additional silence-gate failure was `Soon.`, with 2.16 seconds
+of internal silence and a 0.7297 silence ratio. XTTS completed both limited
+lines and all 46 outputs passed the current structural silence gate in v3.
+XTTS does not accept the shared seed, so its improvement from 44/46 in v2 to
+46/46 in v3 is stochastic evidence, not proof of deterministic reliability.
+Exact words, speaker identity, pauses, repetition and contamination still
+require blind listening. The Apple CPU timing is not a CUDA performance claim.
+
+A preliminary checksum-bound Local4B/XTTS session from the authoritative v3
+reports is ready at
+`authoring/model-listening/offline-local-4b-vs-xtts-finalists-20260823-v2`.
+It contains ten shared COMPLETE trials chosen from asymmetric silence failures,
+large duration differences and all three corpus groups. Non-complete outputs
+remain automatic technical losses and are not fabricated as blind pairs. The
+public session contains no model names; its private key is mode 0600. Keep this
+session at `0/10` while Delay 8B remains absent, then either use it as the local
+pairwise component or publish a new three-model finalist task from the exact
+CUDA report. The earlier `v1` session is bound to the pre-snapshot v2 reports
+and must not replace this session.

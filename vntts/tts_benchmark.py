@@ -72,6 +72,7 @@ def create_backend(
     moss_streaming_interval=None,
     startup_cancellation=None,
     terms_accepted=False,
+    require_cuda=False,
 ):
     cache_root = Path(cache_root)
     common = {
@@ -120,6 +121,7 @@ def create_backend(
             registry,
             **({"model_name": str(model_name)} if model_name is not None else {}),
             generation_profile="expressive",
+            require_cuda=require_cuda,
             **(
                 {"startup_cancellation": startup_cancellation}
                 if startup_cancellation is not None

@@ -34,6 +34,7 @@ from vntts.voices import CharacterVoiceRegistry
 
 class FakeWorkerBackend:
     sample_rate = 24_000
+    device = "cpu"
 
     def __init__(self, registry, *, narrator_reference=None):
         self.registry = registry
@@ -151,6 +152,9 @@ class SpeechWorkerTest(unittest.TestCase):
             [document["type"] for document, _payload in frames],
             ["health", "primed", "chunk", "result", "live-mode"],
         )
+        self.assertEqual(frames[0][0]["device"], "cpu")
+        self.assertTrue(frames[0][0]["platform"])
+        self.assertTrue(frames[0][0]["machine"])
         chunk_document, chunk_payload = frames[2]
         self.assertEqual(chunk_document["shape"], [2, 1])
         np.testing.assert_allclose(

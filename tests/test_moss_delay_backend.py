@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
+from vntts.speech_backend import TTSConfigurationError
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -169,6 +170,22 @@ class MossDelayBackendTest(unittest.TestCase):
         )
         self.assertEqual(model.device, "cpu")
         self.assertTrue(model.evaluated)
+
+    def test_required_cuda_rejects_before_model_loading(self):
+        processor_loader = FakeAutoLoader(FakeProcessor())
+        model_loader = FakeAutoLoader(LoadableFakeModel())
+
+        with self.assertRaisesRegex(TTSConfigurationError, "requires CUDA"):
+            MossTTSDelayVoiceRouterBackend(
+                CharacterVoiceRegistry(),
+                torch_module=FakeTorch(cuda=False),
+                auto_processor=processor_loader,
+                auto_model=model_loader,
+                require_cuda=True,
+            )
+
+        self.assertEqual(processor_loader.calls, [])
+        self.assertEqual(model_loader.calls, [])
 
     def test_renders_one_reference_with_distinct_backend_and_seed(self):
         with TemporaryDirectory() as directory:

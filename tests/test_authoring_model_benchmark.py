@@ -27,7 +27,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class FakeRenderBackend:
@@ -225,6 +225,103 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(corpus["samples"][2]["character"], "Bound Rhiannon reference")
         self.assertRegex(corpus["source_state_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_failure_corpus_resolves_narrator_and_source_bindings_from_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = root / "queue.jsonl"
+            items = []
+            for index, character in enumerate(("Narrator", "Aderyn"), start=1):
+                text = f"Bound comparison line {index}."
+                text_hash = hashlib.sha256(text.encode()).hexdigest()
+                items.append(
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": f"line:{index}:{text_hash[:16]}",
+                        "line_id": f"line:{index}",
+                        "text_sha256": text_hash,
+                        "text": text,
+                        "speaker": character,
+                        "voice_character": character,
+                        "action": "generate",
+                        "state": "pending",
+                    }
+                )
+            write_voice_generation_queue(
+                queue,
+                {"game": "Any Game", "language": "en"},
+                items,
+            )
+            state_document = {
+                "items": {
+                    items[0]["queue_id"]: {
+                        "status": "failed",
+                        "provider": "moss-tts",
+                        "attempts_by_provider": {"moss-tts": 3},
+                        "source_reference_binding": {
+                            "source_voice_character": "Narrator",
+                            "synthesis_voice_character": "Stale selected narrator",
+                        },
+                    },
+                    items[1]["queue_id"]: {
+                        "status": "failed",
+                        "provider": "moss-tts",
+                        "attempts_by_provider": {"moss-tts": 3},
+                        "source_reference_binding": {
+                            "source_voice_character": "Aderyn",
+                            "synthesis_voice_character": "Stale selected Aderyn",
+                        },
+                    },
+                }
+            }
+            state_path = root / "state.json"
+            state_path.write_text(json.dumps(state_document), encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {"character": "Centurion", "speaker": "centurion"},
+                            {
+                                "character": "Bound Aderyn",
+                                "speaker": "aderyn",
+                            },
+                        ],
+                        "vntts.authoring.source_reference_bindings": {
+                            "selected_variants": [
+                                {
+                                    "voice_character": "Bound Aderyn",
+                                    "queue_ids": [items[1]["queue_id"]],
+                                }
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            corpus = build_failure_comparison_corpus(
+                queue,
+                state_path,
+                root / "corpus.json",
+                pocket_sample_size=0,
+                control_sample_size=0,
+                manifest_path=manifest,
+                narrator_character="Centurion",
+                state_loader=lambda _state, _queue: state_document,
+            )
+
+        self.assertEqual(
+            [sample["character"] for sample in corpus["samples"]],
+            ["Centurion", "Bound Aderyn"],
+        )
+        self.assertEqual(
+            [sample["prior_synthesis_voice"] for sample in corpus["samples"]],
+            ["Stale selected narrator", "Stale selected Aderyn"],
+        )
+        self.assertEqual(corpus["narrator_character"], "Centurion")
+        self.assertRegex(corpus["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$")
+
     def test_renderer_uses_typed_bypass_request_and_never_plays(self):
         backend = FakeRenderBackend()
         variant = ModelVariant("fake/one", "fake", generation_profile="expressive")
@@ -347,6 +444,17 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 captured.append((name, options))
                 return FakeRenderBackend(backend_name=name)
 
+            reference = root / "rhiannon.wav"
+            reference.write_bytes(b"exact-reference")
+            registry = CharacterVoiceRegistry(
+                [
+                    CharacterVoice(
+                        "Rhiannon",
+                        "rhiannon",
+                        references=(reference,),
+                    )
+                ]
+            )
             aggregate = benchmark_model_variants(
                 corpus,
                 (
@@ -358,7 +466,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                     ),
                     ModelVariant("moss", "fake"),
                 ),
-                CharacterVoiceRegistry(),
+                registry,
                 root / "accepted",
                 seed=23,
                 backend_factory=factory,
@@ -370,6 +478,141 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(xtts_report["samples"][0]["requested_shared_seed"], 23)
         self.assertIsNone(xtts_report["samples"][0]["seed"])
         self.assertEqual(xtts_report["samples"][0]["seed_policy"], "unsupported")
+
+    def test_voice_controls_are_snapshotted_once_for_every_real_model(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "A shared exact line."
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "one",
+                                "line_id": "line-one",
+                                "character": "Rhiannon",
+                                "text": text,
+                                "text_sha256": hashlib.sha256(
+                                    text.encode()
+                                ).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reference = root / "rhiannon.wav"
+            reference_bytes = b"immutable-reference-bytes"
+            reference.write_bytes(reference_bytes)
+            registry = CharacterVoiceRegistry(
+                [
+                    CharacterVoice(
+                        "Rhiannon",
+                        "rhiannon",
+                        references=(reference,),
+                    )
+                ]
+            )
+            received_references = []
+
+            def factory(name, received_registry, cache, **options):
+                del cache, options
+                captured_reference = received_registry.resolve("Rhiannon").references[0]
+                received_references.append(
+                    (captured_reference, captured_reference.read_bytes())
+                )
+                return FakeRenderBackend(backend_name=name)
+
+            output = root / "comparison"
+            aggregate = benchmark_model_variants(
+                corpus,
+                (
+                    ModelVariant("moss", "moss-tts"),
+                    ModelVariant(
+                        "xtts",
+                        "coqui-xtts",
+                        terms_accepted=True,
+                    ),
+                ),
+                registry,
+                output,
+                backend_factory=factory,
+            )
+
+            snapshot = output / "voice-controls/voice-001/reference-001.wav"
+            reports = [
+                json.loads(Path(path).read_text()) for path in aggregate["reports"]
+            ]
+            expected_reference_sha = hashlib.sha256(reference_bytes).hexdigest()
+            self.assertEqual(snapshot.read_bytes(), reference_bytes)
+            self.assertEqual(received_references[0][0], received_references[1][0])
+            self.assertEqual(
+                [payload for _, payload in received_references],
+                [reference_bytes, reference_bytes],
+            )
+            self.assertEqual(
+                aggregate["voice_controls"],
+                [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "rhiannon",
+                        "reference_index": 1,
+                        "source": str(reference.resolve()),
+                        "audio": str(snapshot.resolve()),
+                        "sha256": expected_reference_sha,
+                        "size": len(reference_bytes),
+                    }
+                ],
+            )
+            self.assertTrue(aggregate["voice_controls_sha256"])
+            self.assertEqual(
+                {report["voice_controls_sha256"] for report in reports},
+                {aggregate["voice_controls_sha256"]},
+            )
+
+    def test_voice_cloning_model_rejects_unresolved_corpus_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "Exact."
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "one",
+                                "line_id": "line-one",
+                                "character": "Missing voice",
+                                "text": text,
+                                "text_sha256": hashlib.sha256(
+                                    text.encode()
+                                ).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ModelBenchmarkError, "unresolved"):
+                benchmark_model_variants(
+                    corpus,
+                    (
+                        ModelVariant(
+                            "xtts",
+                            "coqui-xtts",
+                            terms_accepted=True,
+                        ),
+                        ModelVariant("control", "fake"),
+                    ),
+                    CharacterVoiceRegistry(),
+                    root / "output",
+                )
 
     def test_model_variant_terms_flag_must_be_boolean(self):
         with TemporaryDirectory() as directory:
@@ -388,6 +631,39 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ModelBenchmarkError, "terms_accepted"):
+                load_model_variants(path)
+
+    def test_delay_variant_cuda_requirement_is_explicit_and_scoped(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "model_id": "delay",
+                            "backend": "moss-tts-delay",
+                            "require_cuda": True,
+                        },
+                        {"model_id": "control", "backend": "fake"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(load_model_variants(path)[0].require_cuda)
+
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document[0]["require_cuda"] = "yes"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ModelBenchmarkError, "require_cuda"):
+                load_model_variants(path)
+
+            document[0] = {
+                "model_id": "local",
+                "backend": "moss-tts",
+                "require_cuda": True,
+            }
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ModelBenchmarkError, "only"):
                 load_model_variants(path)
 
     def test_limited_render_is_reported_without_publishing_partial_wav(self):
@@ -439,6 +715,55 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertTrue(
             all(backend.requests[0].text == " Same line. " for backend in backends)
         )
+
+    def test_multi_model_benchmark_publishes_its_validated_corpus(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "source-corpus.json"
+            text = "Exact shared line."
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "one",
+                                "line_id": "line-one",
+                                "character": "Voice",
+                                "text": text,
+                                "text_sha256": hashlib.sha256(
+                                    text.encode()
+                                ).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def factory(name, registry, cache, **options):
+                del registry, cache, options
+                return FakeRenderBackend(backend_name=name)
+
+            output = root / "output"
+            aggregate = benchmark_model_variants(
+                corpus,
+                (ModelVariant("first", "first"), ModelVariant("second", "second")),
+                CharacterVoiceRegistry(),
+                output,
+                backend_factory=factory,
+            )
+            published_corpus = (output / "benchmark-corpus.json").resolve()
+
+            self.assertEqual(Path(aggregate["corpus"]), published_corpus)
+            self.assertEqual(
+                aggregate["corpus_sha256"],
+                hashlib.sha256(published_corpus.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                load_benchmark_corpus(published_corpus)["samples"][0]["text"], text
+            )
 
     def test_late_backend_start_failure_publishes_no_partial_bakeoff(self):
         with TemporaryDirectory() as directory:
