@@ -10,54 +10,24 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Publish a new immutable selected reference/control binding for all 29
-      reference-comparison failures from the completed version-2 audit at
-      `authoring/review-bundles/current-character-story-reference-audit-v2`
-      (audit ID
-      `52fc3aa6e545109b79bbce7f1842ae5f1428c2f467521f362b3b09832f53223e`).
-      The original version-1 audit
-      `7e18a82836e6e79a6f4a50b1e11d04f2fd87cfbae00ccabdf480f3fd3b1b3d8a`
-      is rejected before operator use because its private candidate mapping was
-      not part of the public canonical identity. Version 2 covers the same four
-      exact control
-      groups: three blinded Centurion candidates for 23 Narrator cases, three
-      blinded Rhiannon candidates for four cases, and one exact candidate each
-      for Aderyn and Poacher. Read-only reconciliation on 2026-08-23 is terminal
-      `4/4` with decision-set ID
-      `fc519819f6f7a30fc0474199ac12d9192a9a9e0fd9b855b1f1c70888b5424893`.
-      The exact private mapping selects Rhiannon `references/base/01/01.wav`,
-      the sole Aderyn anchor, the sole Poacher anchor and Centurion
-      `references/narrator/01.ogg`; their hashes are recorded in
-      `docs/current-character-story-completion.md`. Validate that every selected
-      source still matches its audit hash, publish a no-replace binding tied to
-      the audit and decision-set identities, and create a new config-addressed
-      workspace before regeneration. Do not mutate the current manifest,
-      generation state or completed audit decisions.
-      Implement this as a separate checksum-bound overlay rather than rewriting
-      the selected voice manifest: changing that manifest would invalidate the
-      full-manifest synthesis provenance of every already reviewed WAV. The
-      overlay must contain the exact terminal audit/decision identities, one
-      copied selected reference per group, exact queue-to-synthetic-voice
-      overrides and an atomic no-replace binding identity. Reject incomplete or
-      `neither_acceptable` decisions, changed audit/private-key/decision bytes,
-      changed candidate hashes, unsafe paths, duplicate queue ownership and a
-      binding whose queue/manifest authority differs from its audited source.
-      Add a config-addressed successor operation that copies the latest trusted
-      workspace state and WAVs byte-for-byte, verifies every one of the 29 base
-      failures against the audit authority, snapshots the binding, and changes
-      no other item. The child process must independently load and revalidate
-      the binding, add only its exact synthetic voices and overrides, and bind
-      the binding document plus selected reference bytes into synthesis
-      provenance. Final-pack validation must accept the overlay only for its
-      exact queue IDs while continuing to validate the unchanged base manifest
-      for every item. Completion gates: focused tamper/race/idempotency tests,
-      full suite, Ruff/format/lock/diff, clean committed HEAD, real no-replace
-      publication, byte-identical source workspace census and exact 29-ID
-      preflight before any model process starts.
-- [ ] Generate newly unblocked reference lines under immutable controls as
-      references become available, then apply the same risk-based cohort review
-      and exact outcome merge. The previous ten ready lines are complete: one
-      produced a pending-review WAV and nine now have typed repair evidence.
+- [ ] Resolve the terminal outcomes from the selected-reference successor
+      `resume-395a5e5eec0327a3a793b66d-c34e5d54d994e53a` without blind retries.
+      The immutable binding and one bounded exact-29 run are complete: two WAVs
+      are pending review and 27 items remain typed failures. Add repeated
+      `--queue-id` selection to `cohort-review-plan`, publish a checksum-bound
+      two-item plan, and ask the operator to assess only those two new WAVs.
+      Keep the remaining failure actions disjoint: 14 exact sentence-boundary
+      segmentations (11 Narrator, three Rhiannon), eight exhausted-primary
+      offline fallbacks (seven Narrator, one Rhiannon), three Narrator silence
+      failures requiring a new evidence hypothesis, one Poacher inline-pause
+      comparison, and one final bounded Aderyn seed retry. The Aderyn retry may
+      run once under the same overlay because the planner proves only two
+      completed primary attempts; after that it must become a terminal typed
+      action. Do not batch fallback, segmentation or silence-comparison items
+      until their successor constructors preserve and independently revalidate
+      this overlay. Do not approve either new WAV automatically. Completion
+      gates: exact two-ID plan, one bounded Aderyn result, unchanged unrelated
+      state/WAV/control inventories, and an updated read-only repair census.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real

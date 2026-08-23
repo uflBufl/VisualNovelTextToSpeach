@@ -637,6 +637,13 @@ def create_parser():
         type=Path,
         help="Publish the immutable plan without replacing an existing file",
     )
+    cohort_review.add_argument(
+        "--queue-id",
+        action="append",
+        default=None,
+        dest="queue_ids",
+        help="Restrict the plan to one exact pending queue ID; repeat as needed",
+    )
     cohort_bundle = subparsers.add_parser(
         "cohort-review-bundle",
         help="Plan one checksum-bound review inventory across workspaces",
@@ -1345,6 +1352,7 @@ def main(argv=None):
             plan = build_cohort_review_plan(
                 arguments.workspace,
                 clean_samples_per_bucket=arguments.clean_samples_per_bucket,
+                queue_ids=arguments.queue_ids,
             )
             if arguments.output is not None:
                 write_cohort_review_plan(plan, arguments.output)

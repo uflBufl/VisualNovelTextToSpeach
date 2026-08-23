@@ -248,6 +248,29 @@ This dry-run lived under `/private/tmp`; it did not publish app-data or start a
 model. Real publication and generation remain gated on a clean committed tree,
 idempotent no-replace publication and a repeated source inventory check.
 
+The real no-replace publication subsequently completed from clean commit
+`99ea6d8`. The binding lives at
+`authoring/reference-bindings/current-character-story-reference-binding-v1`;
+an exact repeat returned `created=false`. The real config-addressed successor is
+`resume-395a5e5eec0327a3a793b66d-c34e5d54d994e53a`, and its repeat was also
+idempotent. Before generation, its full generated-audio tree matched the base
+byte-for-byte. The source audit remained 11 files with aggregate inventory
+`8b8e47fa...`; the base remained 406 files with aggregate inventory
+`112d1a5a...`; the five-file binding inventory is `6f236d5e...`. Exact selected
+preflight again reported 29/29 ready, zero missing voices and no blockers.
+
+One bounded exact-29 run then used `retries=0` and base seed zero. It produced
+two pending-review WAVs for `reverse1999:314604:23:fee7b4775afa6761` and
+`reverse1999:314607:72:61924bf530710fa3`; 27 selected items remained failed.
+No review decision was made. All 392 unselected state records and all 386 base
+WAVs remained byte-identical, approvals and approved-manifest entries remained
+179, and the process left no active attempt, lease, partial WAV or source-tree
+change. The resulting selected failures are 22 typed missed-EOS limits and five
+typed speech-silence failures. The read-only repair planner partitions those 27
+as 14 sentence segmentations, eight offline fallbacks, three new reference/
+silence investigations, one inline-pause comparison and one final bounded seed
+retry; these are separate evidence paths, not authorization for a bulk retry.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

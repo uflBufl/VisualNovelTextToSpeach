@@ -157,17 +157,30 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
     def test_cli_prints_the_same_public_plan(self):
         with TemporaryDirectory() as directory:
-            workspace, _state_path, _queue_id = self.create_pending_workspace(
+            workspace, _state_path, queue_id = self.create_pending_workspace(
                 Path(directory)
             )
-            expected = build_cohort_review_plan(workspace).document
+            expected = build_cohort_review_plan(
+                workspace, queue_ids=[queue_id]
+            ).document
             stdout = StringIO()
 
             with redirect_stdout(stdout):
-                exit_code = authoring_main(["cohort-review-plan", str(workspace)])
+                exit_code = authoring_main(
+                    [
+                        "cohort-review-plan",
+                        str(workspace),
+                        "--queue-id",
+                        queue_id,
+                    ]
+                )
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue()), expected)
+        self.assertEqual(
+            expected["policy"]["selected_queue_ids"],
+            [queue_id],
+        )
 
     def test_accept_requires_every_sample_and_binds_every_target_wav(self):
         with TemporaryDirectory() as directory:

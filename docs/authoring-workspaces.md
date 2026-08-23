@@ -645,6 +645,19 @@ sampled. Clean items are sampled deterministically from short (up to 6 words),
 medium (7-15) and long (16 or more) buckets; increasing
 `--clean-samples-per-bucket` produces a new plan identity.
 
+Use repeated `--queue-id QUEUE_ID` arguments when a bounded generation run
+produced a small exact subset inside a workspace that also contains older
+pending outcomes. The selection is part of the plan identity, every selected ID
+must currently be pending review, and an empty or missing ID fails rather than
+silently expanding to all pending items. For example:
+
+```sh
+uv run vntts-pregenerate cohort-review-plan WORKSPACE \
+  --queue-id QUEUE_ID_1 \
+  --queue-id QUEUE_ID_2 \
+  --output EXACT-REVIEW.json
+```
+
 The plan contains every covered queue ID, line/text identity, WAV SHA-256,
 technical flags and sample membership. A state or seed change creates a new
 plan/cohort identity. Historical pending items without complete synthesis
