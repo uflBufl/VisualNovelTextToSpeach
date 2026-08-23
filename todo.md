@@ -177,6 +177,24 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P0 - Establish a MOSS quality and latency gate
 
+- [ ] Run the installed checksum-bound offline bake-off on a CUDA host with
+      enough memory for MOSS Delay 8B weights. Use the current exact 46-line
+      corpus (22 unresolved MOSS failures, 12 MOSS-to-Pocket recoveries and 12
+      MOSS controls), MOSS Local 4B MLX int8 as baseline, MOSS Delay 8B and
+      XTTS v2 with explicit CPML acceptance. Retain all three transactional
+      reports and compare per-group complete/limited/cancelled/error rates,
+      exact WAV hashes, timing/RTF, duration, silence/quality and runtime/model
+      provenance. Do not treat the verified one-line Local/XTTS wiring smoke as
+      the model verdict, and do not attempt the 8B corpus on the current
+      CPU-only PyTorch path merely to claim completion.
+- [ ] Blind-review only a small stratified finalist sample after the automatic
+      comparison passes. Compare speaker identity, exact words, pronunciation,
+      pacing, pauses, repetitions and contamination. Do not change the
+      production authoring default from MOSS Local 4B or regenerate approved
+      WAVs until one candidate has a lower technical failure rate, acceptable
+      resource use and non-inferior human quality on the exact corpus. Offline
+      and live winners may differ; Pocket remains the bounded live/final
+      fallback unless a separate hardware gate replaces it.
 - [ ] Run `vntts-benchmark-tts` on the completed exact Rhiannon replay corpus,
       add generated/original game-audio route timing, and retain the report as
       acceptance evidence. The reported-line regression already covers fresh,

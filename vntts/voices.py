@@ -234,11 +234,13 @@ class CharacterVoiceRouter:
         *,
         narrator_speaker=None,
         narrator_voice=None,
+        force_reference_audio=False,
     ):
         self.tts = tts
         self.registry = registry or CharacterVoiceRegistry()
         self.narrator_speaker = narrator_speaker
         self.narrator_voice = narrator_voice
+        self.force_reference_audio = bool(force_reference_audio)
 
     def speak(self, character, text, *, playback_guard=None):
         arguments = self._speech_arguments(character)
@@ -306,7 +308,7 @@ class CharacterVoiceRouter:
             return {"speaker": self.narrator_speaker}
 
         speaker_wav = None
-        if not self.tts.has_speaker(voice.speaker):
+        if self.force_reference_audio or not self.tts.has_speaker(voice.speaker):
             if not voice.references:
                 raise VoiceManifestError(
                     f"Voice {voice.character!r} is not cached and has no references"
@@ -323,7 +325,7 @@ class CharacterVoiceRouter:
                 speaker_wav = speaker_wav[0]
 
         return {
-            "speaker": voice.speaker,
+            "speaker": None if self.force_reference_audio else voice.speaker,
             "speaker_wav": speaker_wav,
         }
 

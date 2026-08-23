@@ -37,6 +37,7 @@ class TTSEngineTest(unittest.TestCase):
         volume=1.0,
         clock=None,
         audio_cache_size=32,
+        persisted_voice_cache=True,
         audio_output=_default_audio_output,
     ):
         tts = Mock()
@@ -70,6 +71,7 @@ class TTSEngineTest(unittest.TestCase):
             torch_module=torch_module,
             audio_output=audio_output,
             audio_cache_size=audio_cache_size,
+            persisted_voice_cache=persisted_voice_cache,
             **options,
         )
         return engine, tts, audio_output
@@ -550,6 +552,22 @@ class TTSEngineTest(unittest.TestCase):
 
             self.assertTrue(engine.has_speaker("Saved-clone"))
             self.assertIn("Saved-clone", engine.cached_speakers)
+
+    def test_benchmark_can_ignore_stale_persisted_voice_index(self):
+        engine, tts, _ = self.create_engine(
+            is_multi_speaker=True,
+            speakers=["Preset"],
+            persisted_voice_cache=False,
+        )
+        with TemporaryDirectory() as directory:
+            tts.synthesizer.voice_dir = directory
+            tts.synthesizer.tts_model.get_voices.return_value = {
+                "Stale-clone": Path(directory) / "missing.pth"
+            }
+
+            self.assertFalse(engine.has_speaker("Stale-clone"))
+
+        tts.synthesizer.tts_model.get_voices.assert_not_called()
 
     def test_persisted_voice_is_reused_without_reference_audio(self):
         engine, tts, _ = self.create_engine(

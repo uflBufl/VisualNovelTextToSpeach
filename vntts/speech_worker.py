@@ -21,6 +21,7 @@ from time import monotonic
 
 import numpy as np
 
+from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -60,16 +61,19 @@ _REQUIRED_MODULES = {
     "pocket-tts": ("numpy", "torch"),
     "chatterbox-nano": ("numpy", "torch", "transformers"),
     "moss-tts": ("numpy", "mlx.core"),
+    "moss-tts-delay": ("numpy", "torch", "transformers"),
 }
 _BACKEND_CLASSES = {
     "pocket-tts": PocketTTSVoiceRouterBackend,
     "chatterbox-nano": ChatterboxNanoVoiceRouterBackend,
     "moss-tts": MossTTSVoiceRouterBackend,
+    "moss-tts-delay": MossTTSDelayVoiceRouterBackend,
 }
 _CAPABILITIES = {
     "pocket-tts": PocketTTSVoiceRouterBackend.capabilities,
     "chatterbox-nano": ChatterboxNanoVoiceRouterBackend.capabilities,
     "moss-tts": MossTTSVoiceRouterBackend.capabilities,
+    "moss-tts-delay": MossTTSDelayVoiceRouterBackend.capabilities,
 }
 
 
@@ -134,11 +138,13 @@ def _runtime_paths(backend, runtime_directory=None):
         "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
         "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
         "moss-tts": "VNTTS_MOSS_RUNTIME",
+        "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
     }[backend]
     folder = {
         "pocket-tts": "pocket-tts",
         "chatterbox-nano": "chatterbox-nano",
         "moss-tts": "moss-tts",
+        "moss-tts-delay": "moss-tts-delay",
     }[backend]
     root = (
         Path(
@@ -441,10 +447,15 @@ class IsolatedSpeechBackend:
             "pocket-tts": "Pocket TTS default",
             "chatterbox-nano": "Chatterbox default",
             "moss-tts": "MOSS reference voice",
+            "moss-tts-delay": "MOSS Delay reference voice",
         }[backend]
         self.capabilities = _CAPABILITIES[backend]
         self.generation_profile = generation_profile or (
-            "stable" if backend == "moss-tts" else "default"
+            "expressive"
+            if backend == "moss-tts-delay"
+            else "stable"
+            if backend == "moss-tts"
+            else "default"
         )
         self.model_name = str(worker_options.get("model_name") or backend)
         self.audio_output = audio_output
@@ -584,7 +595,7 @@ class IsolatedSpeechBackend:
         values = {}
         for key, value in self.worker_options.items():
             values[key] = str(value) if isinstance(value, Path) else value
-        if self.name == "moss-tts":
+        if self.name in {"moss-tts", "moss-tts-delay"}:
             values["generation_profile"] = self.generation_profile
         values["narrator_reference"] = (
             str(self.narrator_reference)
@@ -1015,9 +1026,14 @@ def create_moss_worker_backend(registry, **options):
     return IsolatedSpeechBackend("moss-tts", registry, **options)
 
 
+def create_moss_delay_worker_backend(registry, **options):
+    return IsolatedSpeechBackend("moss-tts-delay", registry, **options)
+
+
 for _factory in (
     create_pocket_worker_backend,
     create_chatterbox_worker_backend,
     create_moss_worker_backend,
+    create_moss_delay_worker_backend,
 ):
     _factory.supports_startup_cancellation = True

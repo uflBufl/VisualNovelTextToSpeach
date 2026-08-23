@@ -1,0 +1,21 @@
+[
+  {
+    "model_id": "moss-local-4b-v1.5-mlx-int8",
+    "backend": "moss-tts",
+    "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "generation_profile": "expressive"
+  },
+  {
+    "model_id": "moss-delay-8b-v1.5",
+    "backend": "moss-tts-delay",
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "generation_profile": "expressive"
+  },
+  {
+    "model_id": "coqui-xtts-v2",
+    "backend": "coqui-xtts",
+    "model": "tts_models/multilingual/multi-dataset/xtts_v2",
+    "generation_profile": "stable",
+    "terms_accepted": false
+  }
+]

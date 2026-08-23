@@ -330,6 +330,29 @@ class CharacterVoiceRouterTest(unittest.TestCase):
                 speaker_wav=[str(reference) for reference in references],
             )
 
+    def test_offline_comparison_forces_exact_references_without_named_cache(self):
+        with TemporaryDirectory() as temporary_directory:
+            reference = Path(temporary_directory) / "rhiannon.wav"
+            reference.touch()
+            tts = Mock()
+            tts.has_speaker.return_value = True
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Rhiannon", "stale-named-cache", reference)]
+            )
+
+            CharacterVoiceRouter(
+                tts,
+                registry,
+                force_reference_audio=True,
+            ).speak("Rhiannon", "Hello.")
+
+            tts.speak.assert_called_once_with(
+                "Hello.",
+                speaker=None,
+                speaker_wav=str(reference),
+            )
+            tts.has_speaker.assert_not_called()
+
     def test_warm_up_synthesizes_narrator_and_every_character_without_playback(self):
         with TemporaryDirectory() as temporary_directory:
             reference = Path(temporary_directory) / "marcus.wav"

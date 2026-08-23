@@ -406,6 +406,11 @@ compatibility loader for its int8 MOSS audio tokenizer until the equivalent
 quantized-weight handling is available upstream; it disables itself when
 native support is detected.
 
+For an offline, device-independent comparison of the current MOSS Local 4B
+baseline with MOSS Delay 8B and Coqui XTTS v2, including the separate runtime,
+license gate and exact failure-corpus command, see
+[`docs/offline-model-comparison.md`](docs/offline-model-comparison.md).
+
 Game-specific extraction lives in a separate repository. An extractor may
 produce a versioned, checksum-bound `vntts.game-pack` that contains three local,
 game-agnostic artifacts for VNTTS:

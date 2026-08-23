@@ -19,9 +19,12 @@ except ImportError:  # pragma: no cover - unavailable on Windows
     resource = None
 
 from vntts.cli import cli_error, cli_messages
+from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.speech_worker import (
     create_chatterbox_worker_backend,
+    create_moss_delay_worker_backend,
     create_moss_worker_backend,
     create_pocket_worker_backend,
 )
@@ -31,7 +34,11 @@ from vntts.synthesis import (
     SynthesisRequest,
 )
 from vntts.versioned_json import read_versioned_json
-from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    CharacterVoiceRouter,
+    find_default_voice_manifest,
+)
 
 default_output = get_local_data_directory() / "benchmarks" / "tts"
 default_text = "The tide is turning. We should return before the storm arrives."
@@ -64,6 +71,7 @@ def create_backend(
     moss_streaming_first_chunk_frames=None,
     moss_streaming_interval=None,
     startup_cancellation=None,
+    terms_accepted=False,
 ):
     cache_root = Path(cache_root)
     common = {
@@ -106,6 +114,39 @@ def create_backend(
             **streaming_options,
             prompt_cache_directory=cache_root / "prompt-codes",
             **common,
+        )
+    if name == "moss-tts-delay":
+        return create_moss_delay_worker_backend(
+            registry,
+            **({"model_name": str(model_name)} if model_name is not None else {}),
+            generation_profile="expressive",
+            **(
+                {"startup_cancellation": startup_cancellation}
+                if startup_cancellation is not None
+                else {}
+            ),
+            **(
+                {"narrator_reference": narrator_reference}
+                if narrator_reference is not None
+                else {}
+            ),
+        )
+    if name == "coqui-xtts":
+        if terms_accepted is not True:
+            raise ValueError(
+                "XTTS v2 requires explicit acceptance of the Coqui Public Model "
+                "License in the model-variant document"
+            )
+        os.environ["COQUI_TOS_AGREED"] = "1"
+        engine = TTSEngine(
+            model_name=str(
+                model_name or "tts_models/multilingual/multi-dataset/xtts_v2"
+            ),
+            language="en",
+            persisted_voice_cache=False,
+        )
+        return XTTSVoiceRouterBackend(
+            CharacterVoiceRouter(engine, registry, force_reference_audio=True)
         )
     raise ValueError(f"Unsupported benchmark backend: {name}")
 

@@ -126,6 +126,7 @@ class TTSEngine:
         clock=monotonic,
         audio_cache_size=32,
         playback_latency="high",
+        persisted_voice_cache=True,
     ):
         if tts_factory is None:
             from TTS.api import TTS
@@ -152,6 +153,7 @@ class TTSEngine:
         self.synthesis_options = dict(synthesis_options or {})
         self.set_volume(volume)
         self.cached_speakers = set()
+        self.persisted_voice_cache = bool(persisted_voice_cache)
         self.audio_cache_size = max(0, int(audio_cache_size))
         self.audio_cache = OrderedDict()
         # Coqui model inference and the audio device are independent resources.
@@ -516,6 +518,8 @@ class TTSEngine:
     def has_speaker(self, speaker):
         if speaker in (self.tts.speakers or []) or speaker in self.cached_speakers:
             return True
+        if not self.persisted_voice_cache:
+            return False
 
         synthesizer = getattr(self.tts, "synthesizer", None)
         model = getattr(synthesizer, "tts_model", None)

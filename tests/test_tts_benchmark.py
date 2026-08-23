@@ -24,6 +24,7 @@ from vntts.synthesis import (
 )
 from vntts.tts_benchmark import (
     benchmark_backend,
+    create_backend,
     load_tts_benchmark_corpus,
     main,
     write_report,
@@ -122,6 +123,42 @@ class FakeRenderingBackend(FakeBackend):
 
 
 class TTSBenchmarkTest(unittest.TestCase):
+    def test_xtts_backend_requires_explicit_cpml_acceptance(self):
+        registry = CharacterVoiceRegistry()
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "explicit acceptance"):
+                create_backend("coqui-xtts", registry, directory)
+
+            engine = object()
+            router = object()
+            wrapped = object()
+            with (
+                patch("vntts.tts_benchmark.TTSEngine", return_value=engine) as create,
+                patch(
+                    "vntts.tts_benchmark.CharacterVoiceRouter", return_value=router
+                ) as route,
+                patch(
+                    "vntts.tts_benchmark.XTTSVoiceRouterBackend",
+                    return_value=wrapped,
+                ) as wrap,
+            ):
+                backend = create_backend(
+                    "coqui-xtts",
+                    registry,
+                    directory,
+                    model_name="tts_models/multilingual/multi-dataset/xtts_v2",
+                    terms_accepted=True,
+                )
+
+        self.assertIs(backend, wrapped)
+        create.assert_called_once_with(
+            model_name="tts_models/multilingual/multi-dataset/xtts_v2",
+            language="en",
+            persisted_voice_cache=False,
+        )
+        route.assert_called_once_with(engine, registry, force_reference_audio=True)
+        wrap.assert_called_once_with(router)
+
     def test_cli_reports_missing_manifest_to_stderr(self):
         errors = StringIO()
         with (
