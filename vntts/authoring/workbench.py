@@ -515,6 +515,14 @@ def create_resume_workspace(
             "missing_voice_policy": policy.to_document(),
             "failure_repair_policy": repair_policy.to_document(),
         }
+        failure_reference_binding, binding_sources = (
+            _copy_carry_forward_failure_reference_binding(
+                staging,
+                carry_forward_from,
+                repair_policy.queue_ids,
+            )
+        )
+        selected_sources = (*selected_sources, *binding_sources)
         seed_state = _preserve_seed_generation_state(staging, state_artifact)
         carry_forward = _carry_forward_review_outcomes(
             carry_forward_from,
@@ -525,6 +533,7 @@ def create_resume_workspace(
             run_config=run_config,
             characters=carry_forward_characters,
             failure_repair_policy=repair_policy,
+            failure_reference_binding=failure_reference_binding,
         )
         config_fingerprint = _workspace_config_fingerprint(
             import_id,
@@ -533,6 +542,7 @@ def create_resume_workspace(
             narrator,
             run_config,
             carry_forward,
+            failure_reference_binding=failure_reference_binding,
         )
         workspace_id = (
             f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
@@ -568,6 +578,7 @@ def create_resume_workspace(
             "run_config": run_config,
             "seed_generation_state": seed_state,
             "carry_forward": carry_forward,
+            "failure_reference_binding": failure_reference_binding,
             "config_fingerprint": config_fingerprint,
             "seed_inventory": [
                 {"path": "provenance/import.json", "sha256": import_sha256},
@@ -575,6 +586,7 @@ def create_resume_workspace(
             ],
         }
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+        _validate_workspace_failure_reference_binding(staging, workspace)
         _verify_import_sources(source, copied, import_path, import_sha256)
         _verify_selected_sources(selected_sources)
         if destination.exists():
@@ -971,6 +983,7 @@ def merge_workspace_outcomes(
         base_document["run_config"],
         base_document.get("carry_forward"),
         outcome_merge,
+        base_document.get("failure_reference_binding"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -2144,6 +2157,7 @@ def _carry_forward_review_outcomes(
     run_config,
     characters,
     failure_repair_policy,
+    failure_reference_binding,
 ):
     repair_policy = failure_repair_policy
     failed_selected = repair_policy.queue_ids
@@ -2190,6 +2204,14 @@ def _carry_forward_review_outcomes(
             "Carry-forward characters must be explicit and exclude Narrator"
         )
     source_directory, source_document = _load_workspace(source_workspace)
+    if (
+        failure_reference_binding is not None
+        and source_document.get("failure_reference_binding")
+        != failure_reference_binding
+    ):
+        raise AuthoringWorkbenchError(
+            "Carry-forward failure-reference binding differs from its source"
+        )
     source_source = source_document["source"]
     if source_source.get("import_id") != import_id:
         raise AuthoringWorkbenchError(
@@ -2278,10 +2300,15 @@ def _carry_forward_review_outcomes(
             "Carry-forward target seed has an active generation attempt"
         )
     target_seed = copy.deepcopy(target_state)
-    target_registry = _registry_from_staged_voice(staging, voice_config)
+    target_registry = _registry_from_staged_voice(
+        staging,
+        voice_config,
+        failure_reference_binding,
+    )
     source_registry = _workspace_voice_registry(source_directory, source_document)
-    source_queue_overrides = _queue_voice_overrides_for_manifest(
-        _selected_voice_manifest(source_directory, source_document)
+    source_queue_overrides = _workspace_queue_voice_overrides(
+        source_directory,
+        source_document,
     )
     target_manifest = _within(
         staging,
@@ -2289,6 +2316,15 @@ def _carry_forward_review_outcomes(
         "Voice manifest snapshot",
     )
     target_queue_overrides = _queue_voice_overrides_for_manifest(target_manifest)
+    target_runtime_binding = _failure_reference_runtime_binding(
+        staging,
+        {"failure_reference_binding": failure_reference_binding},
+    )
+    if target_runtime_binding is not None:
+        target_queue_overrides = {
+            **target_queue_overrides,
+            **target_runtime_binding.queue_voice_overrides,
+        }
     source_provenance = None
     source_audio_snapshots = []
     carried = []
@@ -2646,9 +2682,9 @@ def _workspace_generation_provenance(directory, workspace):
     manifest = _selected_voice_manifest(directory, workspace)
     if manifest is None:
         raise AuthoringWorkbenchError("Carry-forward source has no voice manifest")
-    registry = CharacterVoiceRegistry.from_file(manifest)
+    registry = _workspace_voice_registry(directory, workspace)
     queue = _load_bound_workspace_queue(directory, workspace)
-    queue_overrides = _queue_voice_overrides_for_manifest(manifest)
+    queue_overrides = _workspace_queue_voice_overrides(directory, workspace)
     missing_voice_policy = _workspace_missing_voice_policy(workspace)
     failure_repair_policy = _workspace_failure_repair_policy(workspace)
     narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
@@ -2687,6 +2723,22 @@ def _workspace_generation_provenance(directory, workspace):
             path,
             sha256_control_path(path),
         )
+    runtime_binding = _failure_reference_runtime_binding(directory, workspace)
+    if runtime_binding is not None:
+        binding_path = (runtime_binding.directory / "binding.json").resolve()
+        controls["failure_reference_binding"] = (
+            binding_path,
+            runtime_binding.controls[binding_path],
+        )
+        selected_paths = sorted(
+            (path for path in runtime_binding.controls if path != binding_path),
+            key=str,
+        )
+        for index, path in enumerate(selected_paths, start=1):
+            controls[f"failure_reference_selected:{index:04d}"] = (
+                path,
+                runtime_binding.controls[path],
+            )
     model_path = Path(model).expanduser()
     if model_path.exists():
         model_path = model_path.resolve()
@@ -2737,12 +2789,21 @@ def _workspace_voice_registry(directory, workspace):
     if manifest is None:
         raise AuthoringWorkbenchError("Workspace has no voice manifest snapshot")
     try:
-        return CharacterVoiceRegistry.from_file(manifest)
+        registry = CharacterVoiceRegistry.from_file(manifest)
+    except VoiceManifestError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    runtime_binding = _failure_reference_runtime_binding(directory, workspace)
+    if runtime_binding is None:
+        return registry
+    try:
+        return CharacterVoiceRegistry(
+            (*registry.unique_voices(), *runtime_binding.voices)
+        )
     except VoiceManifestError as error:
         raise AuthoringWorkbenchError(str(error)) from error
 
 
-def _registry_from_staged_voice(staging, voice_config):
+def _registry_from_staged_voice(staging, voice_config, failure_reference_binding=None):
     if not isinstance(voice_config, dict):
         raise AuthoringWorkbenchError(
             "Carry-forward target requires a voice manifest snapshot"
@@ -2753,7 +2814,19 @@ def _registry_from_staged_voice(staging, voice_config):
         "Voice manifest snapshot",
     )
     try:
-        return CharacterVoiceRegistry.from_file(manifest)
+        registry = CharacterVoiceRegistry.from_file(manifest)
+    except VoiceManifestError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    runtime_binding = _failure_reference_runtime_binding(
+        staging,
+        {"failure_reference_binding": failure_reference_binding},
+    )
+    if runtime_binding is None:
+        return registry
+    try:
+        return CharacterVoiceRegistry(
+            (*registry.unique_voices(), *runtime_binding.voices)
+        )
     except VoiceManifestError as error:
         raise AuthoringWorkbenchError(str(error)) from error
 
@@ -2780,6 +2853,17 @@ def _queue_voice_overrides_for_manifest(manifest):
         raise AuthoringWorkbenchError(
             f"Unable to load carry-forward queue voice bindings: {error}"
         ) from error
+
+
+def _workspace_queue_voice_overrides(directory, workspace):
+    manifest = _selected_voice_manifest(directory, workspace)
+    if manifest is None:
+        raise AuthoringWorkbenchError("Workspace has no voice manifest snapshot")
+    overrides = _queue_voice_overrides_for_manifest(manifest)
+    runtime_binding = _failure_reference_runtime_binding(directory, workspace)
+    if runtime_binding is None:
+        return overrides
+    return {**overrides, **runtime_binding.queue_voice_overrides}
 
 
 def _read_file_bytes(path, label):
@@ -3119,6 +3203,32 @@ def _copy_input_snapshots(
         }
         selected_sources.append((source, digest, "voice manifest"))
     return story_config, voice_config, tuple(selected_sources)
+
+
+def _copy_carry_forward_failure_reference_binding(
+    staging,
+    source_workspace,
+    failure_queue_ids,
+):
+    selected = set(failure_queue_ids)
+    if source_workspace is None or not selected:
+        return None, ()
+    source_directory, source_document = _load_workspace(source_workspace)
+    runtime_binding = _failure_reference_runtime_binding(
+        source_directory,
+        source_document,
+    )
+    if runtime_binding is None or not (
+        selected & set(runtime_binding.queue_voice_overrides)
+    ):
+        return None, ()
+    config = copy.deepcopy(source_document["failure_reference_binding"])
+    snapshots = []
+    target = staging / "inputs" / "failure-reference-binding"
+    _copy_workspace_tree_snapshot(runtime_binding.directory, target, snapshots)
+    return config, tuple(
+        (path, digest, "failure-reference binding") for path, digest in snapshots
+    )
 
 
 def _read_source_bytes(path, label):

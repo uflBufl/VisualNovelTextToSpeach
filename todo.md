@@ -16,18 +16,26 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       are pending review and 27 items remain typed failures. Add repeated
       `--queue-id` selection to `cohort-review-plan`, publish a checksum-bound
       two-item plan, and ask the operator to assess only those two new WAVs.
+      The current immutable task is
+      `current-character-story-selected-reference-results-v2.json` (plan ID
+      `20aabd2f03d1f86315437ff2265dab6da2fccb05b4c391af9b45be9f840944d7`);
+      version 1 is intentionally stale after the final Aderyn attempt changed
+      the authoritative state SHA.
       Keep the remaining failure actions disjoint: 14 exact sentence-boundary
-      segmentations (11 Narrator, three Rhiannon), eight exhausted-primary
-      offline fallbacks (seven Narrator, one Rhiannon), three Narrator silence
-      failures requiring a new evidence hypothesis, one Poacher inline-pause
-      comparison, and one final bounded Aderyn seed retry. The Aderyn retry may
-      run once under the same overlay because the planner proves only two
-      completed primary attempts; after that it must become a terminal typed
-      action. Do not batch fallback, segmentation or silence-comparison items
-      until their successor constructors preserve and independently revalidate
-      this overlay. Do not approve either new WAV automatically. Completion
-      gates: exact two-ID plan, one bounded Aderyn result, unchanged unrelated
-      state/WAV/control inventories, and an updated read-only repair census.
+      segmentations (11 Narrator, three Rhiannon), nine exhausted-primary
+      offline fallbacks (seven Narrator, one Rhiannon and one Aderyn), three
+      Narrator silence failures requiring a new evidence hypothesis, one
+      Poacher inline-pause comparison. The final Aderyn seed retry is complete
+      as a typed limit at attempts 3/seed 2 and must not run again on MOSS.
+      Before generating the
+      14/9/1 repair groups, require their successor constructors to preserve and
+      independently revalidate this overlay, publish three disjoint
+      config-addressed workspaces, and prove exact selected readiness. Run at
+      most one attempt per selected ID, never combine providers or repair
+      strategies, and do not approve either new WAV or any repair automatically.
+      Completion gates: operator decisions for the exact two-ID plan, immutable
+      14/9/1 successor evidence, unchanged unrelated state/WAV/control
+      inventories, and an updated read-only repair census.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real

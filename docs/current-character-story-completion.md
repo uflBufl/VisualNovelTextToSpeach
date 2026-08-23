@@ -271,6 +271,19 @@ as 14 sentence segmentations, eight offline fallbacks, three new reference/
 silence investigations, one inline-pause comparison and one final bounded seed
 retry; these are separate evidence paths, not authorization for a bulk retry.
 
+The one planner-authorized final Aderyn retry for
+`reverse1999:314602:4:721879c12bb3873b` completed as another typed missed-EOS
+limit: attempts 2 -> 3 and seed 1 -> 2, with no WAV, partial, active attempt or
+lease. It is now the ninth exhausted-primary offline fallback; no MOSS seed
+retry remains in this selected-reference cohort. Because the first exact
+two-item cohort plan bound the pre-retry state SHA, it remains immutable but is
+superseded. The current operator task is
+`authoring/review-bundles/current-character-story-selected-reference-results-v2.json`,
+plan ID `20aabd2f03d1f86315437ff2265dab6da2fccb05b4c391af9b45be9f840944d7`.
+It binds post-retry state SHA `d6039278...`, exactly two one-item Centurion/
+Narrator cohorts and both new WAV hashes; it contains no inherited pending
+items and no technical flags.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

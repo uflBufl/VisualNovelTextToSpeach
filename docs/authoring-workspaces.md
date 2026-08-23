@@ -291,6 +291,17 @@ generation-state schemas that do not carry the current synthesis-control
 registry still require a current-schema successor before final-pack
 publication; the overlay does not weaken that gate.
 
+When an exact bound failure moves into a supported same-backend repair or
+Pocket fallback workspace, `create-workspace --carry-forward-from` copies the
+source workspace's overlay automatically. It does so only when at least one
+selected repair queue ID belongs to the binding. The target config fingerprint
+includes the exact binding document and copied-reference inventory; source and
+target synthetic registries, queue overrides and synthesis-control provenance
+must match before a failed outcome can be carried. A later outcome merge keeps
+the same binding in its own config identity. This is not a general option to
+attach a reference to unrelated IDs: the failure policy, current source item,
+binding override and carry ledger must all name the same queue identity.
+
 ## Merging reviewed repair outcomes
 
 Sentence and Pocket repairs remain separate config-addressed histories while

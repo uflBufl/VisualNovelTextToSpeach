@@ -18,14 +18,17 @@ from vntts.authoring.failure_reference_binding import (
     load_failure_reference_binding_document,
     publish_failure_reference_binding,
 )
+from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_failure_reference_workspace,
+    create_resume_workspace,
     failure_reference_runtime_binding,
     generation_command,
     generation_control_bindings,
     inspect_generation_readiness,
     inspect_workspace,
+    review_workspace_item,
 )
 
 
@@ -380,6 +383,161 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 result["source_reference_binding"]["synthesis_voice_character"],
                 renderers[0].requests[0].voice,
             )
+
+    def test_same_backend_repair_successor_preserves_the_exact_overlay(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, workspace, queue_id, _group, _candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            successor = create_failure_reference_workspace(
+                workspace,
+                binding,
+                root / "successors",
+            ).directory
+            runtime = failure_reference_runtime_binding(successor)
+            state_path = successor / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            failed = state["items"][queue_id]
+            text_features = failed["failure"]["text_features"]
+            failed.update(
+                {
+                    "attempts": 2,
+                    "seed": 1,
+                    "last_error": (
+                        "MOSS generation hit the text-length audio limit before EOS"
+                    ),
+                    "provider": "moss-tts",
+                    "model": "model with spaces",
+                    "generation_profile": "stable",
+                    "voice_character": runtime.queue_voice_overrides[queue_id],
+                    "failure": {
+                        "schema_version": 1,
+                        "kind": "missed_eos_audio_limit",
+                        "error_type": "SynthesisLimitedError",
+                        "text_features": text_features,
+                        "completion": "limited",
+                    },
+                }
+            )
+            state_path.write_text(json.dumps(state, sort_keys=True))
+            imported = next((root / "imports").glob("legacy-*"))
+            imported_state_path = imported / "generated-audio/generation-state.json"
+            imported_state = json.loads(imported_state_path.read_text())
+            imported_state["active"] = None
+            imported_state_path.write_text(json.dumps(imported_state, sort_keys=True))
+            import_path = imported / "import.json"
+            import_document = json.loads(import_path.read_text())
+            imported_state_sha256 = workbench_module.sha256_file(imported_state_path)
+            next(
+                item
+                for item in import_document["artifacts"]
+                if item["path"] == "generated-audio/generation-state.json"
+            )["sha256"] = imported_state_sha256
+            import_path.write_text(json.dumps(import_document, sort_keys=True))
+
+            repair = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=successor / "inputs/story-index.jsonl",
+                voice_manifest=successor / "inputs/voice/manifest.json",
+                narrator_character="Rhiannon",
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                failure_repair_policy=FailureRepairPolicy(
+                    bounded_seed_retry_queue_ids=(queue_id,)
+                ),
+                carry_forward_from=successor,
+            )
+            repeated = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=successor / "inputs/story-index.jsonl",
+                voice_manifest=successor / "inputs/voice/manifest.json",
+                narrator_character="Rhiannon",
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                failure_repair_policy=FailureRepairPolicy(
+                    bounded_seed_retry_queue_ids=(queue_id,)
+                ),
+                carry_forward_from=successor,
+            )
+
+            repair_runtime = failure_reference_runtime_binding(repair.directory)
+            repair_state = json.loads(
+                (repair.directory / "generated-audio/generation-state.json").read_text()
+            )
+            readiness = inspect_generation_readiness(
+                repair.directory,
+                queue_ids=(queue_id,),
+            )
+            self.assertTrue(repair.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(repair.directory, repeated.directory)
+            self.assertEqual(repair_runtime.document, runtime.document)
+            self.assertEqual(
+                repair_state["items"][queue_id]["voice_character"],
+                runtime.queue_voice_overrides[queue_id],
+            )
+            self.assertEqual(readiness.selected, 1)
+            self.assertEqual(readiness.ready, 1)
+            self.assertEqual(readiness.missing_voice, 0)
+            inspect_workspace(repair.directory)
+
+            def create_backend(_name, registry, *_args, **options):
+                renderer = SyntheticRenderer()
+                renderer.name = "moss-tts"
+                renderer.model_name = options["model_name"]
+                renderer.registry = registry
+                return renderer
+
+            repair_command = generation_command(
+                repair.directory,
+                queue_ids=(queue_id,),
+                retries=0,
+                seed=0,
+            )
+            with patch("vntts.authoring.cli.create_backend", create_backend):
+                self.assertEqual(authoring_main(repair_command[3:]), 0)
+            review_workspace_item(repair.directory, queue_id, "approved")
+            reviewed_state = json.loads(
+                (repair.directory / "generated-audio/generation-state.json").read_text()
+            )
+            self.assertEqual(reviewed_state["items"][queue_id]["status"], "approved")
+            inspect_workspace(repair.directory)
+
+            state = json.loads(state_path.read_text())
+            state["items"][queue_id]["attempts"] = 3
+            state["items"][queue_id]["seed"] = 2
+            state_path.write_text(json.dumps(state, sort_keys=True))
+            fallback = create_resume_workspace(
+                imported,
+                root / "fallbacks",
+                story_index=successor / "inputs/story-index.jsonl",
+                voice_manifest=successor / "inputs/voice/manifest.json",
+                narrator_character="Rhiannon",
+                backend="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                failure_repair_policy=FailureRepairPolicy(
+                    offline_fallback_queue_ids=(queue_id,)
+                ),
+                carry_forward_from=successor,
+            )
+            fallback_runtime = failure_reference_runtime_binding(fallback.directory)
+            fallback_readiness = inspect_generation_readiness(
+                fallback.directory,
+                queue_ids=(queue_id,),
+            )
+            self.assertEqual(fallback_runtime.document, runtime.document)
+            self.assertEqual(fallback_readiness.selected, 1)
+            self.assertEqual(fallback_readiness.ready, 1)
+            self.assertEqual(fallback_readiness.missing_voice, 0)
+            inspect_workspace(fallback.directory)
 
 
 if __name__ == "__main__":
