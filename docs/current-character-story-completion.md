@@ -389,6 +389,23 @@ The planner must treat that applied exhausted bounded repair as stronger than
 the line's generic multi-sentence shape and route its next successor to Pocket,
 never back to sentence segmentation.
 
+After that ordering gate was committed, the exact one-ID Pocket successor
+`resume-395a5e5eec0327a3a793b66d-e39e8c434f50bc3f` rendered one unseeded
+fallback successfully. Its 24 kHz mono WAV is 10.88 seconds long, has SHA-256
+`c0eee5bb79bde5f642e1e851bc43cfbd4b289203e57f2defeec2b4cb3d304386`
+and remains `pending_review`; its state SHA-256 is
+`2a0aefb4546ef6d8bea314fbada5fdee1357c0a98ebad66cda092e91dd3639e0`.
+The source MOSS state and every unrelated target item/WAV remained unchanged.
+
+All seven final Pocket outcomes are collected without inferred decisions in
+`review-bundles/current-character-story-final-pocket-fallbacks-v1.json`.
+Bundle `692a8aa042fbb6c25a31765c5367d2bcdc2de5747099469cfb08cd5dee704e73`
+contains three exact control/reference cohorts and all seven WAVs as mandatory
+samples: five Narrator-source items using the selected Centurion reference,
+one Rhiannon-source item and one Dobharchú-source item. Five samples carry
+technical silence/pause or pace flags and two are deterministic clean controls.
+Only explicit checksum-bound cohort review may approve, reject or expand them.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

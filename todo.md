@@ -95,13 +95,16 @@ Follow the evidence-backed order and invariants in
       final bounded MOSS seed, four reference comparisons and one inline-pause
       comparison; a failed sentence segmentation cannot be planned or executed
       twice. The six Pocket fallbacks are now generated and await exact review.
-      The final bounded MOSS seed failed `missed_eos` without a WAV; the
-      corrected planner now treats that exhausted applied repair as stronger
-      than generic multi-sentence shape and marks its one-ID Pocket successor.
-      Publish and run that final Pocket fallback, then review all seven Pocket
-      WAVs through checksum-bound evidence. Keep the four reference-comparison
-      items unrendered and treat the inline-pause item as a separate one-ID
-      comparison rather than part of the fallback batch.
+      The final bounded MOSS seed failed `missed_eos` without a WAV; its
+      corrected one-ID Pocket successor generated successfully. Review all
+      seven final Pocket WAVs through checksum-bound bundle
+      `current-character-story-final-pocket-fallbacks-v1.json`: it contains
+      three required cohorts and seven mandatory samples, including five with
+      technical silence/pause or pace flags. Apply only explicit source-local
+      cohort decisions, then merge terminal outcomes into a new successor.
+      Keep the four reference-comparison items unrendered and treat the
+      inline-pause item as a separate one-ID comparison rather than part of the
+      fallback batch.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 
