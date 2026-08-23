@@ -41,6 +41,10 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
 )
+from vntts.authoring.failure_reference_binding import (
+    FailureReferenceBindingError,
+    load_failure_reference_binding_document,
+)
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -79,6 +83,7 @@ def publish_final_game_pack(
     queue_path,
     story_index_path,
     voice_manifest_path,
+    failure_reference_binding_path=None,
     game_id=None,
     game_version,
     producers,
@@ -90,6 +95,16 @@ def publish_final_game_pack(
     queue_path = Path(queue_path).expanduser().resolve()
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
+    failure_reference_binding_path = (
+        None
+        if failure_reference_binding_path is None
+        else Path(failure_reference_binding_path).expanduser().resolve()
+    )
+    if (
+        failure_reference_binding_path is not None
+        and failure_reference_binding_path.is_dir()
+    ):
+        failure_reference_binding_path = failure_reference_binding_path / "binding.json"
     game_version = _required_text(game_version, "game version")
     producers = _validate_producers(producers)
     created_at = created_at or _now()
@@ -139,6 +154,52 @@ def publish_final_game_pack(
                         "Generation queue changed while publication was staged"
                     )
 
+                failure_reference_document = None
+                if failure_reference_binding_path is not None:
+                    try:
+                        failure_reference_document = (
+                            load_failure_reference_binding_document(
+                                failure_reference_binding_path.parent
+                            )
+                        )
+                    except FailureReferenceBindingError as error:
+                        raise FinalGamePackError(str(error)) from error
+                    authority = failure_reference_document["source_authority"]
+                    if (
+                        authority["queue_sha256"] != queue_sha256
+                        or authority["voice_manifest_sha256"] != voice_sha256
+                    ):
+                        raise FinalGamePackError(
+                            "Failure-reference binding belongs to different pack controls"
+                        )
+                    binding_copy = (
+                        staging
+                        / "voices"
+                        / "failure-reference-binding"
+                        / "binding.json"
+                    )
+                    _copy_control(
+                        failure_reference_binding_path,
+                        binding_copy,
+                        inventory,
+                        "failure-reference binding",
+                    )
+                    for group in failure_reference_document["groups"]:
+                        relative = _safe_relative(
+                            group["reference"], "Selected reference"
+                        )
+                        source = _contained_source(
+                            failure_reference_binding_path.parent,
+                            relative,
+                            "selected reference",
+                        )
+                        _copy_control(
+                            source,
+                            binding_copy.parent / Path(*relative.parts),
+                            inventory,
+                            "selected reference",
+                        )
+
                 story = _load_story(story_copy)
                 voice_document, voice_entries = _load_voices(voice_copy)
                 narrator_selection = _verify_voice_control_provenance(
@@ -147,6 +208,8 @@ def publish_final_game_pack(
                     voice_manifest_path,
                     voice_document,
                     voice_entries,
+                    failure_reference_binding_path=failure_reference_binding_path,
+                    failure_reference_document=failure_reference_document,
                 )
                 voice_override = _validate_source_bindings(
                     queue.metadata,
@@ -228,6 +291,22 @@ def publish_final_game_pack(
                                 ),
                                 "voice_manifest_override": voice_override,
                                 "narrator_selection": narrator_selection,
+                                "failure_reference_binding": (
+                                    None
+                                    if failure_reference_document is None
+                                    else {
+                                        "path": "voices/failure-reference-binding/binding.json",
+                                        "binding_id": failure_reference_document[
+                                            "binding_id"
+                                        ],
+                                        "audit_id": failure_reference_document[
+                                            "audit_id"
+                                        ],
+                                        "decision_set_id": failure_reference_document[
+                                            "decision_set_id"
+                                        ],
+                                    }
+                                ),
                                 **counts,
                             },
                         },
@@ -625,7 +704,14 @@ def _validate_story_identity(state, story):
 
 
 def _verify_voice_control_provenance(
-    state, queue, voice_manifest_path, voice_document, voice_entries
+    state,
+    queue,
+    voice_manifest_path,
+    voice_document,
+    voice_entries,
+    *,
+    failure_reference_binding_path=None,
+    failure_reference_document=None,
 ):
     registry = state.get("synthesis_controls")
     if not isinstance(registry, dict):
@@ -668,6 +754,38 @@ def _verify_voice_control_provenance(
         if queue_voice_overrides
         else None
     )
+    failure_reference_overrides = {}
+    failure_reference_paths = {}
+    combined_overrides = dict(queue_voice_overrides)
+    combined_overrides_digest = queue_voice_overrides_digest
+    if failure_reference_document is not None:
+        if failure_reference_binding_path is None:
+            raise FinalGamePackError(
+                "Failure-reference binding document has no source path"
+            )
+        failure_reference_overrides = dict(
+            failure_reference_document["queue_voice_overrides"]
+        )
+        combined_overrides.update(failure_reference_overrides)
+        combined_overrides_digest = queue_voice_overrides_sha256(combined_overrides)
+        binding_digest = _source_sha256(
+            failure_reference_binding_path, "failure-reference binding"
+        )
+        failure_reference_paths[failure_reference_binding_path.resolve()] = (
+            binding_digest,
+            lambda role: role == "failure_reference_binding",
+        )
+        binding_root = failure_reference_binding_path.parent.resolve()
+        for group in failure_reference_document["groups"]:
+            relative = _safe_relative(group["reference"], "Selected reference")
+            source = _contained_source(binding_root, relative, "selected reference")
+            digest = _source_sha256(source, "selected reference")
+            if digest != group["reference_sha256"]:
+                raise FinalGamePackError("Failure-reference selected audio changed")
+            failure_reference_paths[source] = (
+                digest,
+                lambda role: role.startswith("failure_reference_selected:"),
+            )
     narrator_selections = set()
     for queue_id, result in state["items"].items():
         if result.get("status") == "live_fallback":
@@ -711,6 +829,22 @@ def _verify_voice_control_provenance(
                 raise FinalGamePackError(
                     f"Voice input {path} does not match synthesis controls for {queue_id!r}"
                 )
+        binding_controls_present = bool(
+            failure_reference_binding_path is not None
+            and failure_reference_binding_path.resolve() in controls_by_path
+        )
+        if binding_controls_present:
+            for path, (digest, role_matches) in failure_reference_paths.items():
+                control = controls_by_path.get(path)
+                if (
+                    control is None
+                    or not role_matches(control.get("role", ""))
+                    or control.get("sha256") != digest
+                ):
+                    raise FinalGamePackError(
+                        "Failure-reference input does not match synthesis controls "
+                        f"for {queue_id!r}"
+                    )
         item = queue_by_id[queue_id]
         narrator_controls = [
             control
@@ -720,14 +854,23 @@ def _verify_voice_control_provenance(
         effective_character = result.get("voice_character") or (
             synthesis_character_for_line(item.speaker, item.voice_character)
         )
-        expected_override = queue_voice_overrides.get(queue_id)
+        expected_override = combined_overrides.get(queue_id)
         binding = result.get("source_reference_binding")
+        expected_override_digest = (
+            combined_overrides_digest
+            if binding_controls_present
+            else queue_voice_overrides_digest
+        )
+        if queue_id in failure_reference_overrides and not binding_controls_present:
+            raise FinalGamePackError(
+                f"Failure-reference controls are missing for {queue_id!r}"
+            )
         if expected_override is not None:
             if (
                 effective_character != expected_override
                 or not isinstance(binding, dict)
                 or binding.get("queue_voice_overrides_sha256")
-                != queue_voice_overrides_digest
+                != expected_override_digest
             ):
                 raise FinalGamePackError(
                     f"Source-reference voice binding is missing for {queue_id!r}"

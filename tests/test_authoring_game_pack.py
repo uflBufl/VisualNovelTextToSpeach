@@ -25,6 +25,7 @@ import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    _canonical_sha256,
     authorize_live_fallback,
     review_generation_item,
     run_bulk_generation,
@@ -258,6 +259,98 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_mixed_state_accepts_exact_failure_reference_overlay(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("old", "new"))
+            old_item, new_item = fixture["items"]
+            review_generation_item(fixture["state"], old_item["queue_id"], "approved")
+            binding = root / "binding"
+            selected = binding / "references" / ("a" * 64) / "selected.wav"
+            selected.parent.mkdir(parents=True)
+            shutil.copyfile(fixture["reference"], selected)
+            selected_sha256 = sha256_file(selected)
+            overrides = {
+                new_item["queue_id"]: "Selected failure reference aaaaaaaaaaaaaaaa"
+            }
+            identity = {
+                "schema": "vntts.authoring-failure-reference-binding",
+                "schema_version": 1,
+                "audit_id": "1" * 64,
+                "decision_set_id": "2" * 64,
+                "source_authority": {
+                    "workspace_id": "resume-" + "3" * 24 + "-" + "4" * 16,
+                    "workspace_sha256": "5" * 64,
+                    "queue_sha256": sha256_file(fixture["queue"]),
+                    "state_sha256": "6" * 64,
+                    "voice_manifest_sha256": sha256_file(fixture["voices"]),
+                    "audit_sha256": "7" * 64,
+                    "blind_key_sha256": "8" * 64,
+                    "decisions_sha256": "9" * 64,
+                },
+                "groups": [
+                    {
+                        "group_id": "a" * 64,
+                        "synthesis_voice_character": "Hero",
+                        "control_character": "Hero",
+                        "speaker": "synthetic-hero",
+                        "candidate_id": "candidate-01",
+                        "voice_character": overrides[new_item["queue_id"]],
+                        "reference": "references/" + "a" * 64 + "/selected.wav",
+                        "reference_sha256": selected_sha256,
+                        "source_reference": "references/hero.wav",
+                        "cases": [
+                            {
+                                "queue_id": new_item["queue_id"],
+                                "failure_sha256": "b" * 64,
+                            }
+                        ],
+                    }
+                ],
+                "queue_voice_overrides": overrides,
+                "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+                "authority": "Exact test overlay",
+            }
+            document = {
+                **identity,
+                "binding_id": _canonical_sha256(identity),
+                "published_at": "2026-08-16T12:04:00+00:00",
+            }
+            binding_path = binding / "binding.json"
+            binding_path.write_text(json.dumps(document, sort_keys=True))
+
+            run_bulk_generation(
+                fixture["queue"],
+                fixture["output"],
+                SyntheticRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+                include_queue_ids=(new_item["queue_id"],),
+                regenerate_existing=True,
+                control_files={
+                    "voice_manifest": fixture["voices"],
+                    "voice_reference:0001": fixture["reference"],
+                    "failure_reference_binding": binding_path,
+                    "failure_reference_selected:0001": selected,
+                },
+                queue_voice_overrides=overrides,
+            )
+            review_generation_item(fixture["state"], new_item["queue_id"], "approved")
+
+            result = publish(
+                fixture,
+                root / "pack",
+                failure_reference_binding_path=binding_path,
+            )
+            pack_document = json.loads(result.manifest.read_text())
+
+        self.assertEqual(result.approved_count, 2)
+        self.assertEqual(
+            pack_document["vntts.authoring"]["failure_reference_binding"]["binding_id"],
+            document["binding_id"],
+        )
+
     def test_exact_source_reference_binding_survives_final_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

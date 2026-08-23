@@ -54,6 +54,10 @@ from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
     publish_failure_reference_audit,
 )
+from vntts.authoring.failure_reference_binding import (
+    FailureReferenceBindingError,
+    publish_failure_reference_binding,
+)
 from vntts.authoring.failure_regeneration import (
     FailureRegenerationError,
     build_failure_regeneration_command,
@@ -151,8 +155,10 @@ from vntts.authoring.voice_repair_comparison import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
+    create_failure_reference_workspace,
     create_resume_workspace,
     default_workspaces_root,
+    failure_reference_runtime_binding,
     generation_control_bindings,
     generation_output_identity,
     merge_workspace_outcomes,
@@ -409,6 +415,15 @@ def create_parser():
     merge.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
+    reference_workspace = subparsers.add_parser(
+        "create-failure-reference-workspace",
+        help="Preserve a workspace and attach one immutable selected-reference overlay",
+    )
+    reference_workspace.add_argument("base_workspace", type=Path)
+    reference_workspace.add_argument("binding", type=Path)
+    reference_workspace.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
     generate = subparsers.add_parser(
         "generate", help="Resume typed device-independent generation from a queue"
     )
@@ -508,6 +523,12 @@ def create_parser():
     reference_audit.add_argument("workspace", type=Path)
     reference_audit.add_argument("--output", type=Path, required=True)
     reference_audit.add_argument("--seed", type=int, default=0)
+    reference_binding = subparsers.add_parser(
+        "failure-reference-binding",
+        help="Publish terminal selected references as an immutable exact-ID overlay",
+    )
+    reference_binding.add_argument("audit", type=Path)
+    reference_binding.add_argument("--output", type=Path, required=True)
     voice_gate = subparsers.add_parser(
         "voice-quality-gate",
         help="Publish a reusable accepted voice-control quality gate",
@@ -767,6 +788,11 @@ def create_parser():
     pack.add_argument("--queue", type=Path, required=True)
     pack.add_argument("--story-index", type=Path, required=True)
     pack.add_argument("--voice-manifest", type=Path, required=True)
+    pack.add_argument(
+        "--failure-reference-binding",
+        type=Path,
+        help="Exact immutable selected-reference binding used by mixed provenance state",
+    )
     pack.add_argument("--output", type=Path, required=True)
     pack.add_argument("--game-id")
     pack.add_argument("--game-version", required=True)
@@ -924,6 +950,15 @@ def main(argv=None):
                 voice_manifest_document,
                 voice_manifest_entries,
             ) = _load_stable_voice_registry(voice_manifest)
+            runtime_reference_binding = (
+                failure_reference_runtime_binding(arguments.workspace)
+                if arguments.workspace is not None
+                else None
+            )
+            if runtime_reference_binding is not None:
+                registry = CharacterVoiceRegistry(
+                    (*registry.unique_voices(), *runtime_reference_binding.voices)
+                )
             try:
                 policy_queue = VoiceGenerationQueue.load(arguments.queue)
             except VoiceGenerationQueueError as error:
@@ -937,6 +972,11 @@ def main(argv=None):
                 )
             except SourceReferenceBindingError as error:
                 raise BulkGenerationError(str(error)) from error
+            if runtime_reference_binding is not None:
+                queue_voice_overrides = {
+                    **queue_voice_overrides,
+                    **runtime_reference_binding.queue_voice_overrides,
+                }
             for item in policy_queue.items:
                 requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
@@ -986,6 +1026,27 @@ def main(argv=None):
                     reference,
                     reference_sha256,
                 )
+            if runtime_reference_binding is not None:
+                binding_path = (
+                    runtime_reference_binding.directory / "binding.json"
+                ).resolve()
+                control_files["failure_reference_binding"] = (
+                    binding_path,
+                    runtime_reference_binding.controls[binding_path],
+                )
+                selected_paths = sorted(
+                    (
+                        path
+                        for path in runtime_reference_binding.controls
+                        if path != binding_path
+                    ),
+                    key=str,
+                )
+                for index, path in enumerate(selected_paths, start=1):
+                    control_files[f"failure_reference_selected:{index:04d}"] = (
+                        path,
+                        runtime_reference_binding.controls[path],
+                    )
             if expected_workspace_controls is not None:
                 observed_paths = {
                     Path(value[0]).resolve() for value in control_files.values()
@@ -1169,6 +1230,30 @@ def main(argv=None):
                 seed=arguments.seed,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "failure-reference-binding":
+            result = publish_failure_reference_binding(
+                arguments.audit,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "create-failure-reference-workspace":
+            result = create_failure_reference_workspace(
+                arguments.base_workspace,
+                arguments.binding,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "workspace": str(result.directory),
+                        "created": result.created,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         if arguments.command == "voice-quality-gate":
             gate = build_voice_quality_gate(
@@ -1509,6 +1594,7 @@ def main(argv=None):
                 queue_path=arguments.queue,
                 story_index_path=arguments.story_index,
                 voice_manifest_path=arguments.voice_manifest,
+                failure_reference_binding_path=arguments.failure_reference_binding,
                 game_id=arguments.game_id,
                 game_version=arguments.game_version,
                 producers=producers,
@@ -1578,6 +1664,7 @@ def main(argv=None):
         FinalGamePackError,
         FailureRegenerationError,
         FailureReferenceAuditError,
+        FailureReferenceBindingError,
         LegacyAuthoringImportError,
         ListeningImportError,
         PortraitAliasError,

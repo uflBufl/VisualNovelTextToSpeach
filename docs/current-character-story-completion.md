@@ -232,6 +232,22 @@ decision validation without constructing a Qt application or writing a missing
 `decisions.json`; it reports the audit ID, completed/remaining group counts and
 the canonical decision-set ID when decisions exist.
 
+The selected-reference overlay implementation was dry-run against the exact
+terminal version-2 audit and latest trusted successor on 2026-08-23. It
+produced binding ID
+`eb4e323fb8f1a5381e92cae72d4fa6846a3f12f21ec856c7f04775787737181e`.
+The binding owns exactly 29 queue IDs across the four terminal groups and keeps
+the selected reference hashes above. Its config-addressed dry-run successor
+was `resume-395a5e5eec0327a3a793b66d-4e0189bc2bb0090d`. The successor's entire
+`generated-audio` tree was byte-identical to base
+`resume-395a5e5eec0327a3a793b66d-d4fbbae41bdd4810`: 179 approved, 207 generated
+and 35 failed items, with no active attempt. Exact selected readiness was
+29/29 ready, zero missing voices and no blocker; the derived bounded command
+contained exactly 29 queue-ID arguments, `retries=0` and base `seed=0`.
+This dry-run lived under `/private/tmp`; it did not publish app-data or start a
+model. Real publication and generation remain gated on a clean committed tree,
+idempotent no-replace publication and a repeated source inventory check.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

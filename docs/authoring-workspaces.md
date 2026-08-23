@@ -227,6 +227,70 @@ counters. Pocket output passes the same typed-completion,
 PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
 other generated artifact.
 
+## Binding selected references without rewriting the voice manifest
+
+A terminal version-2 failure-reference audit is evidence, not generation
+authority. Publish its selected candidates as a separate immutable overlay:
+
+```sh
+uv run vntts-pregenerate failure-reference-binding AUDIT_DIRECTORY \
+  --output REFERENCE_BINDING_DIRECTORY
+
+uv run vntts-pregenerate create-failure-reference-workspace BASE_WORKSPACE \
+  REFERENCE_BINDING_DIRECTORY \
+  --workspaces-root AUTHORING_WORKSPACES_ROOT
+```
+
+The first command requires every audit group to have a terminal candidate
+decision and rejects `Neither candidate is acceptable`. It revalidates the
+public audit, its mode-0600 private key, the complete decision set and every
+selected candidate hash. The published no-replace directory contains copied
+reference bytes, one synthetic voice per audited control group, exact queue-ID
+overrides, and the queue, voice-manifest, audit and decision-set authorities.
+It never rewrites the selected voice manifest. Rewriting that manifest would
+change its SHA-256 and invalidate the synthesis provenance of every previously
+reviewed WAV, including unrelated characters.
+
+The second command creates a config-addressed successor. It requires an idle,
+unleased base workspace, proves that every selected queue item is still the
+exact audited failed result, then copies the complete state and generated-audio
+tree byte-for-byte. The overlay is snapshotted below
+`inputs/failure-reference-binding/`; changing the binding, a selected WAV, the
+queue, the manifest or the base state changes identity or fails closed. An
+exact repeat is idempotent.
+
+Focused readiness and generation use only the binding's exact queue IDs. The
+child independently reloads the workspace and binds `binding.json` plus every
+selected reference into the bulk control inventory before backend construction:
+
+```sh
+uv run --no-sync python -c '
+from pathlib import Path
+from vntts.authoring.workbench import (
+    failure_reference_runtime_binding,
+    generation_command,
+    inspect_generation_readiness,
+)
+w = Path("SUCCESSOR_WORKSPACE")
+b = failure_reference_runtime_binding(w)
+ids = tuple(b.queue_voice_overrides)
+r = inspect_generation_readiness(w, queue_ids=ids)
+assert r.selected == r.ready == len(ids)
+assert r.missing_voice == 0 and not r.blocked_reasons
+print(*generation_command(w, queue_ids=ids, retries=0, seed=0), sep=" ")
+'
+```
+
+Do not paste the printed command through a shell without preserving its
+argument boundaries; production callers should execute the returned tuple
+directly. A bounded run does not approve speech. It produces ordinary
+pending-review or failed outcomes under the selected-reference provenance.
+Mixed old-manifest and new-overlay approved results can later be validated by
+`publish-pack --failure-reference-binding REFERENCE_BINDING_DIRECTORY`. Legacy
+generation-state schemas that do not carry the current synthesis-control
+registry still require a current-schema successor before final-pack
+publication; the overlay does not weaken that gate.
+
 ## Merging reviewed repair outcomes
 
 Sentence and Pocket repairs remain separate config-addressed histories while

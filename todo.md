@@ -33,6 +33,27 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       the audit and decision-set identities, and create a new config-addressed
       workspace before regeneration. Do not mutate the current manifest,
       generation state or completed audit decisions.
+      Implement this as a separate checksum-bound overlay rather than rewriting
+      the selected voice manifest: changing that manifest would invalidate the
+      full-manifest synthesis provenance of every already reviewed WAV. The
+      overlay must contain the exact terminal audit/decision identities, one
+      copied selected reference per group, exact queue-to-synthetic-voice
+      overrides and an atomic no-replace binding identity. Reject incomplete or
+      `neither_acceptable` decisions, changed audit/private-key/decision bytes,
+      changed candidate hashes, unsafe paths, duplicate queue ownership and a
+      binding whose queue/manifest authority differs from its audited source.
+      Add a config-addressed successor operation that copies the latest trusted
+      workspace state and WAVs byte-for-byte, verifies every one of the 29 base
+      failures against the audit authority, snapshots the binding, and changes
+      no other item. The child process must independently load and revalidate
+      the binding, add only its exact synthetic voices and overrides, and bind
+      the binding document plus selected reference bytes into synthesis
+      provenance. Final-pack validation must accept the overlay only for its
+      exact queue IDs while continuing to validate the unchanged base manifest
+      for every item. Completion gates: focused tamper/race/idempotency tests,
+      full suite, Ruff/format/lock/diff, clean committed HEAD, real no-replace
+      publication, byte-identical source workspace census and exact 29-ID
+      preflight before any model process starts.
 - [ ] Generate newly unblocked reference lines under immutable controls as
       references become available, then apply the same risk-based cohort review
       and exact outcome merge. The previous ten ready lines are complete: one
