@@ -1102,15 +1102,18 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "under current controls before selecting a repair"
             )
         elif kind == "missed_eos_audio_limit":
+            provider_attempts = record["attempts_by_provider"].get(
+                record["provider"], attempts
+            )
             if len(safe_sentence_segments(record["text"])) >= 2:
                 action = "sentence_boundary_segmentation"
                 reason = "multiple complete sentence boundaries"
-            elif attempts < 3:
+            elif provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                 action = "bounded_seed_retry"
-                reason = "fewer than three completed primary attempts"
+                reason = "fewer than three completed attempts for the current provider"
             else:
                 action = "offline_fallback_backend"
-                reason = "primary bounded attempts are exhausted"
+                reason = "current-provider bounded attempts are exhausted"
         elif kind == "speech_silence":
             quality = failure.get("speech_quality")
             edge_only = bool(

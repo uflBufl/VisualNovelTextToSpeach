@@ -284,6 +284,17 @@ It binds post-retry state SHA `d6039278...`, exactly two one-item Centurion/
 Narrator cohorts and both new WAV hashes; it contains no inherited pending
 items and no technical flags.
 
+The first real fallback-successor dry-run then exposed a planner/constructor
+disagreement without touching app-data: cumulative attempts mixed
+`legacy-unbound` and `moss-tts`, while safe fallback authority is provider-local.
+The constructor correctly rejected a Rhiannon item with five total attempts but
+only two MOSS attempts. The planner now uses the same provider-local boundary.
+The corrected 27-item partition is 14 sentence segmentations, seven final
+bounded MOSS attempts, two exhausted-primary Pocket fallbacks, three unresolved
+Narrator silence investigations and one Poacher inline-pause comparison. The
+temporary sentence workspace was only a dry-run artifact under `/private/tmp`;
+no repair model ran.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

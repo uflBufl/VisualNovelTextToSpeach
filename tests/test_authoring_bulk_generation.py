@@ -586,6 +586,12 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 include_queue_ids=[limited_item["queue_id"]],
             )
             state = json.loads(result.state.read_text(encoding="utf-8"))
+            limited = state["items"][limited_item["queue_id"]]
+            limited["attempts"] = 5
+            limited["attempts_by_provider"] = {
+                "legacy-unbound": 3,
+                limited["provider"]: 2,
+            }
             state["items"][silence_item["queue_id"]] = {
                 "status": "failed",
                 "attempts": 3,
@@ -659,6 +665,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             record["queue_id"]: record["action"] for record in repair_plan["records"]
         }
         self.assertEqual(actions[limited_item["queue_id"]], "bounded_seed_retry")
+        limited_plan = next(
+            record
+            for record in repair_plan["records"]
+            if record["queue_id"] == limited_item["queue_id"]
+        )
+        self.assertEqual(limited_plan["attempts"], 5)
+        self.assertIn("current provider", limited_plan["reason"])
         self.assertEqual(actions[silence_item["queue_id"]], "reference_comparison")
         self.assertEqual(
             actions[unbound_item["queue_id"]],
