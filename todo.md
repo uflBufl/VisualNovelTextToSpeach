@@ -10,20 +10,6 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the final selected-reference repair task with
-      `vntts-review-bundle` using
-      `current-character-story-selected-reference-repairs-v1.json` (bundle ID
-      `419a2118159812a7a44218ad84d851f9af6b926607b4f48c5ad8fa2851f7fb63`).
-      It contains 13 exact pending WAVs in eight source-local cohorts and 11
-      required samples: three selected-reference/final-MOSS results, seven
-      sentence repairs, two Pocket fallbacks and one Poacher inline-pause
-      comparison. Do not use the stale two-item version-2 plan and do not apply
-      decisions across workspaces by similarity. The bounded generation phase
-      is complete: every run used one attempt per ID, preserved unrelated
-      state/WAV controls and left no active attempt, lease or partial WAV.
-      Apply only explicit checksum-bound operator decisions. The seven failed
-      sentence repairs and three untouched Narrator reference/silence cases
-      require a new evidence-backed hypothesis; do not retry them automatically.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real

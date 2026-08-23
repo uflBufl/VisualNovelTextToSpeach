@@ -325,6 +325,31 @@ decision. The seven failed sentence-repair outcomes and the three untouched
 Narrator investigations remain failure evidence. They require a new explicit
 hypothesis rather than another automatic attempt.
 
+The operator completed the selected-reference repair task on 2026-08-23.
+Read-only reconciliation reports `8/8` completed cohorts, all 13 exact WAV
+decisions applied and zero remaining samples or items. Eleven WAVs were
+approved and two sentence-repair WAVs were rejected. The approved outcomes are
+the three direct/final MOSS results in the selected-reference workspace, five
+sentence repairs, two Pocket fallbacks and the Poacher inline-pause result.
+The two remaining reviewed sentence repairs retain their exact rejected
+authority; no decision was inferred for any unreviewed failure.
+
+An exact outcome-merge dry run then used
+`resume-395a5e5eec0327a3a793b66d-c34e5d54d994e53a` as the primary history and
+the Pocket, sentence-repair and inline-pause workspaces as its three reviewed
+sources. The same merge was atomically published under the application data
+root as
+`resume-395a5e5eec0327a3a793b66d-1c6ff408bbe999e0`; an exact repeat returned
+`created: false`. The successor has 190 approved, 209 generated and 22 failed
+state items. Its 190-entry manifest is exactly the approved state subset, its
+queue SHA-256 remains `1831f95d...`, and its final state SHA-256 is
+`f8d60aa0ac88b07617bb8bbbeaf02cd684888db00e1010e36148ad015e6e9481`.
+It has no active attempt, generation lease or partial WAV. The merge copied
+only exact terminal reviewed repair outcomes, revalidated every source
+workspace and left all source histories unchanged. It did not run generation
+or publish a final game pack. The seven failed sentence repairs and three
+untouched Narrator investigations remain blocked on a new bounded hypothesis.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included
