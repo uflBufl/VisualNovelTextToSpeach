@@ -156,8 +156,11 @@ when fewer than three were consumed, then advances to the different-backend
 fallback only after all three are exhausted. A segmented `speech_silence`
 outcome advances to reference comparison because changing the backend is not
 sufficient evidence that the voice or silence problem is safe to repair
-automatically. Launch validation rejects an identical second segmentation
-before rendering or changing authoritative state.
+automatically. An applied bounded-seed record has priority over generic text
+shape: exhausting its third provider-local attempt advances to fallback even
+when the text still contains safe sentence boundaries. Launch validation
+rejects an identical second segmentation before rendering or changing
+authoritative state.
 
 The inline-pause comparison is MOSS-only, accepts exactly one queue ID per run,
 and records the original text hash, derived prompt hash, marker count, pause

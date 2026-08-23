@@ -1108,6 +1108,18 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "synthesis-control provenance; recover immutable evidence or regenerate "
                 "under current controls before selecting a repair"
             )
+        elif (
+            previous_strategy == BOUNDED_SEED_RETRY and kind == "missed_eos_audio_limit"
+        ):
+            provider_attempts = record["attempts_by_provider"].get(
+                record["provider"], attempts
+            )
+            if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+                action = "bounded_seed_retry"
+                reason = "the current-provider bounded repair still has an attempt"
+            else:
+                action = "offline_fallback_backend"
+                reason = "the current-provider bounded repair is exhausted"
         elif previous_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
             if kind == "missed_eos_audio_limit":
                 provider_attempts = record["attempts_by_provider"].get(

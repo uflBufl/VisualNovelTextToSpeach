@@ -91,13 +91,17 @@ Follow the evidence-backed order and invariants in
       merge only terminal decisions, and leave generation, review and final-pack
       publication as separate transactions.
       The first exact 12-item successor produced no WAV. Its corrected
-      read-only projection is now six exact different-backend fallbacks, one
+      read-only projection selected six exact different-backend fallbacks, one
       final bounded MOSS seed, four reference comparisons and one inline-pause
       comparison; a failed sentence segmentation cannot be planned or executed
-      twice. Publish a Pocket successor for only those six fallback IDs; keep
-      the four reference-comparison items unrendered; and treat the bounded seed
-      and inline-pause items as separate one-ID comparisons rather than part of
-      the fallback batch.
+      twice. The six Pocket fallbacks are now generated and await exact review.
+      The final bounded MOSS seed failed `missed_eos` without a WAV; the
+      corrected planner now treats that exhausted applied repair as stronger
+      than generic multi-sentence shape and marks its one-ID Pocket successor.
+      Publish and run that final Pocket fallback, then review all seven Pocket
+      WAVs through checksum-bound evidence. Keep the four reference-comparison
+      items unrendered and treat the inline-pause item as a separate one-ID
+      comparison rather than part of the fallback batch.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

@@ -1919,14 +1919,41 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
             state = load_generation_state(repaired.state, queue)
             stored = state["items"][item["queue_id"]]
-            plan = generation_failure_repair_plan(repaired.state, queue)
+            before_plan = generation_failure_repair_plan(repaired.state, queue)
+            bounded_policy = FailureRepairPolicy(
+                bounded_seed_retry_queue_ids=(item["queue_id"],)
+            )
+            exhausted = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=bounded_policy,
+            )
+            exhausted_item = load_generation_state(exhausted.state, queue)["items"][
+                item["queue_id"]
+            ]
+            exhausted_plan = generation_failure_repair_plan(exhausted.state, queue)
 
         self.assertEqual(stored["attempts_by_provider"], {"synthetic": 2})
         self.assertEqual(
             stored["failure_repair"]["strategy"],
             "sentence_boundary_segmentation",
         )
-        self.assertEqual(plan["records"][0]["action"], "bounded_seed_retry")
+        self.assertEqual(before_plan["records"][0]["action"], "bounded_seed_retry")
+        self.assertEqual(exhausted_item["attempts_by_provider"], {"synthetic": 3})
+        self.assertEqual(
+            exhausted_item["failure_repair"]["strategy"], "bounded_seed_retry"
+        )
+        self.assertEqual(
+            exhausted_plan["records"][0]["attempted_repair_strategy"],
+            "bounded_seed_retry",
+        )
+        self.assertEqual(
+            exhausted_plan["records"][0]["action"], "offline_fallback_backend"
+        )
 
     def test_failed_silent_sentence_repair_requires_reference_comparison(self):
         with TemporaryDirectory() as directory:

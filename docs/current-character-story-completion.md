@@ -369,6 +369,26 @@ different-backend fallbacks, one final bounded MOSS seed, four reference
 comparisons and one inline-pause comparison. It never authorizes the same failed
 segmentation again or bypasses the three-attempt Pocket fallback gate.
 
+The six immediately eligible fallbacks were then copied into isolated Pocket
+workspace `resume-395a5e5eec0327a3a793b66d-d86e2dbf7e822dd1` and rendered
+with one unseeded `pocket-tts/default` attempt per exact ID. All six completed,
+passed the technical WAV gate and remain `pending_review`; no approval or
+manifest entry was inferred. The workspace contains exactly six new 24 kHz
+WAVs, no lease or partial file, and state SHA-256
+`6fc3e548cdbcdc0062541e4af5826d35365c2a1527c12a312b6be2b9f1c6f928`.
+All 332 non-target state records, 197 pre-existing WAVs and the source state
+remain unchanged.
+
+The one remaining provider-local repair ran separately in
+`resume-395a5e5eec0327a3a793b66d-dccc2a67467e3e2c` with `retries=0` and
+seed 2. It reached the typed 20-second/2,000-token MOSS limit without EOS,
+published no WAV and exhausted the third exact MOSS attempt. The workspace is
+idle with no lease or partial file and state SHA-256
+`7dbdd9fff6c29295fc84bf9f9ac424caba4c5a5a44468523f7dc7b7b52c4fb5d`.
+The planner must treat that applied exhausted bounded repair as stronger than
+the line's generic multi-sentence shape and route its next successor to Pocket,
+never back to sentence segmentation.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included
