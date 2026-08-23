@@ -295,6 +295,36 @@ Narrator silence investigations and one Poacher inline-pause comparison. The
 temporary sentence workspace was only a dry-run artifact under `/private/tmp`;
 no repair model ran.
 
+The four bounded follow-up runs then completed from clean commit `7409954`
+without applying a review decision. Seven final provider-local MOSS attempts in
+the selected-reference successor produced one validated Narrator WAV and six
+typed failures. The 14-item sentence-boundary successor
+`resume-395a5e5eec0327a3a793b66d-8f5c3a4daeb3ec75` produced seven validated
+WAVs and seven typed failures. The two-item Pocket successor
+`resume-395a5e5eec0327a3a793b66d-4f8501cbe5c1438a` produced both its Aderyn and
+Narrator WAVs, with one provider-local Pocket attempt and no applied seed. The
+single Poacher inline-pause successor
+`resume-395a5e5eec0327a3a793b66d-c0cee8df625c405a` produced its validated WAV
+with a bound 180 ms marker policy. Every run used `retries=0`, changed only its
+exact selected state records, preserved every pre-existing WAV byte, and ended
+with no active attempt, lease or partial WAV. The three Narrator
+reference/silence investigations were not rendered because no new bounded
+hypothesis exists.
+
+The resulting operator task is the immutable bundle
+`authoring/review-bundles/current-character-story-selected-reference-repairs-v1.json`
+with ID
+`419a2118159812a7a44218ad84d851f9af6b926607b4f48c5ad8fa2851f7fb63`.
+It binds four source workspaces, eight exact cohorts, 13 pending items, 11
+required samples and zero blocked items. Its exact inventory contains the two
+original selected-reference WAVs, the one final bounded-MOSS success, seven
+sentence-repair successes, two Pocket fallbacks and one inline-pause result.
+The earlier two-item version-2 plan remains immutable but became stale when the
+final bounded-MOSS run changed its source state; it must not be used for a new
+decision. The seven failed sentence-repair outcomes and the three untouched
+Narrator investigations remain failure evidence. They require a new explicit
+hypothesis rather than another automatic attempt.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

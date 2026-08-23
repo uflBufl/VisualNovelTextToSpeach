@@ -10,38 +10,20 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Resolve the terminal outcomes from the selected-reference successor
-      `resume-395a5e5eec0327a3a793b66d-c34e5d54d994e53a` without blind retries.
-      The immutable binding and one bounded exact-29 run are complete: two WAVs
-      are pending review and 27 items remain typed failures. Add repeated
-      `--queue-id` selection to `cohort-review-plan`, publish a checksum-bound
-      two-item plan, and ask the operator to assess only those two new WAVs.
-      The current immutable task is
-      `current-character-story-selected-reference-results-v2.json` (plan ID
-      `20aabd2f03d1f86315437ff2265dab6da2fccb05b4c391af9b45be9f840944d7`);
-      version 1 is intentionally stale after the final Aderyn attempt changed
-      the authoritative state SHA.
-      Keep the remaining failure actions disjoint. The provider-local planner
-      fix proves the current groups are: 14 exact sentence-boundary
-      segmentations (11 Narrator, three Rhiannon), seven final bounded MOSS
-      attempts (six Narrator, one Rhiannon), two exhausted-primary Pocket
-      fallbacks (one Narrator, one Aderyn), three Narrator silence failures
-      requiring a new evidence hypothesis, and one Poacher inline-pause
-      comparison. The final Aderyn MOSS retry is complete as a typed limit at
-      attempts 3/seed 2 and must not run again on MOSS. The old total-attempt
-      planner incorrectly called seven mixed legacy/MOSS histories exhausted;
-      its provider-local fix must remain aligned with the carry validator.
-      Before generating the 14/2/1 successor groups, require their constructors
-      to preserve and independently revalidate this overlay, publish three disjoint
-      config-addressed workspaces, and prove exact selected readiness. Run the
-      seven bounded retries in the current overlay workspace and at most one
-      attempt per selected ID everywhere; never combine providers or repair
-      strategies. Because every state change invalidates an earlier full-state
-      cohort plan, publish one final checksum-bound review bundle only after all
-      four bounded runs finish. Do not approve any WAV automatically.
-      Completion gates: immutable 14/2/1 successor evidence, unchanged
-      unrelated state/WAV/control inventories, a final exact review bundle and
-      an updated read-only repair census.
+- [ ] Review the final selected-reference repair task with
+      `vntts-review-bundle` using
+      `current-character-story-selected-reference-repairs-v1.json` (bundle ID
+      `419a2118159812a7a44218ad84d851f9af6b926607b4f48c5ad8fa2851f7fb63`).
+      It contains 13 exact pending WAVs in eight source-local cohorts and 11
+      required samples: three selected-reference/final-MOSS results, seven
+      sentence repairs, two Pocket fallbacks and one Poacher inline-pause
+      comparison. Do not use the stale two-item version-2 plan and do not apply
+      decisions across workspaces by similarity. The bounded generation phase
+      is complete: every run used one attempt per ID, preserved unrelated
+      state/WAV controls and left no active attempt, lease or partial WAV.
+      Apply only explicit checksum-bound operator decisions. The seven failed
+      sentence repairs and three untouched Narrator reference/silence cases
+      require a new evidence-backed hypothesis; do not retry them automatically.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
