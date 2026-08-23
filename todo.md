@@ -178,20 +178,16 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P0 - Establish a MOSS quality and latency gate
 
-- [ ] When a suitable CUDA host becomes available, run the installed
-      checksum-bound offline bake-off with MOSS Delay 8B. No CUDA host is
-      currently available, so this is a deferred optional candidate rather
-      than a blocker for choosing between the two locally runnable models. Use
-      the current exact 46-line
-      corpus (22 unresolved MOSS failures, 12 MOSS-to-Pocket recoveries and 12
-      MOSS controls), MOSS Local 4B MLX int8 as baseline, MOSS Delay 8B and
-      XTTS v2 with explicit CPML acceptance. Retain all three transactional
-      reports and compare per-group complete/limited/cancelled/error rates,
-      exact WAV hashes, timing/RTF, duration, silence/quality and runtime/model
-      provenance. Do not treat the verified one-line Local/XTTS wiring smoke as
-      the model verdict, and do not attempt the 8B corpus on the current
-      CPU-only PyTorch path merely to claim completion. The corrected full local
-      phase is complete at
+- [ ] When a suitable CUDA host becomes available, run MOSS Delay 8B on the
+      installed checksum-bound 46-line corpus (22 unresolved MOSS failures, 12
+      MOSS-to-Pocket recoveries and 12 MOSS controls). No CUDA host is currently
+      available, so this remains an optional future candidate and does not
+      block the current model decision. Retain the transactional Delay report
+      and compare its per-group outcomes, exact WAV hashes, timing/RTF,
+      duration, silence/quality and hardware/model provenance against MOSS Local
+      4B. Do not rerun XTTS or the completed Local4B/XTTS blind task merely to
+      claim a three-way comparison, and do not attempt the 8B corpus on the
+      current CPU-only path. The authoritative local phase is complete at
       `offline-local-4b-vs-xtts-20260823-v3`: exact manifest resolution maps
       Narrator to Centurion, both reports share all 46 ordered identities and
       bind the same 12 copied voice controls with canonical SHA-256
@@ -200,24 +196,11 @@ while one-sentence controls remained below 0.25 seconds.
       produced 46 complete/46 gate-passing results; XTTS has unsupported shared
       seeding, so retain this as one stochastic run. The earlier `v1` run is
       invalid because of speaker fallback, while `v2` established exact speaker
-      identity but did not snapshot reference bytes. Delay 8B on CUDA remains
-      the only missing automatic model report.
-- [ ] Blind-review the current small Local4B/XTTS finalist sample now; do not
-      wait indefinitely for optional Delay 8B hardware. Compare speaker
-      identity, exact words, pronunciation,
-      pacing, pauses, repetitions and contamination. Do not change the
-      production authoring default from MOSS Local 4B or regenerate approved
-      WAVs until one candidate has a lower technical failure rate, acceptable
-      resource use and non-inferior human quality on the exact corpus. Offline
-      and live winners may differ; Pocket remains the bounded live/final
-      fallback unless a separate hardware gate replaces it. A preliminary
-      ten-trial Local4B/XTTS session from v3 is already published at
-      `offline-local-4b-vs-xtts-finalists-20260823-v2`, progress `0/10`. Allow
-      A, B, no preference when both are acceptable, and neither acceptable when
-      both are bad. Non-complete outputs are technical losses, not synthetic
-      listening pairs. If Delay 8B is tested later, compare it only against the
-      local winner in a new bounded follow-up rather than repeating this full
-      review.
+      identity but did not snapshot reference bytes. The completed ten-trial
+      blind task ranked MOSS first: 7 MOSS wins, 1 XTTS win, 1 no-preference and
+      1 neither-acceptable. Keep MOSS Local 4B as the offline authoring default;
+      do not regenerate approved WAVs. If Delay 8B is tested later, compare it
+      only against MOSS in a new bounded blind follow-up.
 - [ ] Run `vntts-benchmark-tts` on the completed exact Rhiannon replay corpus,
       add generated/original game-audio route timing, and retain the report as
       acceptance evidence. The reported-line regression already covers fresh,

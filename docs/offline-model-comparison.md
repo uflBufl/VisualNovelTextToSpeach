@@ -158,15 +158,25 @@ XTTS does not accept the shared seed, so its improvement from 44/46 in v2 to
 Exact words, speaker identity, pauses, repetition and contamination still
 require blind listening. The Apple CPU timing is not a CUDA performance claim.
 
-A preliminary checksum-bound Local4B/XTTS session from the authoritative v3
-reports is ready at
+A checksum-bound Local4B/XTTS session from the authoritative v3 reports was
+completed at
 `authoring/model-listening/offline-local-4b-vs-xtts-finalists-20260823-v2`.
 It contains ten shared COMPLETE trials chosen from asymmetric silence failures,
 large duration differences and all three corpus groups. Non-complete outputs
 remain automatic technical losses and are not fabricated as blind pairs. The
-public session contains no model names; its private key is mode 0600. No CUDA
-host is currently available, so use this `0/10` Local4B/XTTS session to select
-the best locally runnable candidate instead of blocking on Delay 8B. If Delay
-8B becomes available later, compare it only against that local winner in a new
-bounded follow-up. The earlier `v1` session is bound to the pre-snapshot v2
-reports and must not replace this session.
+public session contains no model names; its private key is mode 0600. The final
+session SHA-256 is
+`d3ca8c3c2ef66bbff2180893b7ed10903266e31485ef2481ea16bcfc435c1188`,
+the private-key SHA-256 is
+`c05237ac69fbf6bc97f05a4f29d56b99f816a501fc9e6628d5535ff3748de9d6`,
+and the integrity-checked report SHA-256 is
+`2504f7b2c087ef9c486e98eab8b3b2898945ea3526a17df39e8ffd619eea5acd`.
+
+MOSS Local 4B won seven trials, XTTS won one, one trial had no preference and
+one marked both models unacceptable. The report therefore ranks MOSS first
+with preference rate 0.8333 against XTTS at 0.1667. XTTS's 46/46 technical
+completion does not overcome this human-quality result, so MOSS Local 4B stays
+the offline authoring default and approved WAVs are not regenerated. If Delay
+8B becomes available later, compare it only against MOSS in a new bounded
+follow-up. The earlier `v1` session is bound to the pre-snapshot v2 reports and
+must not replace this evidence.
