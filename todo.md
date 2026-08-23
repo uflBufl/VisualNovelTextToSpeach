@@ -75,6 +75,21 @@ Follow the evidence-backed order and invariants in
       still required for `reverse1999:314608:29:7be68e27f6d36933` and
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist.
+- [ ] Finish the exact 22-failure tail in merged workspace
+      `resume-395a5e5eec0327a3a793b66d-1c6ff408bbe999e0` without another broad
+      retry. Its current read-only repair projection is 11 safe
+      sentence-boundary segmentations, seven exhausted-primary Pocket
+      fallbacks, one final provider-local bounded MOSS seed and three Narrator
+      reference/silence investigations. First publish and execute one
+      config-addressed MOSS successor containing only the 11 sentence IDs and
+      one bounded-seed ID, then recompute the plan from its authoritative state.
+      Publish a separate Pocket successor only for items that the recomputed
+      provider-local plan marks `offline_fallback_backend`; never render the
+      three reference-comparison items without a new exact hypothesis. Preserve
+      all 190 approvals, every unrelated state/WAV hash and the 190-entry
+      approved-only manifest. Review new WAVs through a checksum-bound bundle,
+      merge only terminal decisions, and leave generation, review and final-pack
+      publication as separate transactions.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 
