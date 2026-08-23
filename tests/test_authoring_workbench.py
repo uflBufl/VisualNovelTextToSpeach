@@ -2004,6 +2004,18 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             flags,
             ("near clipping", "slow pace", "notable silence", "notable pause"),
         )
+        item = SimpleNamespace(
+            duration_seconds=6.0,
+            failure_category=None,
+            internal_pause_seconds=None,
+            words_per_minute=30.0,
+            peak=0.99,
+            technical_flags=flags,
+            repair_strategy=None,
+        )
+        summary = workbench_module.review_technical_summary(item)
+        self.assertIn("advisory measurements (listen to decide):", summary)
+        self.assertIn("notable silence", summary)
         self.assertEqual(
             workbench_module._review_technical_metrics({}, "No WAV"),
             (None, None, None, ()),

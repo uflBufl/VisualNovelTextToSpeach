@@ -58,6 +58,13 @@ from vntts.authoring.cohort_bundle import (
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
 
 
+def _display_required_reason(reason):
+    prefix = "technical-attention: "
+    if reason.startswith(prefix):
+        return "advisory measurement; listening decides: " + reason.removeprefix(prefix)
+    return reason
+
+
 class _TaskSignals(QObject):
     finished = Signal(int, object, object)
 
@@ -237,7 +244,8 @@ class CohortReviewBundleDialog(QDialog):
         self.heading.setAccessibleName("Specialist voice review")
         self.guide = QLabel(
             "1. Play every required sample   2. Mark any bad sample   "
-            "3. Accept, reject, or request more evidence"
+            "3. Accept, reject, or request more evidence. Technical attention "
+            "only selects samples for listening; it is not a rejection verdict."
         )
         self.guide.setWordWrap(True)
         self.guide.setObjectName("reviewGuide")
@@ -619,7 +627,8 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.sample_identity.setText(
             f"Source label: {sample.item.speaker} | Generated role: "
-            f"{sample.item.voice_character} | Required: {sample.required_reason}"
+            f"{sample.item.voice_character} | Required sample: "
+            f"{_display_required_reason(sample.required_reason)}"
         )
         self.sample_text.setText(sample.item.text)
         cohort = self._current_cohort()
@@ -650,7 +659,7 @@ class CohortReviewBundleDialog(QDialog):
                 else "Waiting",
                 item.speaker,
                 item.voice_character,
-                sample.required_reason,
+                _display_required_reason(sample.required_reason),
                 review_technical_summary(item),
                 item.line_id,
                 item.text,

@@ -84,6 +84,9 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.table.isColumnHidden(5))
             self.assertTrue(dialog.table.isColumnHidden(6))
             self.assertIn("Generated role", dialog.sample_identity.text())
+            self.assertIn("listening decides", dialog.sample_identity.text())
+            self.assertIn("not a rejection verdict", dialog.guide.text())
+            self.assertNotIn("technical-attention", dialog.table.item(0, 4).text())
             self.assertEqual(
                 dialog.sample_text.text(), dialog._selected_sample().item.text
             )

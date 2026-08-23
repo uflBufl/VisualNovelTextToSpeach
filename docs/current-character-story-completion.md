@@ -406,6 +406,29 @@ one Rhiannon-source item and one Dobharchú-source item. Five samples carry
 technical silence/pause or pace flags and two are deterministic clean controls.
 Only explicit checksum-bound cohort review may approve, reject or expand them.
 
+The operator completed that bundle on 2026-08-24. All three cohorts and all
+seven mandatory samples were explicitly accepted; no decision was inferred.
+The six-item source state SHA-256 became
+`9f74f0097145f0d31f3b16cffb4373852e7416e82c912008043a4ffc854c3a52`
+and the one-item source state SHA-256 became
+`5c6606e2439103a1e320dc3ece4c4c656e1ae000679075a93fcddb2a94a0b734`.
+The approved outcomes were atomically merged with the 190-approved base into
+successor `resume-395a5e5eec0327a3a793b66d-cd54b7632c220de2`. It contains
+197 approved, 209 generated and 15 failed items; its 197-entry manifest is the
+exact approved state subset. The queue SHA-256 remains `1831f95d...`, every
+copied WAV digest matches the review publication, and the successor has no
+active attempt, lease or partial WAV.
+
+The accepted Pocket evidence also bounds the review-only silence heuristic.
+The seven accepted WAVs include silence ratios up to `0.2576` and longest
+internal silent spans up to `1.12` seconds; the operator explicitly reported
+that at least one `notable silence` label did not correspond to an abnormal
+audible pause. These measurements remain conservative sample-selection signals,
+not rejection verdicts. The UI therefore presents them as advisory and says
+that listening decides. The stricter publication safety gate is unchanged.
+Changing risk thresholds still requires matched rejected evidence rather than
+overfitting to this all-accepted cohort.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

@@ -253,7 +253,10 @@ def review_technical_summary(item):
     if item.peak is not None:
         metrics.append(f"peak {item.peak:.3f}")
     if item.technical_flags:
-        metrics.append("attention: " + ", ".join(item.technical_flags))
+        metrics.append(
+            "advisory measurements (listen to decide): "
+            + ", ".join(item.technical_flags)
+        )
     else:
         metrics.append("technical pass")
     if (

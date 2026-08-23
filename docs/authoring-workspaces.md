@@ -852,6 +852,10 @@ name. Line IDs, quality metrics, provider/profile/repair controls and workspace
 identity are hidden until `Show technical details` is enabled. A sample-level
 bad mark is explicitly non-terminal, while confirmation text for Accept/Reject
 states that the action affects every WAV in only the current exact cohort.
+Technical flags are conservative sampling measurements, not quality verdicts.
+The visible guide and per-sample reason call them advisory and state that
+listening decides; a natural pause may therefore be accepted without weakening
+the independent publication safety gate.
 
 Playback is available by button, row double-click or Space. Left/Right changes
 the selected sample, B toggles its bad evidence after a complete listen,
