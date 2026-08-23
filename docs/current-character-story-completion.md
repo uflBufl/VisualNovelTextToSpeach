@@ -429,6 +429,29 @@ that listening decides. The stricter publication safety gate is unchanged.
 Changing risk thresholds still requires matched rejected evidence rather than
 overfitting to this all-accepted cohort.
 
+The next exact MOSS repair successor is
+`resume-395a5e5eec0327a3a793b66d-25dc94e1e521dab8`. It selected only four
+planner-authorized sentence segmentations and one final provider-local bounded
+seed with `retries=0`. All five remained typed `speech_silence`; no WAV was
+published. Its state SHA-256 is
+`3d8dbe13a0bd2a7dd7ca6e1aca3e212d3e711ea2f16412c87c2970eec5917a2d`,
+all 197 inherited WAVs and every unrelated state record retained their exact
+baseline digest, the source successor stayed at `c673b863...`, and active,
+lease and partial files are absent. Replanning from this exact state routes the
+four failed segmentations to reference comparison and the bounded-seed result
+to an inline-pause-marker comparison; none may be blindly retried or sent to
+Pocket.
+
+Creating the separately authorized seven-ID Pocket successor then exposed a
+contract mismatch before publication: the planner correctly selected an
+exhausted raw inline-pause-shaped `speech_silence` outcome, while workspace
+construction accepted that transition only after an explicit inline-pause
+repair had already been applied. Creation failed before a workspace or render.
+The constructor and persisted/runtime provenance validators now accept the raw
+transition only when the exact silence shape matches and the source provider
+has at least three attempts. An end-to-end regression proves the resulting
+Pocket outcome and source immutability; arbitrary silence remains rejected.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

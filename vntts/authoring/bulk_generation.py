@@ -3633,9 +3633,10 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
         source_failure_kind = source.get("source_failure_kind")
         source_repair_strategy = source.get("source_repair_strategy")
         source_provider_attempts = source.get("source_provider_attempts")
-        inline_pause_source = (
+        exhausted_silence_source = (
             source_failure_kind == "speech_silence"
-            and source_repair_strategy == INLINE_PAUSE_MARKER
+            and source_repair_strategy
+            in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
             and isinstance(source_provider_attempts, int)
             and not isinstance(source_provider_attempts, bool)
             and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
@@ -3644,7 +3645,9 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             source.get("mode") != "failed-outcome"
             or source.get("source_provider") == result.get("provider")
             or source_failure_kind not in {"missed_eos_audio_limit", "speech_silence"}
-            or (source_failure_kind == "speech_silence" and not inline_pause_source)
+            or (
+                source_failure_kind == "speech_silence" and not exhausted_silence_source
+            )
             or (
                 source_repair_strategy == INLINE_PAUSE_MARKER
                 and source_failure_kind != "speech_silence"

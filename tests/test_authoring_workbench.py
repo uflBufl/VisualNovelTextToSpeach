@@ -1174,6 +1174,118 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture["queue_id"],
         )
 
+    def test_exhausted_raw_inline_pause_failure_moves_to_pocket(self):
+        from tests.test_authoring_bulk_generation import (
+            SyntheticRenderer,
+            audio_samples,
+        )
+        from vntts.authoring.bulk_generation import (
+            generation_failure_repair_plan,
+            load_generation_state,
+            publish_generated_manifest,
+            run_bulk_generation,
+        )
+
+        text = "What happened? You're hurt."
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root, text=text)
+            queue_path = source.directory / "queue.jsonl"
+            source_output = source.directory / "generated-audio"
+            source_state_path = source_output / "generation-state.json"
+            initial = load_generation_state(source_state_path, queue_path)
+            initial_item = initial["items"].pop(fixture["queue_id"])
+            (source_output / initial_item["path"]).unlink()
+            source_state_path.write_text(
+                json.dumps(initial, sort_keys=True), encoding="utf-8"
+            )
+            publish_generated_manifest(source_state_path)
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+
+            def failed_renderer():
+                renderer = SyntheticRenderer(
+                    diagnostics_backend="moss-tts", pcm=failed_pcm
+                )
+                renderer.name = "moss-tts"
+                renderer.model_name = "model with spaces"
+                return renderer
+
+            for attempt in range(3):
+                run_bulk_generation(
+                    queue_path,
+                    source_output,
+                    failed_renderer(),
+                    provider="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    retries=0,
+                    seed=0,
+                    include_queue_ids=(fixture["queue_id"],),
+                    regenerate_existing=attempt == 0,
+                )
+            source_state_before = source_state_path.read_bytes()
+            source_item = load_generation_state(source_state_path, queue_path)["items"][
+                fixture["queue_id"]
+            ]
+            plan = generation_failure_repair_plan(source_state_path, queue_path)
+            fallback_policy = FailureRepairPolicy(
+                offline_fallback_queue_ids=(fixture["queue_id"],)
+            )
+            fallback = create_resume_workspace(
+                imported,
+                root / "fallback",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                narrator_character="Rhiannon",
+                failure_repair_policy=fallback_policy,
+                carry_forward_from=source.directory,
+            )
+            carried_item = load_generation_state(
+                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            pocket = SyntheticRenderer(diagnostics_backend="pocket-tts")
+            pocket.name = "pocket-tts"
+            pocket.model_name = "pocket-tts"
+            generated = run_bulk_generation(
+                fallback.directory / "queue.jsonl",
+                fallback.directory / "generated-audio",
+                pocket,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=fallback_policy,
+            )
+            final_item = load_generation_state(
+                generated.state, fallback.directory / "queue.jsonl"
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(fallback.directory)
+            source_state_after = source_state_path.read_bytes()
+
+        self.assertEqual(source_item["attempts_by_provider"], {"moss-tts": 3})
+        self.assertNotIn("failure_repair", source_item)
+        self.assertEqual(plan["records"][0]["action"], "offline_fallback_backend")
+        self.assertNotIn("source_repair_strategy", carried_item["carry_forward"])
+        self.assertEqual(
+            carried_item["carry_forward"]["source_failure_kind"], "speech_silence"
+        )
+        self.assertEqual([request.seed for request in pocket.requests], [None])
+        self.assertEqual(final_item["status"], "generated")
+        self.assertEqual(
+            final_item["attempts_by_provider"],
+            {"moss-tts": 3, "pocket-tts": 1},
+        )
+        self.assertEqual(source_state_after, source_state_before)
+
     def test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

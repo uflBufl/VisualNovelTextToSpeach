@@ -83,8 +83,14 @@ Follow the evidence-backed order and invariants in
       publish and execute one config-addressed MOSS successor containing only
       the four segmentation IDs and one bounded-seed ID, then recompute the
       plan. Publish a separate Pocket successor only for records still marked
-      `offline_fallback_backend`; do not render the three reference comparisons
-      without a new exact hypothesis. Preserve all 197 approvals, every
+      `offline_fallback_backend`. The first five-ID MOSS successor is terminal
+      with no WAV: its four failed segmentations now require reference
+      comparison and its bounded-seed result requires a separate inline-pause
+      comparison. The exhausted raw-silence planner/constructor mismatch is
+      closed with exact creation, persisted-state and runtime regressions, so
+      proceed with the seven distinct Pocket fallbacks from the 15-item base.
+      Do not render any of the resulting eight comparison-only records without
+      a new exact hypothesis. Preserve all 197 approvals, every
       unrelated state/WAV hash and the 197-entry approved-only manifest. Review
       any new WAVs through a checksum-bound bundle, merge only terminal
       decisions, and keep generation, review and final-pack publication as

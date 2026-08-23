@@ -2467,7 +2467,8 @@ def _carry_forward_review_outcomes(
                     failure.get("kind") == "missed_eos_audio_limit"
                     or (
                         failure.get("kind") == "speech_silence"
-                        and source_repair_strategy == INLINE_PAUSE_MARKER
+                        and source_repair_strategy
+                        in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
                         and _inline_pause_matches_failure(
                             failure, queue_by_id[queue_id].text
                         )
@@ -3467,7 +3468,8 @@ def _validate_workspace_carry_forward(directory, workspace):
             source_provider_attempts = item.get("source_provider_attempts")
             if (
                 strategy == OFFLINE_FALLBACK_BACKEND
-                and source_repair_strategy == INLINE_PAUSE_MARKER
+                and source_repair_strategy
+                in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
                 and isinstance(source_provider_attempts, int)
                 and not isinstance(source_provider_attempts, bool)
                 and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS

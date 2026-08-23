@@ -148,6 +148,15 @@ up to a cumulative provider maximum of three. Cross-backend Pocket fallback
 keeps the stricter exhausted-attempt and Pocket default requirements below.
 Same-backend and cross-backend strategies cannot share one workspace.
 
+An exhausted raw `speech_silence` outcome with no prior repair may move directly
+to Pocket only when the same exact typed failure matches the bounded
+inline-pause shape and the source provider has already consumed at least three
+attempts. The planner, workspace constructor, carried-state validator and
+runtime validator share that rule. An exhausted bounded-seed or applied
+inline-pause repair may use the same transition; an arbitrary silence failure
+cannot. This closes a fail-closed planner/constructor mismatch without
+weakening the reference-comparison boundary.
+
 The failure report projects the validated `failure_repair` record from both
 successful and failed outcomes. A failed sentence-boundary segmentation is
 terminal for that strategy and cannot be selected a second time. A segmented
