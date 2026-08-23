@@ -36,17 +36,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       `uv run vntts-reference-audit AUDIT_DIRECTORY --status`. After all groups,
       these decisions are reference evidence only. Publish a new explicit
       selected reference/control binding before any regeneration.
-- [ ] After the repair WAVs are reviewed, run the checksum-bound
-      `merge-workspace-outcomes` command to create one successor containing the
-      77 primary approvals plus only exact approved/rejected sentence and
-      Pocket repair outcomes. Both bundles are now terminal: 102 repair WAVs
-      are approved and 42 repair outcomes are rejected. The isolated 17-source
-      preflight was idempotent and produced expected successor ID
-      `resume-395a5e5eec0327a3a793b66d-d4fbbae41bdd4810`, with 179 approved-only
-      manifest entries. Publish the same exact merge to the real authoring root
-      after filesystem escalation is approved, then inspect its
-      source-state/item/WAV ledger and approved-only manifest before using the
-      successor for generation.
 - [ ] Generate newly unblocked reference lines under immutable controls as
       references become available, then apply the same risk-based cohort review
       and exact outcome merge. The previous ten ready lines are complete: one

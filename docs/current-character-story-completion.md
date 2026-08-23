@@ -177,7 +177,11 @@ An isolated exact merge preflight over the 17 distinct source workspaces was
 idempotent and produced expected successor
 `resume-395a5e5eec0327a3a793b66d-d4fbbae41bdd4810`: 179 approved, 78 rejected,
 129 pending-review and 35 failed state items, with 179 approved-only manifest
-entries. Real publication has not run yet. The Dobharchú natural-expansion task
+entries. The same successor was atomically published on 2026-08-23 and loaded
+from its final app-data path. Its 17 recorded source-state hashes still match,
+the outcome ledger contains exactly 144 terminal repairs, and the manifest is
+the exact 179-item approved state subset. Generation, additional review and
+final-pack publication did not run. The Dobharchú natural-expansion task
 separately has all four cohorts and 24 samples/items remaining.
 
 The 29 primary failures classified as `reference_comparison` are one separate
