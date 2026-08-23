@@ -325,6 +325,15 @@ decision. The seven failed sentence-repair outcomes and the three untouched
 Narrator investigations remain failure evidence. They require a new explicit
 hypothesis rather than another automatic attempt.
 
+The first operator save attempt on a binding-backed cohort exposed a
+review-time fingerprint regression: cohort application omitted the immutable
+`failure_reference_binding` field while workspace creation and loading included
+it. The false mismatch failed closed before writing review evidence. Read-only
+reconciliation after the error still reported all eight cohorts, 13 items and
+11 samples remaining. Review application now uses the same complete canonical
+fingerprint as the workspace boundary, with a binding-backed commit regression
+and the existing binding-tamper rejection tests.
+
 The reference-audit dialog also offers an optional generated sample for the
 current opaque candidate and one exact affected line. It renders in a
 background worker with the workspace backend, model and generation profile,

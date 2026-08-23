@@ -8,6 +8,11 @@ import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_bulk_generation import SyntheticRenderer
 from tests.test_authoring_failure_reference_audit import FailureReferenceAuditTest
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.cohort_review import (
+    apply_cohort_review_decision,
+    build_cohort_review_decision,
+    build_cohort_review_plan,
+)
 from vntts.authoring.failure_reference_audit import (
     publish_failure_reference_audit,
     record_failure_reference_decision,
@@ -383,6 +388,31 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 result["source_reference_binding"]["synthesis_voice_character"],
                 renderers[0].requests[0].voice,
             )
+
+            plan = build_cohort_review_plan(
+                created.directory,
+                queue_ids=(queue_id,),
+            )
+            cohort = plan.document["cohorts"][0]
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            projection = apply_cohort_review_decision(
+                created.directory,
+                plan,
+                decision,
+            )
+            reviewed_state = json.loads(
+                (
+                    created.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+
+            self.assertEqual(projection.review_status, "approved")
+            self.assertEqual(reviewed_state["items"][queue_id]["status"], "approved")
 
     def test_same_backend_repair_successor_preserves_the_exact_overlay(self):
         with TemporaryDirectory() as directory:
