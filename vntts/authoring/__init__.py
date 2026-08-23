@@ -71,6 +71,12 @@ from vntts.authoring.failure_reference_audit import (
     publish_failure_reference_audit,
     record_failure_reference_decision,
 )
+from vntts.authoring.failure_reference_preview import (
+    FailureReferencePreview,
+    FailureReferencePreviewCancelled,
+    FailureReferencePreviewError,
+    FailureReferencePreviewService,
+)
 from vntts.authoring.failure_regeneration import (
     FAILURE_REGENERATION_PLAN_SCHEMA,
     FAILURE_REGENERATION_PLAN_VERSION,
@@ -327,6 +333,10 @@ __all__ = [
     "FailureReferenceAudit",
     "FailureReferenceAudio",
     "FailureReferenceAuditError",
+    "FailureReferencePreview",
+    "FailureReferencePreviewCancelled",
+    "FailureReferencePreviewError",
+    "FailureReferencePreviewService",
     "FinalGamePackError",
     "FinalGamePackResult",
     "SpeechQuality",

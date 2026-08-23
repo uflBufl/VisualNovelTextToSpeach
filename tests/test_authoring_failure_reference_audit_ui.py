@@ -3,6 +3,7 @@ import json
 import os
 import time
 import unittest
+import wave
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +23,7 @@ try:
     )
     from vntts.authoring.failure_reference_audit_ui import FailureReferenceAuditDialog
     from vntts.authoring.failure_reference_audit_ui import main as reference_audit_main
+    from vntts.authoring.failure_reference_preview import FailureReferencePreview
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
         raise
@@ -29,6 +31,46 @@ except ModuleNotFoundError as error:
     QCloseEvent = None
     QMediaPlayer = None
     FailureReferenceAuditDialog = None
+
+
+def _wav_payload():
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * 800)
+    return output.getvalue()
+
+
+class _PreviewService:
+    def __init__(self, _audit):
+        self.generate_calls = []
+        self.cancel_calls = 0
+        self.close_calls = 0
+
+    def generate(self, group_id, candidate_id, text):
+        self.generate_calls.append((group_id, candidate_id, text))
+        return FailureReferencePreview(
+            group_id=group_id,
+            candidate_id=candidate_id,
+            text=text,
+            synthesis_text=text,
+            text_sha256="1" * 64,
+            backend="moss-tts",
+            model="model",
+            generation_profile="stable",
+            seed=0,
+            sample_rate=16_000,
+            audio_sha256="2" * 64,
+            payload=_wav_payload(),
+        )
+
+    def cancel(self):
+        self.cancel_calls += 1
+
+    def close(self):
+        self.close_calls += 1
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")
@@ -116,6 +158,19 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             self.assertIn("listen through every candidate", dialog.action_reason.text())
             self.assertTrue(dialog.progress.accessibleName())
             self.assertTrue(dialog.action_reason.accessibleName())
+            self.assertIn(
+                "selects voice-cloning source audio", dialog.explanation.text()
+            )
+            self.assertIn("Voice target: Rhiannon", dialog.summary.text())
+            self.assertTrue(dialog.preview_text_choice.accessibleName())
+            self.assertIn(
+                "without saving authoring state",
+                dialog.generate_preview.accessibleDescription(),
+            )
+            self.assertIn(
+                "does not reject the character",
+                dialog.neither.accessibleDescription(),
+            )
 
             dialog.technical_details.setChecked(True)
             self.assertTrue(dialog.cases.isVisibleTo(dialog))
@@ -147,6 +202,72 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             self.assertEqual(len(decisions["decisions"]), 1)
             self.assertIn("SAVED", dialog.status.text())
 
+    def test_generated_preview_is_optional_immutable_evidence(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            service = _PreviewService(audit)
+            dialog = FailureReferenceAuditDialog(
+                audit, preview_service_factory=lambda _audit: service
+            )
+            dialog.show()
+            group = dialog._current_group()
+            candidate_id = dialog.candidate_choice.currentData()
+            text = dialog.preview_text_choice.currentData()
+
+            dialog.generate_selected_preview()
+            self.assertTrue(dialog._preview_active)
+            self.assertTrue(dialog.play.isEnabled())
+            self.wait_for(lambda: not dialog._preview_active)
+
+            self.assertEqual(
+                service.generate_calls,
+                [(group["group_id"], candidate_id, text)],
+            )
+            self.assertEqual(dialog._playback_kind, "generated")
+            self.assertEqual(dialog._playback_buffer.data().data(), _wav_payload())
+            self.assertIn("does not select the reference", dialog.status.text())
+            self.assertFalse(dialog.choose.isEnabled())
+            self.assertFalse(dialog.neither.isEnabled())
+            self.assertEqual(load_failure_reference_decisions(audit)["decisions"], [])
+
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertIn("GENERATED SAMPLE HEARD", dialog.status.text())
+            self.assertFalse(dialog.choose.isEnabled())
+            dialog.replay_generated_preview()
+            self.assertEqual(dialog._playback_kind, "generated")
+
+    def test_single_candidate_group_uses_binary_reference_wording(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            dialog = FailureReferenceAuditDialog(audit)
+            group = dialog._current_group()
+            group["candidates"] = group["candidates"][:1]
+            dialog.candidate_choice.blockSignals(True)
+            dialog.candidate_choice.clear()
+            dialog.candidate_choice.addItem("Candidate 1 of 1", "candidate-01")
+            dialog.candidate_choice.blockSignals(False)
+
+            dialog._update_candidate_card()
+
+            self.assertEqual(dialog.choose.text(), "Use this reference")
+            self.assertEqual(dialog.neither.text(), "This reference is unsuitable")
+
+    def test_preview_generation_does_not_block_reference_decision_controls(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            dialog = FailureReferenceAuditDialog(audit)
+            dialog.show()
+            self.hear_all_candidates(dialog)
+            dialog._preview_active = True
+
+            dialog._update_actions()
+
+            self.assertTrue(dialog.play.isEnabled())
+            self.assertTrue(dialog.choose.isEnabled())
+            self.assertTrue(dialog.neither.isEnabled())
+            self.assertTrue(dialog.cancel_preview.isEnabled())
+            self.assertIn("remain available", dialog.action_reason.text())
+
     def test_close_is_deferred_during_checksum_work(self):
         with TemporaryDirectory() as directory:
             audit = self.create_audit(Path(directory))
@@ -157,6 +278,22 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             dialog.closeEvent(event)
 
             self.assertFalse(event.isAccepted())
+            self.assertIn("Close deferred", dialog.status.text())
+
+    def test_close_is_deferred_during_preview_generation(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            service = _PreviewService(audit)
+            dialog = FailureReferenceAuditDialog(
+                audit, preview_service_factory=lambda _audit: service
+            )
+            dialog._preview_active = True
+            event = QCloseEvent()
+
+            dialog.closeEvent(event)
+
+            self.assertFalse(event.isAccepted())
+            self.assertEqual(service.close_calls, 0)
             self.assertIn("Close deferred", dialog.status.text())
 
     def test_status_is_read_only_and_does_not_create_qt_state(self):

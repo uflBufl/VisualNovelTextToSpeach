@@ -1,7 +1,11 @@
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+import numpy as np
 
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.failure_reference_audit import (
@@ -11,6 +15,94 @@ from vntts.authoring.failure_reference_audit import (
     publish_failure_reference_audit,
     record_failure_reference_decision,
 )
+from vntts.authoring.failure_reference_preview import (
+    FailureReferencePreviewCancelled,
+    FailureReferencePreviewService,
+)
+from vntts.synthesis import (
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisResult,
+    SynthesisTiming,
+)
+
+
+class _CollectedResult:
+    def __init__(self, result_factory):
+        self.result_factory = result_factory
+
+    def collect(self):
+        return self.result_factory()
+
+
+class _PreviewBackend:
+    def __init__(self, name, registry, model_name, cancellation, *, on_render=None):
+        self.name = name
+        self.registry = registry
+        self.model_name = model_name
+        self.cancellation = cancellation
+        self.on_render = on_render
+        self.requests = []
+        self.stop_calls = 0
+
+    def render(self, request):
+        self.requests.append(request)
+
+        def result():
+            if self.on_render is not None:
+                self.on_render(self, request)
+            completion = (
+                SynthesisCompletion.CANCELLED
+                if request.cancellation_requested()
+                else SynthesisCompletion.COMPLETE
+            )
+            return SynthesisResult(
+                pcm=np.full((800, 1), 0.2, dtype=np.float32),
+                sample_rate=16_000,
+                completion=completion,
+                limits=SynthesisLimits(100, 2.0),
+                timing=SynthesisTiming(10.0, 20.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=800,
+                ),
+            )
+
+        return _CollectedResult(result)
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class _PreviewBackendFactory:
+    def __init__(self, *, on_render=None):
+        self.on_render = on_render
+        self.backends = []
+
+    def __call__(
+        self,
+        name,
+        registry,
+        _cache_root,
+        *,
+        model_name=None,
+        startup_cancellation=None,
+        **_options,
+    ):
+        backend = _PreviewBackend(
+            name,
+            registry,
+            model_name,
+            startup_cancellation,
+            on_render=self.on_render,
+        )
+        self.backends.append(backend)
+        return backend
 
 
 class FailureReferenceAuditTest(unittest.TestCase):
@@ -150,6 +242,119 @@ class FailureReferenceAuditTest(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True))
             with self.assertRaisesRegex(FailureReferenceAuditError, queue_id):
                 load_failure_reference_audit(output)
+
+    def test_preview_is_ephemeral_exact_and_cached_for_the_dialog_lifetime(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            document = json.loads((output / "audit.json").read_text())
+            group = document["groups"][0]
+            candidate = group["candidates"][0]
+            text = group["cases"][0]["text"]
+            state_path = workspace / "generated-audio/generation-state.json"
+            state_before = state_path.read_bytes()
+            factory = _PreviewBackendFactory()
+            service = FailureReferencePreviewService(output, backend_factory=factory)
+
+            first = service.generate(group["group_id"], candidate["candidate_id"], text)
+            second = service.generate(
+                group["group_id"], candidate["candidate_id"], text
+            )
+            reference = (
+                factory.backends[0]
+                .registry.resolve(f"Reference candidate {candidate['sha256'][:16]}")
+                .references[0]
+            )
+            service.close()
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(factory.backends), 1)
+            self.assertEqual(len(factory.backends[0].requests), 1)
+            self.assertEqual(first.backend, "moss-tts")
+            self.assertEqual(first.generation_profile, "stable")
+            self.assertEqual(first.seed, 0)
+            self.assertTrue(first.payload.startswith(b"RIFF"))
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertFalse((output / "decisions.json").exists())
+            self.assertFalse(reference.exists())
+            self.assertEqual(factory.backends[0].stop_calls, 1)
+
+    def test_preview_revalidates_candidate_after_render(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            document = json.loads((output / "audit.json").read_text())
+            group = document["groups"][0]
+            candidate = group["candidates"][0]
+            audio = output / candidate["audio"]
+
+            def tamper(_backend, _request):
+                audio.write_bytes(b"changed during preview")
+
+            service = FailureReferencePreviewService(
+                output, backend_factory=_PreviewBackendFactory(on_render=tamper)
+            )
+            with self.assertRaisesRegex(FailureReferenceAuditError, "audio changed"):
+                service.generate(
+                    group["group_id"],
+                    candidate["candidate_id"],
+                    group["cases"][0]["text"],
+                )
+            service.close()
+
+    def test_preview_cancellation_has_no_audio_or_authoring_write(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            document = json.loads((output / "audit.json").read_text())
+            group = document["groups"][0]
+            candidate = group["candidates"][0]
+            state_path = workspace / "generated-audio/generation-state.json"
+            state_before = state_path.read_bytes()
+            entered = threading.Event()
+
+            def wait_for_cancel(_backend, request):
+                entered.set()
+                deadline = time.monotonic() + 2.0
+                while (
+                    not request.cancellation_requested() and time.monotonic() < deadline
+                ):
+                    time.sleep(0.005)
+
+            service = FailureReferencePreviewService(
+                output,
+                backend_factory=_PreviewBackendFactory(on_render=wait_for_cancel),
+            )
+            errors = []
+
+            def generate():
+                try:
+                    service.generate(
+                        group["group_id"],
+                        candidate["candidate_id"],
+                        group["cases"][0]["text"],
+                    )
+                except Exception as error:  # noqa: BLE001 - asserted below
+                    errors.append(error)
+
+            worker = threading.Thread(target=generate)
+            worker.start()
+            self.assertTrue(entered.wait(1.0))
+            service.cancel()
+            worker.join(2.0)
+            service.close()
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], FailureReferencePreviewCancelled)
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertFalse((output / "decisions.json").exists())
 
 
 if __name__ == "__main__":

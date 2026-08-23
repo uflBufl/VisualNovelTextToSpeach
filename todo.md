@@ -10,8 +10,8 @@ sections after their implementation has been verified and committed.
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
-- [ ] Review the published version-2 operator task for all 29
-      reference-comparison failures at
+- [ ] Publish a new immutable selected reference/control binding for all 29
+      reference-comparison failures from the completed version-2 audit at
       `authoring/review-bundles/current-character-story-reference-audit-v2`
       (audit ID
       `52fc3aa6e545109b79bbce7f1842ae5f1428c2f467521f362b3b09832f53223e`).
@@ -22,20 +22,17 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       exact control
       groups: three blinded Centurion candidates for 23 Narrator cases, three
       blinded Rhiannon candidates for four cases, and one exact candidate each
-      for Aderyn and Poacher. Run `uv run vntts-reference-audit AUDIT_DIRECTORY`:
-      it plays copied checksum-bound bytes without exposing source names,
-      offers every opaque candidate plus `Neither candidate is acceptable`, and
-      saves in a background worker without disabling playback. After all four
-      decisions, inspect the canonical decision-set ID and private mapping. The
-      2026-08-22 read-only census found 0/4 group decisions, so this task still
-      requires a complete operator pass. The
-      UI requires every candidate in the current group to reach end of playback
-      before either candidate or Neither becomes available; affected line IDs
-      remain collapsed unless technical detail is requested. Check progress
-      without opening Qt using
-      `uv run vntts-reference-audit AUDIT_DIRECTORY --status`. After all groups,
-      these decisions are reference evidence only. Publish a new explicit
-      selected reference/control binding before any regeneration.
+      for Aderyn and Poacher. Read-only reconciliation on 2026-08-23 is terminal
+      `4/4` with decision-set ID
+      `fc519819f6f7a30fc0474199ac12d9192a9a9e0fd9b855b1f1c70888b5424893`.
+      The exact private mapping selects Rhiannon `references/base/01/01.wav`,
+      the sole Aderyn anchor, the sole Poacher anchor and Centurion
+      `references/narrator/01.ogg`; their hashes are recorded in
+      `docs/current-character-story-completion.md`. Validate that every selected
+      source still matches its audit hash, publish a no-replace binding tied to
+      the audit and decision-set identities, and create a new config-addressed
+      workspace before regeneration. Do not mutate the current manifest,
+      generation state or completed audit decisions.
 - [ ] Generate newly unblocked reference lines under immutable controls as
       references become available, then apply the same risk-based cohort review
       and exact outcome merge. The previous ten ready lines are complete: one

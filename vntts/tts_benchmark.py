@@ -63,10 +63,16 @@ def create_backend(
     narrator_reference=None,
     moss_streaming_first_chunk_frames=None,
     moss_streaming_interval=None,
+    startup_cancellation=None,
 ):
     cache_root = Path(cache_root)
     common = {
         "persistent_audio_cache_directory": cache_root / "audio",
+        **(
+            {"startup_cancellation": startup_cancellation}
+            if startup_cancellation is not None
+            else {}
+        ),
         **(
             {"narrator_reference": narrator_reference}
             if narrator_reference is not None

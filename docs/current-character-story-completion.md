@@ -218,10 +218,38 @@ collapsed by default, records a session-local heard ledger and enables the
 candidate/Neither decisions only after every candidate in the current group
 reaches end of playback. Navigation and playback remain available outside the
 short background decision commit.
+The operator completed all four groups on 2026-08-23. Read-only reconciliation
+reports `4/4`, zero remaining groups and canonical decision-set ID
+`fc519819f6f7a30fc0474199ac12d9192a9a9e0fd9b855b1f1c70888b5424893`.
+Unblinding against the exact mode-0600 key selected Rhiannon
+`references/base/01/01.wav` (`5bb83cc7...`), the sole Aderyn anchor
+(`cc3d4d1d...`), the sole Poacher anchor (`42c1ccbf...`) and Centurion
+`references/narrator/01.ogg` (`ddcef063...`). These are complete reference
+decisions for all 29 cases, but they are still evidence rather than a voice
+manifest/control binding or regeneration authority.
 `vntts-reference-audit AUDIT_DIRECTORY --status` performs the same public/key/
 decision validation without constructing a Qt application or writing a missing
 `decisions.json`; it reports the audit ID, completed/remaining group counts and
 the canonical decision-set ID when decisions exist.
+
+The reference-audit dialog also offers an optional generated sample for the
+current opaque candidate and one exact affected line. It renders in a
+background worker with the workspace backend, model and generation profile,
+deterministic seed zero and bypassed persistent audio cache. Candidate bytes
+are copied from a read-once SHA-256-verified payload into a private ephemeral
+directory; generated PCM is normalized to mono and replayed from immutable WAV
+bytes. The dialog keeps only a lifetime-local memory cache, revalidates the
+candidate and complete audit after rendering, supports request cancellation and
+shuts down its isolated model worker on close. It never writes generation
+state, a manifest, binding or audit decision. Hearing or liking the generated
+sample therefore informs, but never performs, the separate source-reference
+decision.
+An exact real-model smoke on 2026-08-23 used the selected Rhiannon candidate,
+the shortest affected line (`That's not. I wasn't trying to—!`), the bound
+local MOSS model, stable profile and seed zero. It completed at 48 kHz and
+produced a 453,164-byte ephemeral WAV with SHA-256
+`7984b3e013a91a8905c4a5df784357a522d51e45a9b8deb3e404b641d9237a98`;
+the service then shut down and retained no preview file or authoring write.
 
 `vntts-pregenerate pending-resolution-plan WORKSPACE --output PLAN.json`
 atomically publishes a no-replace canonical plan for the cohort-blocked pending
