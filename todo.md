@@ -90,6 +90,14 @@ Follow the evidence-backed order and invariants in
       approved-only manifest. Review new WAVs through a checksum-bound bundle,
       merge only terminal decisions, and leave generation, review and final-pack
       publication as separate transactions.
+      The first exact 12-item successor produced no WAV. Its corrected
+      read-only projection is now six exact different-backend fallbacks, one
+      final bounded MOSS seed, four reference comparisons and one inline-pause
+      comparison; a failed sentence segmentation cannot be planned or executed
+      twice. Publish a Pocket successor for only those six fallback IDs; keep
+      the four reference-comparison items unrendered; and treat the bounded seed
+      and inline-pause items as separate one-ID comparisons rather than part of
+      the fallback batch.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

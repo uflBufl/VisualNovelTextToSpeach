@@ -353,6 +353,22 @@ workspace and left all source histories unchanged. It did not run generation
 or publish a final game pack. The seven failed sentence repairs and three
 untouched Narrator investigations remain blocked on a new bounded hypothesis.
 
+The first exact failure-tail successor then selected only the 11 planner-safe
+sentence segmentations and one final provider-local bounded seed from the
+merged history. It ran with `retries=0`, base seed zero and produced no WAV:
+seven outcomes remained typed `missed_eos_audio_limit` and five remained typed
+`speech_silence`. The successor is idle with no lease or partial file, its
+authoritative state SHA-256 is
+`40b4a1637bec4fcea5fcd66002313f641d568cb9cfaac3de7788dfe5bc85d554`,
+all 329 unrelated state records and all 197 pre-existing WAVs match the dry-run
+twin, and the source history remains byte-identical. Its empty approved manifest
+is correct for an isolated repair workspace; the 190 approvals remain in the
+source history and were not copied or changed. The corrected read-only planner
+uses the retained repair records to classify the exact tail as six
+different-backend fallbacks, one final bounded MOSS seed, four reference
+comparisons and one inline-pause comparison. It never authorizes the same failed
+segmentation again or bypasses the three-attempt Pocket fallback gate.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

@@ -148,6 +148,17 @@ up to a cumulative provider maximum of three. Cross-backend Pocket fallback
 keeps the stricter exhausted-attempt and Pocket default requirements below.
 Same-backend and cross-backend strategies cannot share one workspace.
 
+The failure report projects the validated `failure_repair` record from both
+successful and failed outcomes. A failed sentence-boundary segmentation is
+terminal for that strategy and cannot be selected a second time. A segmented
+`missed_eos_audio_limit` outcome uses its one remaining bounded provider attempt
+when fewer than three were consumed, then advances to the different-backend
+fallback only after all three are exhausted. A segmented `speech_silence`
+outcome advances to reference comparison because changing the backend is not
+sufficient evidence that the voice or silence problem is safe to repair
+automatically. Launch validation rejects an identical second segmentation
+before rendering or changing authoritative state.
+
 The inline-pause comparison is MOSS-only, accepts exactly one queue ID per run,
 and records the original text hash, derived prompt hash, marker count, pause
 value and synthesis-control digest. It remains bounded to three cumulative

@@ -1824,6 +1824,151 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             manifest["entries"][0]["failure_repair"], result["failure_repair"]
         )
 
+    def test_failed_sentence_repair_transitions_and_cannot_repeat(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(
+                    [SynthesisCompletion.LIMITED, SynthesisCompletion.LIMITED]
+                ),
+                retries=1,
+                seed=0,
+            )
+            policy = FailureRepairPolicy((item["queue_id"],))
+            repair_renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            failed = self.run_generation(
+                queue,
+                output,
+                repair_renderer,
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(failed.state, queue)
+            stored = state["items"][item["queue_id"]]
+            report = generation_failure_report(failed.state, queue)
+            plan = generation_failure_repair_plan(failed.state, queue)
+            before = failed.state.read_bytes()
+            repeated_renderer = SyntheticRenderer()
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "Sentence repair already failed"
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    repeated_renderer,
+                    retries=0,
+                    seed=0,
+                    include_queue_ids=[item["queue_id"]],
+                    failure_repair_policy=policy,
+                )
+            after = failed.state.read_bytes()
+            published_wavs = list((output / "audio").rglob("*.wav"))
+
+        self.assertEqual(failed.generated, 0)
+        self.assertEqual(stored["status"], "failed")
+        self.assertEqual(
+            stored["failure_repair"]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(
+            report["records"][0]["failure_repair"], stored["failure_repair"]
+        )
+        self.assertEqual(
+            plan["records"][0]["attempted_repair_strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(plan["records"][0]["action"], "offline_fallback_backend")
+        self.assertEqual(after, before)
+        self.assertEqual(repeated_renderer.requests, [])
+        self.assertEqual(published_wavs, [])
+
+    def test_failed_sentence_repair_keeps_last_bounded_provider_attempt(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+            )
+            policy = FailureRepairPolicy((item["queue_id"],))
+            repaired = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(repaired.state, queue)
+            stored = state["items"][item["queue_id"]]
+            plan = generation_failure_repair_plan(repaired.state, queue)
+
+        self.assertEqual(stored["attempts_by_provider"], {"synthetic": 2})
+        self.assertEqual(
+            stored["failure_repair"]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(plan["records"][0]["action"], "bounded_seed_retry")
+
+    def test_failed_silent_sentence_repair_requires_reference_comparison(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The first warning is clear. The second warning is equally clear."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            tone = audio_samples()
+            failed_pcm = np.concatenate(
+                (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+            )
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(pcm=failed_pcm),
+                retries=0,
+                seed=0,
+            )
+            policy = FailureRepairPolicy((item["queue_id"],))
+            repaired = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(pcm=failed_pcm),
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(repaired.state, queue)
+            stored = state["items"][item["queue_id"]]
+            plan = generation_failure_repair_plan(repaired.state, queue)
+
+        self.assertEqual(repaired.generated, 0)
+        self.assertEqual(stored["failure"]["kind"], "speech_silence")
+        self.assertEqual(
+            stored["failure_repair"]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(plan["records"][0]["action"], "reference_comparison")
+
     def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

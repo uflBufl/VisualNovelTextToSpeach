@@ -1024,6 +1024,7 @@ def generation_failure_report(state_path, queue_path):
                 "seed": result.get("seed"),
                 "last_error": result.get("last_error"),
                 "failure": failure,
+                "failure_repair": copy.deepcopy(result.get("failure_repair")),
             }
         )
     records.sort(key=lambda value: value["queue_id"])
@@ -1094,6 +1095,12 @@ def generation_failure_repair_plan(state_path, queue_path):
         failure = record["failure"]
         kind = failure["kind"]
         attempts = record["attempts"]
+        previous_repair = record.get("failure_repair")
+        previous_strategy = (
+            previous_repair.get("strategy")
+            if isinstance(previous_repair, dict)
+            else None
+        )
         if not _failure_has_bound_synthesis_controls(record):
             action = "provenance_recovery_or_regeneration"
             reason = (
@@ -1101,6 +1108,35 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "synthesis-control provenance; recover immutable evidence or regenerate "
                 "under current controls before selecting a repair"
             )
+        elif previous_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            if kind == "missed_eos_audio_limit":
+                provider_attempts = record["attempts_by_provider"].get(
+                    record["provider"], attempts
+                )
+                if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+                    action = "bounded_seed_retry"
+                    reason = (
+                        "sentence segmentation failed, but one bounded "
+                        "current-provider attempt remains"
+                    )
+                else:
+                    action = "offline_fallback_backend"
+                    reason = (
+                        "bounded sentence segmentation failed and current-provider "
+                        "attempts are exhausted"
+                    )
+            elif kind == "speech_silence":
+                action = "reference_comparison"
+                reason = (
+                    "segmented output still failed the speech-silence gate and "
+                    "requires listening and reference audit"
+                )
+            else:
+                action = "backend_diagnosis"
+                reason = (
+                    "sentence segmentation already failed with an unrelated typed "
+                    "backend outcome"
+                )
         elif kind == "missed_eos_audio_limit":
             provider_attempts = record["attempts_by_provider"].get(
                 record["provider"], attempts
@@ -1170,6 +1206,7 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "failure_kind": kind,
                 "attempts": attempts,
                 "seed": record["seed"],
+                "attempted_repair_strategy": previous_strategy,
                 "action": action,
                 "reason": reason,
             }
@@ -1222,6 +1259,14 @@ def _validate_failure_repair_selection(
         failure = normalized_failure_record(result, text=item.text)
         strategy = policy.strategy_for(queue_id)
         if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            previous_repair = result.get("failure_repair")
+            if (
+                isinstance(previous_repair, dict)
+                and previous_repair.get("strategy") == SENTENCE_BOUNDARY_SEGMENTATION
+            ):
+                raise BulkGenerationError(
+                    f"Sentence repair already failed for {queue_id!r}"
+                )
             if not _sentence_repair_matches_failure(failure, item.text):
                 raise BulkGenerationError(
                     f"Sentence repair no longer matches failure {queue_id!r}"
