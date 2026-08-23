@@ -105,6 +105,16 @@ Follow the evidence-backed order and invariants in
       Keep the four reference-comparison items unrendered and treat the
       inline-pause item as a separate one-ID comparison rather than part of the
       fallback batch.
+- [ ] Recalibrate review-only silence attention after the seven-WAV Pocket
+      bundle is terminal. At least one item currently labelled `notable
+      silence` was explicitly judged by the listener to contain no abnormal
+      pause, so treat that label as advisory during this review rather than as
+      rejection evidence. Preserve the strict publication safety checks; use
+      the checksum-bound accepted/rejected examples to measure false positives,
+      adjust only the review-risk thresholds or feature definition, and make
+      the UI say that technical attention is a non-blocking diagnostic. Add
+      regressions proving a natural accepted pause is not presented as a likely
+      defect while genuinely long internal silence remains visible.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 
