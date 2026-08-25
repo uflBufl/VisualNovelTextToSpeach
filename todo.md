@@ -3,6 +3,44 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
+## P0 - Harden authoring reconciliation and review surfaces
+
+Complete this block before using a reconciliation report as final merge
+authority. Preserve read-only behavior and do not mutate any workspace, bundle,
+quality-review or app-data authority while validating the implementation.
+
+- [ ] Reconcile the immutable original item scope of every bundle source, even
+      after completed cohorts disappear from the current resumable projection.
+      Detect conflicting `approved`, `rejected` and explicit live-fallback
+      terminal authorities by full queue-record identity, not queue ID alone.
+      Add exact completed-secondary, partial-bundle, fallback-conflict and
+      changed-record regressions, then rebuild the current read-only report only
+      after the implementation is committed and clean.
+- [ ] Replace path-reopened reconciliation semantics with exact read-once typed
+      authority snapshots, retain the final source-rehash gate, reject symlink
+      substitution, and fully validate the published reconciliation wire
+      document: required fields, nested types, enums, SHA-256 values, unique
+      identities and summary/count consistency. A self-consistent but incomplete
+      document must fail public load.
+- [ ] Keep cohort navigation live during playback while crediting a completed
+      immutable WAV to its playback target even when the table selection moved.
+      Preserve the newer selection and add an exact navigation-during-playback
+      regression.
+- [ ] Distinguish normal `Refresh authority` from error-only `Retry workspace
+      load`, and show a truthful empty-review state instead of presenting a
+      successful workspace as a failed load. Cover successful empty, filtered
+      empty and failed projection states offscreen.
+- [ ] After correctness is green, extract only the shared public authority
+      primitives needed by reconciliation from private workbench/bulk helpers,
+      document the dependency direction, and remove the completed block from
+      this TODO. Keep the larger module decomposition and import-cycle cleanup
+      as separate backlog only if concrete residual work remains.
+
+Acceptance gates: focused adversarial tests, full unittest discovery, full Ruff
+lint and format checks, `uv lock --check`, `git diff --check`, clean worktree,
+and a read-only real report whose terminal conflict claim is derived from the
+preserved original bundle inventories.
+
 ## P0 - Reconcile and close the remaining Character Story authoring tail
 
 Complete this sweep in dependency order. Do not infer review decisions from an

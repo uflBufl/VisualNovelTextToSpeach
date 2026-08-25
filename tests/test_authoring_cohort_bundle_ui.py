@@ -3,6 +3,7 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -110,6 +111,42 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.mark_bad.isEnabled())
             self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
             self.assertIn("All 1 required samples", dialog.decision_help.text())
+
+    def test_navigation_during_playback_credits_target_and_keeps_new_selection(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            second_item = replace(
+                first.item,
+                queue_id=f"{first.item.queue_id}-second",
+                line_id=f"{first.item.line_id}-second",
+                text="A second immutable review sample.",
+            )
+            second = replace(first, item=second_item)
+            key = dialog._current_key()
+            dialog.samples_by_cohort[key] = (first, second)
+            dialog._show_current_cohort()
+
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog.table.selectRow(1)
+            self.assertEqual(
+                dialog._selected_sample().item.queue_id, second.item.queue_id
+            )
+            self.assertIsNotNone(dialog._playback_target)
+
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+            self.assertEqual(
+                dialog._selected_sample().item.queue_id, second.item.queue_id
+            )
+            self.assertIn(first.item.queue_id, dialog.heard[key])
+            self.assertNotIn(second.item.queue_id, dialog.heard[key])
+            self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertEqual(dialog.table.item(1, 0).text(), "Not heard")
 
     def test_bad_marker_blocks_accept_but_keeps_reject(self):
         with TemporaryDirectory() as directory:

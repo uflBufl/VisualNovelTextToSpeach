@@ -682,8 +682,6 @@ class CohortReviewBundleDialog(QDialog):
         return value if isinstance(value, CohortBundleSample) else None
 
     def _selection_changed(self):
-        if self._playback_target is not None:
-            self.stop_playback()
         self._update_selected_sample_details()
         self._update_actions()
 
@@ -764,20 +762,24 @@ class CohortReviewBundleDialog(QDialog):
             return
         workspace_id, cohort_id, queue_id, audio_sha256 = self._playback_target
         selected = self._selected_sample()
-        if (
-            selected is not None
-            and selected.workspace_id == workspace_id
-            and selected.cohort_id == cohort_id
-            and selected.item.queue_id == queue_id
-            and selected.item.authority is not None
-            and selected.item.authority.audio_sha256 == audio_sha256
-        ):
+        target = next(
+            (
+                sample
+                for sample in self.samples_by_cohort.get((workspace_id, cohort_id), ())
+                if sample.item.queue_id == queue_id
+                and sample.item.authority is not None
+                and sample.item.authority.audio_sha256 == audio_sha256
+            ),
+            None,
+        )
+        if target is not None:
             self.heard[(workspace_id, cohort_id)].add(queue_id)
-            self.status.setText(f"HEARD: {selected.item.line_id}")
+            self.status.setText(f"HEARD: {target.item.line_id}")
         self._playback_target = None
         self._discard_playback_buffer()
         self._show_current_cohort()
-        self._select_queue_id(queue_id)
+        if selected is not None:
+            self._select_queue_id(selected.item.queue_id)
 
     def _media_error(self, _error, message=""):
         self._playback_target = None

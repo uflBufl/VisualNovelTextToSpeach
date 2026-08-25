@@ -3854,6 +3854,11 @@ def _load_workspace_snapshot(workspace_directory, label):
     return directory, document, digest
 
 
+def load_workspace_authority(workspace_directory):
+    """Load one fully validated workspace from an exact document snapshot."""
+    return _load_workspace_snapshot(workspace_directory, "authority")
+
+
 def _copy_workspace_tree_snapshot(source, target, snapshots):
     if source.is_symlink() or not source.is_dir():
         raise AuthoringWorkbenchError("Outcome merge immutable input tree is invalid")
@@ -4303,6 +4308,24 @@ def _voice_readiness(
     return missing, ()
 
 
+def inspect_voice_readiness(
+    workspace,
+    spoken,
+    completed_ids,
+    manifest_path,
+    *,
+    directory=None,
+):
+    """Project exact missing-voice IDs through the workbench policy."""
+    return _voice_readiness(
+        workspace,
+        spoken,
+        completed_ids,
+        manifest_path,
+        directory=directory,
+    )
+
+
 def _workspace_control_reasons(workspace):
     run_config = workspace.get("run_config", {})
     missing = [
@@ -4375,6 +4398,11 @@ def _safe_relative(value, label):
     return Path(*pure.parts)
 
 
+def safe_workspace_relative_path(value, label):
+    """Validate one canonical POSIX-relative workspace path."""
+    return _safe_relative(value, label)
+
+
 def _within(root, relative, label):
     root = Path(root).resolve()
     path = (root / relative).resolve()
@@ -4383,6 +4411,11 @@ def _within(root, relative, label):
     except ValueError as error:
         raise AuthoringWorkbenchError(f"{label} leaves its owning directory") from error
     return path
+
+
+def contained_workspace_path(root, relative, label):
+    """Resolve one already validated relative path inside its owning root."""
+    return _within(root, relative, label)
 
 
 def _require_sha256(value, label):
@@ -4447,11 +4480,15 @@ __all__ = [
     "inspect_workspace",
     "inspect_collection_selection",
     "inspect_generation_readiness",
+    "inspect_voice_readiness",
     "immutable_history_timestamps",
     "list_workspace_collections",
     "list_review_items",
+    "load_workspace_authority",
     "prepare_review_audio",
     "review_selected_item",
     "review_workspace_item",
+    "safe_workspace_relative_path",
+    "contained_workspace_path",
     "workspace_voice_snapshot",
 ]

@@ -672,6 +672,10 @@ an older worker result is discarded and reloaded instead of reverting the new
 selection. A transient worker or projection failure clears stale controls but
 leaves `Retry workspace load` available for an explicit in-dialog recovery
 without requiring a file timestamp change.
+Normal successful projections instead label that control `Refresh authority`.
+A valid workspace with no review outcomes says that review is complete; an
+empty filtered projection says that no outcomes match the active filters.
+Neither successful state is presented as a failed workspace load.
 
 Read-only acceptance against the real 592-line workspace on 2026-08-17 returned
 the dialog constructor in 0.139 seconds while the 16.331-second full integrity
@@ -743,7 +747,10 @@ stay in one fixed row; their keyboard equivalents are `Ctrl+Alt+Left`,
 `Ctrl+Alt+R`, `Ctrl+Alt+S` and `Ctrl+Alt+Right`. Replay is available both before
 and after a sample has been heard and does not erase earlier listening evidence.
 Only an actual `EndOfMedia` event for the captured WAV bytes counts as heard;
-Stop, playback error, selection change and stale hashes do not. `Accept cohort`
+Stop, playback error and stale hashes do not. Navigation remains usable while
+audio plays: selecting another row does not stop the captured playback, and its
+eventual `EndOfMedia` credits the immutable playback target while preserving the
+newer table selection. `Accept cohort`
 remains disabled until every sample finishes, `Reject cohort` requires at least
 one finished sample, and `Expand sample` requires the complete current sample.
 Finish, Stop and media-error paths immediately restore replay/navigation and

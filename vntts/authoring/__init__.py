@@ -1,5 +1,13 @@
 """Offline VNTTS authoring and non-destructive legacy-work import."""
 
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import (
     AudioQuality,
     BulkGenerationError,
@@ -17,6 +25,7 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
     run_bulk_generation,
     sha256_control_path,
+    validate_generation_state_document,
 )
 from vntts.authoring.cohort_bundle import (
     COHORT_REVIEW_BUNDLE_SCHEMA,
@@ -29,6 +38,8 @@ from vntts.authoring.cohort_bundle import (
     load_cohort_review_bundle,
     load_cohort_review_bundle_samples,
     refresh_cohort_review_bundle,
+    validate_cohort_review_bundle_document,
+    validate_cohort_review_progress_document,
     write_cohort_review_bundle,
 )
 from vntts.authoring.cohort_review import (
@@ -267,6 +278,7 @@ from vntts.authoring.source_reference_quality import (
     publish_source_reference_quality_review,
     quality_review_progress,
     record_source_reference_quality_decision,
+    validate_source_reference_quality_review_document,
 )
 from vntts.authoring.source_reference_review import (
     SourceReferenceBindingsResult,
@@ -318,12 +330,16 @@ from vntts.authoring.workbench import (
     ImmutableHistoryTimestamp,
     WorkspaceCollection,
     WorkspaceVoice,
+    contained_workspace_path,
     create_failure_reference_workspace,
     failure_reference_runtime_binding,
     immutable_history_timestamps,
     inspect_collection_selection,
+    inspect_voice_readiness,
     list_workspace_collections,
+    load_workspace_authority,
     merge_workspace_outcomes,
+    safe_workspace_relative_path,
     workspace_voice_snapshot,
 )
 
@@ -331,6 +347,8 @@ __all__ = [
     "AUTHORING_RECONCILIATION_SCHEMA",
     "AUTHORING_RECONCILIATION_VERSION",
     "AudioQuality",
+    "AuthoritySnapshot",
+    "AuthoringAuthorityError",
     "AuthoringReconciliation",
     "AuthoringReconciliationError",
     "BOUNDED_SEED_RETRY",
@@ -594,4 +612,16 @@ __all__ = [
     "write_specialist_failure_plan",
     "write_voice_quality_gate",
     "write_voice_repair_comparison_plan",
+    "assert_authority_snapshot",
+    "canonical_document_sha256",
+    "capture_authority_file",
+    "contained_workspace_path",
+    "inspect_voice_readiness",
+    "load_workspace_authority",
+    "safe_workspace_relative_path",
+    "validate_cohort_review_bundle_document",
+    "validate_cohort_review_progress_document",
+    "validate_generation_state_document",
+    "validate_source_reference_quality_review_document",
+    "write_json_document_no_replace",
 ]

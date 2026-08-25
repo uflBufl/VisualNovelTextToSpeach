@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -224,8 +225,23 @@ def write_cohort_review_bundle(bundle, output_path):
 def load_cohort_review_bundle(path):
     """Load and validate one exact multi-workspace review bundle."""
     document = _load_document(path, "cohort review bundle")
-    document = _validated_bundle_document(document)
-    return CohortReviewBundle(document["bundle_id"], document)
+    return validate_cohort_review_bundle_document(document)
+
+
+def validate_cohort_review_bundle_document(document):
+    """Validate one already captured bundle document without reopening a path."""
+    validated = _validated_bundle_document(copy.deepcopy(document))
+    return CohortReviewBundle(validated["bundle_id"], validated)
+
+
+def validate_cohort_review_progress_document(document, original):
+    """Validate one already captured progress document against its publication."""
+    root = (
+        original
+        if isinstance(original, CohortReviewBundle)
+        else validate_cohort_review_bundle_document(original)
+    )
+    return _validated_progress_document(copy.deepcopy(document), root)
 
 
 def cohort_review_progress_path(publication):
@@ -286,7 +302,7 @@ def load_resumable_cohort_review_bundle(publication, *, persist=False):
         raise CohortReviewError("Cohort review progress cannot be a symlink")
     if progress.is_file():
         saved = _load_document(progress, "cohort review progress")
-        saved_bundle = _validated_progress_document(saved, original)
+        saved_bundle = validate_cohort_review_progress_document(saved, original)
         progress_current = saved_bundle.bundle_id == current.bundle_id
     if persist and not progress_current:
         write_cohort_review_progress(path, original, current)

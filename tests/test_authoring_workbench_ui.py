@@ -519,6 +519,20 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertIn("showing 1 of 1", dialog.review_scope.text())
 
+    def test_successful_empty_review_uses_refresh_not_retry_language(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.clear_authoring_state(workspace)
+
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+
+            self.assertIsNotNone(dialog.summary)
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertEqual(dialog.reload_authority.text(), "Refresh authority")
+            self.assertIn("Review complete", dialog.review_scope.text())
+            self.assertIn("no review outcomes", dialog.review_action_reason.text())
+
     def test_review_filters_are_explicit_and_empty_result_never_means_all(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -620,7 +634,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             dialog.review_search.setText("not present")
             self.assertEqual(dialog.review_table.rowCount(), 0)
-            self.assertIn("showing 0 of 4", dialog.review_scope.text())
+            self.assertIn("No outcomes match", dialog.review_scope.text())
             dialog.review_search.clear()
             dialog.exclude_narrator.setChecked(False)
             dialog.review_status.setCurrentText("Failed: audio limit")
@@ -1151,10 +1165,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertIsNone(dialog.summary)
             self.assertTrue(dialog.reload_authority.isEnabled())
+            self.assertEqual(dialog.reload_authority.text(), "Retry workspace load")
             self.assertIn("transient review worker failure", dialog.status.text())
             dialog.reload_authority.click()
 
             self.assertIsNotNone(dialog.summary)
+            self.assertEqual(dialog.reload_authority.text(), "Refresh authority")
             self.assertEqual(dialog._selected_review_item().queue_id, queue_id)
             self.assertTrue(dialog.approve.isEnabled())
 

@@ -775,7 +775,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reject = QPushButton("Reject (Ctrl+Backspace)")
         self.review_play = QPushButton("Replay (Ctrl+R)")
         self.review_stop = QPushButton("Stop selected audio")
-        self.reload_authority = QPushButton("Retry workspace load")
+        self.reload_authority = QPushButton("Refresh authority")
         self.retry_failed = QPushButton("Retry failed")
         self.generate = QPushButton("Generate ready lines")
         self.stop_generation = QPushButton("Stop generation")
@@ -1167,6 +1167,7 @@ class AuthoringWorkbenchDialog(QDialog):
             action.setEnabled(False)
             action.setToolTip(str(error))
         self.reload_authority.setEnabled(not self._projection_active)
+        self.reload_authority.setText("Retry workspace load")
         self.reload_authority.setToolTip("Retry authoritative workspace validation")
         self.stop_generation.setEnabled(
             self.process.state() != QProcess.ProcessState.NotRunning
@@ -1240,6 +1241,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.stop_generation.setEnabled(running)
         self.open_output.setEnabled(True)
         self.reload_authority.setEnabled(True)
+        self.reload_authority.setText("Refresh authority")
         self.reload_authority.setToolTip("Reload authoritative workspace state")
         self._update_review_actions(preserve_queue_id=True)
 
@@ -1882,10 +1884,23 @@ class AuthoringWorkbenchDialog(QDialog):
                 self.review_table.setCurrentCell(row, 0)
         finally:
             self.review_table.blockSignals(False)
-        self.review_scope.setText(
-            f"Independent review scope: showing {len(self._filtered_reviews)} of "
-            f"{len(self._all_reviews)} outcomes. Generation collection selection does not filter this list."
-        )
+        if not self._all_reviews:
+            scope = (
+                "Review complete: this workspace has no generated, approved, "
+                "rejected or failed outcomes to display."
+            )
+        elif not self._filtered_reviews:
+            scope = (
+                f"No outcomes match the active review filters; "
+                f"{len(self._all_reviews)} outcomes exist in this workspace."
+            )
+        else:
+            scope = (
+                f"Independent review scope: showing {len(self._filtered_reviews)} of "
+                f"{len(self._all_reviews)} outcomes. Generation collection selection "
+                "does not filter this list."
+            )
+        self.review_scope.setText(scope)
         self._update_review_actions(preserve_queue_id=True)
 
     def open_specialist_reviewer(self):
@@ -2131,7 +2146,12 @@ class AuthoringWorkbenchDialog(QDialog):
         elif self._playback_prepare_active:
             reason = "Preparing replay: validating and copying exact WAV bytes"
         elif selected is None:
-            reason = "Review disabled: select a generated or approved outcome"
+            if not self._all_reviews:
+                reason = "Review complete: no review outcomes exist in this workspace"
+            elif not self._filtered_reviews:
+                reason = "Review disabled: no outcomes match the active filters"
+            else:
+                reason = "Review disabled: select a generated or approved outcome"
         elif running:
             reason = "Review disabled: another generation process owns the state lease"
         elif selected.status not in {"generated", "approved"}:

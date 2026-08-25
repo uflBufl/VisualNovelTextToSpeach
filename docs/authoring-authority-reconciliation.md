@@ -17,21 +17,43 @@ uv run --no-sync vntts-authoring-reconcile \
 
 The primary workspace contributes its complete spoken generation inventory.
 Other workspaces are admitted only through a current v2 bundle and contribute
-only items in that bundle's current successor. Completed bundle sources remain
-in the workspace ledger for provenance but do not reopen terminal work. Older
-bundle schemas and unrelated JSON documents are ignored. A queue item appearing
-under two distinct current bundle authorities fails the run rather than being
-merged by filename or chronology.
+the immutable item inventory of the original publication, not merely the
+remaining successor. A completed cohort disappears from the operator's current
+sample list, but its exact source item remains in reconciliation scope so a
+later approved, rejected or explicit-fallback authority cannot be lost. Older
+bundle schemas and unrelated JSON documents are ignored. A queue ID appearing
+with different full queue-record hashes or conflicting terminal authorities is
+reported as a conflict rather than merged by filename or chronology.
 
 Source-quality reviews are explicit arguments because the application-data root
 may retain old, superseded, but still internally valid pending sessions. Folder
 presence and an old `completed_count` cannot establish current product scope.
 
-Every workspace is loaded by the authoring workbench validation path. Queue,
-state, generated manifest and every reported pending WAV are hash-bound; current
-bundles and quality reviews also run their full public validators. All observed
-files are rehashed once more before the report ID is calculated. A concurrent
-change fails the run. The output is published with no-replace semantics.
+Every workspace is loaded by the authoring workbench validation path. Queue and
+state semantics are parsed from captured bytes, while workspace, selected voice
+manifest, voice controls, generated manifest and every in-scope generated WAV
+are hash-bound. Cohort publications, mutable progress and quality reviews are
+also parsed from captured documents through their public validators. Missing
+state, manifest and progress paths are bound as absences, and the bundle
+directory inventory is checked again. All observed files are rehashed before
+the report ID is calculated; symlink substitution or a concurrent appearance,
+removal or byte change fails the run. The output uses shared no-replace
+publication semantics.
+
+The public report reader validates the complete version-1 wire document:
+required top-level and nested fields, canonical paths and identities, enums,
+lowercase SHA-256 values, unique workspace/action/conflict identities and every
+summary/count equation. Recomputing `report_id` does not make an incomplete or
+internally inconsistent document valid. Historical version-1 documents using
+the older `current_bundle_items_only` scope remain readable, but new reports
+emit `original_bundle_items_only` and should replace them for final merge
+planning.
+
+The dependency direction is intentionally one-way: reconciliation consumes the
+shared public `authoring.authority` snapshot/hash/no-replace primitives and the
+public captured-document validators from cohort, quality, generation-state and
+workbench modules. The authority module depends only on the standard library;
+it never imports a UI, workspace or synthesis implementation.
 
 The item-level next actions are deliberately conservative:
 
@@ -57,10 +79,10 @@ merge winner.
 
 ## Current Character Story evidence
 
-The 2026-08-25 run used merged workspace
+The original 2026-08-25 run used merged workspace
 `resume-395a5e5eec0327a3a793b66d-cd54b7632c220de2`, all seven current v2 bundle
-publications, and exactly the Mrs. Owen and Hotelier quality cards. The final
-report is
+publications, and exactly the Mrs. Owen and Hotelier quality cards. That
+historical report is
 `authoring/reconciliations/current-character-story-20260825-04d09414e72e.json`:
 
 - report ID:
@@ -68,12 +90,14 @@ report is
 - file SHA-256:
   `6001eb61656b88a915c1e3a7ba93a78e63351fc39d4a1a0c7ba535620b18c014`;
 - 28 provenance workspaces and seven current bundle publications validated;
-- zero conflicting terminal authorities;
+- zero conflicts under the historical current-successor scope;
 - 25 exact current cohort-review items;
 - two explicitly current source-quality decisions, Mrs. Owen and Hotelier;
 - 129 primary pending WAVs requiring a risk-based review plan, not listen-all;
 - 15 primary failures requiring a new bounded hypothesis;
 - 164 primary lines requiring an exact source reference or explicit fallback.
 
-The report is planning evidence only. It does not authorize the final manifest
-until terminal decisions and supported fallbacks cover the selected game pack.
+It remains readable for provenance, but it must not be treated as the final
+merge claim until rebuilt with the original-publication scope. Any report is
+planning evidence only: it does not authorize the final manifest until terminal
+decisions and supported fallbacks cover the selected game pack.

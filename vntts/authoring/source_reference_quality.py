@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -388,6 +389,13 @@ def load_source_reference_quality_review(path):
     """Load and fully validate one self-contained quality review."""
     path = Path(path).expanduser().resolve()
     _payload, session = _read_json(path, "source-reference quality review")
+    return validate_source_reference_quality_review_document(session, path.parent)
+
+
+def validate_source_reference_quality_review_document(document, root):
+    """Validate captured quality-review semantics against one artifact root."""
+    session = copy.deepcopy(document)
+    path = Path(root).expanduser().resolve() / "review.json"
     if (
         session.get("schema") != QUALITY_REVIEW_SCHEMA
         or session.get("schema_version") != QUALITY_REVIEW_VERSION
@@ -982,6 +990,7 @@ __all__ = [
     "publish_source_reference_quality_review",
     "quality_review_progress",
     "record_source_reference_quality_decision",
+    "validate_source_reference_quality_review_document",
 ]
 
 

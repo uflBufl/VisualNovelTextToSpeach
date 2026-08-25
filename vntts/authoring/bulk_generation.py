@@ -983,6 +983,23 @@ def load_generation_state(state_path, queue_path=None):
     return state
 
 
+def validate_generation_state_document(
+    document,
+    output_directory,
+    queue,
+    queue_sha256,
+):
+    """Validate captured state semantics without reopening its JSON path."""
+    state = copy.deepcopy(document)
+    _validate_state_document(
+        state,
+        Path(output_directory).expanduser().resolve(),
+        queue,
+        queue_sha256,
+    )
+    return state
+
+
 def generation_failure_report(state_path, queue_path):
     """Project current and legacy failures into stable, actionable cohorts."""
     state_path = Path(state_path).expanduser().resolve()
