@@ -286,6 +286,108 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         return report, review, story
 
+    def test_v2_unrouted_media_uses_fixed_corpus_without_invented_transcript(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            report_document = json.loads(report.read_text(encoding="utf-8"))
+            report_document["schema_version"] = 2
+            for index, candidate in enumerate(report_document["candidates"], start=1):
+                candidate["candidate_origin"] = "exact_bank_unrouted_media"
+                candidate["source_event_ids"] = [10_000 + index]
+                candidate["source_lines"] = []
+            report.write_text(
+                json.dumps(report_document, sort_keys=True), encoding="utf-8"
+            )
+            review_document = json.loads(review.read_text(encoding="utf-8"))
+            review_document["candidate_report_sha256"] = hashlib.sha256(
+                report.read_bytes()
+            ).hexdigest()
+            evidence_by_key = {}
+            for candidate in report_document["candidates"]:
+                key = candidate_key(
+                    candidate["character"],
+                    candidate["portrait"],
+                    candidate["source_bank"],
+                    candidate["media_id"],
+                    candidate["reference_sha256"],
+                )
+                evidence_by_key[key] = hashlib.sha256(
+                    json.dumps(
+                        candidate,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+            for decision in review_document["decisions"]:
+                decision["candidate_evidence_sha256"] = evidence_by_key[
+                    decision["candidate_key"]
+                ]
+            review.write_text(
+                json.dumps(review_document, sort_keys=True), encoding="utf-8"
+            )
+
+            plan = import_source_reference_review(report, review, story, root / "plan")
+            plan_document = load_source_reference_plan(plan.directory)
+            evaluation = publish_source_reference_evaluation(
+                plan.directory, root / "evaluation"
+            )
+            comparison = json.loads(
+                (evaluation.directory / "comparison.json").read_text(encoding="utf-8")
+            )
+            generation = run_bulk_generation(
+                evaluation.directory / "queue.jsonl",
+                root / "generation",
+                EvaluationRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            quality = publish_source_reference_quality_review(
+                plan.directory,
+                evaluation.directory,
+                generation.state,
+                root / "quality",
+            )
+            session = load_source_reference_quality_review(quality.session)
+
+            self.assertEqual(evaluation.queue_items, 6)
+            self.assertTrue(
+                all(
+                    reference["candidate_origin"] == "exact_bank_unrouted_media"
+                    and not reference["source_transcripts"]
+                    and reference["source_event_ids"]
+                    for cluster in plan_document["clusters"]
+                    for reference in cluster["references"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    "source_match_queue_id" not in value
+                    for value in comparison["variants"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    len(card["generated_samples"]) == 3
+                    and {
+                        sample["evaluation_kind"]
+                        for sample in card["generated_samples"]
+                    }
+                    == {"fixed-1", "fixed-2", "fixed-3"}
+                    for card in session["variants"]
+                )
+            )
+            with self.assertRaisesRegex(
+                SourceReferenceReviewError, "fixed-corpus.*unrouted media"
+            ):
+                publish_source_reference_listening_reports(
+                    evaluation.directory,
+                    generation.state,
+                    root / "listening",
+                )
+
     def write_base_voice_manifest(self, root, *, include_rhiannon=False):
         reference = root / "base-references" / "centurion.wav"
         reference.parent.mkdir()

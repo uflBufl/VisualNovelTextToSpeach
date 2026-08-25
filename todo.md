@@ -45,16 +45,24 @@ Follow the evidence-backed order and invariants in
       quality decision before publishing a voice binding. Preserve the source
       bank/event/media IDs, decoded WAV SHA-256 and the explicit human identity
       decision; do not mutate the old `needs_sample` review or v4 binding.
-      Hotelier remains a separate evidence search: exhaust exact English
-      config/event aliases and every locally installed or archived asset index,
-      then check official game packages/version snapshots for the exact
-      `npcnoname327` role. Use Wiki or recorded story media only as discovery;
-      importing a clip requires exact story-role identity, one English speaker,
-      no music/SFX contamination, a stable source/revision URL, legal reuse and
-      checksum-bound bytes. Never assign by reused portrait `505401`, generic
-      NPC label or voice similarity. If no >=2-second exact candidate exists,
-      retain `needs_sample` or publish an explicit Hotelier-only Narrator
-      fallback instead of guessing. The expanded review
+      Hotelier is an expected source gap: this one-off role appears only in a
+      mostly unvoiced Character Story, and the exact installed bank is complete.
+      Do not search other game versions, public recordings, Wiki audio, reused
+      portrait `505401`, generic NPC labels or similar voices. Publish a
+      checksum-ledgered experiment from the five exact same-bank clips only;
+      if its generated-quality gate fails, retain `needs_sample` and prepare an
+      explicit Hotelier-only Narrator fallback instead of guessing. The
+      VNTTS importer must accept extractor candidate-report v2, preserve
+      candidate origin and exact Wwise event IDs, and evaluate unrouted media
+      on the fixed synthesis corpus without inventing a source-match transcript.
+      Bind the user's Mrs. Owen decision to the exact audition WAV hash; when a
+      fresh decoder produces equivalent but byte-different PCM, publish the
+      relationship and its objective comparison explicitly instead of silently
+      transferring approval to the new hash. Build the Hotelier composite only
+      from the five exact-bank references with a per-clip checksum ledger and
+      bounded edge-silence trimming; keep it experimental until generated audio
+      passes a separate quality review. The
+      expanded review
       is complete
       `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal
       Rhiannon decisions were carried into the new config-addressed workspace,

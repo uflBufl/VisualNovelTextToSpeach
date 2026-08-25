@@ -93,6 +93,12 @@ three base Rhiannon references and carried all 15 terminal Rhiannon decisions
 missing-reference cohort from 184 to 164 lines. Forty-one lower-priority source
 candidates remain unreviewed evidence, not implicit voice authority.
 
+Hotelier's complete exact bank contains five short clips totaling 5.009
+seconds. Because the role appears only once in this mostly unvoiced Character
+Story, no alternate-version or public-recording search is planned. One
+checksum-ledgered same-bank composite may be evaluated; if it fails, retain a
+Hotelier-only Narrator fallback rather than inventing identity evidence.
+
 The first exact-ID generation pass attempted all 73 bound items with seed 0 and
 no automatic retry. It produced 44 technically valid WAVs. A bounded second
 seed recovered eight of 15 eligible missed-EOS failures, and the third and

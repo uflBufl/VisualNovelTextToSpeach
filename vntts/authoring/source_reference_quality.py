@@ -210,36 +210,42 @@ def publish_source_reference_quality_review(
                 snapshots,
             )
 
-            queue_ids = [
-                _required_text(
-                    variant.get("source_match_queue_id"),
-                    f"variant {variant_id} source-match queue ID",
+            queue_ids = []
+            source_match_queue_id = variant.get("source_match_queue_id")
+            if source_match_queue_id is not None:
+                queue_ids.append(
+                    (
+                        "source-match",
+                        _required_text(
+                            source_match_queue_id,
+                            f"variant {variant_id} source-match queue ID",
+                        ),
+                    )
                 )
-            ]
             fixed = variant.get("fixed_queue_ids")
             if not isinstance(fixed, list):
                 raise SourceReferenceQualityError(
                     f"Variant {variant_id} fixed queue IDs must be a list"
                 )
             queue_ids.extend(
-                _required_text(value, f"variant {variant_id} fixed queue ID")
-                for value in fixed
+                (
+                    f"fixed-{index}",
+                    _required_text(value, f"variant {variant_id} fixed queue ID"),
+                )
+                for index, value in enumerate(fixed, start=1)
             )
-            if len(queue_ids) != len(set(queue_ids)):
+            if len(queue_ids) != len({queue_id for _kind, queue_id in queue_ids}):
                 raise SourceReferenceQualityError(
                     f"Variant {variant_id} queue IDs are duplicated"
                 )
             generated = []
             excluded = []
-            for item_index, queue_id in enumerate(queue_ids):
+            for item_index, (expected_kind, queue_id) in enumerate(queue_ids):
                 item = queue_by_id.get(queue_id)
                 if item is None:
                     raise SourceReferenceQualityError(
                         f"Variant {variant_id} queue item is absent: {queue_id}"
                     )
-                expected_kind = (
-                    "source-match" if item_index == 0 else f"fixed-{item_index}"
-                )
                 if (
                     item.document.get("reference_cluster_id") != cluster["cluster_id"]
                     or item.document.get("evaluation_kind") != expected_kind

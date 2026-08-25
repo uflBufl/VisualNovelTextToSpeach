@@ -66,25 +66,20 @@ Participant I, Librarian and Researcher. A same-bank composite could be tested
 only as an explicit experimental candidate with human listening; it is not an
 identity-supported automatic assignment.
 
-The first external discovery lead is the public Rhiannon Character Story guide
-linked from the Reverse: 1999 community post
-[`The You That's Meant To Be RHIANNON Puzzle Quest`](https://www.reddit.com/r/Reverse1999/comments/1vnb865/the_you_thats_meant_to_be_rhiannon_puzzle_quest/).
-Its linked video is `https://www.youtube.com/watch?v=i77DfLpUrGk`; the post
-marks `Honeyed Words` at 5:03, a chapter containing an exact Hotelier line in
-the local story index. This is only a location to inspect. It is not yet proof
-that the recording contains clean English dialogue, nor does the post grant
-reuse authority. A candidate taken from it must still satisfy the source,
-speaker, contamination, rights and checksum gates above.
+Hotelier is a one-off role in a mostly unvoiced Character Story. The complete
+five-media bank is therefore the expected source boundary, not evidence of a
+broken extraction. Other game versions are not expected to contain different
+voice material for this already complete bank. Public recordings, Wiki audio,
+other NPC banks and the reused portrait are deliberately outside the search
+boundary. The only remaining voice experiment is a provenance-preserving
+composite of these five exact clips; otherwise use a role-scoped fallback.
 
 ## Result
 
 Mrs. Owen now has one exact-bank, technically strong, human-accepted identity
 candidate. The next bounded step is a new immutable candidate plus a Mrs.
 Owen-only synthesis-quality evaluation. Hotelier remains evidence-blocked as a
-single-clip reference. Search exact config/event aliases and official asset
-versions first; separately evaluate the five-clip same-bank composite. Public
-story recordings or Wiki pages are discovery evidence only unless the exact
-English role, stable source/revision, clean single-speaker bytes and reuse terms
-can all be bound. Otherwise Hotelier must stay `needs_sample` or use an explicit
-per-role Narrator fallback. The audit does not justify selecting another
-portrait, performer or generic NPC bank.
+single-clip reference by design, not because another asset search is pending.
+Evaluate the five-clip exact-bank composite once; otherwise Hotelier must stay
+`needs_sample` or use an explicit per-role Narrator fallback. The audit does not
+justify selecting another version, portrait, performer or generic NPC bank.

@@ -14,11 +14,15 @@ uv run vntts-pregenerate import-reference-review \
   --output /new/source-reference-plan
 ```
 
-The importer supports extractor review v1 and v2. V1 requires the exact report
-SHA-256. V2 accepts only decisions whose candidate key, full candidate-evidence
-SHA-256 and reference SHA-256 still match; invalidated decisions are preserved
-as non-authoritative evidence. Report, review, story index and accepted WAVs are
-read and rechecked before atomic no-overwrite publication.
+The importer supports extractor candidate-report v1 and v2 and review v1 and
+v2. Candidate-report v2 preserves whether a medium came from a story-line route
+or from a complete exact-bank inventory and carries its exact Wwise event IDs.
+Unrouted media is valid only with an empty source-line list, so neither the
+extractor nor VNTTS invents dialogue text. Review v1 requires the exact report
+SHA-256. Review v2 accepts only decisions whose candidate key, full candidate-
+evidence SHA-256 and reference SHA-256 still match; invalidated decisions are
+preserved as non-authoritative evidence. Report, review, story index and
+accepted WAVs are read and rechecked before atomic no-overwrite publication.
 
 Each accepted cluster is keyed by the exact `(character, portrait, source_bank)`
 triple. References are copied into that cluster with their original candidate
@@ -42,13 +46,15 @@ uv run vntts-pregenerate build-reference-evaluation \
 ```
 
 The evaluation directory contains a synthetic voice manifest with exactly one
-accepted source WAV per variant, a generation queue with one source-matching
-transcript and three fixed sentences per variant, and `comparison.json` binding
-all paths and SHA-256 values. Variants are ordered by the number of affected
-queue lines. Generate into a separate output directory; do not put mutable state
-or rendered WAVs inside the immutable evaluation input directory. Source-match
-audio can then be compared blindly against its exact original, while fixed-text
-outputs compare cadence and pronunciation across variants.
+accepted source WAV per variant, three fixed sentences per variant, and
+`comparison.json` binding all paths and SHA-256 values. A story-routed variant
+also receives one source-matching transcript. Exact-bank unrouted media receives
+no source-match item: only its fixed-corpus synthesis may be used for the
+generated-quality decision. Variants are ordered by the number of affected
+queue lines. Generate into a separate output directory; do not put mutable
+state or rendered WAVs inside the immutable evaluation input directory.
+Source-match audio can then be compared blindly against its exact original,
+while fixed-text outputs compare cadence and pronunciation across variants.
 
 After the bounded generation run, publish a self-contained cluster-specific
 quality review from the exact evaluation and generation state:

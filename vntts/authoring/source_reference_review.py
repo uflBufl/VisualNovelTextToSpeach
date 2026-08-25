@@ -41,7 +41,9 @@ from vntts.authoring.source_reference_bindings import (
 )
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
-SOURCE_REPORT_VERSION = 1
+SOURCE_REPORT_VERSIONS = frozenset({1, 2})
+SOURCE_ORIGIN_STORY_LINE = "story_line_route"
+SOURCE_ORIGIN_EXACT_BANK = "exact_bank_unrouted_media"
 SOURCE_REVIEW_SCHEMA = "r1999.story-voice-reference-review"
 SOURCE_REVIEW_VERSIONS = frozenset({1, 2})
 REFERENCE_PLAN_SCHEMA = "vntts.authoring-source-reference-plan"
@@ -135,7 +137,7 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
         )
     if (
         report.get("schema") != SOURCE_REPORT_SCHEMA
-        or report.get("schema_version") != SOURCE_REPORT_VERSION
+        or report.get("schema_version") not in SOURCE_REPORT_VERSIONS
     ):
         raise SourceReferenceReviewError(
             "Unsupported extractor candidate report schema"
@@ -221,6 +223,8 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
                         "candidate_key": candidate["candidate_key"],
                         "candidate_evidence_sha256": candidate["evidence_sha256"],
                         "media_id": candidate["media_id"],
+                        "candidate_origin": candidate["candidate_origin"],
+                        "source_event_ids": list(candidate["source_event_ids"]),
                         "source_reference": candidate["reference_relative"],
                         "source_transcripts": list(candidate["transcripts"]),
                     }
@@ -735,24 +739,20 @@ def publish_source_reference_evaluation(plan_directory, output):
                     }
                 )
                 source_transcripts = reference.get("source_transcripts")
-                if (
-                    not isinstance(source_transcripts, list)
-                    or not source_transcripts
-                    or any(
-                        not isinstance(text, str) or not text.strip()
-                        for text in source_transcripts
-                    )
+                if not isinstance(source_transcripts, list) or any(
+                    not isinstance(text, str) or not text.strip()
+                    for text in source_transcripts
                 ):
                     raise SourceReferenceReviewError(
-                        f"Source-reference anchor has no exact transcript: {variant_id}"
+                        f"Source-reference anchor transcripts are invalid: {variant_id}"
                     )
-                evaluation_texts = [
-                    ("source-match", source_transcripts[0]),
-                    *(
-                        (f"fixed-{index}", text)
-                        for index, text in enumerate(FIXED_EVALUATION_CORPUS, start=1)
-                    ),
-                ]
+                evaluation_texts = []
+                if source_transcripts:
+                    evaluation_texts.append(("source-match", source_transcripts[0]))
+                evaluation_texts.extend(
+                    (f"fixed-{index}", text)
+                    for index, text in enumerate(FIXED_EVALUATION_CORPUS, start=1)
+                )
                 queue_ids = {}
                 for evaluation_kind, text in evaluation_texts:
                     text_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -778,24 +778,24 @@ def publish_source_reference_evaluation(plan_directory, output):
                             "evaluation_kind": evaluation_kind,
                         }
                     )
-                variants.append(
-                    {
-                        "variant_id": variant_id,
-                        "character": cluster["character"],
-                        "portrait": cluster["portrait"],
-                        "source_bank": cluster["source_bank"],
-                        "media_id": reference["media_id"],
-                        "source_audio": relative.as_posix(),
-                        "source_audio_sha256": reference["sha256"],
-                        "source_match_queue_id": queue_ids["source-match"],
-                        "fixed_queue_ids": [
-                            queue_ids[f"fixed-{index}"]
-                            for index in range(1, len(FIXED_EVALUATION_CORPUS) + 1)
-                        ],
-                        "affected_queue_item_count": len(cluster["queue_items"]),
-                        "manual_blind_review_required": True,
-                    }
-                )
+                variant = {
+                    "variant_id": variant_id,
+                    "character": cluster["character"],
+                    "portrait": cluster["portrait"],
+                    "source_bank": cluster["source_bank"],
+                    "media_id": reference["media_id"],
+                    "source_audio": relative.as_posix(),
+                    "source_audio_sha256": reference["sha256"],
+                    "fixed_queue_ids": [
+                        queue_ids[f"fixed-{index}"]
+                        for index in range(1, len(FIXED_EVALUATION_CORPUS) + 1)
+                    ],
+                    "affected_queue_item_count": len(cluster["queue_items"]),
+                    "manual_blind_review_required": True,
+                }
+                if "source-match" in queue_ids:
+                    variant["source_match_queue_id"] = queue_ids["source-match"]
+                variants.append(variant)
         manifest_path = staging / "voice-manifest.json"
         write_voice_manifest(
             manifest_path,
@@ -963,35 +963,43 @@ def publish_source_reference_listening_reports(
             raise SourceReferenceReviewError(
                 f"Evaluation variant ID is invalid: {variant_id}"
             )
-        queue_ids = [
-            _text(
-                variant.get("source_match_queue_id"),
-                f"variant {variant_id} source-match queue ID",
+        queue_ids = []
+        source_match_queue_id = variant.get("source_match_queue_id")
+        if source_match_queue_id is not None:
+            queue_ids.append(
+                (
+                    "source-match",
+                    _text(
+                        source_match_queue_id,
+                        f"variant {variant_id} source-match queue ID",
+                    ),
+                )
             )
-        ]
         fixed_queue_ids = variant.get("fixed_queue_ids")
         if not isinstance(fixed_queue_ids, list):
             raise SourceReferenceReviewError(
                 f"Variant {variant_id} fixed queue IDs must be a list"
             )
         queue_ids.extend(
-            _text(value, f"variant {variant_id} fixed queue ID")
-            for value in fixed_queue_ids
+            (
+                f"fixed-{index}",
+                _text(value, f"variant {variant_id} fixed queue ID"),
+            )
+            for index, value in enumerate(fixed_queue_ids, start=1)
         )
-        if len(queue_ids) != len(set(queue_ids)):
+        if len(queue_ids) != len({queue_id for _kind, queue_id in queue_ids}):
             raise SourceReferenceReviewError(
                 f"Variant {variant_id} evaluation queue IDs are duplicated"
             )
         samples = []
         report_provider = None
         report_model = None
-        for position, queue_id in enumerate(queue_ids):
+        for position, (expected_kind, queue_id) in enumerate(queue_ids):
             item = queue_by_id.get(queue_id)
             if item is None:
                 raise SourceReferenceReviewError(
                     f"Variant {variant_id} queue ID is missing: {queue_id}"
                 )
-            expected_kind = "source-match" if position == 0 else f"fixed-{position}"
             if (
                 item.speaker != character
                 or item.voice_character != evaluation_character
@@ -1020,7 +1028,9 @@ def publish_source_reference_listening_reports(
                 )
             checked_audio.append((audio, audio_sha256))
             sample_id = (
-                f"source-match:{variant_id}" if position == 0 else f"fixed-{position}"
+                f"source-match:{variant_id}"
+                if expected_kind == "source-match"
+                else expected_kind
             )
             sample = {
                 "id": sample_id,
@@ -1045,7 +1055,7 @@ def publish_source_reference_listening_reports(
                 raise SourceReferenceReviewError(
                     f"Variant {variant_id} mixes generation backends or models"
                 )
-            if position == 0:
+            if expected_kind == "source-match":
                 originals.append(
                     {
                         **sample,
@@ -1067,7 +1077,8 @@ def publish_source_reference_listening_reports(
             )
     if not originals:
         raise SourceReferenceReviewError(
-            "No successful source-match result is available for blind review"
+            "No successful source-match result is available for blind review; "
+            "use the fixed-corpus source-reference quality review for unrouted media"
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1198,6 +1209,25 @@ def _load_candidates(report_path, report):
         media_id = value.get("media_id")
         if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 0:
             raise SourceReferenceReviewError(f"Candidate {index} media ID is invalid")
+        report_version = report["schema_version"]
+        candidate_origin = value.get("candidate_origin", SOURCE_ORIGIN_STORY_LINE)
+        if candidate_origin not in {
+            SOURCE_ORIGIN_STORY_LINE,
+            SOURCE_ORIGIN_EXACT_BANK,
+        }:
+            raise SourceReferenceReviewError(f"Candidate {index} origin is invalid")
+        source_event_ids = value.get("source_event_ids", [])
+        if not isinstance(source_event_ids, list) or any(
+            isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 0
+            for event_id in source_event_ids
+        ):
+            raise SourceReferenceReviewError(
+                f"Candidate {index} source event IDs are invalid"
+            )
+        if report_version >= 2 and not source_event_ids:
+            raise SourceReferenceReviewError(
+                f"Candidate {index} has no exact source event IDs"
+            )
         relative = _text(value.get("reference"), f"candidate {index} reference")
         reference_path = _contained_file(root, relative)
         payload = reference_path.read_bytes()
@@ -1230,11 +1260,17 @@ def _load_candidates(report_path, report):
             "portrait": portrait,
             "source_bank": bank,
             "media_id": media_id,
+            "candidate_origin": candidate_origin,
+            "source_event_ids": tuple(source_event_ids),
             "reference_relative": relative,
             "reference_path": reference_path,
             "reference_payload": payload,
             "reference_sha256": reference_sha256,
-            "transcripts": _candidate_transcripts(value, index),
+            "transcripts": _candidate_transcripts(
+                value,
+                index,
+                allow_empty=candidate_origin == SOURCE_ORIGIN_EXACT_BANK,
+            ),
         }
     return candidates
 
@@ -1331,10 +1367,14 @@ def _candidate_key(character, portrait, bank, media_id, reference_sha256):
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
-def _candidate_transcripts(value, index):
+def _candidate_transcripts(value, index, *, allow_empty=False):
     source_lines = value.get("source_lines")
-    if not isinstance(source_lines, list) or not source_lines:
+    if not isinstance(source_lines, list) or (not source_lines and not allow_empty):
         raise SourceReferenceReviewError(f"Candidate {index} source lines are missing")
+    if allow_empty and source_lines:
+        raise SourceReferenceReviewError(
+            f"Candidate {index} unrouted media must not invent source lines"
+        )
     transcripts = []
     for line_index, line in enumerate(source_lines):
         if not isinstance(line, dict):

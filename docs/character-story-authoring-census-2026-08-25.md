@@ -101,7 +101,7 @@ generation pass. It is:
    six unmatched/limited outcomes as blocked evidence;
 3. publish and review the matched long-pause repair comparison;
 4. publish and evaluate the user-accepted Mrs. Owen exact-bank candidate, and
-   retain an explicit supported fallback for Hotelier unless a same-bank
-   composite or new exact evidence passes generated-quality review; and
+   evaluate Hotelier's exact-bank composite once, then retain an explicit
+   supported fallback if it does not pass generated-quality review; and
 5. merge only terminal decisions, rebuild the approved-only manifest and run
    the real routing/auto-advance acceptance.
