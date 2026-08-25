@@ -104,8 +104,12 @@ Follow the evidence-backed order and invariants in
       Pocket fallback from that terminal marker workspace. The first successor
       creation exposed a persisted-workspace validator mismatch and public load
       failed closed before synthesis; align planner, constructor and runtime
-      validation with an exact regression before recreating and running it once.
-      Publish any valid WAV for a separate checksum-bound listening decision.
+      validation is now covered by an exact regression. The repaired successor
+      `resume-395a5e5eec0327a3a793b66d-a2c30805e8846457` produced one validated
+      pending-review WAV in its sole unseeded Pocket attempt. Review it through
+      `authoring/review-bundles/current-character-story-rhiannon-inline-pocket-fallback-v1.json`
+      (bundle ID `3b26c7811a6458dc1e610e405316cf688f99f21a06d3df74deec5d3dc6c2426f`),
+      then merge only a terminal decision.
       Keep the other seven records blocked until an exact
       alternative-reference hypothesis is selected; do not spend another seed
       on their current controls. Preserve all 197 approvals, every

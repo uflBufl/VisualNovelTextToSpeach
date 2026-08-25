@@ -498,6 +498,21 @@ Unsupported kinds and non-exhausted provider attempts remain fail-closed. The
 regression executes the full silence -> inline marker -> missed EOS -> Pocket
 chain and preserves the source state.
 
+After that fix, the same config-addressed Pocket successor
+`resume-395a5e5eec0327a3a793b66d-a2c30805e8846457` loaded idempotently and ran
+one exact unseeded fallback. It produced a pending-review PCM16 mono 24 kHz WAV
+of 3.20 seconds with SHA-256
+`731fe7fa067553d562f92ee5ab7186f798e232cc15bcbc7dbfde16578114a0a3`.
+The final state SHA-256 is
+`3d517d1fc8807ea37587035c53820d1f027399d92e723a83e5b3084d9d1c3841`;
+the marker source state remained `0f48987a...`, the approved manifest is empty,
+and active, lease and partial files are absent. The measured 0.475 silence
+ratio and 1.04-second internal span make listening mandatory, not automatic
+rejection. Its separate one-cohort/one-sample review publication is
+`authoring/review-bundles/current-character-story-rhiannon-inline-pocket-fallback-v1.json`
+with bundle ID
+`3b26c7811a6458dc1e610e405316cf688f99f21a06d3df74deec5d3dc6c2426f`.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included
