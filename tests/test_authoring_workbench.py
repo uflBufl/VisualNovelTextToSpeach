@@ -991,6 +991,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             publish_generated_manifest,
             run_bulk_generation,
         )
+        from vntts.synthesis import SynthesisCompletion
 
         text = "What happened? You're hurt."
         with TemporaryDirectory() as directory:
@@ -1046,11 +1047,21 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 failure_repair_policy=inline_policy,
                 carry_forward_from=source.directory,
             )
-            for _attempt in range(2):
+            for attempt in range(2):
+                renderer = (
+                    failed_renderer()
+                    if attempt == 0
+                    else SyntheticRenderer(
+                        [SynthesisCompletion.LIMITED],
+                        diagnostics_backend="moss-tts",
+                    )
+                )
+                renderer.name = "moss-tts"
+                renderer.model_name = "model with spaces"
                 run_bulk_generation(
                     repaired.directory / "queue.jsonl",
                     repaired.directory / "generated-audio",
-                    failed_renderer(),
+                    renderer,
                     provider="moss-tts",
                     model="model with spaces",
                     generation_profile="stable",
@@ -1126,7 +1137,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             inspect_workspace(fallback.directory)
             final_state_before = result.state.read_bytes()
             for field, value in (
-                ("source_repair_strategy", "sentence_boundary_segmentation"),
+                ("source_repair_strategy", "edge_silence_trim"),
                 ("source_provider_attempts", 2),
             ):
                 tampered = json.loads(final_state_before)
@@ -1138,7 +1149,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     bulk_generation_module.BulkGenerationError,
-                    "offline fallback source (is inconsistent|attempts are not exhausted)",
+                    "offline fallback source "
+                    "(is inconsistent|attempts are not exhausted|repair is invalid)",
                 ):
                     load_generation_state(
                         result.state, fallback.directory / "queue.jsonl"
@@ -1151,7 +1163,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(repaired_item["attempts"], 3)
         self.assertEqual(repaired_item["attempts_by_provider"], {"moss-tts": 3})
         self.assertEqual(plan["records"][0]["action"], "offline_fallback_backend")
-        self.assertEqual(source_failure["source_failure_kind"], "speech_silence")
+        self.assertEqual(
+            source_failure["source_failure_kind"], "missed_eos_audio_limit"
+        )
         self.assertEqual(
             source_failure["source_repair_strategy"], "inline_pause_marker"
         )

@@ -97,7 +97,18 @@ Follow the evidence-backed order and invariants in
       Complete its three cohorts and seven mandatory samples, then atomically
       merge only terminal decisions back into the 15-item base successor.
       Do not render any of the resulting eight comparison-only records without
-      a new exact hypothesis. Preserve all 197 approvals, every
+      a new exact hypothesis. One exact hypothesis already exists for
+      `reverse1999:314605:9:1d0f968d85af2125`. Its separate versioned 180 ms
+      inline-marker attempt is complete and failed closed at the 8.5-second
+      missed-EOS limit, with no WAV. The exact planner now permits one unseeded
+      Pocket fallback from that terminal marker workspace. The first successor
+      creation exposed a persisted-workspace validator mismatch and public load
+      failed closed before synthesis; align planner, constructor and runtime
+      validation with an exact regression before recreating and running it once.
+      Publish any valid WAV for a separate checksum-bound listening decision.
+      Keep the other seven records blocked until an exact
+      alternative-reference hypothesis is selected; do not spend another seed
+      on their current controls. Preserve all 197 approvals, every
       unrelated state/WAV hash and the 197-entry approved-only manifest. Review
       any new WAVs through a checksum-bound bundle, merge only terminal
       decisions, and keep generation, review and final-pack publication as

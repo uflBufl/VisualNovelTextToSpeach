@@ -477,6 +477,27 @@ listening remains authoritative. Terminal decisions must be merged back into
 the 197-approved `cd54b7632c220de2` successor; the repair workspace is not a
 replacement for that merged authority.
 
+The separate inline-pause hypothesis for
+`reverse1999:314605:9:1d0f968d85af2125` ran once in workspace
+`resume-395a5e5eec0327a3a793b66d-c6dee25b528e1487`. It preserved the original
+queue text/hash and recorded one derived 180 ms marker, but MOSS reached the
+8.5-second/850-token limit before EOS. The terminal state SHA-256 is
+`0f48987a2c3348e285ab73347f4162b6a33e9dedb07833f174ca6c5855d495b8`;
+no target WAV or manifest entry was published, the source state remained
+`3d8dbe13...`, and active, lease and partial files are absent. Another MOSS
+seed or a larger limit is not authorized.
+
+The exact planner then permitted one unseeded Pocket fallback. Its first
+successor was published but rejected by public workspace loading before
+synthesis because persisted validation assumed every inline-marker result must
+remain `speech_silence`; this run had truthfully changed to
+`missed_eos_audio_limit`. Planner, workspace and runtime validation now share
+the narrow rule: an exhausted inline-marker source may carry either of those
+two supported failure kinds into the already bounded one-attempt fallback.
+Unsupported kinds and non-exhausted provider attempts remain fail-closed. The
+regression executes the full silence -> inline marker -> missed EOS -> Pocket
+chain and preserves the source state.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

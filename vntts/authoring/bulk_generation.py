@@ -3648,10 +3648,6 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             or (
                 source_failure_kind == "speech_silence" and not exhausted_silence_source
             )
-            or (
-                source_repair_strategy == INLINE_PAUSE_MARKER
-                and source_failure_kind != "speech_silence"
-            )
         ):
             raise BulkGenerationError(
                 f"State item {queue_id!r} offline fallback source is inconsistent"

@@ -3479,13 +3479,6 @@ def _validate_workspace_carry_forward(directory, workspace):
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure kind is unsupported"
                 )
-            if (
-                source_repair_strategy == INLINE_PAUSE_MARKER
-                and item.get("source_failure_kind") != "speech_silence"
-            ):
-                raise AuthoringWorkbenchError(
-                    "Workspace carry-forward source repair conflicts with its failure"
-                )
             source_voice = item.get("source_voice_reference")
             if (
                 not isinstance(source_voice, dict)
