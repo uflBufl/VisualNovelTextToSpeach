@@ -3,44 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## P0 - Harden authoring reconciliation and review surfaces
-
-Complete this block before using a reconciliation report as final merge
-authority. Preserve read-only behavior and do not mutate any workspace, bundle,
-quality-review or app-data authority while validating the implementation.
-
-- [ ] Reconcile the immutable original item scope of every bundle source, even
-      after completed cohorts disappear from the current resumable projection.
-      Detect conflicting `approved`, `rejected` and explicit live-fallback
-      terminal authorities by full queue-record identity, not queue ID alone.
-      Add exact completed-secondary, partial-bundle, fallback-conflict and
-      changed-record regressions, then rebuild the current read-only report only
-      after the implementation is committed and clean.
-- [ ] Replace path-reopened reconciliation semantics with exact read-once typed
-      authority snapshots, retain the final source-rehash gate, reject symlink
-      substitution, and fully validate the published reconciliation wire
-      document: required fields, nested types, enums, SHA-256 values, unique
-      identities and summary/count consistency. A self-consistent but incomplete
-      document must fail public load.
-- [ ] Keep cohort navigation live during playback while crediting a completed
-      immutable WAV to its playback target even when the table selection moved.
-      Preserve the newer selection and add an exact navigation-during-playback
-      regression.
-- [ ] Distinguish normal `Refresh authority` from error-only `Retry workspace
-      load`, and show a truthful empty-review state instead of presenting a
-      successful workspace as a failed load. Cover successful empty, filtered
-      empty and failed projection states offscreen.
-- [ ] After correctness is green, extract only the shared public authority
-      primitives needed by reconciliation from private workbench/bulk helpers,
-      document the dependency direction, and remove the completed block from
-      this TODO. Keep the larger module decomposition and import-cycle cleanup
-      as separate backlog only if concrete residual work remains.
-
-Acceptance gates: focused adversarial tests, full unittest discovery, full Ruff
-lint and format checks, `uv lock --check`, `git diff --check`, clean worktree,
-and a read-only real report whose terminal conflict claim is derived from the
-preserved original bundle inventories.
-
 ## P0 - Reconcile and close the remaining Character Story authoring tail
 
 Complete this sweep in dependency order. Do not infer review decisions from an
@@ -49,6 +11,15 @@ come from the current checksum-bound state, bundle and manifest authorities.
 The reconciled baseline and exact remaining identities are recorded in
 [`docs/character-story-authoring-census-2026-08-25.md`](docs/character-story-authoring-census-2026-08-25.md).
 
+- [ ] Resolve the five exact cross-workspace terminal conflicts in the current
+      original-scope reconciliation report. Each has identical queue-record and
+      text identity but an older rejected authority and one or more newer
+      approved authorities: `314602:92`, `314602:110`, `314608:27`,
+      `314608:35`, and `314608:71`. Present the immutable WAV evidence as a
+      bounded decision set and require an explicit human winner for each; do
+      not choose by workspace age, filename, or majority. Publish a successor
+      report only after the winning authorities have been recorded through the
+      normal review workflow.
 - [ ] Complete the real long-pause comparison pipeline: compare independent
       sentence segmentation with the center-only silence-compression candidate
       on an exact matched corpus, preserve equal text and speaker/control
@@ -60,6 +31,17 @@ The reconciled baseline and exact remaining identities are recorded in
       known long-line capture ended typed limited. Keep this task blocked until
       a new exact long-line raw capture completes with one uniquely safe
       removable span; do not weaken the transform or reconstruct old evidence.
+
+## P2 - Decompose reconciliation schema validation
+
+- [ ] Move the versioned reconciliation wire-schema validator and its nested
+      record/count validators out of `authoring/reconciliation.py` into a
+      dedicated schema module. Then generate an import graph for the authoring
+      package and remove only demonstrated remaining cycles, keeping the public
+      API and report bytes unchanged. Require the current malformed-document,
+      historical-scope and full real-report loader tests before and after the
+      mechanical split.
+
 ## Offline authoring and application responsibility split
 
 ### P0 - Complete the current Character Story in fail-closed order

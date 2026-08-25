@@ -79,6 +79,31 @@ merge winner.
 
 ## Current Character Story evidence
 
+The original-publication-scope rebuild from clean commit `7ce861d` is
+`authoring/reconciliations/current-character-story-20260825-8e49fc5171f4.json`:
+
+- report ID:
+  `8e49fc5171f4f1fd5bc07bc8c802d05f7126a8701654e24d7e1cf9d6a5836bbe`;
+- file SHA-256:
+  `60bf25a3d163c534392947203ab3995439872593ede53b8a7a876b36a2379b16`;
+- 28 provenance workspaces, all seven current v2 bundle publications, and both
+  explicitly selected source-quality reviews validated from captured bytes;
+- 25 exact current cohort-review items, 129 primary pending WAVs requiring a
+  risk-based plan, 15 bounded-hypothesis failures, and 164 lines requiring an
+  exact reference or explicit fallback;
+- five terminal conflicts were recovered from completed original bundle
+  inventories: `314602:92`, `314602:110`, `314608:27`, `314608:35`, and
+  `314608:71`. Each conflict has identical queue-record and text identity but
+  contains an older rejection and one or more newer approvals. The report does
+  not choose among them; an explicit human authority is required.
+
+The report was first built under `/private/tmp`, loaded through the public
+strict reader, and then republished byte-for-byte through the public no-replace
+writer. No workspace, bundle, progress file, quality review, state, manifest,
+or generated WAV was changed.
+
+### Historical current-successor report
+
 The original 2026-08-25 run used merged workspace
 `resume-395a5e5eec0327a3a793b66d-cd54b7632c220de2`, all seven current v2 bundle
 publications, and exactly the Mrs. Owen and Hotelier quality cards. That
@@ -97,7 +122,8 @@ historical report is
 - 15 primary failures requiring a new bounded hypothesis;
 - 164 primary lines requiring an exact source reference or explicit fallback.
 
-It remains readable for provenance, but it must not be treated as the final
-merge claim until rebuilt with the original-publication scope. Any report is
-planning evidence only: it does not authorize the final manifest until terminal
-decisions and supported fallbacks cover the selected game pack.
+It remains readable for provenance, but its zero-conflict statement applies
+only to the historical current-successor scope and must not be used as the
+final merge claim. Any report is planning evidence only: it does not authorize
+the final manifest until terminal decisions and supported fallbacks cover the
+selected game pack.
