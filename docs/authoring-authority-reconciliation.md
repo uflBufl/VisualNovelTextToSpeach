@@ -49,11 +49,22 @@ the older `current_bundle_items_only` scope remain readable, but new reports
 emit `original_bundle_items_only` and should replace them for final merge
 planning.
 
-The dependency direction is intentionally one-way: reconciliation consumes the
-shared public `authoring.authority` snapshot/hash/no-replace primitives and the
-public captured-document validators from cohort, quality, generation-state and
-workbench modules. The authority module depends only on the standard library;
-it never imports a UI, workspace or synthesis implementation.
+The dependency direction is intentionally one-way. The versioned wire schema,
+nested record validation and count equations live in
+`authoring.reconciliation_schema`; that module imports only the shared
+`authoring.authority` canonical-document helper. The reconciliation projector
+consumes that schema plus the public captured-document validators from cohort,
+quality, generation-state and workbench modules. The authority module depends
+only on the standard library; it never imports a UI, workspace or synthesis
+implementation.
+
+An AST import-graph audit after the split found no cycle involving
+`reconciliation` or `reconciliation_schema`. It did expose four older,
+independent authoring strongly connected components: game-pack/workbench
+failure-reference helpers, listening/listening UI, source-reference
+composition/review/quality UI, and legacy/listening import. They are tracked as
+separate refactors because breaking them safely requires moving domain records
+or adapters, not changing reconciliation report behavior.
 
 The item-level next actions are deliberately conservative:
 

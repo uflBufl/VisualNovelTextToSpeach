@@ -32,15 +32,18 @@ The reconciled baseline and exact remaining identities are recorded in
       a new exact long-line raw capture completes with one uniquely safe
       removable span; do not weaken the transform or reconstruct old evidence.
 
-## P2 - Decompose reconciliation schema validation
+## P2 - Break demonstrated authoring import cycles
 
-- [ ] Move the versioned reconciliation wire-schema validator and its nested
-      record/count validators out of `authoring/reconciliation.py` into a
-      dedicated schema module. Then generate an import graph for the authoring
-      package and remove only demonstrated remaining cycles, keeping the public
-      API and report bytes unchanged. Require the current malformed-document,
-      historical-scope and full real-report loader tests before and after the
-      mechanical split.
+- [ ] Remove the four strongly connected components found by the authoring AST
+      import-graph audit without changing public APIs or wire bytes. Work in
+      this order: (1) extract listening presentation adapters from
+      `listening`/`listening_ui`; (2) extract shared legacy snapshot records from
+      `legacy_import`/`listening_import`; (3) extract source-reference review
+      records from the four-module composite/review/quality/UI cycle; (4) move
+      failure-reference projection records out of the
+      game-pack/workbench/binding/audit cycle. For each slice, add an import
+      graph regression proving that exact SCC is gone, run its focused tests,
+      and keep higher-layer UI modules depending only on lower-layer records.
 
 ## Offline authoring and application responsibility split
 
