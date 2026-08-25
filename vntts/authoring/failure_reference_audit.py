@@ -67,7 +67,9 @@ class FailureReferenceAudio:
     payload: bytes
 
 
-def publish_failure_reference_audit(workspace_directory, output_directory, *, seed=0):
+def publish_failure_reference_audit(
+    workspace_directory, output_directory, *, seed=0, queue_ids=None
+):
     """Publish one immutable task over every exact reference-comparison failure."""
     workspace = Path(workspace_directory).expanduser().resolve()
     output = Path(output_directory).expanduser().resolve()
@@ -92,11 +94,30 @@ def publish_failure_reference_audit(workspace_directory, output_directory, *, se
     except (VoiceGenerationQueueError, VoiceManifestError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     plan = generation_failure_repair_plan(state_path, queue_path)
-    selected = [
-        record
-        for record in plan["records"]
-        if record["action"] == "reference_comparison"
-    ]
+    records_by_id = {record["queue_id"]: record for record in plan["records"]}
+    if queue_ids is None:
+        selected = [
+            record
+            for record in plan["records"]
+            if record["action"] == "reference_comparison"
+        ]
+    else:
+        requested = tuple(queue_ids)
+        if (
+            not requested
+            or any(not isinstance(value, str) or not value for value in requested)
+            or len(set(requested)) != len(requested)
+        ):
+            raise FailureReferenceAuditError(
+                "Explicit reference audit queue IDs must be unique non-empty text"
+            )
+        missing = sorted(set(requested) - set(records_by_id))
+        if missing:
+            raise FailureReferenceAuditError(
+                "Explicit reference audit items are not current failures: "
+                + ", ".join(missing)
+            )
+        selected = [records_by_id[queue_id] for queue_id in requested]
     if not selected:
         raise FailureReferenceAuditError(
             "Workspace has no reference-comparison failures"

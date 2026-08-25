@@ -110,6 +110,12 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reference_render_comparison import (
+    ReferenceRenderComparisonError,
+    create_reference_render_listening,
+    load_reference_render_plan,
+    publish_reference_render_comparison,
+)
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     inspect_voice_reference_candidates,
@@ -523,6 +529,20 @@ def create_parser():
     reference_audit.add_argument("workspace", type=Path)
     reference_audit.add_argument("--output", type=Path, required=True)
     reference_audit.add_argument("--seed", type=int, default=0)
+    reference_audit.add_argument("--queue-id", action="append")
+    reference_render = subparsers.add_parser(
+        "failure-reference-render-comparison",
+        help="Render an immutable comparison from exact failed-reference arms",
+    )
+    reference_render.add_argument("plan", type=Path)
+    reference_render.add_argument("--output", type=Path, required=True)
+    reference_render_listen = subparsers.add_parser(
+        "failure-reference-render-session",
+        help="Create a blind session for complete matched reference renders",
+    )
+    reference_render_listen.add_argument("comparison", type=Path)
+    reference_render_listen.add_argument("--output", type=Path, required=True)
+    reference_render_listen.add_argument("--seed", type=int, default=0)
     reference_binding = subparsers.add_parser(
         "failure-reference-binding",
         help="Publish terminal selected references as an immutable exact-ID overlay",
@@ -1235,8 +1255,43 @@ def main(argv=None):
                 arguments.workspace,
                 arguments.output,
                 seed=arguments.seed,
+                queue_ids=arguments.queue_id,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "failure-reference-render-comparison":
+            plan = load_reference_render_plan(arguments.plan)
+            result = publish_reference_render_comparison(plan, arguments.output)
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "comparison_id": result.comparison_id,
+                        "arm_count": result.arm_count,
+                        "sample_count": result.sample_count,
+                        "complete_pair_count": result.complete_pair_count,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "failure-reference-render-session":
+            session = create_reference_render_listening(
+                arguments.comparison,
+                arguments.output,
+                seed=arguments.seed,
+            )
+            print(
+                json.dumps(
+                    {
+                        "comparison": str(arguments.comparison),
+                        "session": str(session),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         if arguments.command == "failure-reference-binding":
             result = publish_failure_reference_binding(
@@ -1677,6 +1732,7 @@ def main(argv=None):
         ListeningImportError,
         PortraitAliasError,
         ReferenceSelectionError,
+        ReferenceRenderComparisonError,
         SilenceComparisonError,
         SourceReferenceReviewError,
         SourceReferenceQualityError,

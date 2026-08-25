@@ -19,6 +19,14 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
+from vntts.authoring.reference_render_comparison import (
+    REFERENCE_RENDER_INPUT_SCHEMA,
+    REFERENCE_RENDER_INPUT_VERSION,
+    ReferenceRenderComparisonError,
+    create_reference_render_listening,
+    load_reference_render_plan,
+    publish_reference_render_comparison,
+)
 from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisDiagnostics,
@@ -159,6 +167,23 @@ class FailureReferenceAuditTest(unittest.TestCase):
         self.assertEqual(document["case_count"], 1)
         self.assertEqual(document["groups"][0]["cases"][0]["queue_id"], queue_id)
         self.assertIn("neither_acceptable", document["groups"][0]["decision_options"])
+
+    def test_explicit_audit_scope_accepts_only_current_failed_queue_ids(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+
+            scoped = publish_failure_reference_audit(
+                workspace, root / "scoped", queue_ids=(queue_id,)
+            )
+            with self.assertRaisesRegex(
+                FailureReferenceAuditError, "not current failures"
+            ):
+                publish_failure_reference_audit(
+                    workspace, root / "missing", queue_ids=("missing",)
+                )
+
+        self.assertEqual(scoped.case_count, 1)
 
     def test_audio_tamper_fails_closed(self):
         with TemporaryDirectory() as directory:
@@ -355,6 +380,110 @@ class FailureReferenceAuditTest(unittest.TestCase):
             self.assertIsInstance(errors[0], FailureReferencePreviewCancelled)
             self.assertEqual(state_path.read_bytes(), state_before)
             self.assertFalse((output / "decisions.json").exists())
+
+    def test_publishes_render_only_alternative_reference_comparison(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            audit_root = root / "audit"
+            audit = publish_failure_reference_audit(workspace, audit_root, seed=0)
+            document = json.loads((audit_root / "audit.json").read_text())
+            group = document["groups"][0]
+            self.assertEqual(len(group["candidates"]), 2)
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                        "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                        "audit": str(audit_root),
+                        "audit_id": audit.audit_id,
+                        "arms": [
+                            {
+                                "arm_id": f"candidate-{index}",
+                                "samples": [
+                                    {
+                                        "queue_id": queue_id,
+                                        "case_group_id": group["group_id"],
+                                        "candidate_group_id": group["group_id"],
+                                        "candidate_id": candidate["candidate_id"],
+                                    }
+                                ],
+                            }
+                            for index, candidate in enumerate(
+                                group["candidates"], start=1
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_path = workspace / "generated-audio/generation-state.json"
+            state_before = state_path.read_bytes()
+            factory = _PreviewBackendFactory()
+
+            comparison = publish_reference_render_comparison(
+                load_reference_render_plan(plan_path),
+                root / "comparison",
+                backend_factory=factory,
+            )
+            session = create_reference_render_listening(
+                comparison.directory, root / "listening", seed=7
+            )
+
+            self.assertEqual(comparison.arm_count, 2)
+            self.assertEqual(comparison.sample_count, 1)
+            self.assertEqual(comparison.complete_pair_count, 1)
+            self.assertTrue(session.is_file())
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertEqual(len(factory.backends), 1)
+            self.assertEqual(len(factory.backends[0].requests), 2)
+
+            first_report = next(comparison.directory.glob("arms/*/report.json"))
+            first_report.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "report changed"
+            ):
+                create_reference_render_listening(
+                    comparison.directory, root / "tampered-listening", seed=7
+                )
+
+    def test_render_plan_rejects_duplicate_or_cross_character_controls(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            audit_root = root / "audit"
+            audit = publish_failure_reference_audit(workspace, audit_root)
+            document = json.loads((audit_root / "audit.json").read_text())
+            group = document["groups"][0]
+            candidate = group["candidates"][0]
+            plan = {
+                "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                "audit": str(audit_root),
+                "audit_id": audit.audit_id,
+                "arms": [
+                    {
+                        "arm_id": arm_id,
+                        "samples": [
+                            {
+                                "queue_id": queue_id,
+                                "case_group_id": group["group_id"],
+                                "candidate_group_id": group["group_id"],
+                                "candidate_id": candidate["candidate_id"],
+                            }
+                        ],
+                    }
+                    for arm_id in ("one", "two")
+                ],
+            }
+            plan_path = root / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "repeat the same control"
+            ):
+                load_reference_render_plan(plan_path)
 
 
 if __name__ == "__main__":

@@ -84,6 +84,7 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreview,
     FailureReferencePreviewCancelled,
     FailureReferencePreviewError,
+    FailureReferencePreviewIncomplete,
     FailureReferencePreviewService,
 )
 from vntts.authoring.failure_regeneration import (
@@ -198,6 +199,16 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     plan_generation_queue,
     publish_generation_queue,
+)
+from vntts.authoring.reference_render_comparison import (
+    REFERENCE_RENDER_INPUT_SCHEMA,
+    REFERENCE_RENDER_INPUT_VERSION,
+    ReferenceRenderComparison,
+    ReferenceRenderComparisonError,
+    ReferenceRenderPlan,
+    create_reference_render_listening,
+    load_reference_render_plan,
+    publish_reference_render_comparison,
 )
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
@@ -353,6 +364,7 @@ __all__ = [
     "FailureReferencePreview",
     "FailureReferencePreviewCancelled",
     "FailureReferencePreviewError",
+    "FailureReferencePreviewIncomplete",
     "FailureReferencePreviewService",
     "FinalGamePackError",
     "FinalGamePackResult",
@@ -384,6 +396,11 @@ __all__ = [
     "NARRATOR_ROLES",
     "ReferenceSelectionError",
     "ReferenceSelectionResult",
+    "REFERENCE_RENDER_INPUT_SCHEMA",
+    "REFERENCE_RENDER_INPUT_VERSION",
+    "ReferenceRenderComparison",
+    "ReferenceRenderComparisonError",
+    "ReferenceRenderPlan",
     "REFERENCE_OR_LIVE",
     "SPECIALIST_FAILURE_PLAN_SCHEMA",
     "SPECIALIST_FAILURE_PLAN_VERSION",
@@ -446,6 +463,7 @@ __all__ = [
     "create_listening_session",
     "create_listening_session_from_reports",
     "create_silence_comparison_session",
+    "create_reference_render_listening",
     "discover_legacy_jobs",
     "ensure_listening_report",
     "generation_failure_report",
@@ -481,6 +499,7 @@ __all__ = [
     "load_failure_reference_decisions",
     "load_silence_comparison",
     "load_silence_comparison_input_plan",
+    "load_reference_render_plan",
     "load_silence_failure_evidence",
     "load_source_reference_plan",
     "load_specialist_failure_plan",
@@ -494,6 +513,7 @@ __all__ = [
     "portrait_identity_by_variant",
     "publish_generation_queue",
     "publish_silence_comparison",
+    "publish_reference_render_comparison",
     "publish_silence_failure_evidence",
     "publish_generated_manifest",
     "publish_final_game_pack",

@@ -953,7 +953,10 @@ class IsolatedSpeechBackend:
                 },
             )
             while True:
-                document, _payload = self._next_frame(process, timeout=0.1)
+                try:
+                    document, _payload = self._next_frame(process, timeout=0.1)
+                except queue.Empty:
+                    continue
                 if document.get("request_id") != request_id:
                     continue
                 if document.get("type") == "error":

@@ -39,6 +39,10 @@ class FailureReferencePreviewCancelled(FailureReferencePreviewError):
     """The operator cancelled the current preview generation."""
 
 
+class FailureReferencePreviewIncomplete(FailureReferencePreviewError):
+    """The typed renderer ended without a publishable complete result."""
+
+
 @dataclass(frozen=True)
 class FailureReferencePreview:
     group_id: str
@@ -53,6 +57,7 @@ class FailureReferencePreview:
     sample_rate: int
     audio_sha256: str
     payload: bytes
+    candidate_group_id: str | None = None
 
 
 class FailureReferencePreviewService:
@@ -69,7 +74,7 @@ class FailureReferencePreviewService:
         self._cancel = threading.Event()
         self._closed = False
 
-    def generate(self, group_id, candidate_id, text):
+    def generate(self, group_id, candidate_id, text, *, candidate_group_id=None):
         """Generate or return one exact in-memory preview without authoring writes."""
         text = str(text)
         if not text.strip():
@@ -79,6 +84,17 @@ class FailureReferencePreviewService:
                 raise FailureReferencePreviewError("Preview service is closed")
             self._cancel.clear()
             audit, document, group = self._load_group(group_id)
+            source_group_id = candidate_group_id or group_id
+            _source_audit, _source_document, source_group = self._load_group(
+                source_group_id
+            )
+            if source_group_id != group_id and _reference_family(
+                source_group
+            ) != _reference_family(group):
+                raise FailureReferencePreviewError(
+                    "Cross-group preview candidates must belong to the same exact "
+                    "source-reference character family"
+                )
             if text not in {value.get("text") for value in group["cases"]}:
                 raise FailureReferencePreviewError(
                     "Preview text is not an affected line in this reference group"
@@ -86,7 +102,7 @@ class FailureReferencePreviewService:
             candidate = next(
                 (
                     value
-                    for value in group["candidates"]
+                    for value in source_group["candidates"]
                     if value.get("candidate_id") == candidate_id
                 ),
                 None,
@@ -110,6 +126,7 @@ class FailureReferencePreviewService:
             key = (
                 audit.audit_id,
                 group_id,
+                source_group_id,
                 candidate_id,
                 candidate["sha256"],
                 text,
@@ -122,7 +139,7 @@ class FailureReferencePreviewService:
                 return cached
 
             source = prepare_failure_reference_audio(
-                audit.directory, group_id, candidate_id
+                audit.directory, source_group_id, candidate_id
             )
             reference = self._copy_reference(source)
             synthetic_voice = f"Reference candidate {source.sha256[:16]}"
@@ -166,7 +183,7 @@ class FailureReferencePreviewService:
                     "Preview generation was cancelled"
                 )
             if result.completion is not SynthesisCompletion.COMPLETE:
-                raise FailureReferencePreviewError(
+                raise FailureReferencePreviewIncomplete(
                     "Preview generation did not complete within its typed limits"
                 )
             diagnostics = result.diagnostics
@@ -186,7 +203,7 @@ class FailureReferencePreviewService:
             payload = output.read_bytes()
             output.unlink(missing_ok=True)
             final_source = prepare_failure_reference_audio(
-                audit.directory, group_id, candidate_id
+                audit.directory, source_group_id, candidate_id
             )
             if final_source.sha256 != source.sha256:
                 raise FailureReferencePreviewError(
@@ -199,6 +216,7 @@ class FailureReferencePreviewService:
                 )
             preview = FailureReferencePreview(
                 group_id=group_id,
+                candidate_group_id=source_group_id,
                 candidate_id=candidate_id,
                 text=text,
                 synthesis_text=synthesis_text,
@@ -302,9 +320,28 @@ def _required_text(value, label):
     return value.strip()
 
 
+def _reference_family(group):
+    value = _required_text(
+        group.get("synthesis_voice_character"), "Preview synthesis voice character"
+    )
+    prefix = "Source reference "
+    marker = " cluster-"
+    if not value.startswith(prefix) or marker not in value:
+        raise FailureReferencePreviewError(
+            "Cross-group preview is restricted to source-reference character families"
+        )
+    character, separator, _cluster = value[len(prefix) :].partition(marker)
+    if not separator or not character:
+        raise FailureReferencePreviewError(
+            "Cross-group preview source-reference identity is malformed"
+        )
+    return character
+
+
 __all__ = [
     "FailureReferencePreview",
     "FailureReferencePreviewCancelled",
     "FailureReferencePreviewError",
+    "FailureReferencePreviewIncomplete",
     "FailureReferencePreviewService",
 ]

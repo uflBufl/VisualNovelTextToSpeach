@@ -3,6 +3,25 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
+## P0 - Reconcile and close the remaining Character Story authoring tail
+
+Complete this sweep in dependency order. Do not infer review decisions from an
+old TODO count, a GUI session or the presence of a WAV; every conclusion must
+come from the current checksum-bound state, bundle and manifest authorities.
+The reconciled baseline and exact remaining identities are recorded in
+[`docs/character-story-authoring-census-2026-08-25.md`](docs/character-story-authoring-census-2026-08-25.md).
+
+- [ ] Complete the real long-pause comparison pipeline: compare independent
+      sentence segmentation with the center-only silence-compression candidate
+      on an exact matched corpus, preserve equal text and speaker/control
+      identity, publish raw and transformed WAV hashes plus the transform
+      ledger, and expose the pair through a blind checksum-bound review bundle.
+      Production selection remains unchanged until a human verdict exists.
+      The exhaustive local scan found no eligible stored raw WAV; a fresh
+      short-line capture was deliberately segmentation-ineligible and the
+      known long-line capture ended typed limited. Keep this task blocked until
+      a new exact long-line raw capture completes with one uniquely safe
+      removable span; do not weaken the transform or reconstruct old evidence.
 ## Offline authoring and application responsibility split
 
 ### P0 - Complete the current Character Story in fail-closed order
@@ -20,9 +39,15 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Acquire a new intelligible Mrs. Owen reference and a Hotelier reference
-      that passes the minimum-duration gate, then repeat only their exact
-      cluster evaluation and quality review. The expanded review is complete
+- [ ] Listen once to exact-bank Mrs. Owen media `562400954`, the new
+      3.172-second technical candidate documented in
+      [`docs/missing-character-reference-audit-2026-08-25.md`](docs/missing-character-reference-audit-2026-08-25.md).
+      If and only if it is the correct single uncontaminated speaker, publish a
+      checksum-bound candidate and repeat only the Mrs. Owen exact cluster
+      evaluation. Hotelier's exact bank is exhausted with five sub-threshold
+      clips; retain `needs_sample` or configure an explicit per-role Narrator
+      fallback instead of searching by its reused portrait. The expanded review
+      is complete
       `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal
       Rhiannon decisions were carried into the new config-addressed workspace,
       and preflight reduced missing references from 184 to 164 lines. Mrs.
@@ -110,9 +135,12 @@ Follow the evidence-backed order and invariants in
       `authoring/review-bundles/current-character-story-rhiannon-inline-pocket-fallback-v1.json`
       (bundle ID `3b26c7811a6458dc1e610e405316cf688f99f21a06d3df74deec5d3dc6c2426f`),
       then merge only a terminal decision.
-      Keep the other seven records blocked until an exact
-      alternative-reference hypothesis is selected; do not spend another seed
-      on their current controls. Preserve all 197 approvals, every
+      The seven exact alternative-reference experiments are now published and
+      documented in
+      [`docs/alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md).
+      Review only the one matched Narrator A/B trial. Two unmatched Narrator
+      completions and four all-limited lines remain blocked and do not authorize
+      another seed. Preserve all 197 approvals, every
       unrelated state/WAV hash and the 197-entry approved-only manifest. Review
       any new WAVs through a checksum-bound bundle, merge only terminal
       decisions, and keep generation, review and final-pack publication as
@@ -152,8 +180,11 @@ while one-sentence controls remained below 0.25 seconds.
       evidence. The first authorized capture attempt for
       `reverse1999:314605:102:1ab22c5fa4f30490` reached the typed audio limit
       before silence validation, so it published neither production audio nor
-      raw evidence. Do not spend another seed or raise the audio limit without
-      a new bounded hypothesis and explicit authorization.
+      raw evidence. The subsequent 2026-08-25 scan found zero eligible stored
+      raw WAVs; a short exact capture was segmentation-ineligible and the known
+      long-line capture ended typed limited. Do not spend another seed or raise
+      the audio limit without a new bounded hypothesis and explicit
+      authorization.
 - [ ] Apply the selected repair policy to pending/failed Dobharchú items in a
       new config-addressed workspace. Review every transformed WAV and a
       deterministic clean control sample. Acceptance requires no internal pause

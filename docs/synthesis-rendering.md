@@ -42,6 +42,13 @@ matched Hugging Face metadata. An offline Apple Silicon smoke then returned a
 complete 48 kHz stereo render; stopping a separate active generation returned a
 typed `cancelled` result and left no render thread alive.
 
+Once healthy, scalar protocol calls such as `prime` and `set-live-mode` also
+poll the response queue rather than treating one empty 100 ms interval as a
+failure. Worker exit is still detected by the same frame reader. This matters
+for cold voice conditioning, which can legitimately take longer than one poll
+without implying a dead worker; typed streaming renders already used the same
+idle-poll behavior.
+
 The parent streams worker PCM through its existing output device and applies
 the configured volume there. Settings that change backend/model/language/voice
 identity remain restart-only, so no worker is silently repurposed across a

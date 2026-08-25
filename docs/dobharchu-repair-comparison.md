@@ -381,6 +381,20 @@ justify another seed, a larger limit or an inferred silence-compression
 candidate; a future attempt needs a different bounded hypothesis and explicit
 authorization.
 
+The 2026-08-25 reconciliation then exhaustively checked 27 distinct stored
+Dobharchu WAV/text pairs from the local model-comparison corpus. Zero passed the
+center-only compressor gate: 12 lacked exactly one safe sentence boundary,
+eight lacked exactly one notable internal silence span and seven had a span
+below the compression trigger. A fresh render-only capture of short exact line
+`reverse1999:314608:10:8e075530a44c9dd9` completed as a 4.48-second WAV,
+SHA-256 `74ba41d70a60c098f567a366412c0c9ecafc09948d364ff3841d5f336314aa9c`,
+but its two very short clauses are deliberately ineligible for segmentation.
+A fresh capture of known long-pause line
+`reverse1999:314605:40:a15bc2a6e08da13e` ended typed `limited` and published no
+raw WAV. Therefore no matched raw/compressed corpus can yet be published
+without weakening the transform or fabricating evidence. The render-only
+captures did not mutate generation state or review authority.
+
 An exact comparison strategy is also available through
 `--inline-pause-failed QUEUE_ID --inline-pause-ms 180`. It is restricted to one
 current checksum-bound internal-silence failure, `moss-tts`, an exact queue-ID

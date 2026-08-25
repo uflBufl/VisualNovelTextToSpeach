@@ -1,4 +1,5 @@
 import json
+import queue
 import sys
 import unittest
 from io import BytesIO
@@ -283,6 +284,33 @@ class SpeechWorkerTest(unittest.TestCase):
 
         self.assertEqual(backend.model_name, "/models/moss-local")
         self.assertEqual(backend.worker_options["model_name"], "/models/moss-local")
+
+    def test_scalar_worker_request_waits_across_an_idle_poll(self):
+        backend = object.__new__(IsolatedSpeechBackend)
+        with patch.object(IsolatedSpeechBackend, "_start_worker"):
+            with patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ):
+                IsolatedSpeechBackend.__init__(
+                    backend,
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                )
+        process = FakeProcess(None)
+        response = ({"request_id": "request-1", "value": True}, b"")
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send"),
+            patch.object(
+                backend,
+                "_next_frame",
+                side_effect=(queue.Empty(), response),
+            ),
+            patch("vntts.speech_worker.uuid.uuid4") as uuid4,
+        ):
+            uuid4.return_value.hex = "request-1"
+            self.assertTrue(backend.prime("Narrator"))
 
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
