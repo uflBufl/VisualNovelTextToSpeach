@@ -39,29 +39,16 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Convert the user's accepted Mrs. Owen identity check for exact-bank media
-      `562400954` into a new immutable checksum-bound candidate; repeat only the
-      34-line Mrs. Owen cluster evaluation and require a separate generated-
-      quality decision before publishing a voice binding. Preserve the source
-      bank/event/media IDs, decoded WAV SHA-256 and the explicit human identity
-      decision; do not mutate the old `needs_sample` review or v4 binding.
-      Hotelier is an expected source gap: this one-off role appears only in a
-      mostly unvoiced Character Story, and the exact installed bank is complete.
-      Do not search other game versions, public recordings, Wiki audio, reused
-      portrait `505401`, generic NPC labels or similar voices. Publish a
-      checksum-ledgered experiment from the five exact same-bank clips only;
-      if its generated-quality gate fails, retain `needs_sample` and prepare an
+- [ ] Finish the two remaining exact-source Character Story quality gates.
+      Review the published Mrs. Owen `0/1` card by hearing original media
+      `562400954` and valid `fixed-1`; then publish a successor binding only if
+      that generated voice is accepted. Do not retry its two speech-silence
+      failures without a new repair hypothesis. For Hotelier, do not search
+      other versions, public recordings, Wiki audio, reused portrait `505401`,
+      generic NPC labels or similar voices. Build a bounded fixed-corpus
+      evaluation from the published complete five-clip composite v2 and require
+      a separate quality decision; if it fails, retain `needs_sample` and use an
       explicit Hotelier-only Narrator fallback instead of guessing. The
-      VNTTS importer must accept extractor candidate-report v2, preserve
-      candidate origin and exact Wwise event IDs, and evaluate unrouted media
-      on the fixed synthesis corpus without inventing a source-match transcript.
-      Bind the user's Mrs. Owen decision to the exact audition WAV hash; when a
-      fresh decoder produces equivalent but byte-different PCM, publish the
-      relationship and its objective comparison explicitly instead of silently
-      transferring approval to the new hash. Build the Hotelier composite only
-      from the five exact-bank references with a per-clip checksum ledger and
-      bounded edge-silence trimming; keep it experimental until generated audio
-      passes a separate quality review. The
       expanded review
       is complete
       `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal

@@ -200,6 +200,13 @@ from vntts.authoring.queue_builder import (
     plan_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reference_composite import (
+    COMPOSITE_SCHEMA,
+    COMPOSITE_VERSION,
+    ReferenceCompositeError,
+    ReferenceCompositeResult,
+    publish_exact_bank_reference_composite,
+)
 from vntts.authoring.reference_render_comparison import (
     REFERENCE_RENDER_INPUT_SCHEMA,
     REFERENCE_RENDER_INPUT_VERSION,
@@ -386,6 +393,8 @@ __all__ = [
     "PortraitAliasPlan",
     "COHORT_REVIEW_BUNDLE_SCHEMA",
     "COHORT_REVIEW_BUNDLE_VERSION",
+    "COMPOSITE_SCHEMA",
+    "COMPOSITE_VERSION",
     "CohortBundleProjection",
     "CohortBundleSample",
     "CohortReviewBundle",
@@ -396,6 +405,8 @@ __all__ = [
     "NARRATOR_ROLES",
     "ReferenceSelectionError",
     "ReferenceSelectionResult",
+    "ReferenceCompositeError",
+    "ReferenceCompositeResult",
     "REFERENCE_RENDER_INPUT_SCHEMA",
     "REFERENCE_RENDER_INPUT_VERSION",
     "ReferenceRenderComparison",
@@ -514,6 +525,7 @@ __all__ = [
     "publish_generation_queue",
     "publish_silence_comparison",
     "publish_reference_render_comparison",
+    "publish_exact_bank_reference_composite",
     "publish_silence_failure_evidence",
     "publish_generated_manifest",
     "publish_final_game_pack",

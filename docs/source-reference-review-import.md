@@ -36,6 +36,26 @@ source acceptance is only the first gate: each cluster still requires generated
 quality review on that fixed corpus. The plan deliberately does not mutate a
 voice manifest, create a workspace or authorize bulk generation.
 
+For a one-off role whose complete exact bank contains only short clips, build
+at most one explicit composite experiment from the complete-bank extractor
+report:
+
+```bash
+uv run vntts-reference-composite \
+  --report /path/to/complete-bank/report.json \
+  --character Hotelier --portrait 505401.png \
+  --source-bank activityvoc_story_npcnoname327_beiai.bnk \
+  --output /new/hotelier-reference-composite
+```
+
+The command rejects ordinary story-routed reports. It requires extractor report
+v2 with `bank_inventory_scope=complete_exact_bank`, one exact role/portrait/bank
+identity and every event-routed clip in that group. It copies every source WAV,
+orders clips by media ID, applies only bounded edge-silence trimming, inserts a
+fixed 120 ms gap and publishes the composite with source report, bank, media,
+event, encoded-media, WAV and trim checksums/metrics. This is an experimental
+synthesis control, not a reference decision or voice binding.
+
 Publish the evaluation inputs separately so the immutable decision plan stays
 read-only:
 

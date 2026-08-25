@@ -39,6 +39,31 @@ legitimate for Mrs. Owen. That is identity authority for publishing a new
 checksum-bound candidate, not generated-quality authority and not permission to
 mutate the earlier `needs_sample` review or v4 binding.
 
+The complete-bank extractor v2 report later decoded the same source medium as
+WAV SHA-256
+`6ae90c5957d0d4fbb55f3d9ac19a5c49c86b403930d7fa59a8d18d3bbf8cd92d`.
+This was not treated as silently identical bytes. Comparison against the exact
+WAV heard by the user found the same mono 24 kHz waveform with correlation
+`0.9999999969`, a least-squares gain ratio of `1.2576918470`, residual SNR
+`82.05 dB` and only `1.667 ms` duration difference. The new review decision
+records both hashes and these equivalence metrics while binding the exact bank,
+event `3381126906`, encoded media hash and new decoded WAV.
+
+The bounded seed-0 fixed-corpus evaluation published one valid WAV (`fixed-1`,
+SHA-256
+`8ab22999249ffa5a36368c5f9938ac6f3cc1a117941287b431b7bf0e86ecde88`).
+The other two first ended at the typed MOSS audio limit. Their one planner-
+authorized bounded-seed attempt completed synthesis but failed the speech-
+silence gate with `3.84 s`/`69%` silent frames and `2.88 s` internal silence.
+No rejected WAV was published and the repair planner now requires reference
+comparison rather than another seed. A self-contained `0/1` quality card is at
+`authoring/source-reference-quality-reviews/character-story-mrs-owen-exact-bank-v2-20260825`;
+the remaining human action is to hear the original reference and `fixed-1`,
+then choose accept, reject or needs-sample.
+The immutable report/review/plan/evaluation hashes are `e1fc0314355f...`,
+`6d936371faad...`, `a1b252f82a5c...` and `dabd18e82f5d...`; the final run state
+is `a1876317abf0...` and the initial quality review is `c77dbba592fe...`.
+
 ## Hotelier
 
 The exact installed bank is
@@ -73,6 +98,20 @@ voice material for this already complete bank. Public recordings, Wiki audio,
 other NPC banks and the reused portrait are deliberately outside the search
 boundary. The only remaining voice experiment is a provenance-preserving
 composite of these five exact clips; otherwise use a role-scoped fallback.
+The composite publisher must consume a complete-bank extractor report, retain
+all five original WAVs and their event/media/hash ledger, trim only bounded edge
+silence, and insert the documented 120 ms gap. It must not cherry-pick a
+different performer or imply that the composite passed generated-quality
+review.
+
+The real v2 composite was published from all five exact clips at
+`authoring/source-reference-composites/character-story-hotelier-exact-bank-v2-20260825`.
+It is PCM16 mono 24 kHz, `5.489333 s`, SHA-256
+`79c43a24a232d7ac853c13c93b553fa40cdd652b7dfa9926a988cff9a35b3293`,
+and passes objective reference preflight. No clip required edge trimming; the
+only inserted audio is four declared 120 ms gaps. This still does not establish
+generated voice quality or authorize a Hotelier binding. Its ledger SHA-256 is
+`48fd253a88f285b57a54e593e621f1bbcfa933e9a7c2aaaea50549ace3b966e2`.
 
 ## Result
 
