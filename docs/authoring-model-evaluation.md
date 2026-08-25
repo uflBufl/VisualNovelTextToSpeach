@@ -184,6 +184,16 @@ remains a character voice, while Centurion is the selected Narrator.
 
 ## Blind listening and report semantics
 
+The listening domain and its presentation adapters have a one-way dependency
+boundary. `authoring.listening` owns session/key/report validation and mutation;
+`authoring.listening_ui` depends on that core; and `authoring.listening_cli`
+adapts the core plus the optional Qt launcher. The `vntts-listen` entry point is
+bound to the CLI adapter, so importing the core never imports PySide6 or a
+presentation module. An AST import-graph regression prevents the former
+`listening`/`listening_ui` cycle from returning. The old `listening:main`
+symbol remains as a lazy compatibility bridge for already-installed entry-point
+scripts; new installs bind directly to `listening_cli:main`.
+
 Start a session directly from the aggregate benchmark:
 
 ```sh

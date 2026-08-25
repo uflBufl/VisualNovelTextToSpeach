@@ -44,6 +44,18 @@ def _reachable(graph, source, target):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_listening_core_does_not_depend_on_its_presentations(self):
+        graph = _authoring_import_graph()
+        core = "vntts.authoring.listening"
+        cli = "vntts.authoring.listening_cli"
+        ui = "vntts.authoring.listening_ui"
+
+        self.assertIn(core, graph[cli])
+        self.assertIn(ui, graph[cli])
+        self.assertIn(core, graph[ui])
+        self.assertFalse(_reachable(graph, core, cli))
+        self.assertFalse(_reachable(graph, core, ui))
+
     def test_public_reconciliation_types_keep_their_module_identity(self):
         self.assertEqual(
             AuthoringReconciliation.__module__, "vntts.authoring.reconciliation"

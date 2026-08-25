@@ -25,7 +25,7 @@ from vntts.authoring.listening import (
     next_pending_trial,
     record_trial_preference,
 )
-from vntts.authoring.listening import main as listening_main
+from vntts.authoring.listening_cli import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
