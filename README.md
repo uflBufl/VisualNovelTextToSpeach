@@ -474,6 +474,14 @@ versioned policy rather than claiming the fallback is the original speaker.
 See the [workspace contract](docs/authoring-workspaces.md) for the typed API and
 review behavior.
 
+For a large history with parallel repair workspaces and retained old review
+documents, `vntts-authoring-reconcile` produces a no-overwrite, read-only
+authority report from one explicit primary workspace, current v2 cohort
+bundles and explicitly named source-quality reviews. It classifies exact next
+actions without treating every pending WAV as a listen-all task or guessing
+which historical workspace wins. See the
+[authoring reconciliation contract](docs/authoring-authority-reconciliation.md).
+
 Exact MOSS failures that exhaust their bounded attempts can move to a distinct
 Pocket TTS workspace with `--carry-forward-from` and repeated
 `--offline-fallback-failed` IDs. The source workspace is never mutated;

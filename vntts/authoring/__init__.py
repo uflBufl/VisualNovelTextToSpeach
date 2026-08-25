@@ -200,6 +200,15 @@ from vntts.authoring.queue_builder import (
     plan_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reconciliation import (
+    AUTHORING_RECONCILIATION_SCHEMA,
+    AUTHORING_RECONCILIATION_VERSION,
+    AuthoringReconciliation,
+    AuthoringReconciliationError,
+    build_authoring_reconciliation,
+    load_authoring_reconciliation,
+    write_authoring_reconciliation,
+)
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
     COMPOSITE_VERSION,
@@ -319,7 +328,11 @@ from vntts.authoring.workbench import (
 )
 
 __all__ = [
+    "AUTHORING_RECONCILIATION_SCHEMA",
+    "AUTHORING_RECONCILIATION_VERSION",
     "AudioQuality",
+    "AuthoringReconciliation",
+    "AuthoringReconciliationError",
     "BOUNDED_SEED_RETRY",
     "BulkGenerationError",
     "BulkGenerationResult",
@@ -457,6 +470,7 @@ __all__ = [
     "benchmark_model_variants",
     "benchmark_renderer",
     "build_benchmark_corpus",
+    "build_authoring_reconciliation",
     "build_cohort_review_decision",
     "build_cohort_review_bundle",
     "build_cohort_review_plan",
@@ -512,6 +526,7 @@ __all__ = [
     "load_silence_comparison",
     "load_silence_comparison_input_plan",
     "load_reference_render_plan",
+    "load_authoring_reconciliation",
     "load_silence_failure_evidence",
     "load_source_reference_plan",
     "load_specialist_failure_plan",
@@ -570,6 +585,7 @@ __all__ = [
     "validate_reference_selection_provenance",
     "write_cohort_review_decision",
     "write_cohort_review_plan",
+    "write_authoring_reconciliation",
     "write_cohort_review_bundle",
     "write_failure_regeneration_plan",
     "write_pending_resolution_plan",
