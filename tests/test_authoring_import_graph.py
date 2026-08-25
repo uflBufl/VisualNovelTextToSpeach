@@ -2,9 +2,17 @@ import ast
 import unittest
 from pathlib import Path
 
+from vntts.authoring.failure_reference_binding import (
+    FailureReferenceBinding,
+    FailureReferenceBindingError,
+)
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
     AuthoringReconciliationError,
+)
+from vntts.authoring.source_reference_quality import (
+    SourceReferenceQualityError,
+    SourceReferenceQualityResult,
 )
 
 
@@ -44,6 +52,24 @@ def _reachable(graph, source, target):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_extracted_record_types_keep_their_public_module_identity(self):
+        self.assertEqual(
+            FailureReferenceBinding.__module__,
+            "vntts.authoring.failure_reference_binding",
+        )
+        self.assertEqual(
+            FailureReferenceBindingError.__module__,
+            "vntts.authoring.failure_reference_binding",
+        )
+        self.assertEqual(
+            SourceReferenceQualityResult.__module__,
+            "vntts.authoring.source_reference_quality",
+        )
+        self.assertEqual(
+            SourceReferenceQualityError.__module__,
+            "vntts.authoring.source_reference_quality",
+        )
+
     def test_import_destination_policy_does_not_depend_on_importers(self):
         graph = _authoring_import_graph()
         paths = "vntts.authoring.import_paths"
@@ -86,6 +112,42 @@ class AuthoringImportGraphTest(unittest.TestCase):
         self.assertIn(schema, graph[reconciliation])
         self.assertEqual(graph[schema], {authority})
         self.assertFalse(_reachable(graph, schema, reconciliation))
+
+    def test_source_reference_quality_records_break_presentation_cycle(self):
+        graph = _authoring_import_graph()
+        records = "vntts.authoring.source_reference_quality_records"
+        modules = {
+            "vntts.authoring.reference_composite",
+            "vntts.authoring.source_reference_quality",
+            "vntts.authoring.source_reference_quality_ui",
+            "vntts.authoring.source_reference_review",
+        }
+
+        self.assertEqual(graph[records], set())
+        for module in modules:
+            self.assertFalse(_reachable(graph, records, module))
+            for peer in modules - {module}:
+                self.assertFalse(
+                    _reachable(graph, module, peer) and _reachable(graph, peer, module)
+                )
+
+    def test_failure_reference_records_break_projection_cycle(self):
+        graph = _authoring_import_graph()
+        records = "vntts.authoring.failure_reference_binding_records"
+        modules = {
+            "vntts.authoring.failure_reference_audit",
+            "vntts.authoring.failure_reference_binding",
+            "vntts.authoring.game_pack",
+            "vntts.authoring.workbench",
+        }
+
+        self.assertEqual(graph[records], {"vntts.authoring.source_reference_bindings"})
+        for module in modules:
+            self.assertFalse(_reachable(graph, records, module))
+            for peer in modules - {module}:
+                self.assertFalse(
+                    _reachable(graph, module, peer) and _reachable(graph, peer, module)
+                )
 
 
 if __name__ == "__main__":

@@ -32,17 +32,6 @@ The reconciled baseline and exact remaining identities are recorded in
       a new exact long-line raw capture completes with one uniquely safe
       removable span; do not weaken the transform or reconstruct old evidence.
 
-## P2 - Break demonstrated authoring import cycles
-
-- [ ] Remove the two remaining strongly connected components found by the
-      authoring AST import-graph audit without changing public APIs or wire
-      bytes. Work in this order: (1) extract source-reference review records
-      from the four-module composite/review/quality/UI cycle; (2) move
-      failure-reference projection records out of the
-      game-pack/workbench/binding/audit cycle. For each slice, add an import
-      graph regression proving that exact SCC is gone, run its focused tests,
-      and keep higher-layer UI modules depending only on lower-layer records.
-
 ## Offline authoring and application responsibility split
 
 ### P0 - Complete the current Character Story in fail-closed order

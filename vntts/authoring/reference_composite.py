@@ -26,6 +26,13 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.source_reference_quality_records import (
+    QUALITY_REVIEW_SCHEMA,
+    QUALITY_REVIEW_VERSION,
+    SourceReferenceQualityResult,
+    _copy_audio,
+    load_source_reference_quality_review,
+)
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
 from vntts.cli import cli_error, cli_success
 from vntts.reference_quality import analyze_reference_bytes
@@ -61,14 +68,6 @@ class ReferenceCompositeResult:
 
 def publish_composite_quality_review(composite_directory, state_path, output):
     """Publish one self-contained review card for an exact-bank composite run."""
-    from vntts.authoring.source_reference_quality import (
-        QUALITY_REVIEW_SCHEMA,
-        QUALITY_REVIEW_VERSION,
-        SourceReferenceQualityResult,
-        _copy_audio,
-        load_source_reference_quality_review,
-    )
-
     composite_directory = Path(composite_directory).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     output = Path(output).expanduser().resolve()

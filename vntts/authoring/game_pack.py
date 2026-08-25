@@ -41,7 +41,7 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
 )
-from vntts.authoring.failure_reference_binding import (
+from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding_document,
 )

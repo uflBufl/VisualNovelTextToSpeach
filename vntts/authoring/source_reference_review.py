@@ -402,7 +402,7 @@ def publish_source_reference_bindings(
             raise SourceReferenceReviewError(
                 "Quality-reviewed bindings cannot also accept variant IDs"
             )
-        from vntts.authoring.source_reference_quality import (
+        from vntts.authoring.source_reference_quality_records import (
             SourceReferenceQualityError,
             accepted_source_reference_variants,
             load_source_reference_quality_review,

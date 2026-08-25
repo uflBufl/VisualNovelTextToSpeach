@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.source_reference_quality import (
+from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
     next_pending_quality_variant,
     quality_review_progress,

@@ -56,7 +56,7 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
     sha256_control_path,
 )
-from vntts.authoring.failure_reference_binding import (
+from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding,
     load_failure_reference_binding_document,
