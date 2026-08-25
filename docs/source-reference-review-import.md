@@ -54,7 +54,25 @@ identity and every event-routed clip in that group. It copies every source WAV,
 orders clips by media ID, applies only bounded edge-silence trimming, inserts a
 fixed 120 ms gap and publishes the composite with source report, bank, media,
 event, encoded-media, WAV and trim checksums/metrics. This is an experimental
-synthesis control, not a reference decision or voice binding.
+synthesis control, not a reference decision or voice binding. The same output
+contains a self-contained `voice-manifest.json`, `queue.jsonl` with exactly the
+three fixed-corpus items, and `evaluation.json` binding all hashes and queue
+IDs. These inputs permit one bounded generation run without first pretending
+that the composite is an accepted source-reference plan.
+
+After a bounded generation run, publish a dedicated composite quality card:
+
+```bash
+uv run vntts-reference-review create-composite \
+  --composite /new/hotelier-reference-composite \
+  --state /mutable/hotelier-evaluation/generation-state.json \
+  --output /new/hotelier-composite-quality-review
+```
+
+The card reuses the heard-evidence UI but identifies every component media ID
+instead of pretending the composite has one source media. It is deliberately
+not ordinary source-reference plan authority, so an `accept` decision still
+requires a dedicated binding publication gate.
 
 Publish the evaluation inputs separately so the immutable decision plan stays
 read-only:

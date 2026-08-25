@@ -104,14 +104,27 @@ silence, and insert the documented 120 ms gap. It must not cherry-pick a
 different performer or imply that the composite passed generated-quality
 review.
 
-The real v2 composite was published from all five exact clips at
-`authoring/source-reference-composites/character-story-hotelier-exact-bank-v2-20260825`.
+The current v3 composite was published from all five exact clips at
+`authoring/source-reference-composites/character-story-hotelier-exact-bank-v3-20260825`.
 It is PCM16 mono 24 kHz, `5.489333 s`, SHA-256
 `79c43a24a232d7ac853c13c93b553fa40cdd652b7dfa9926a988cff9a35b3293`,
 and passes objective reference preflight. No clip required edge trimming; the
 only inserted audio is four declared 120 ms gaps. This still does not establish
-generated voice quality or authorize a Hotelier binding. Its ledger SHA-256 is
-`48fd253a88f285b57a54e593e621f1bbcfa933e9a7c2aaaea50549ace3b966e2`.
+generated voice quality or authorize a Hotelier binding. Its ledger/evaluation
+SHA-256 values are `97d66728c21b...` and `7425ee8caa4a...`.
+
+The bounded seed-0 Hotelier composite evaluation published valid `fixed-1` and
+`fixed-3` WAVs with SHA-256 `c24fee24f220...` and `cca6cb5515aa...`.
+`fixed-2` first failed the speech-silence gate with `2.80 s` internal silence
+and `64%` silent frames. Its one planner-authorized inline-pause comparison then
+ended at the typed audio limit and published no WAV. The final state SHA-256 is
+`2140deef14ae...`. The two valid fixed samples and original composite are ready
+for a future Hotelier quality decision; no additional seed is authorized.
+A self-contained `0/1` card is published at
+`authoring/source-reference-quality-reviews/character-story-hotelier-exact-bank-v3-20260825`
+with initial SHA-256 `6d1e16c9318d...`. It explicitly labels the reference as
+a five-media exact-bank composite and cannot be consumed as ordinary binding
+authority without a dedicated post-decision gate.
 
 ## Result
 

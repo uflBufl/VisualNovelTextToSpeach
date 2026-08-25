@@ -419,10 +419,36 @@ def load_source_reference_quality_review(path):
         seen.add(variant_id)
         for field in ("cluster_id", "character", "source_bank"):
             _required_text(card.get(field), f"quality variant {variant_id} {field}")
-        media_id = card.get("media_id")
-        if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 0:
+        reference_kind = card.get("reference_kind", "single_media")
+        if reference_kind == "single_media":
+            media_id = card.get("media_id")
+            if (
+                isinstance(media_id, bool)
+                or not isinstance(media_id, int)
+                or media_id < 0
+            ):
+                raise SourceReferenceQualityError(
+                    f"Quality variant {variant_id} media ID is invalid"
+                )
+        elif reference_kind == "exact_bank_composite":
+            media_ids = card.get("media_ids")
+            if (
+                not isinstance(media_ids, list)
+                or len(media_ids) < 2
+                or any(
+                    isinstance(media_id, bool)
+                    or not isinstance(media_id, int)
+                    or media_id < 0
+                    for media_id in media_ids
+                )
+                or len(media_ids) != len(set(media_ids))
+            ):
+                raise SourceReferenceQualityError(
+                    f"Quality variant {variant_id} composite media IDs are invalid"
+                )
+        else:
             raise SourceReferenceQualityError(
-                f"Quality variant {variant_id} media ID is invalid"
+                f"Quality variant {variant_id} reference kind is invalid"
             )
         portrait = card.get("portrait")
         if portrait is not None and (
@@ -581,6 +607,10 @@ def create_parser():
     create.add_argument("--state", type=Path, required=True)
     create.add_argument("--output", type=Path, required=True)
     create.add_argument("--portrait-directory", type=Path)
+    create_composite = subparsers.add_parser("create-composite")
+    create_composite.add_argument("--composite", type=Path, required=True)
+    create_composite.add_argument("--state", type=Path, required=True)
+    create_composite.add_argument("--output", type=Path, required=True)
     for command in ("status", "next", "ui"):
         child = subparsers.add_parser(command)
         child.add_argument("--session", type=Path, required=True)
@@ -595,6 +625,15 @@ def create_parser():
 def main(argv=None):
     options = create_parser().parse_args(argv)
     try:
+        if options.command == "create-composite":
+            from vntts.authoring.reference_composite import (
+                publish_composite_quality_review,
+            )
+
+            result = publish_composite_quality_review(
+                options.composite, options.state, options.output
+            )
+            return cli_success(f"Created composite quality review: {result.session}")
         if options.command == "create":
             result = publish_source_reference_quality_review(
                 options.plan,

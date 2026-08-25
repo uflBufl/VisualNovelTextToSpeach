@@ -46,9 +46,13 @@ Follow the evidence-backed order and invariants in
       failures without a new repair hypothesis. For Hotelier, do not search
       other versions, public recordings, Wiki audio, reused portrait `505401`,
       generic NPC labels or similar voices. Build a bounded fixed-corpus
-      evaluation from the published complete five-clip composite v2 and require
-      a separate quality decision; if it fails, retain `needs_sample` and use an
-      explicit Hotelier-only Narrator fallback instead of guessing. The
+      evaluation from the published complete five-clip composite and require a
+      separate quality decision. Its bounded run now has two valid fixed samples
+      and one exhausted inline-pause comparison. Review the published `0/1`
+      Hotelier card by hearing the composite plus `fixed-1` and `fixed-3`; then
+      accept, reject or select needs-sample. If it fails, retain `needs_sample`
+      and use an explicit Hotelier-only Narrator fallback instead of guessing.
+      The
       expanded review
       is complete
       `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal

@@ -14,15 +14,26 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import numpy as np
+from vntts_artifacts import (
+    VoiceGenerationQueue,
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
 from vntts.cli import cli_error, cli_success
 from vntts.reference_quality import analyze_reference_bytes
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
 COMPOSITE_VERSION = 1
+COMPOSITE_EVALUATION_SCHEMA = "vntts.authoring-exact-bank-composite-evaluation"
+COMPOSITE_EVALUATION_VERSION = 1
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSION = 2
 COMPLETE_BANK_SCOPE = "complete_exact_bank"
@@ -46,6 +57,225 @@ class ReferenceCompositeResult:
             "duration_seconds": self.duration_seconds,
             "sha256": self.sha256,
         }
+
+
+def publish_composite_quality_review(composite_directory, state_path, output):
+    """Publish one self-contained review card for an exact-bank composite run."""
+    from vntts.authoring.source_reference_quality import (
+        QUALITY_REVIEW_SCHEMA,
+        QUALITY_REVIEW_VERSION,
+        SourceReferenceQualityResult,
+        _copy_audio,
+        load_source_reference_quality_review,
+    )
+
+    composite_directory = Path(composite_directory).expanduser().resolve()
+    state_path = Path(state_path).expanduser().resolve()
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise ReferenceCompositeError(f"Composite quality output exists: {output}")
+    ledger_path = composite_directory / "composite.json"
+    evaluation_path = composite_directory / "evaluation.json"
+    queue_path = composite_directory / "queue.jsonl"
+    try:
+        ledger_payload = ledger_path.read_bytes()
+        ledger = json.loads(ledger_payload.decode("utf-8"))
+        evaluation_payload = evaluation_path.read_bytes()
+        evaluation = json.loads(evaluation_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReferenceCompositeError(
+            f"Unable to read composite inputs: {error}"
+        ) from error
+    ledger_sha256 = hashlib.sha256(ledger_payload).hexdigest()
+    evaluation_sha256 = hashlib.sha256(evaluation_payload).hexdigest()
+    if (
+        not isinstance(ledger, dict)
+        or ledger.get("schema") != COMPOSITE_SCHEMA
+        or ledger.get("schema_version") != COMPOSITE_VERSION
+        or not isinstance(evaluation, dict)
+        or evaluation.get("schema") != COMPOSITE_EVALUATION_SCHEMA
+        or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
+        or evaluation.get("source_composite_sha256") != ledger_sha256
+        or evaluation.get("queue_sha256") != sha256_file(queue_path)
+    ):
+        raise ReferenceCompositeError("Composite evaluation identity is invalid")
+    try:
+        queue = VoiceGenerationQueue.load(queue_path)
+        state = load_generation_state(state_path, queue_path)
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise ReferenceCompositeError(str(error)) from error
+    state_sha256 = sha256_file(state_path)
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    declared_queue_ids = evaluation.get("fixed_queue_ids")
+    if (
+        not isinstance(declared_queue_ids, list)
+        or len(declared_queue_ids) != len(queue.items)
+        or set(declared_queue_ids) != set(queue_by_id)
+    ):
+        raise ReferenceCompositeError("Composite fixed queue inventory changed")
+    composite_record = ledger.get("composite")
+    clips = ledger.get("clips")
+    if not isinstance(composite_record, dict) or not isinstance(clips, list):
+        raise ReferenceCompositeError("Composite ledger inventory is invalid")
+    composite_source = _contained_file(
+        composite_directory, composite_record.get("path")
+    )
+    composite_sha256 = _sha256(composite_record.get("sha256"), "Composite WAV hash")
+    if sha256_file(composite_source) != composite_sha256:
+        raise ReferenceCompositeError("Composite WAV changed")
+    report_path = (
+        Path(_text(ledger.get("source_candidate_report"), "Source candidate report"))
+        .expanduser()
+        .resolve()
+    )
+    report_sha256 = _sha256(
+        ledger.get("source_candidate_report_sha256"), "Source report hash"
+    )
+    try:
+        report_payload = report_path.read_bytes()
+        report = json.loads(report_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReferenceCompositeError(
+            f"Unable to read source report: {error}"
+        ) from error
+    if hashlib.sha256(report_payload).hexdigest() != report_sha256:
+        raise ReferenceCompositeError("Source candidate report changed")
+    group = next(
+        (
+            value
+            for value in report.get("groups", [])
+            if isinstance(value, dict)
+            and (
+                value.get("character"),
+                value.get("portrait"),
+                value.get("source_bank"),
+            )
+            == (
+                ledger.get("character"),
+                ledger.get("portrait"),
+                ledger.get("source_bank"),
+            )
+        ),
+        None,
+    )
+    affected = group.get("affected_portrait_line_count") if group else None
+    if isinstance(affected, bool) or not isinstance(affected, int) or affected <= 0:
+        raise ReferenceCompositeError("Composite affected story-line count is invalid")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+    ).resolve()
+    snapshots = [
+        (ledger_path, ledger_sha256),
+        (evaluation_path, evaluation_sha256),
+        (queue_path, sha256_file(queue_path)),
+        (state_path, state_sha256),
+        (composite_source, composite_sha256),
+        (report_path, report_sha256),
+    ]
+    try:
+        reference_relative = Path("audio") / "hotel-composite" / "reference.wav"
+        reference = _copy_audio(
+            composite_source, composite_sha256, staging / reference_relative
+        )
+        reference["audio"] = reference_relative.as_posix()
+        generated = []
+        excluded = []
+        for index, queue_id in enumerate(declared_queue_ids, start=1):
+            item = queue_by_id[queue_id]
+            result = state["items"].get(queue_id)
+            status = result.get("status") if isinstance(result, dict) else "pending"
+            common = {
+                "queue_id": queue_id,
+                "evaluation_kind": item.document.get("evaluation_kind"),
+                "text": item.text,
+                "text_sha256": item.text_sha256,
+            }
+            if status in {"generated", "approved"}:
+                source = _contained_file(
+                    state_path.parent,
+                    _text(result.get("path"), f"Generated sample {queue_id} path"),
+                )
+                digest = _sha256(
+                    result.get("file_sha256"), f"Generated sample {queue_id} hash"
+                )
+                if sha256_file(source) != digest:
+                    raise ReferenceCompositeError(
+                        f"Generated composite sample changed: {queue_id}"
+                    )
+                relative = Path("audio") / "hotel-composite" / f"generated-{index}.wav"
+                copied = _copy_audio(source, digest, staging / relative)
+                generated.append({**common, "audio": relative.as_posix(), **copied})
+                snapshots.append((source, digest))
+            else:
+                failure = result.get("failure", {}) if isinstance(result, dict) else {}
+                excluded.append(
+                    {
+                        **common,
+                        "status": status,
+                        "attempts": result.get("attempts", 0)
+                        if isinstance(result, dict)
+                        else 0,
+                        "error": result.get("last_error")
+                        if isinstance(result, dict)
+                        else None,
+                        "completion": failure.get("completion")
+                        if isinstance(failure, dict)
+                        else None,
+                        "failure_kind": failure.get("kind")
+                        if isinstance(failure, dict)
+                        else None,
+                    }
+                )
+        now = datetime.now(timezone.utc).isoformat()
+        variant_id = f"exact-bank-composite:{composite_sha256}"
+        session = {
+            "schema": QUALITY_REVIEW_SCHEMA,
+            "schema_version": QUALITY_REVIEW_VERSION,
+            "created_at": now,
+            "updated_at": now,
+            "source_reference_plan_sha256": ledger_sha256,
+            "source_reference_evaluation_sha256": evaluation_sha256,
+            "generation_state_sha256": state_sha256,
+            "variant_count": 1,
+            "completed_count": 0,
+            "variants": [
+                {
+                    "variant_id": variant_id,
+                    "cluster_id": variant_id,
+                    "character": ledger["character"],
+                    "portrait": ledger["portrait"],
+                    "portrait_image": None,
+                    "source_bank": ledger["source_bank"],
+                    "reference_kind": "exact_bank_composite",
+                    "media_ids": [clip["media_id"] for clip in clips],
+                    "affected_queue_item_count": affected,
+                    "reference": reference,
+                    "generated_samples": generated,
+                    "excluded_results": excluded,
+                    "decision": None,
+                }
+            ],
+            "authority": (
+                "Composite quality decision only. This review is not a source-reference "
+                "plan and cannot be consumed as a voice binding without a dedicated gate."
+            ),
+        }
+        review_path = staging / "review.json"
+        atomic_write_json(review_path, session, sort_keys=True)
+        load_source_reference_quality_review(review_path)
+        for source, digest in snapshots:
+            if sha256_file(source) != digest:
+                raise ReferenceCompositeError(
+                    f"Composite quality source changed: {source.name}"
+                )
+        _rename_directory_no_replace(staging, output)
+        return SourceReferenceQualityResult(output, 1, len(generated), len(excluded))
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
 
 
 def publish_exact_bank_reference_composite(
@@ -263,7 +493,82 @@ def publish_exact_bank_reference_composite(
                 "does not replace generated-quality review or authorize a voice binding."
             ),
         }
-        atomic_write_json(staging / "composite.json", ledger)
+        ledger_path = staging / "composite.json"
+        atomic_write_json(ledger_path, ledger)
+        ledger_sha256 = sha256_file(ledger_path)
+        voice_character = f"Exact bank composite {character} {composite_sha256[:12]}"
+        manifest_path = staging / "voice-manifest.json"
+        write_voice_manifest(
+            manifest_path,
+            {
+                "version": 2,
+                "game": "Exact bank composite evaluation",
+                "language": "en",
+                "voices": [
+                    {
+                        "character": voice_character,
+                        "speaker": f"exact-bank-composite:{character}",
+                        "references": [composite_path.name],
+                    }
+                ],
+                "vntts.authoring.exact_bank_composite_sha256": ledger_sha256,
+            },
+        )
+        queue_items = []
+        queue_ids = []
+        for index, text in enumerate(FIXED_EVALUATION_CORPUS, start=1):
+            text_sha256 = hashlib.sha256(text.encode()).hexdigest()
+            line_id = f"exact-bank-composite:{composite_sha256}:fixed-{index}"
+            queue_id = expected_voice_generation_queue_id(line_id, text_sha256)
+            queue_ids.append(queue_id)
+            queue_items.append(
+                {
+                    "record_type": "generation_item",
+                    "queue_id": queue_id,
+                    "line_id": line_id,
+                    "text": text,
+                    "text_sha256": text_sha256,
+                    "speaker": character,
+                    "voice_character": voice_character,
+                    "source_audio_status": "absent",
+                    "source_audio_reason": "exact_bank_composite_evaluation",
+                    "source_kind": "authoring_evaluation",
+                    "action": "generate",
+                    "state": "pending",
+                    "evaluation_kind": f"fixed-{index}",
+                    "source_composite_sha256": ledger_sha256,
+                }
+            )
+        queue_path = staging / "queue.jsonl"
+        write_voice_generation_queue(
+            queue_path,
+            {
+                "game": "Exact bank composite evaluation",
+                "language": "en",
+                "source_composite_sha256": ledger_sha256,
+            },
+            queue_items,
+        )
+        evaluation = {
+            "schema": COMPOSITE_EVALUATION_SCHEMA,
+            "schema_version": COMPOSITE_EVALUATION_VERSION,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "source_composite": ledger_path.name,
+            "source_composite_sha256": ledger_sha256,
+            "voice_manifest": manifest_path.name,
+            "voice_manifest_sha256": sha256_file(manifest_path),
+            "queue": queue_path.name,
+            "queue_sha256": sha256_file(queue_path),
+            "voice_character": voice_character,
+            "fixed_queue_ids": queue_ids,
+            "authority": (
+                "Bounded fixed-corpus generation input only. Generated audio requires "
+                "a separate quality decision before any Hotelier voice binding."
+            ),
+        }
+        atomic_write_json(staging / "evaluation.json", evaluation)
+        load_voice_manifest(manifest_path, allow_legacy=False)
+        VoiceGenerationQueue.load(queue_path)
         if hashlib.sha256(report_path.read_bytes()).hexdigest() != report_sha256:
             raise ReferenceCompositeError(
                 "Candidate report changed during composite publication"

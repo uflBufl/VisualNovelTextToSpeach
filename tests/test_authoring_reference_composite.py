@@ -7,11 +7,60 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
+from vntts_artifacts import VoiceGenerationQueue
+from vntts_artifacts.voice_manifest import load_voice_manifest
+
+from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
     ReferenceCompositeError,
+    publish_composite_quality_review,
     publish_exact_bank_reference_composite,
 )
+from vntts.authoring.source_reference_quality import (
+    load_source_reference_quality_review,
+)
+from vntts.synthesis import (
+    SynthesisChunk,
+    SynthesisChunkStream,
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisResult,
+    SynthesisTiming,
+)
+
+
+class _Renderer:
+    name = "synthetic"
+    model_name = "synthetic-v1"
+
+    def render(self, request):
+        pcm = np.full(4_000, 0.1, dtype=np.float32)
+
+        def produce():
+            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=16_000,
+                completion=SynthesisCompletion.COMPLETE,
+                limits=SynthesisLimits(256, 180.0),
+                timing=SynthesisTiming(1.0, 2.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=len(pcm),
+                ),
+            )
+
+        return SynthesisChunkStream(produce())
+
+    def stop(self):
+        pass
 
 
 class AuthoringReferenceCompositeTest(unittest.TestCase):
@@ -72,6 +121,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                             "portrait": "505401.png",
                             "source_bank": "hotelier.bnk",
                             "candidate_count": 2,
+                            "affected_portrait_line_count": 1,
                         }
                     ],
                     "candidates": candidates,
@@ -97,6 +147,13 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             ledger = json.loads(
                 (result.directory / "composite.json").read_text(encoding="utf-8")
             )
+            evaluation = json.loads(
+                (result.directory / "evaluation.json").read_text(encoding="utf-8")
+            )
+            queue = VoiceGenerationQueue.load(result.directory / "queue.jsonl")
+            _manifest, voices = load_voice_manifest(
+                result.directory / "voice-manifest.json", allow_legacy=False
+            )
 
             self.assertEqual(ledger["schema"], COMPOSITE_SCHEMA)
             self.assertEqual(result.clips, 2)
@@ -117,6 +174,10 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                 ledger["composite"]["objective_preflight"]["path"],
                 "composite.wav",
             )
+            self.assertEqual(len(queue.items), 3)
+            self.assertEqual(len(evaluation["fixed_queue_ids"]), 3)
+            self.assertEqual(voices[0].references, ("composite.wav",))
+            self.assertEqual(queue.items[0].voice_character, voices[0].character)
 
     def test_rejects_story_routed_only_report(self):
         with TemporaryDirectory() as directory:
@@ -131,6 +192,38 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     "hotelier.bnk",
                     root / "composite",
                 )
+
+    def test_publishes_composite_quality_card_without_binding_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = self.make_report(root)
+            composite = publish_exact_bank_reference_composite(
+                report,
+                "Hotelier",
+                "505401.png",
+                "hotelier.bnk",
+                root / "composite",
+            )
+            generation = run_bulk_generation(
+                composite.directory / "queue.jsonl",
+                root / "generation",
+                _Renderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+
+            quality = publish_composite_quality_review(
+                composite.directory, generation.state, root / "quality"
+            )
+            session = load_source_reference_quality_review(quality.session)
+
+            self.assertEqual(quality.generated_samples, 3)
+            card = session["variants"][0]
+            self.assertEqual(card["reference_kind"], "exact_bank_composite")
+            self.assertEqual(card["media_ids"], [10, 20])
+            self.assertEqual(len(card["generated_samples"]), 3)
+            self.assertIn("not a source-reference plan", session["authority"])
 
     def test_rejects_changed_reference_and_existing_output(self):
         with TemporaryDirectory() as directory:

@@ -205,6 +205,7 @@ from vntts.authoring.reference_composite import (
     COMPOSITE_VERSION,
     ReferenceCompositeError,
     ReferenceCompositeResult,
+    publish_composite_quality_review,
     publish_exact_bank_reference_composite,
 )
 from vntts.authoring.reference_render_comparison import (
@@ -526,6 +527,7 @@ __all__ = [
     "publish_silence_comparison",
     "publish_reference_render_comparison",
     "publish_exact_bank_reference_composite",
+    "publish_composite_quality_review",
     "publish_silence_failure_evidence",
     "publish_generated_manifest",
     "publish_final_game_pack",

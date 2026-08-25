@@ -188,9 +188,14 @@ class SourceReferenceQualityDialog(QDialog):
             self.play_generated.setEnabled(False)
             return
 
+        if self.current.get("reference_kind") == "exact_bank_composite":
+            media = "Exact-bank composite media: " + ", ".join(
+                str(value) for value in self.current["media_ids"]
+            )
+        else:
+            media = f"Original media: {self.current['media_id']}"
         self.identity.setText(
-            f"Character: {self.current['character']} | "
-            f"Original media: {self.current['media_id']} | "
+            f"Character: {self.current['character']} | {media} | "
             f"Affected story lines: {self.current['affected_queue_item_count']}"
         )
         self.portrait_image.setVisible(True)
