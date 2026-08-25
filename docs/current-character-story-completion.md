@@ -452,6 +452,31 @@ transition only when the exact silence shape matches and the source provider
 has at least three attempts. An end-to-end regression proves the resulting
 Pocket outcome and source immutability; arbitrary silence remains rejected.
 
+The resulting Pocket successor is
+`resume-395a5e5eec0327a3a793b66d-dee61c5ea3baf68c`. Its carry-forward document
+binds exactly seven failed records from source workspace `cd54b7632c220de2`
+and source state SHA-256
+`c673b8631045c0d2a6206c6458f93b38b4b39e9b30b8efd3acd5ebbd893c2cf6`;
+the workspace intentionally seeds the immutable legacy snapshot rather than
+copying the whole merged state. One unseeded Pocket attempt per selected ID
+produced seven validated pending-review PCM16 mono WAVs and no review decision.
+The final state SHA-256 is
+`f18053ef0dfa4e56209a56ee3306a54d0975c13e6463cee30a5f663f79b8138f`.
+The 332 non-selected seed records retained their exact baseline digest, the
+workspace WAV count changed only from 197 to 204, the approved-only manifest
+remained empty, the source state stayed byte-identical, and active, lease and
+partial files are absent.
+
+Only those seven new WAVs are published for review in
+`authoring/review-bundles/current-character-story-exhausted-primary-pocket-fallbacks-v1.json`.
+Its bundle ID is
+`3cf27ce5ef86a6b52468ef795eca13a79a791464ec4b75cad759a9fef7fdc0cf`;
+it contains one workspace, three cohorts, seven pending items, seven mandatory
+samples and zero blocked items. Technical flags are advisory selectors and
+listening remains authoritative. Terminal decisions must be merged back into
+the 197-approved `cd54b7632c220de2` successor; the repair workspace is not a
+replacement for that merged authority.
+
 The first operator save attempt on a binding-backed cohort exposed a
 review-time fingerprint regression: cohort application omitted the immutable
 `failure_reference_binding` field while workspace creation and loading included

@@ -88,7 +88,14 @@ Follow the evidence-backed order and invariants in
       comparison and its bounded-seed result requires a separate inline-pause
       comparison. The exhausted raw-silence planner/constructor mismatch is
       closed with exact creation, persisted-state and runtime regressions, so
-      proceed with the seven distinct Pocket fallbacks from the 15-item base.
+      the separate Pocket successor
+      `resume-395a5e5eec0327a3a793b66d-dee61c5ea3baf68c` has now run exactly those
+      seven fallbacks once. All seven produced validated pending-review WAVs,
+      no decision was applied, and the exact seven-item review bundle is
+      `authoring/review-bundles/current-character-story-exhausted-primary-pocket-fallbacks-v1.json`
+      with bundle ID `3cf27ce5ef86a6b52468ef795eca13a79a791464ec4b75cad759a9fef7fdc0cf`.
+      Complete its three cohorts and seven mandatory samples, then atomically
+      merge only terminal decisions back into the 15-item base successor.
       Do not render any of the resulting eight comparison-only records without
       a new exact hypothesis. Preserve all 197 approvals, every
       unrelated state/WAV hash and the 197-entry approved-only manifest. Review
