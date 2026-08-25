@@ -32,9 +32,12 @@ helpful for intelligibility screening but is not authoritative story identity.
 Its decoded WAV SHA-256 is
 `82e3125fbc195951006817ccd13d507b40c4d2311c2f17ebc7a37f2505e7e22b`.
 Because no exact config/story row currently binds this media to the target Mrs.
-Owen lines, the candidate requires one human check for speaker identity,
-single-speaker content and contamination before a quality evaluation may be
-published. It must not be auto-selected from ASR alone.
+Owen lines, the candidate required one human check for speaker identity,
+single-speaker content and contamination before a quality evaluation could be
+published. The user completed that check on 2026-08-25 and judged the voice
+legitimate for Mrs. Owen. That is identity authority for publishing a new
+checksum-bound candidate, not generated-quality authority and not permission to
+mutate the earlier `needs_sample` review or v4 binding.
 
 ## Hotelier
 
@@ -52,16 +55,36 @@ sixth candidate:
 | `574172592` | 1.323 s | `Mrs. Owen!` |
 | `776462590` | 0.902 s | `Please allow me.` |
 
-None passes the established minimum-duration reference gate. Portrait `505401`
+None passes the established minimum-duration reference gate. Together they
+contain 5.009 seconds of exact-role English audio; a silence-trimmed,
+checksum-ledgered composite can therefore be evaluated as an experimental
+same-bank reference, but it still requires generated-quality review and cannot
+become an automatic binding. Portrait `505401`
 cannot safely expand the search: current source data reuses it across 46
 incompatible roles and performers, including Driver, Debate Moderator,
 Participant I, Librarian and Researcher. A same-bank composite could be tested
 only as an explicit experimental candidate with human listening; it is not an
 identity-supported automatic assignment.
 
+The first external discovery lead is the public Rhiannon Character Story guide
+linked from the Reverse: 1999 community post
+[`The You That's Meant To Be RHIANNON Puzzle Quest`](https://www.reddit.com/r/Reverse1999/comments/1vnb865/the_you_thats_meant_to_be_rhiannon_puzzle_quest/).
+Its linked video is `https://www.youtube.com/watch?v=i77DfLpUrGk`; the post
+marks `Honeyed Words` at 5:03, a chapter containing an exact Hotelier line in
+the local story index. This is only a location to inspect. It is not yet proof
+that the recording contains clean English dialogue, nor does the post grant
+reuse authority. A candidate taken from it must still satisfy the source,
+speaker, contamination, rights and checksum gates above.
+
 ## Result
 
-Mrs. Owen now has one exact-bank, technically strong candidate awaiting a
-single human identity/content check. Hotelier remains evidence-blocked and must
-stay `needs_sample` or use an explicit per-role Narrator fallback. The audit
-does not justify selecting another portrait, performer or generic NPC bank.
+Mrs. Owen now has one exact-bank, technically strong, human-accepted identity
+candidate. The next bounded step is a new immutable candidate plus a Mrs.
+Owen-only synthesis-quality evaluation. Hotelier remains evidence-blocked as a
+single-clip reference. Search exact config/event aliases and official asset
+versions first; separately evaluate the five-clip same-bank composite. Public
+story recordings or Wiki pages are discovery evidence only unless the exact
+English role, stable source/revision, clean single-speaker bytes and reuse terms
+can all be bound. Otherwise Hotelier must stay `needs_sample` or use an explicit
+per-role Narrator fallback. The audit does not justify selecting another
+portrait, performer or generic NPC bank.

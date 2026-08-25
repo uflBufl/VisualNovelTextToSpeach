@@ -86,7 +86,8 @@ two Narrator and both Dobharchu lines. No state or decision changed.
 The exhaustive local bank audit is recorded in
 [`missing-character-reference-audit-2026-08-25.md`](missing-character-reference-audit-2026-08-25.md).
 Mrs. Owen now has one new 3.172-second exact-bank technical candidate, media
-`562400954`, awaiting a human identity/content check. Hotelier's exact bank has
+`562400954`, accepted by the user as a legitimate Mrs. Owen voice and awaiting
+a separate generated-quality evaluation. Hotelier's exact bank has
 only five short clips and no technical pass; its reused portrait cannot safely
 broaden the identity. Both remain fail-closed until those stated gates change.
 
@@ -99,7 +100,8 @@ generation pass. It is:
 2. review the one matched Narrator alternative-reference pair and retain the
    six unmatched/limited outcomes as blocked evidence;
 3. publish and review the matched long-pause repair comparison;
-4. hear the one new Mrs. Owen exact-bank candidate and retain an explicit
-   supported fallback for Hotelier unless new exact evidence appears; and
+4. publish and evaluate the user-accepted Mrs. Owen exact-bank candidate, and
+   retain an explicit supported fallback for Hotelier unless a same-bank
+   composite or new exact evidence passes generated-quality review; and
 5. merge only terminal decisions, rebuild the approved-only manifest and run
    the real routing/auto-advance acceptance.

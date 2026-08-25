@@ -72,13 +72,21 @@ other age/portrait group. The `hero3146` and `npcnoname326` groups remain
 variant-separated until listening establishes an age-appropriate reuse policy.
 Aderyn crying-only media `369040295` and `172299031` are rejected. Mrs. Owen
 media `599773947` remains uncertain: its voice sounded usable, but the speech
-was not intelligible enough to approve as a cloning reference.
+was not intelligible enough to approve as a cloning reference. A later
+exhaustive exact-bank scan found the stronger 3.172-second media `562400954`
+(decoded WAV SHA-256
+`82e3125fbc195951006817ccd13d507b40c4d2311c2f17ebc7a37f2505e7e22b`),
+which the user accepted as a legitimate Mrs. Owen voice on 2026-08-25. It must
+enter a new immutable candidate/evaluation; it does not retroactively change
+the earlier `needs_sample` decision.
 
 The expanded checksum-bound review completed all seven selected cluster cards.
 Six were accepted: both Dobharchú groups, Poacher, Aderyn's Father, adult
 Aderyn/Rhiannon media `792349907`, and child Aderyn/Rhiannon portrait `533706`
-media `477089679`. Mrs. Owen remains `needs_sample`, and Hotelier still has no
-minimum-duration technical pass. The resulting partial manifest binds 73 exact
+media `477089679`. The published review still records Mrs. Owen as
+`needs_sample` pending the new candidate's generated-quality evaluation, and
+Hotelier still has no single-clip minimum-duration technical pass. The
+resulting partial manifest binds 73 exact
 queue IDs. A new immutable Centurion/MOSS workspace explicitly included the
 three base Rhiannon references and carried all 15 terminal Rhiannon decisions
 (ten approved, five rejected) without synthesis. Its preflight reduced the

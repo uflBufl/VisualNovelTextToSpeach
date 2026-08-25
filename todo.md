@@ -39,14 +39,22 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Listen once to exact-bank Mrs. Owen media `562400954`, the new
-      3.172-second technical candidate documented in
-      [`docs/missing-character-reference-audit-2026-08-25.md`](docs/missing-character-reference-audit-2026-08-25.md).
-      If and only if it is the correct single uncontaminated speaker, publish a
-      checksum-bound candidate and repeat only the Mrs. Owen exact cluster
-      evaluation. Hotelier's exact bank is exhausted with five sub-threshold
-      clips; retain `needs_sample` or configure an explicit per-role Narrator
-      fallback instead of searching by its reused portrait. The expanded review
+- [ ] Convert the user's accepted Mrs. Owen identity check for exact-bank media
+      `562400954` into a new immutable checksum-bound candidate; repeat only the
+      34-line Mrs. Owen cluster evaluation and require a separate generated-
+      quality decision before publishing a voice binding. Preserve the source
+      bank/event/media IDs, decoded WAV SHA-256 and the explicit human identity
+      decision; do not mutate the old `needs_sample` review or v4 binding.
+      Hotelier remains a separate evidence search: exhaust exact English
+      config/event aliases and every locally installed or archived asset index,
+      then check official game packages/version snapshots for the exact
+      `npcnoname327` role. Use Wiki or recorded story media only as discovery;
+      importing a clip requires exact story-role identity, one English speaker,
+      no music/SFX contamination, a stable source/revision URL, legal reuse and
+      checksum-bound bytes. Never assign by reused portrait `505401`, generic
+      NPC label or voice similarity. If no >=2-second exact candidate exists,
+      retain `needs_sample` or publish an explicit Hotelier-only Narrator
+      fallback instead of guessing. The expanded review
       is complete
       `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal
       Rhiannon decisions were carried into the new config-addressed workspace,
