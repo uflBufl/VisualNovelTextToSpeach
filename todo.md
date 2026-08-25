@@ -34,11 +34,10 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ## P2 - Break demonstrated authoring import cycles
 
-- [ ] Remove the three remaining strongly connected components found by the
+- [ ] Remove the two remaining strongly connected components found by the
       authoring AST import-graph audit without changing public APIs or wire
-      bytes. Work in this order: (1) extract shared legacy snapshot records from
-      `legacy_import`/`listening_import`; (2) extract source-reference review
-      records from the four-module composite/review/quality/UI cycle; (3) move
+      bytes. Work in this order: (1) extract source-reference review records
+      from the four-module composite/review/quality/UI cycle; (2) move
       failure-reference projection records out of the
       game-pack/workbench/binding/audit cycle. For each slice, add an import
       graph regression proving that exact SCC is gone, run its focused tests,

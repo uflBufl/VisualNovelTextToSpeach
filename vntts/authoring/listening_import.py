@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.authoring.legacy_import import default_import_root
+from vntts.authoring.import_paths import default_import_root
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"

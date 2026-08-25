@@ -25,7 +25,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
 )
 
-from vntts.settings import get_local_data_directory
+from vntts.authoring.import_paths import default_import_root
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -115,10 +115,6 @@ def default_legacy_jobs_root(*, environment=None):
         else user_data_path("Reverse1999Extractor", appauthor=False)
     )
     return data_root / "reverse1999" / "pregeneration-jobs"
-
-
-def default_import_root():
-    return get_local_data_directory() / "authoring" / "legacy-imports"
 
 
 def discover_legacy_jobs(jobs_root=None):

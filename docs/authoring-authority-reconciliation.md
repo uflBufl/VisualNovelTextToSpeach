@@ -59,12 +59,13 @@ only on the standard library; it never imports a UI, workspace or synthesis
 implementation.
 
 An AST import-graph audit after the split found no cycle involving
-`reconciliation` or `reconciliation_schema`. It did expose four older,
-independent authoring strongly connected components: game-pack/workbench
-failure-reference helpers, listening/listening UI, source-reference
-composition/review/quality UI, and legacy/listening import. They are tracked as
-separate refactors because breaking them safely requires moving domain records
-or adapters, not changing reconciliation report behavior.
+`reconciliation` or `reconciliation_schema`. Follow-up slices removed the
+listening/listening-UI and legacy/listening-import components by separating the
+CLI presentation adapter and shared import destination policy. Two older,
+independent authoring strongly connected components remain: game-pack/workbench
+failure-reference helpers and source-reference composition/review/quality UI.
+They are tracked as separate refactors because breaking them safely requires
+moving domain records or adapters, not changing reconciliation report behavior.
 
 The item-level next actions are deliberately conservative:
 

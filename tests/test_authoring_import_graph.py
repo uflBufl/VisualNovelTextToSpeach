@@ -44,6 +44,19 @@ def _reachable(graph, source, target):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_import_destination_policy_does_not_depend_on_importers(self):
+        graph = _authoring_import_graph()
+        paths = "vntts.authoring.import_paths"
+        legacy = "vntts.authoring.legacy_import"
+        listening = "vntts.authoring.listening_import"
+
+        self.assertIn(paths, graph[legacy])
+        self.assertIn(paths, graph[listening])
+        self.assertIn(listening, graph[legacy])
+        self.assertFalse(_reachable(graph, listening, legacy))
+        self.assertFalse(_reachable(graph, paths, legacy))
+        self.assertFalse(_reachable(graph, paths, listening))
+
     def test_listening_core_does_not_depend_on_its_presentations(self):
         graph = _authoring_import_graph()
         core = "vntts.authoring.listening"

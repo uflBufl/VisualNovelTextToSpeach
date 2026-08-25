@@ -78,6 +78,13 @@ directory and checksum-verified, then the complete directory is renamed into
 place. The source job is never deleted, rewritten or regenerated. Existing
 imports are never overwritten.
 
+The common destination policy lives in the dependency-free
+`authoring.import_paths` module. Both generation-history and blind-listening
+importers consume it, while generation discovery may inspect listening
+snapshots without creating an importer cycle. `legacy_import.default_import_root`
+remains an imported compatibility symbol, so existing Python callers keep the
+same path and behavior.
+
 Immediately before staging is renamed, every planned source artifact is hashed
 again: control documents and every generated or blind-listening WAV. A changed
 file aborts and removes staging with an actionable retry-when-idle error. A live
