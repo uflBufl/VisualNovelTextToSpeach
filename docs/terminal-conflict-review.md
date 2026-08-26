@@ -137,3 +137,29 @@ The real-data acceptance measured one-time publication at 26.64 seconds,
 candidate loading at 0.087 seconds and a full source-authority decision save at
 0.27 seconds. Publication is an operator/setup operation; playback and decision
 saves are the interactive path, and saving stays outside the Qt thread.
+
+## Authority refresh after primary Narrator review
+
+The original v1 review correctly failed closed after the three Centurion
+cohorts changed the primary workspace from 197 to 326 approvals. An attempted
+terminal decision reported `Terminal conflict authority changed` and created no
+`progress.json`; replay remained available. The candidate WAVs had not changed,
+but their captured source state authority was intentionally stale.
+
+A fresh read-only reconciliation over the same explicit bundle and quality
+scope was published as
+`authoring/reconciliations/current-character-story-20260827-091d56596664.json`,
+report ID
+`091d56596664aa50c116bfced31d40cd8862ecdf0b64e1972fd4b5f639b1186e`.
+It retains the same five conflicts and current action counts while binding the
+326-approved primary state.
+
+The current operator review is the no-replace directory
+`authoring/review-bundles/current-character-story-terminal-conflicts-v2`, review
+ID `784954f97ced807c8f26fa84ef93fd3034e2e0059b5bcaca91a3f130fb44dec3`.
+Its five cases and ten candidate WAV SHA-256 values are identical to v1. Public
+source-authority validation passes, no progress decision exists initially, and
+the primary state SHA-256 remains
+`2cdd8a18b4826f423bad7e06b719b07cd6b6a83e4bbd6ec38cf5e93893407f4e`.
+The immutable v1 directory remains historical evidence and must not receive new
+decisions.

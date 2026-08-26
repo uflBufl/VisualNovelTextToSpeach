@@ -11,9 +11,14 @@ come from the current checksum-bound state, bundle and manifest authorities.
 The reconciled baseline and exact remaining identities are recorded in
 [`docs/character-story-authoring-census-2026-08-25.md`](docs/character-story-authoring-census-2026-08-25.md).
 
-- [ ] Review the five exact cross-workspace terminal conflicts in the published
+- [ ] Review the five exact cross-workspace terminal conflicts in the current
       app-data bundle
-      `authoring/review-bundles/current-character-story-terminal-conflicts-v1`.
+      `authoring/review-bundles/current-character-story-terminal-conflicts-v2`.
+      The immutable v1 bundle remains historical evidence but became stale
+      after the completed 129-WAV Centurion review changed the primary state;
+      its fail-closed save produced no progress decision. Version 2 must bind
+      reconciliation report `091d56596664...` and the current 326-approved
+      primary authority without changing either candidate WAV in any case.
       Hear both blind candidates for `314602:92`, `314602:110`, `314608:27`,
       `314608:35` and `314608:71`, then choose one candidate or explicitly mark
       neither acceptable. After all five decisions exist, apply them through a

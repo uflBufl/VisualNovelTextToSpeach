@@ -170,3 +170,11 @@ The original version-1 plan remains immutable. Review-attention policy version
 read-only from the same measurements, while leaving the strict synthesis gate
 unchanged. The calibration and compatibility rules are recorded in
 [`review-attention-silence-policy.md`](review-attention-silence-policy.md).
+
+The completed approvals made the original terminal-conflict v1 source authority
+stale without changing its ten candidate WAVs. The refreshed reconciliation is
+`current-character-story-20260827-091d56596664.json`; its current terminal review
+directory is `current-character-story-terminal-conflicts-v2`, with the same five
+cases, zero initial decisions and current primary state authority. Details and
+the fail-closed recovery are recorded in
+[`terminal-conflict-review.md`](terminal-conflict-review.md).
