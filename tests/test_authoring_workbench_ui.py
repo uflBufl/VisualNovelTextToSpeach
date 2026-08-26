@@ -15,7 +15,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
-from vntts_artifacts.voice_manifest import write_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
@@ -801,7 +801,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             reopened._choose_typed_recent_reference()
             self.assertIn("RECENT PREVIEW UNAVAILABLE", reopened.status.text())
 
-    def test_cached_transient_external_reference_is_never_played_or_reused(self):
+    def test_transient_external_reference_is_rejected_before_it_can_be_cached(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
@@ -825,21 +825,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            stale = VoiceReferenceController(manifest)
+            with self.assertRaisesRegex(VoiceManifestError, "safe.*relative"):
+                VoiceReferenceController(manifest)
             manifest.write_bytes(original)
-            dialog.voice_controller = stale
-            dialog.voice_character.clear()
-            dialog.voice_character.addItem("Rhiannon")
-            dialog.player = Mock()
-
-            dialog.play_reference()
-            played = Path(dialog.player.setSource.call_args.args[0].toLocalFile())
-            dialog._apply_recent_reference("Rhiannon", 0)
-            recent = dialog.voice_controller.current("Rhiannon")
-
-            self.assertNotEqual(played, outside)
-            self.assertTrue(played.is_relative_to(workspace / "inputs/voice"))
-            self.assertTrue(recent.path.is_relative_to(workspace / "inputs/voice"))
+            self.assertTrue(
+                dialog.voice_controller.current("Rhiannon").path.is_relative_to(
+                    workspace / "inputs/voice"
+                )
+            )
 
     def test_readiness_details_show_immutable_utc_history_and_persist(self):
         with TemporaryDirectory() as directory:

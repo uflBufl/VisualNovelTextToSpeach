@@ -161,6 +161,11 @@ deliberate override case.
   auto advance is available, then tries verified generated audio, then live
   synthesis.
 
+Standalone voice and generated-audio manifests own their referenced files.
+References must be POSIX-relative paths contained beneath the manifest
+directory; absolute, traversal, backslash and symlinked paths are rejected
+before a local WAV can reach synthesis or playback.
+
 Loading a story index does not change this policy. The full Dashboard shows the
 configured engine and policy, whether the generated-audio manifest is available,
 and the effective source of the latest line. For MOSS this source distinguishes

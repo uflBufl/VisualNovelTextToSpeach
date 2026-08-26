@@ -344,6 +344,9 @@ from vntts.authoring.terminal_conflict_successor import (
     publish_terminal_conflict_successor,
     validate_terminal_conflict_successor_document,
 )
+from vntts.authoring.terminal_conflict_workspace import (
+    merge_terminal_conflict_resolution,
+)
 from vntts.authoring.voice_quality_gate import (
     VOICE_QUALITY_GATE_SCHEMA,
     VOICE_QUALITY_GATE_VERSION,
@@ -381,7 +384,6 @@ from vntts.authoring.workbench import (
     inspect_voice_readiness,
     list_workspace_collections,
     load_workspace_authority,
-    merge_terminal_conflict_resolution,
     merge_workspace_outcomes,
     safe_workspace_relative_path,
     workspace_voice_snapshot,

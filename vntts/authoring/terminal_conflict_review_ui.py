@@ -48,6 +48,11 @@ class TerminalConflictReviewDialog(QDialog):
         self.document = load_terminal_conflict_review_document(self.directory)
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._decision_finished)
+        self.playback_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.playback_runner.finished.connect(self._playback_prepared)
+        self.playback_runner.activeChanged.connect(
+            lambda _active: self._set_actions(True)
+        )
         self.candidate_loader = candidate_loader
         self.decision_recorder = decision_recorder
         self._active = False
@@ -56,6 +61,7 @@ class TerminalConflictReviewDialog(QDialog):
         self._playing_candidate = None
         self._heard = set()
         self._current = None
+        self._display_candidates = []
 
         self.setWindowTitle("Terminal audio conflict review")
         self.setMinimumSize(760, 420)
@@ -127,6 +133,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio_output)
         self.player.errorOccurred.connect(self._playback_error)
+        self.player.mediaStatusChanged.connect(self._media_status_changed)
         self._load_next()
 
     def _decisions(self):
@@ -165,6 +172,21 @@ class TerminalConflictReviewDialog(QDialog):
             raise TerminalConflictReviewError(
                 "The current UI supports exactly two distinct candidates per conflict"
             )
+        self._display_candidates = sorted(
+            candidates,
+            key=lambda candidate: hashlib.sha256(
+                (
+                    self.document["review_id"]
+                    + ":"
+                    + self._current["case_id"]
+                    + ":"
+                    + candidate["candidate_id"]
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        for index, button in enumerate(self.choose_buttons):
+            button.setText(f"Choose candidate {chr(65 + index)}")
+            button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
         self.identity.setText(
             f"Line: {self._current['line_id']} | Speaker: {self._current['speaker']} | "
             f"Voice: {self._current['voice_character']}"
@@ -177,18 +199,48 @@ class TerminalConflictReviewDialog(QDialog):
     def _play(self, index):
         if self._active or self._current is None:
             return
-        candidate = self._current["candidates"][index]
-        try:
-            payload = self.candidate_loader(
-                self.directory, self._current["case_id"], candidate["candidate_id"]
-            )
-        except TerminalConflictReviewError as error:
-            self.status.setText(f"PLAYBACK BLOCKED: {error}")
-            return
-        if hashlib.sha256(payload).hexdigest() != candidate["audio_sha256"]:
-            self.status.setText("PLAYBACK BLOCKED: candidate WAV changed")
-            return
+        candidate = self._display_candidates[index]
         self._stop()
+        self.status.setText(
+            f"Preparing checksum-verified candidate {chr(65 + index)} in background..."
+        )
+        self.playback_runner.start(
+            self._load_candidate_payload,
+            self.candidate_loader,
+            self.directory,
+            self._current["case_id"],
+            candidate["candidate_id"],
+            candidate["audio_sha256"],
+            index,
+        )
+
+    @staticmethod
+    def _load_candidate_payload(
+        loader, directory, case_id, candidate_id, expected_sha256, index
+    ):
+        payload = loader(directory, case_id, candidate_id)
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise TerminalConflictReviewError("Terminal conflict candidate WAV changed")
+        return case_id, candidate_id, expected_sha256, index, payload
+
+    def _playback_prepared(self, result, error):
+        if error is not None:
+            self.status.setText(f"PLAYBACK BLOCKED: {error}")
+            self._set_actions(True)
+            return
+        case_id, candidate_id, expected_sha256, index, payload = result
+        if self._current is None or self._current["case_id"] != case_id:
+            self.status.setText("PLAYBACK CANCELLED: conflict selection changed")
+            self._set_actions(True)
+            return
+        candidate = self._display_candidates[index]
+        if (
+            candidate["candidate_id"] != candidate_id
+            or candidate["audio_sha256"] != expected_sha256
+        ):
+            self.status.setText("PLAYBACK CANCELLED: candidate selection changed")
+            self._set_actions(True)
+            return
         self._audio_buffer = QBuffer(self)
         self._audio_buffer.setData(QByteArray(payload))
         self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -197,13 +249,13 @@ class TerminalConflictReviewDialog(QDialog):
             self._audio_buffer, QUrl(f"memory:terminal-candidate-{index + 1}.wav")
         )
         self.player.play()
-        self._heard.add(candidate["candidate_id"])
         self.evidence.setText(
-            f"Heard {len(self._heard)}/2 candidates. Replay remains available."
+            f"Playing candidate {chr(65 + index)}. It counts only after audio ends."
         )
-        self._update_decision_buttons()
 
     def _stop(self):
+        if hasattr(self, "playback_runner"):
+            self.playback_runner.cancel()
         self.player.stop()
         self.player.setSource(QUrl())
         if self._audio_buffer is not None:
@@ -214,7 +266,7 @@ class TerminalConflictReviewDialog(QDialog):
     def _choose(self, index):
         if self._current is None:
             return
-        self._save(self._current["candidates"][index]["candidate_id"])
+        self._save(self._display_candidates[index]["candidate_id"])
 
     def _choose_neither(self):
         self._save(NEITHER_ACCEPTABLE)
@@ -253,22 +305,70 @@ class TerminalConflictReviewDialog(QDialog):
             self.close()
 
     def _set_actions(self, enabled):
-        enabled = bool(enabled and self._current is not None and not self._active)
+        enabled = bool(
+            enabled
+            and self._current is not None
+            and not self._active
+            and not self.playback_runner.active
+        )
         for button in self.play_buttons:
             button.setEnabled(enabled)
-        self.stop.setEnabled(enabled)
+        self.stop.setEnabled(
+            self._current is not None
+            and not self._active
+            and (enabled or self.playback_runner.active)
+        )
         self._update_decision_buttons()
 
     def _update_decision_buttons(self):
         enabled = (
-            self._current is not None and not self._active and len(self._heard) == 2
+            self._current is not None
+            and not self._active
+            and len(self._heard) == 2
+            and not self.playback_runner.active
         )
         for button in self.choose_buttons:
             button.setEnabled(enabled)
         self.neither.setEnabled(enabled)
 
+        if enabled:
+            consequences = []
+            for index, (button, candidate) in enumerate(
+                zip(self.choose_buttons, self._display_candidates, strict=True)
+            ):
+                authority = candidate["authority"]
+                label = chr(65 + index)
+                button.setText(f"Keep {authority.title()} candidate {label}")
+                button.setAccessibleName(
+                    f"Keep historically {authority} terminal candidate {index + 1}"
+                )
+                consequence = (
+                    "enters the approved manifest"
+                    if authority == "approved"
+                    else "remains rejected outside the manifest"
+                )
+                consequences.append(f"{label} was {authority} and {consequence}")
+            self.evidence.setText(
+                "Both candidates finished. " + "; ".join(consequences) + "."
+            )
+
+    def _media_status_changed(self, status):
+        if (
+            status != QMediaPlayer.MediaStatus.EndOfMedia
+            or self._playing_candidate is None
+        ):
+            return
+        self._heard.add(self._playing_candidate)
+        self._playing_candidate = None
+        self.evidence.setText(
+            f"Heard {len(self._heard)}/2 candidates. Replay remains available."
+        )
+        self._update_decision_buttons()
+
     def _playback_error(self, _error, error_string):
+        self._playing_candidate = None
         self.status.setText(f"PLAYBACK FAILED: {error_string}")
+        self._update_decision_buttons()
 
     def closeEvent(self, event: QCloseEvent):
         if self._active:

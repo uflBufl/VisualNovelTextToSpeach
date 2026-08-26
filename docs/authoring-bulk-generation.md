@@ -79,10 +79,10 @@ is checked once more before the manifest replace. If ownership changes in that
 narrow interval, the durable state decision is reported as saved while the
 older derived manifest remains fail-closed until recovery.
 Additive raw entry fields retain generation profile, synthesis/control hashes,
-voice, text transform and silence measurements. The vntts-artifacts 0.6.1 typed
-generated-audio index does not expose those extensions, so generation state
-remains the lossless provenance authority even though the raw manifest keeps
-them.
+voice, text transform and silence measurements. The pinned vntts-artifacts
+0.6.2 lossless generated-audio document API exposes those extensions to typed
+consumers. Generation state remains the mutable review and retry authority;
+the generated manifest is still a derived approved-only projection.
 
 ## Command line
 

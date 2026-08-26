@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import copy
-import ctypes
-import errno
 import hashlib
 import json
 import os
 import shutil
 import socket
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -34,7 +31,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _approved_manifest_entries,
     _canonical_sha256,
-    _GenerationLease,
     _load_stable_queue,
     _process_started_at,
     _validate_state_document,
@@ -44,6 +40,13 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding_document,
+)
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    generation_publication_leases,
+)
+from vntts.authoring.publication import (
+    rename_directory_no_replace as _rename_directory_no_replace,
 )
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
@@ -116,11 +119,11 @@ def publish_final_game_pack(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     with _PublicationLease(destination) as publication_lease:
-        with _GenerationLease(
-            state_path.parent,
-            initial_state["queue_sha256"],
+        with generation_publication_leases(
+            ((state_path.parent, initial_state["queue_sha256"]),),
             process_checker=process_is_alive,
-        ) as generation_lease:
+        ) as generation_leases:
+            generation_lease = generation_leases[0]
             try:
                 queue, queue_sha256 = _load_stable_queue(queue_path)
             except BulkGenerationError as error:
@@ -329,7 +332,7 @@ def publish_final_game_pack(
                     )
                 try:
                     _rename_directory_no_replace(staging, destination)
-                except OSError as error:
+                except (AtomicPublicationError, OSError) as error:
                     raise FinalGamePackError(
                         f"Unable to atomically publish final game pack: {error}"
                     ) from error
@@ -979,58 +982,6 @@ def _new_destination(value):
 
 def _path_exists(path):
     return os.path.lexists(path)
-
-
-def _rename_directory_no_replace(source, destination):
-    """Atomically rename a staged directory without replacing any destination."""
-    source_bytes = os.fsencode(source)
-    destination_bytes = os.fsencode(destination)
-    if sys.platform == "darwin":
-        libc = ctypes.CDLL(None, use_errno=True)
-        renamex_np = libc.renamex_np
-        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        renamex_np.restype = ctypes.c_int
-        result = renamex_np(source_bytes, destination_bytes, 0x00000004)
-    elif sys.platform.startswith("linux"):
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = getattr(libc, "renameat2", None)
-        if renameat2 is None:
-            raise FinalGamePackError(
-                "Atomic no-replace directory publication is unavailable on this Linux runtime"
-            )
-        renameat2.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        renameat2.restype = ctypes.c_int
-        result = renameat2(-100, source_bytes, -100, destination_bytes, 1)
-    elif os.name == "nt":
-        try:
-            os.rename(source, destination)
-        except FileExistsError as error:
-            raise FinalGamePackError(
-                f"Final game-pack destination already exists: {destination}"
-            ) from error
-        return
-    else:
-        raise FinalGamePackError(
-            f"Atomic no-replace directory publication is unsupported on {sys.platform}"
-        )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
-        raise FinalGamePackError(
-            f"Final game-pack destination already exists: {destination}"
-        )
-    if error_number in {errno.ENOSYS, errno.ENOTSUP}:
-        raise FinalGamePackError(
-            "Atomic no-replace directory publication is unavailable on this filesystem"
-        )
-    raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
 def _required_text(value, label):

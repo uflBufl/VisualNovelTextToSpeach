@@ -53,6 +53,7 @@ from vntts.authoring.cohort_bundle import (
     load_resumable_cohort_review_bundle,
     load_resumable_cohort_review_bundle_samples,
     load_resumable_cohort_review_session,
+    write_cohort_review_observations,
     write_cohort_review_progress,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
@@ -220,6 +221,7 @@ class CohortReviewBundleDialog(QDialog):
             self.bundle_path is not None
             and decision_executor is _execute_bundle_decision_task
         )
+        self._checkpoint_observations_enabled = self._checkpoint_decisions
         self.confirmer = confirmer or self._confirm_decision
         self.samples = ()
         self.samples_by_cohort = {}
@@ -780,6 +782,7 @@ class CohortReviewBundleDialog(QDialog):
         self._show_current_cohort()
         if selected is not None:
             self._select_queue_id(selected.item.queue_id)
+        self._checkpoint_observations()
 
     def _media_error(self, _error, message=""):
         self._playback_target = None
@@ -819,6 +822,24 @@ class CohortReviewBundleDialog(QDialog):
         queue_id = sample.item.queue_id
         self._show_current_cohort()
         self._select_queue_id(queue_id)
+        self._checkpoint_observations()
+
+    def _checkpoint_observations(self):
+        if not self._checkpoint_observations_enabled:
+            return
+        try:
+            write_cohort_review_observations(
+                self.bundle_path,
+                self.original_bundle,
+                self.bundle,
+                self.heard,
+                self.bad,
+            )
+        except Exception as error:
+            self.status.setText(
+                "LISTENING CHECKPOINT FAILED: keep this window open or replay "
+                f"samples after reopening ({error})"
+            )
 
     def apply_decision(self, decision):
         if self._decision_active:
@@ -939,6 +960,7 @@ class CohortReviewBundleDialog(QDialog):
                 task_result.samples,
                 status=status,
             )
+            self._checkpoint_observations()
             return
         self.bundle = result.next_bundle
         self.status.setText(

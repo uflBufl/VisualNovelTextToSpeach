@@ -48,6 +48,8 @@ class SourceReferenceQualityDialog(QDialog):
         self.decision_recorder = decision_recorder
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_finished)
+        self.playback_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.playback_runner.finished.connect(self._playback_prepared)
         self._decision_active = False
         self._close_pending = False
         self.current = None
@@ -368,17 +370,41 @@ class SourceReferenceQualityDialog(QDialog):
         self._play_record(sample, sample["queue_id"])
 
     def _play_record(self, record, token):
-        path = (self.session_path.parent / record["audio"]).resolve()
-        try:
-            path.relative_to(self.session_path.parent)
-            payload = path.read_bytes()
-        except (OSError, ValueError) as error:
+        self._stop()
+        self.status.setText("Preparing checksum-verified audio in background...")
+        self.playback_runner.start(
+            self._load_audio_payload,
+            self.session_path.parent,
+            dict(record),
+            token,
+            self.current["variant_id"],
+        )
+
+    @staticmethod
+    def _load_audio_payload(root, record, token, variant_id):
+        root = Path(root).resolve()
+        path = root / record["audio"]
+        if path.is_symlink():
+            raise ValueError("audio path is a symlink")
+        path = path.resolve()
+        path.relative_to(root)
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != record["audio_sha256"]:
+            raise ValueError("audio checksum changed")
+        return variant_id, token, record["audio_sha256"], payload
+
+    def _playback_prepared(self, result, error):
+        if error is not None:
             self.status.setText(f"Playback blocked: {error}")
             return
-        if hashlib.sha256(payload).hexdigest() != record["audio_sha256"]:
-            self.status.setText("Playback blocked: audio checksum changed")
+        variant_id, token, digest, payload = result
+        if self.current is None or self.current["variant_id"] != variant_id:
+            self.status.setText("Playback cancelled: review card changed")
             return
-        self.player.stop()
+        records = [self.current["reference"], *self.current["generated_samples"]]
+        if not any(record.get("audio_sha256") == digest for record in records):
+            self.status.setText("Playback cancelled: audio selection changed")
+            return
         self._audio_buffer = QBuffer(self)
         self._audio_buffer.setData(QByteArray(payload))
         if not self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly):
@@ -418,6 +444,8 @@ class SourceReferenceQualityDialog(QDialog):
         self.status.setText(f"Playback failed: {message or self.player.errorString()}")
 
     def _stop(self):
+        if hasattr(self, "playback_runner"):
+            self.playback_runner.cancel()
         if hasattr(self, "player"):
             self.player.stop()
         self._playing_token = None

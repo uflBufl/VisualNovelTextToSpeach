@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -92,12 +92,14 @@ class CharacterVoiceRegistry:
             CharacterVoice(
                 character=entry.character,
                 speaker=entry.speaker,
-                reference=(manifest_path.parent / entry.references[0]).resolve()
+                reference=_contained_manifest_reference(
+                    manifest_path, entry.references[0]
+                )
                 if entry.references
                 else None,
                 aliases=entry.aliases,
                 references=tuple(
-                    (manifest_path.parent / reference).resolve()
+                    _contained_manifest_reference(manifest_path, reference)
                     for reference in entry.references
                 ),
             )
@@ -201,6 +203,31 @@ class CharacterVoiceRegistry:
         if existing_voice is not None and existing_voice != voice:
             raise VoiceManifestError(f"Duplicate voice name or alias: {name!r}")
         self.voices[normalized_name] = voice
+
+
+def _contained_manifest_reference(manifest_path, reference):
+    if not isinstance(reference, str) or not reference.strip() or "\\" in reference:
+        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+    relative = PurePosixPath(reference.strip())
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+    root = Path(manifest_path).parent.resolve()
+    unresolved = root.joinpath(*relative.parts)
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise VoiceManifestError("Voice reference must not use symlinks")
+    resolved = unresolved.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise VoiceManifestError(
+            "Voice reference must stay within the manifest directory"
+        ) from error
+    return resolved
 
 
 def find_default_voice_manifest(project_root=None):

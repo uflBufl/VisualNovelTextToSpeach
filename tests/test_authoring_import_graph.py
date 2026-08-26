@@ -2,10 +2,13 @@ import ast
 import unittest
 from pathlib import Path
 
+import vntts.authoring.game_pack as game_pack_module
+import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
     FailureReferenceBindingError,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
     AuthoringReconciliationError,
@@ -13,6 +16,9 @@ from vntts.authoring.reconciliation import (
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     SourceReferenceQualityResult,
+)
+from vntts.authoring.terminal_conflict_workspace import (
+    merge_terminal_conflict_resolution,
 )
 
 
@@ -52,6 +58,19 @@ def _reachable(graph, source, target):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_authoring_module_graph_has_no_strongly_connected_components(self):
+        graph = _authoring_import_graph()
+        cycles = []
+        modules = sorted(graph)
+        for position, source in enumerate(modules):
+            for target in modules[position + 1 :]:
+                if _reachable(graph, source, target) and _reachable(
+                    graph, target, source
+                ):
+                    cycles.append((source, target))
+
+        self.assertEqual(cycles, [])
+
     def test_extracted_record_types_keep_their_public_module_identity(self):
         self.assertEqual(
             FailureReferenceBinding.__module__,
@@ -101,6 +120,26 @@ class AuthoringImportGraphTest(unittest.TestCase):
         )
         self.assertEqual(
             AuthoringReconciliationError.__module__, "vntts.authoring.reconciliation"
+        )
+
+    def test_terminal_workspace_application_is_a_leaf_orchestration_module(self):
+        graph = _authoring_import_graph()
+        terminal_workspace = "vntts.authoring.terminal_conflict_workspace"
+        workbench = "vntts.authoring.workbench"
+
+        self.assertEqual(
+            merge_terminal_conflict_resolution.__module__, terminal_workspace
+        )
+        self.assertIn(workbench, graph[terminal_workspace])
+        self.assertNotIn(terminal_workspace, graph[workbench])
+        self.assertFalse(_reachable(graph, workbench, terminal_workspace))
+        self.assertIs(
+            terminal_workspace_module.rename_directory_no_replace,
+            rename_directory_no_replace,
+        )
+        self.assertIs(
+            game_pack_module._rename_directory_no_replace,
+            rename_directory_no_replace,
         )
 
     def test_reconciliation_schema_dependency_is_one_way(self):

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import socket
 import unittest
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +22,8 @@ from vntts.authoring.reconciliation import (
 )
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
+    PROGRESS_LEASE_SCHEMA,
+    PROGRESS_LEASE_VERSION,
     TerminalConflictReviewError,
     load_terminal_conflict_review,
     load_terminal_conflict_review_progress,
@@ -227,6 +230,85 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 list(root.glob(".conflict-review.staging-*")),
                 [],
             )
+
+    def test_dead_progress_lease_is_archived_and_review_continues(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report_path, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            lock = output / ".progress.lock"
+            lock.write_text(
+                json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 999999,
+                        "hostname": socket.gethostname(),
+                        "process_started_at": "stale",
+                        "lease_id": "dead-owner",
+                        "started_at": "2026-08-26T12:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "vntts.authoring.terminal_conflict_review.process_is_alive",
+                return_value=False,
+            ):
+                progress = record_terminal_conflict_decision(
+                    output,
+                    review["cases"][0]["case_id"],
+                    NEITHER_ACCEPTABLE,
+                )
+
+            self.assertEqual(len(progress["decisions"]), 1)
+            self.assertFalse(lock.exists())
+            self.assertEqual(len(list(output.glob(".progress.lock.interrupted-*"))), 1)
+
+    def test_live_progress_lease_blocks_concurrent_decision(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report_path, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            (output / ".progress.lock").write_text(
+                json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 1234,
+                        "hostname": socket.gethostname(),
+                        "process_started_at": "same-start",
+                        "lease_id": "live-owner",
+                        "started_at": "2026-08-26T12:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch(
+                    "vntts.authoring.terminal_conflict_review.process_is_alive",
+                    return_value=True,
+                ),
+                patch(
+                    "vntts.authoring.terminal_conflict_review.process_started_at",
+                    return_value="same-start",
+                ),
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError,
+                    "Another terminal conflict decision is being saved",
+                ),
+            ):
+                record_terminal_conflict_decision(
+                    output,
+                    review["cases"][0]["case_id"],
+                    NEITHER_ACCEPTABLE,
+                )
 
 
 if __name__ == "__main__":

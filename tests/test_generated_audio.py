@@ -82,6 +82,46 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest)), audio
 
+    def test_optional_library_rejects_symlink_escape_from_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            external = root / "outside.wav"
+            write_wav(external, [0.0, 0.25, -0.25, 0.0])
+            (manifest_root / "linked.wav").symlink_to(external)
+            manifest = manifest_root / "generated-audio.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.generated-audio",
+                        "schema_version": 1,
+                        "entry_count": 1,
+                        "entries": [
+                            {
+                                "line_id": "game:1",
+                                "text_sha256": text_sha256("Hello."),
+                                "audio": "linked.wav",
+                                "audio_format": "wav-pcm16-mono",
+                                "audio_sha256": sha256_file(external),
+                                "sample_rate": 24_000,
+                                "sample_count": 4,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            warnings = []
+
+            library = GeneratedAudioLibrary.load_optional(
+                manifest, warn=warnings.append
+            )
+
+        self.assertIsNone(library)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("manifest directory", warnings[0])
+
     def create_resolver(
         self,
         *,

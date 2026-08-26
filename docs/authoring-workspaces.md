@@ -882,6 +882,14 @@ reason and explanatory tooltip. The layout was rendered against the current
 sample table, playback controls or decision area; Qt regressions retain those
 geometry, shortcut, detail-toggle, progress and next-cohort gates.
 
+For a published bundle, complete-listen and sample-level bad/acceptable marks
+are atomically checkpointed in a separate `*.observations.json` sidecar. The
+checkpoint is bound to the root bundle, current successor bundle, workspace,
+cohort, queue ID and WAV SHA-256. Closing and reopening therefore does not force
+unchanged samples to be heard again. The sidecar is deliberately
+non-authoritative: it cannot approve/reject a cohort, and observations from a
+different successor identity are ignored.
+
 The real ten-source specialist bundle opened its 81 exact samples in 0.078
 seconds through the targeted loader; an offscreen dialog populated 18 cohorts
 and its first sample table in 0.399 seconds. A read-only benchmark of the

@@ -2,11 +2,12 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
@@ -30,6 +31,14 @@ class TrayApplicationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def wait_until(self, predicate, *, timeout_ms=2000):
+        for _ in range(max(1, timeout_ms // 5)):
+            self.application.processEvents()
+            if predicate():
+                return
+            QTest.qWait(5)
+        self.fail("Timed out waiting for an asynchronous UI operation")
 
     def test_tray_shell_exposes_runtime_controls(self):
         controller = Mock()
@@ -433,6 +442,7 @@ class TrayApplicationTest(unittest.TestCase):
             return_value=True,
         ):
             tray_application._open_pending_speaker_mapping("Selone")
+            self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
@@ -1031,6 +1041,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         with patch("vntts.app.VoicePreviewDialog", return_value=dialog):
             tray_application.open_voice_previews()
+            self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
@@ -1075,6 +1086,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         with patch("vntts.app.DialogueHistoryDialog", return_value=dialog):
             tray_application.open_history()
+            self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
@@ -1451,11 +1463,86 @@ class TrayApplicationTest(unittest.TestCase):
                 patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
             ):
                 tray_application.open_profiles()
+                self.wait_until(
+                    lambda: not tray_application.profile_restart_runner.active
+                )
 
             controller.shutdown.assert_called_once_with()
             controller.apply_settings.assert_called_once_with(selected_settings)
             controller.start.assert_called_once_with()
             self.assertIn("Reverse: 1999", tray_application.status_action.text())
+            tray_application.shutdown()
+
+    def test_live_modal_stop_wait_does_not_block_qt_events(self):
+        controller = Mock()
+        controller.is_live_running = True
+        release = Event()
+
+        def toggle_live():
+            controller.is_live_running = False
+            return False
+
+        controller.toggle_live.side_effect = toggle_live
+        controller.live_reader.wait.side_effect = lambda: release.wait(2)
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        opened = []
+        heartbeat = []
+
+        with patch.object(
+            tray_application,
+            "_open_history_dialog",
+            side_effect=lambda resume: opened.append(resume),
+        ):
+            tray_application.open_history()
+            QTimer.singleShot(0, lambda: heartbeat.append(True))
+            self.application.processEvents()
+            self.assertEqual(heartbeat, [True])
+            self.assertEqual(opened, [])
+            self.assertTrue(tray_application.live_stop_runner.active)
+            release.set()
+            self.wait_until(lambda: opened == [True])
+
+        tray_application.shutdown()
+
+    def test_profile_restart_does_not_block_qt_events(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Reverse: 1999", AppSettings())
+            selected_settings = profile.apply(AppSettings())
+            release = Event()
+            controller = Mock()
+            controller.start.side_effect = lambda: release.wait(2) or True
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+                profile_store=store,
+            )
+            dialog = Mock()
+            dialog.exec.return_value = SettingsDialog.DialogCode.Accepted
+            dialog.settings.return_value = selected_settings
+            heartbeat = []
+
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            ):
+                tray_application.open_profiles()
+                QTimer.singleShot(0, lambda: heartbeat.append(True))
+                self.application.processEvents()
+                self.assertEqual(heartbeat, [True])
+                self.assertTrue(tray_application.profile_restart_runner.active)
+                self.assertFalse(tray_application.profiles_action.isEnabled())
+                release.set()
+                self.wait_until(
+                    lambda: not tray_application.profile_restart_runner.active
+                )
+
+            self.assertTrue(tray_application.profiles_action.isEnabled())
             tray_application.shutdown()
 
     def test_incomplete_setup_opens_wizard_instead_of_loading_model(self):

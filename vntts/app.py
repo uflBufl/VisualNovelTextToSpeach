@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
+from vntts.async_ui import LatestTaskRunner
 from vntts.calibration import show_calibration_overlay
 from vntts.controller import AppController
 from vntts.dashboard_ui import (
@@ -970,6 +971,12 @@ class TrayApplication(QObject):
             route_trace_handler=self.record_audio_route,
             pipeline_event_handler=self.generation_timelines.record,
         )
+        self.live_stop_runner = LatestTaskRunner(self)
+        self.live_stop_runner.finished.connect(self._live_stop_finished)
+        self._live_stop_continuation = None
+        self.profile_restart_runner = LatestTaskRunner(self)
+        self.profile_restart_runner.finished.connect(self._profile_restart_finished)
+        self._pending_profile_name = None
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
@@ -1704,16 +1711,68 @@ class TrayApplication(QObject):
             return
         self.settings = dialog.settings()
         path = self.settings.save()
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        self._pending_profile_name = profile.name if profile is not None else None
+        self.profiles_action.setEnabled(False)
+        self.set_status(
+            f"Applying profile {self._pending_profile_name!r} in background; "
+            f"settings saved to {path}"
+        )
+        self.profile_restart_runner.start(
+            self._restart_controller_for_profile, self.settings
+        )
+
+    def _restart_controller_for_profile(self, settings):
         self.controller.shutdown()
-        self.controller.apply_settings(self.settings)
-        ready = self.controller.start()
+        self.controller.apply_settings(settings)
+        return self.controller.start()
+
+    def _profile_restart_finished(self, ready, error):
+        self.profiles_action.setEnabled(True)
+        profile_name = self._pending_profile_name
+        self._pending_profile_name = None
+        if error is not None:
+            self.set_ready(False)
+            self.set_status(f"Profile restart failed: {error}")
+            return
         self.set_ready(ready)
         if not ready:
             self.set_status("Unable to load the selected profile")
             return
         self.signals.hotkeys_requested.emit()
-        profile = self.profile_store.get(self.settings.active_profile_id)
-        self.set_status(f"Profile {profile.name!r} selected; settings saved to {path}")
+        self.set_status(f"Profile {profile_name!r} selected")
+
+    def _stop_live_then(self, continuation, status):
+        if self.live_stop_runner.active:
+            self.set_status("Live capture is already stopping; please wait")
+            return False
+        reader = self.controller.live_reader
+        running = self.controller.toggle_live()
+        self.signals.live_changed.emit(running)
+        if running:
+            self.set_status("Unable to stop live capture for this action")
+            return False
+        self._live_stop_continuation = continuation
+        self.set_status(status)
+        if reader is None:
+            QTimer.singleShot(0, lambda: self._live_stop_finished(True, None))
+        else:
+            self.live_stop_runner.start(self._wait_for_live_reader, reader)
+        return True
+
+    @staticmethod
+    def _wait_for_live_reader(reader):
+        reader.wait()
+        return True
+
+    def _live_stop_finished(self, _result, error):
+        continuation = self._live_stop_continuation
+        self._live_stop_continuation = None
+        if error is not None:
+            self.set_status(f"Unable to stop live capture: {error}")
+            return
+        if continuation is not None:
+            QTimer.singleShot(0, continuation)
 
     def open_corrections(self):
         profile = self.profile_store.get(self.settings.active_profile_id)
@@ -1754,10 +1813,14 @@ class TrayApplication(QObject):
     def open_voice_previews(self):
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
-            if self.controller.live_reader is not None:
-                self.controller.live_reader.wait()
+            self._stop_live_then(
+                lambda: self._open_voice_previews_dialog(True),
+                "Stopping live capture before voice preview...",
+            )
+            return
+        self._open_voice_previews_dialog(False)
+
+    def _open_voice_previews_dialog(self, resume_live):
         dialog = VoicePreviewDialog(
             self.controller.available_voice_characters(),
             self.controller.available_voice_choices(),
@@ -1878,10 +1941,11 @@ class TrayApplication(QObject):
             self.resume_live_after_unknown_mapping or self.controller.is_live_running
         )
         if self.controller.is_live_running:
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
-            if self.controller.live_reader is not None:
-                self.controller.live_reader.wait()
+            self._stop_live_then(
+                lambda: self._open_pending_speaker_mapping(speaker),
+                "Stopping live capture before speaker mapping...",
+            )
+            return
         self.pending_unknown_speaker = speaker
         assigned = self.open_speaker_mapping()
         self.unknown_speaker_mapping_in_progress = None
@@ -1979,20 +2043,24 @@ class TrayApplication(QObject):
             )
 
     def open_history(self):
-        dialog = DialogueHistoryDialog(
-            self.controller.history,
-            self.controller.replay_dialog,
-        )
         # Region capture has no game-window focus probe. Leaving it running
         # while this modal window covers the calibrated region makes OCR read
         # the history list, append that text to the history, and repeat. Stop
         # capture for the modal session, then restore the previous live state.
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
-            running = self.controller.toggle_live()
-            self.signals.live_changed.emit(running)
-            if self.controller.live_reader is not None:
-                self.controller.live_reader.wait()
+            self._stop_live_then(
+                lambda: self._open_history_dialog(True),
+                "Stopping live capture before dialogue history...",
+            )
+            return
+        self._open_history_dialog(False)
+
+    def _open_history_dialog(self, resume_live):
+        dialog = DialogueHistoryDialog(
+            self.controller.history,
+            self.controller.replay_dialog,
+        )
         try:
             dialog.exec()
         finally:

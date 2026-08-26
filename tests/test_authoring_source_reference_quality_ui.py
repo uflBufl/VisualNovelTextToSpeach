@@ -197,6 +197,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             (root / "reference.wav").write_bytes(b"changed")
 
             dialog._play_reference()
+            self.wait_for(lambda: not dialog.playback_runner.active)
             message = dialog.status.text()
             dialog.close()
 

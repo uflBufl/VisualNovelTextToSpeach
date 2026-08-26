@@ -1,14 +1,26 @@
+import hashlib
+import io
 import json
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import tests.test_authoring_reconciliation as reconciliation_tests
 import tests.test_authoring_terminal_conflict_review as review_tests
+import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 import vntts.authoring.workbench as workbench_module
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import load_generation_state
+from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
+    _GenerationLease,
+    load_generation_state,
+    process_is_alive,
+    publish_generated_manifest,
+)
+from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.cohort_review import _load_bound_review_workspace
 from vntts.authoring.terminal_conflict_resolution import (
     publish_terminal_conflict_resolution,
 )
@@ -20,11 +32,13 @@ from vntts.authoring.terminal_conflict_review import (
 from vntts.authoring.terminal_conflict_successor import (
     publish_terminal_conflict_successor,
 )
+from vntts.authoring.terminal_conflict_workspace import (
+    merge_terminal_conflict_resolution,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     inspect_workspace,
     load_workspace_authority,
-    merge_terminal_conflict_resolution,
 )
 
 
@@ -178,7 +192,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             )
             state_path = Path(candidate["source_authorities"][0]["state"])
             original_validator = (
-                workbench_module._validate_workspace_terminal_conflict_merge
+                terminal_workspace_module._validate_workspace_terminal_conflict_merge
             )
             mutated = False
 
@@ -195,7 +209,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             workspaces = root / "workspaces"
             before = set(workspaces.glob("resume-*"))
             with patch.object(
-                workbench_module,
+                terminal_workspace_module,
                 "_validate_workspace_terminal_conflict_merge",
                 side_effect=validate_and_mutate,
             ):
@@ -243,6 +257,167 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
 
             with self.assertRaises(AuthoringWorkbenchError):
                 load_workspace_authority(result.directory)
+
+    def test_merged_workspace_is_accepted_by_cohort_authority_loader(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, _queue_id, _report, _review, successor = (
+                self.create_successor(root, "approved")
+            )
+            result = merge_terminal_conflict_resolution(
+                primary, successor, root / "workspaces"
+            )
+            workspace = load_workspace_authority(result.directory)[1]
+
+            loaded = _load_bound_review_workspace(
+                result.directory,
+                {
+                    "workspace_id": workspace["workspace_id"],
+                    "workspace_config_fingerprint": workspace["config_fingerprint"],
+                    "queue_sha256": hashlib.sha256(
+                        (result.directory / "queue.jsonl").read_bytes()
+                    ).hexdigest(),
+                    "state_sha256": hashlib.sha256(
+                        (
+                            result.directory / "generated-audio/generation-state.json"
+                        ).read_bytes()
+                    ).hexdigest(),
+                },
+            )
+
+            self.assertEqual(loaded[1]["workspace_id"], workspace["workspace_id"])
+
+    def test_orphaned_terminal_provenance_cannot_enter_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, queue_id, _report, _review, successor = (
+                self.create_successor(root, "approved")
+            )
+            result = merge_terminal_conflict_resolution(
+                primary, successor, root / "workspaces"
+            )
+            merged_state = load_generation_state(
+                result.directory / "generated-audio/generation-state.json"
+            )
+            state_path = primary / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id]["terminal_conflict_resolution"] = merged_state[
+                "items"
+            ][queue_id]["terminal_conflict_resolution"]
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            load_generation_state(state_path, primary / "queue.jsonl")
+            with self.assertRaisesRegex(
+                BulkGenerationError, "merge ledger is missing or malformed"
+            ):
+                publish_generated_manifest(state_path)
+
+    def test_malformed_terminal_provenance_is_rejected_by_state_loader(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, queue_id, _report = (
+                review_tests.TerminalConflictReviewTest().create_fixture(root)
+            )
+            state_path = primary / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id]["terminal_conflict_resolution"] = {"spoofed": True}
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "state-item provenance is malformed"
+            ):
+                load_generation_state(state_path, primary / "queue.jsonl")
+
+    def test_source_generation_is_locked_through_final_workspace_rename(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, _queue_id, _report, _review, successor = (
+                self.create_successor(root, "approved")
+            )
+            original_rename = terminal_workspace_module.rename_directory_no_replace
+            observed = []
+
+            def assert_source_locked(staging, destination):
+                state = load_generation_state(
+                    primary / "generated-audio/generation-state.json"
+                )
+                with self.assertRaisesRegex(
+                    BulkGenerationError, "Another generation process is active"
+                ):
+                    with _GenerationLease(
+                        primary / "generated-audio",
+                        state["queue_sha256"],
+                        process_checker=process_is_alive,
+                    ):
+                        pass
+                observed.append(True)
+                return original_rename(staging, destination)
+
+            with patch.object(
+                terminal_workspace_module,
+                "rename_directory_no_replace",
+                side_effect=assert_source_locked,
+            ):
+                result = merge_terminal_conflict_resolution(
+                    primary, successor, root / "workspaces"
+                )
+
+            self.assertTrue(result.created)
+            self.assertEqual(observed, [True])
+
+    def test_supported_cli_applies_terminal_conflict_pipeline(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, _queue_id, report, review, _successor = (
+                self.create_successor(root, "approved")
+            )
+            resolution = root / "cli-resolution"
+            successor = root / "cli-successor"
+            workspaces = root / "cli-workspaces"
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                self.assertEqual(
+                    authoring_main(
+                        [
+                            "terminal-conflict-resolution",
+                            str(review),
+                            str(resolution),
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    authoring_main(
+                        [
+                            "terminal-conflict-successor",
+                            str(report),
+                            str(resolution),
+                            str(successor),
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    authoring_main(
+                        [
+                            "terminal-conflict-merge",
+                            str(primary),
+                            str(successor),
+                            "--workspaces-root",
+                            str(workspaces),
+                        ]
+                    ),
+                    0,
+                )
+
+            payloads = [
+                json.loads(chunk)
+                for chunk in output.getvalue().replace("}\n{", "}\0{").split("\0")
+            ]
+            self.assertTrue(payloads[0]["created"])
+            self.assertTrue(payloads[1]["created"])
+            self.assertTrue(payloads[2]["created"])
 
 
 if __name__ == "__main__":

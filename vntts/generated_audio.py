@@ -156,8 +156,20 @@ RouteDecision = (
 )
 
 
+def _validate_generated_audio_paths(index):
+    root = index.manifest_path.parent.resolve()
+    for entry in index.entries:
+        try:
+            entry.audio.resolve().relative_to(root)
+        except ValueError as error:
+            raise GeneratedAudioManifestError(
+                "Generated audio must stay within the manifest directory"
+            ) from error
+
+
 class GeneratedAudioLibrary:
     def __init__(self, index, *, warn=None, cache_size=32):
+        _validate_generated_audio_paths(index)
         self.index = index
         self.warn = warn or (lambda _message: None)
         self.cache = BoundedCache(cache_size)

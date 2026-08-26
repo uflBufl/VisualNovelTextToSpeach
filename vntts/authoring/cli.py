@@ -144,6 +144,17 @@ from vntts.authoring.specialist_failure_plan import (
     build_specialist_failure_plan,
     write_specialist_failure_plan,
 )
+from vntts.authoring.terminal_conflict_resolution import (
+    TerminalConflictResolutionError,
+    publish_terminal_conflict_resolution,
+)
+from vntts.authoring.terminal_conflict_successor import (
+    TerminalConflictSuccessorError,
+    publish_terminal_conflict_successor,
+)
+from vntts.authoring.terminal_conflict_workspace import (
+    merge_terminal_conflict_resolution,
+)
 from vntts.authoring.voice_quality_gate import (
     VoiceQualityGateError,
     build_voice_quality_gate,
@@ -419,6 +430,28 @@ def create_parser():
         required=True,
     )
     merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    terminal_resolution = subparsers.add_parser(
+        "terminal-conflict-resolution",
+        help="Publish immutable completed terminal-conflict decisions",
+    )
+    terminal_resolution.add_argument("review_directory", type=Path)
+    terminal_resolution.add_argument("output", type=Path)
+    terminal_successor = subparsers.add_parser(
+        "terminal-conflict-successor",
+        help="Publish a resolution-aware reconciliation successor",
+    )
+    terminal_successor.add_argument("reconciliation", type=Path)
+    terminal_successor.add_argument("resolution_directory", type=Path)
+    terminal_successor.add_argument("output", type=Path)
+    terminal_merge = subparsers.add_parser(
+        "terminal-conflict-merge",
+        help="Create a config-addressed workspace from terminal decisions",
+    )
+    terminal_merge.add_argument("base_workspace", type=Path)
+    terminal_merge.add_argument("successor_directory", type=Path)
+    terminal_merge.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     reference_workspace = subparsers.add_parser(
@@ -941,6 +974,34 @@ def main(argv=None):
                         "created": result.created,
                     },
                     ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "terminal-conflict-resolution":
+            result = publish_terminal_conflict_resolution(
+                arguments.review_directory, arguments.output
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "terminal-conflict-successor":
+            result = publish_terminal_conflict_successor(
+                arguments.reconciliation,
+                arguments.resolution_directory,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "terminal-conflict-merge":
+            result = merge_terminal_conflict_resolution(
+                arguments.base_workspace,
+                arguments.successor_directory,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {"directory": str(result.directory), "created": result.created},
                     indent=2,
                     sort_keys=True,
                 )
@@ -1738,6 +1799,8 @@ def main(argv=None):
         SourceReferenceQualityError,
         SourceReferenceBindingError,
         StoryIndexError,
+        TerminalConflictResolutionError,
+        TerminalConflictSuccessorError,
         VoiceGenerationQueueError,
         VoiceManifestError,
         VoiceQualityGateError,

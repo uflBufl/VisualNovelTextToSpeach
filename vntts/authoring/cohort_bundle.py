@@ -30,6 +30,8 @@ COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
 COHORT_REVIEW_BUNDLE_VERSION = 2
 COHORT_REVIEW_PROGRESS_SCHEMA = "vntts.authoring-cohort-review-progress"
 COHORT_REVIEW_PROGRESS_VERSION = 1
+COHORT_REVIEW_OBSERVATIONS_SCHEMA = "vntts.authoring-cohort-review-observations"
+COHORT_REVIEW_OBSERVATIONS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -250,6 +252,12 @@ def cohort_review_progress_path(publication):
     return path.with_name(f"{path.stem}.progress.json")
 
 
+def cohort_review_observations_path(publication):
+    """Return the non-authoritative listening checkpoint sibling."""
+    path = Path(publication).expanduser().resolve()
+    return path.with_name(f"{path.stem}.observations.json")
+
+
 def reconcile_cohort_review_bundle(bundle):
     """Project exact terminal cohort evidence onto an immutable publication."""
     original = (
@@ -329,8 +337,144 @@ def load_resumable_cohort_review_session(publication, *, persist=True):
         publication,
         persist=persist,
     )
-    assessments = _recovered_expansion_assessments(current)
-    return resume, current, samples, assessments
+    recovered = {
+        (value.workspace_id, value.cohort_id, value.queue_id): value
+        for value in _recovered_expansion_assessments(current)
+    }
+    for value in load_cohort_review_observations(
+        publication,
+        resume.original,
+        current,
+    ):
+        recovered[(value.workspace_id, value.cohort_id, value.queue_id)] = value
+    return resume, current, samples, tuple(recovered[key] for key in sorted(recovered))
+
+
+def load_cohort_review_observations(publication, original, current):
+    """Load exact listening observations without treating them as decisions."""
+    path = cohort_review_observations_path(publication)
+    if path.is_symlink():
+        raise CohortReviewError("Cohort review observations cannot be a symlink")
+    if not path.exists():
+        return ()
+    document = _load_document(path, "cohort review observations")
+    root = _validated_bundle_document(original)
+    active = _validated_bundle_document(current)
+    if not isinstance(document, dict):
+        raise CohortReviewError("Cohort review observations must be an object")
+    body = {key: value for key, value in document.items() if key != "observations_id"}
+    if (
+        document.get("schema") != COHORT_REVIEW_OBSERVATIONS_SCHEMA
+        or document.get("schema_version") != COHORT_REVIEW_OBSERVATIONS_VERSION
+        or document.get("root_bundle_id") != root["bundle_id"]
+        or document.get("observations_id") != _canonical_sha256(body)
+    ):
+        raise CohortReviewError("Cohort review observations identity is invalid")
+    if document.get("current_bundle_id") != active["bundle_id"]:
+        return ()
+    allowed = {
+        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
+            "audio_sha256"
+        ]
+        for cohort in active["cohorts"]
+        for sample in cohort["samples"]
+    }
+    entries = document.get("observations")
+    if not isinstance(entries, list):
+        raise CohortReviewError("Cohort review observations list is invalid")
+    recovered = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise CohortReviewError("Cohort review observation must be an object")
+        key = (
+            entry.get("workspace_id"),
+            entry.get("cohort_id"),
+            entry.get("queue_id"),
+        )
+        if (
+            key in seen
+            or allowed.get(key) != entry.get("audio_sha256")
+            or entry.get("assessment") not in {"heard", "bad"}
+            or set(entry)
+            != {
+                "workspace_id",
+                "cohort_id",
+                "queue_id",
+                "audio_sha256",
+                "assessment",
+            }
+        ):
+            raise CohortReviewError("Cohort review observation authority is invalid")
+        seen.add(key)
+        recovered.append(
+            CohortReviewRecoveredAssessment(
+                workspace_id=key[0],
+                cohort_id=key[1],
+                queue_id=key[2],
+                assessment=entry["assessment"],
+            )
+        )
+    return tuple(recovered)
+
+
+def write_cohort_review_observations(
+    publication,
+    original,
+    current,
+    heard,
+    bad,
+):
+    """Atomically save exact listening progress, never terminal authority."""
+    root = _validated_bundle_document(original)
+    active = _validated_bundle_document(current)
+    allowed = {
+        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
+            "audio_sha256"
+        ]
+        for cohort in active["cohorts"]
+        for sample in cohort["samples"]
+    }
+    heard_keys = {
+        (workspace_id, cohort_id, queue_id)
+        for (workspace_id, cohort_id), queue_ids in heard.items()
+        for queue_id in queue_ids
+    }
+    bad_keys = {
+        (workspace_id, cohort_id, queue_id)
+        for (workspace_id, cohort_id), queue_ids in bad.items()
+        for queue_id in queue_ids
+    }
+    if not bad_keys.issubset(heard_keys) or not heard_keys.issubset(allowed):
+        raise CohortReviewError("Cohort review observations do not match the bundle")
+    observations = [
+        {
+            "workspace_id": key[0],
+            "cohort_id": key[1],
+            "queue_id": key[2],
+            "audio_sha256": allowed[key],
+            "assessment": "bad" if key in bad_keys else "heard",
+        }
+        for key in sorted(heard_keys)
+    ]
+    body = {
+        "schema": COHORT_REVIEW_OBSERVATIONS_SCHEMA,
+        "schema_version": COHORT_REVIEW_OBSERVATIONS_VERSION,
+        "root_bundle_id": root["bundle_id"],
+        "current_bundle_id": active["bundle_id"],
+        "observations": observations,
+    }
+    document = {**body, "observations_id": _canonical_sha256(body)}
+    path = cohort_review_observations_path(publication)
+    if path.is_symlink():
+        raise CohortReviewError("Cohort review observations cannot be a symlink")
+    try:
+        atomic_write_json(path, document, sort_keys=True)
+    except OSError as error:
+        raise CohortReviewError(
+            f"Unable to save cohort review observations {path}: {error}"
+        ) from error
+    return path
 
 
 def write_cohort_review_progress(publication, original, current):

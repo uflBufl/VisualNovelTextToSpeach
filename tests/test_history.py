@@ -83,6 +83,16 @@ class DialogueHistoryDialogTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for dialogue replay")
 
+    def test_search_and_details_expose_accessible_names_and_label_buddies(self):
+        dialog = DialogueHistoryDialog(DialogueHistory(), Mock())
+
+        self.assertEqual(dialog.search.accessibleName(), "Search dialogue history")
+        self.assertEqual(dialog.search_label.buddy(), dialog.search)
+        self.assertEqual(dialog.details.accessibleName(), "Selected dialogue details")
+        self.assertEqual(dialog.details_label.buddy(), dialog.details)
+
+        dialog.deleteLater()
+
     def test_searches_and_replays_selected_entry(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")

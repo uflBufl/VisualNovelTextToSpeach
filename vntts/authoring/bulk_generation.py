@@ -65,6 +65,11 @@ from vntts.authoring.missing_voice_policy import (
 )
 from vntts.authoring.silence_evidence import publish_silence_failure_evidence
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.authoring.terminal_conflict_records import (
+    TerminalConflictRecordError,
+    validate_terminal_conflict_item_provenance,
+    validate_terminal_conflict_state_binding,
+)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -2248,6 +2253,7 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
         raise BulkGenerationError(
             "Generated-audio manifest must stay in the state directory"
         )
+    _validate_terminal_conflict_manifest_authority(state_path, state)
     _write_generated_manifest_from_state(state, output_directory, manifest_path)
     return manifest_path
 
@@ -2286,6 +2292,27 @@ def _write_generated_manifest_from_state(
                 },
             )
     except GeneratedAudioManifestError as error:
+        raise BulkGenerationError(str(error)) from error
+
+
+def _validate_terminal_conflict_manifest_authority(state_path, state):
+    marked = any(
+        isinstance(result, dict) and "terminal_conflict_resolution" in result
+        for result in state.get("items", {}).values()
+    )
+    if not marked:
+        return
+    workspace_path = state_path.parent.parent / "workspace.json"
+    if workspace_path.is_symlink() or not workspace_path.is_file():
+        raise BulkGenerationError(
+            "Terminal conflict state requires its canonical workspace ledger"
+        )
+    workspace = _load_json(workspace_path, "authoring workspace")
+    try:
+        validate_terminal_conflict_state_binding(
+            state, workspace.get("terminal_conflict_merge")
+        )
+    except TerminalConflictRecordError as error:
         raise BulkGenerationError(str(error)) from error
 
 
@@ -3032,6 +3059,13 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             )
         if not isinstance(result, dict):
             raise BulkGenerationError(f"Generation state item {queue_id!r} is invalid")
+        if "terminal_conflict_resolution" in result:
+            try:
+                validate_terminal_conflict_item_provenance(
+                    result["terminal_conflict_resolution"]
+                )
+            except TerminalConflictRecordError as error:
+                raise BulkGenerationError(str(error)) from error
         status = result.get("status")
         review = result.get("review_status")
         valid = {

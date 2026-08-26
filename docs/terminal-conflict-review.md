@@ -32,18 +32,39 @@ Run the operator interface with:
 uv run --no-sync vntts-conflict-review REVIEW_DIRECTORY
 ```
 
-The interface presents opaque candidate A/B labels, requires both candidates
-to be played, permits replay, and offers candidate A, candidate B or
-`Neither candidate is acceptable`. Saving runs outside the Qt thread and shows
-that the source reconciliation, workspace state, queue and candidate WAVs are
-being rechecked. The mutable `progress.json` is separate from immutable
-`review.json` and copied audio.
+The interface initially presents a deterministic blind A/B order derived from
+the review/case/candidate identities rather than historical approval state.
+Playback bytes are prepared outside the Qt thread. A candidate counts as heard
+only at `EndOfMedia`; stop and playback errors do not unlock a decision. After
+both complete listens, the controls reveal the exact consequence: keeping an
+approved candidate places it in the derived manifest, while keeping a rejected
+candidate preserves the explicit rejection outside the manifest. `Neither
+candidate is acceptable` requires a new repair hypothesis. Saving runs outside
+the Qt thread and shows that the source reconciliation, workspace state, queue
+and candidate WAVs are being rechecked. The mutable `progress.json` is separate
+from immutable `review.json` and copied audio. Its write lock records owner,
+PID, host and process-start identity; a proven-dead local owner is archived and
+recovered, while live or uninspectable owners fail closed.
 
 The progress document is decision evidence only. It deliberately does not
 rewrite a workspace or suppress conflicts in a later reconciliation. Applying
 completed choices must be a separate fail-closed transaction that copies the
 selected exact outcome through the normal review/merge workflow and then
 publishes a successor reconciliation report.
+
+The supported command pipeline is:
+
+```bash
+uv run --no-sync vntts-pregenerate terminal-conflict-resolution \
+  REVIEW_DIRECTORY RESOLUTION_DIRECTORY
+uv run --no-sync vntts-pregenerate terminal-conflict-successor \
+  RECONCILIATION_JSON RESOLUTION_DIRECTORY SUCCESSOR_DIRECTORY
+uv run --no-sync vntts-pregenerate terminal-conflict-merge \
+  BASE_WORKSPACE SUCCESSOR_DIRECTORY --workspaces-root WORKSPACES_ROOT
+```
+
+Each command prints a JSON result. Existing output destinations are never
+replaced.
 
 `publish_terminal_conflict_resolution` is the first application boundary. It
 refuses incomplete progress, binds the exact immutable review and mutable
@@ -67,7 +88,9 @@ Only the exact matching resolution adds one explicit next action:
 The successor projection does not mutate a workspace, suppress historical
 authority or make a `neither` case publishable.
 
-`merge_terminal_conflict_resolution` is the final application boundary. It
+`vntts.authoring.terminal_conflict_workspace.merge_terminal_conflict_resolution`
+is the final application boundary, isolated from the general workbench core as
+a leaf orchestration module. It
 requires the primary workspace recorded by the reconciliation, derives the
 selected state authority from the exact blind candidate, and prefers that
 primary authority when identical approved audio exists in more than one
@@ -78,9 +101,11 @@ the report, successor, resolution, source workspace/state/item and WAV hashes,
 and rebuilds the approved-only manifest. Existing `outcome_merge` provenance in
 the selected item remains intact beneath the new terminal-conflict ledger.
 
-The merge rechecks every source immediately before atomic no-replace
-publication and never changes the primary or historical workspaces. Approved
-choices enter the derived manifest, rejected choices remain explicit terminal
+The merge and final-pack publisher use the same generation-lease set and atomic
+no-replace publication primitives. The merge acquires every source lease in
+stable path order, then rechecks every source while those leases remain held
+through publication. It never changes the primary or historical workspaces.
+Approved choices enter the derived manifest, rejected choices remain explicit terminal
 rejections outside it, and any `neither` choice prevents workspace creation
 until a separately versioned repair hypothesis exists.
 

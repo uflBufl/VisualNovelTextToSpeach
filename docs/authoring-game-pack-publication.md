@@ -4,8 +4,8 @@
 authoring boundary. It creates a portable `vntts.game-pack` version 1 directory
 from a fully reviewed bulk-generation state plus the exact queue, story index
 and voice manifest that produced it. The implementation uses only the released
-vntts-artifacts v0.6.1 game-pack and binding APIs; lossless generated-audio
-extensions remain authoritative in generation state.
+vntts-artifacts v0.6.2 game-pack, binding and lossless generated-audio APIs;
+review authority remains in generation state.
 
 ## Publication gates
 
@@ -52,8 +52,10 @@ fully preflights the staged pack.
 
 Immediately before commit, VNTTS rechecks the queue, exact state snapshot,
 story, voice manifest and every copied source file, plus both generation and
-publication lease ownership. The staging directory is then renamed with an
-atomic no-replace primitive. macOS uses `renamex_np(RENAME_EXCL)`, Linux uses
+publication lease ownership. Final-pack and terminal-conflict workspace
+publication share the same generation-lease set and atomic no-replace
+primitives. The staging directory is then renamed without replacement. macOS uses
+`renamex_np(RENAME_EXCL)`, Linux uses
 `renameat2(RENAME_NOREPLACE)`, and Windows uses its non-replacing rename
 semantics. Publication refuses an existing file, symlink, empty directory or
 populated directory; it never merges with or overwrites a previous delivery.

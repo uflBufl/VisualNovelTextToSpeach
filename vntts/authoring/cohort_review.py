@@ -454,6 +454,7 @@ def _load_bound_review_workspace(workspace_directory, plan_document):
             workspace.get("carry_forward"),
             workspace.get("outcome_merge"),
             workspace.get("failure_reference_binding"),
+            workspace.get("terminal_conflict_merge"),
         )
     except (TypeError, ValueError) as error:
         raise CohortReviewError("Workspace configuration is malformed") from error

@@ -117,6 +117,61 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                 ),
             )
 
+    def test_manifest_rejects_reference_outside_its_directory(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            outside = root / "outside.wav"
+            outside.write_bytes(b"outside")
+            manifest_path = manifest_root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Lucy",
+                                "speaker": "lucy",
+                                "references": [str(outside)],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(VoiceManifestError, "safe.*relative"):
+                CharacterVoiceRegistry.from_file(manifest_path)
+
+    def test_manifest_rejects_symlinked_reference(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            outside = root / "outside.wav"
+            outside.write_bytes(b"outside")
+            (manifest_root / "linked.wav").symlink_to(outside)
+            manifest_path = manifest_root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Lucy",
+                                "speaker": "lucy",
+                                "references": ["linked.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                CharacterVoiceRegistry.from_file(manifest_path)
+
     def test_duplicate_normalized_names_are_rejected(self):
         with self.assertRaisesRegex(VoiceManifestError, "Duplicate voice"):
             CharacterVoiceRegistry(

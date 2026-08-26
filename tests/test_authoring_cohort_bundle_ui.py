@@ -326,6 +326,34 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(reopened.bundle.document["cohort_count"], 1)
             self.assertTrue((root / "bundle.progress.json").is_file())
 
+    def test_unfinished_listening_checkpoint_survives_close_and_reopen(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(publication)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            dialog.toggle_bad()
+            dialog.close()
+            self.application.processEvents()
+
+            reopened = CohortReviewBundleDialog(publication)
+            reopened.show()
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            key = (sample.workspace_id, sample.cohort_id)
+            self.assertIn(sample.item.queue_id, reopened.heard[key])
+            self.assertIn(sample.item.queue_id, reopened.bad[key])
+            self.assertEqual(reopened.table.item(0, 0).text(), "Heard")
+            self.assertEqual(reopened.table.item(0, 1).text(), "Sounds bad")
+            self.assertTrue((root / "bundle.observations.json").is_file())
+
     def test_published_expand_reopens_with_exact_prior_assessments(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

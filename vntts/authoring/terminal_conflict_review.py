@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -27,6 +28,8 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
     load_review_audio_bytes,
+    process_is_alive,
+    process_started_at,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.reconciliation import (
@@ -44,6 +47,8 @@ TERMINAL_CONFLICT_REVIEW_VERSION = 1
 TERMINAL_CONFLICT_PROGRESS_SCHEMA = "vntts.authoring-terminal-conflict-review-progress"
 TERMINAL_CONFLICT_PROGRESS_VERSION = 1
 NEITHER_ACCEPTABLE = "neither_acceptable"
+PROGRESS_LEASE_SCHEMA = "vntts.authoring-terminal-conflict-progress-lease"
+PROGRESS_LEASE_VERSION = 1
 
 
 class TerminalConflictReviewError(RuntimeError):
@@ -231,9 +236,10 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                     raise TerminalConflictReviewError(
                         f"Conflict display identity changed: {queue_id}"
                     )
-            if len(candidates) < 2:
+            if len(candidates) != 2:
                 raise TerminalConflictReviewError(
-                    f"Conflict has fewer than two distinct terminal WAVs: {queue_id}"
+                    "Terminal conflict review requires exactly two distinct WAVs: "
+                    f"{queue_id}"
                 )
             line_id, speaker, voice_character, text = shared
             stable_candidates = []
@@ -900,7 +906,60 @@ def _aware_timestamp(value, label):
 @contextmanager
 def _progress_lock(directory):
     path = directory / ".progress.lock"
-    token = uuid.uuid4().hex
+    lease = {
+        "schema": PROGRESS_LEASE_SCHEMA,
+        "schema_version": PROGRESS_LEASE_VERSION,
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "process_started_at": process_started_at(os.getpid()),
+        "lease_id": uuid.uuid4().hex,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TerminalConflictReviewError(
+                "Unrecognized terminal conflict progress lock blocks review"
+            ) from error
+        if (
+            not isinstance(existing, dict)
+            or existing.get("schema") != PROGRESS_LEASE_SCHEMA
+            or existing.get("schema_version") != PROGRESS_LEASE_VERSION
+            or not isinstance(existing.get("pid"), int)
+            or existing["pid"] <= 0
+            or not isinstance(existing.get("hostname"), str)
+            or not existing["hostname"]
+            or not isinstance(existing.get("lease_id"), str)
+            or not existing["lease_id"]
+        ):
+            raise TerminalConflictReviewError(
+                "Unrecognized terminal conflict progress lock blocks review"
+            )
+        if existing["hostname"] != socket.gethostname():
+            raise TerminalConflictReviewError(
+                "Another terminal conflict decision is being saved"
+            )
+        live = process_is_alive(existing["pid"])
+        if live:
+            recorded_start = existing.get("process_started_at")
+            actual_start = process_started_at(existing["pid"])
+            if recorded_start is None or actual_start is None:
+                raise TerminalConflictReviewError(
+                    "Another terminal conflict decision is being saved"
+                )
+            live = recorded_start == actual_start
+        if live:
+            raise TerminalConflictReviewError(
+                "Another terminal conflict decision is being saved"
+            )
+        interrupted = directory / (".progress.lock.interrupted-" + uuid.uuid4().hex)
+        try:
+            path.rename(interrupted)
+        except OSError as error:
+            raise TerminalConflictReviewError(
+                "Unable to recover an interrupted terminal conflict save"
+            ) from error
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as error:
@@ -909,15 +968,16 @@ def _progress_lock(directory):
         ) from error
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(token)
+            json.dump(lease, stream, sort_keys=True)
+            stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
         yield
     finally:
         try:
-            if path.read_text(encoding="utf-8") == token:
+            if json.loads(path.read_text(encoding="utf-8")) == lease:
                 path.unlink()
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError):
             pass
 
 

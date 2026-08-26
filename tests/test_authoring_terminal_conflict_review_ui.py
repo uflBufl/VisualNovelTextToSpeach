@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtGui import QCloseEvent
+    from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
     import tests.test_authoring_terminal_conflict_review as conflict_tests
@@ -27,6 +28,7 @@ except ModuleNotFoundError as error:
         raise
     QApplication = None
     QCloseEvent = None
+    QMediaPlayer = None
     TerminalConflictReviewDialog = None
 
 
@@ -44,6 +46,11 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
                 return
             time.sleep(0.01)
         self.fail("Timed out waiting for terminal conflict review UI")
+
+    def finish_playback(self, dialog):
+        self.wait_for(lambda: dialog._playing_candidate is not None)
+        dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+        self.application.processEvents()
 
     def create_review(self, root):
         _primary, _secondary, _queue_id, report = (
@@ -63,8 +70,14 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertFalse(dialog.neither.isEnabled())
             dialog.play_buttons[0].click()
             self.assertFalse(dialog.neither.isEnabled())
+            self.finish_playback(dialog)
+            self.assertFalse(dialog.neither.isEnabled())
             dialog.play_buttons[1].click()
+            self.assertFalse(dialog.neither.isEnabled())
+            self.finish_playback(dialog)
             self.assertTrue(dialog.neither.isEnabled())
+            self.assertIn("was approved", dialog.evidence.text().casefold())
+            self.assertIn("was rejected", dialog.evidence.text().casefold())
             dialog.neither.click()
             self.assertTrue(dialog._active)
             self.assertIn("Saving in background", dialog.status.text())
@@ -92,7 +105,9 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             )
             dialog.show()
             dialog.play_buttons[0].click()
+            self.finish_playback(dialog)
             dialog.play_buttons[1].click()
+            self.finish_playback(dialog)
             dialog.choose_buttons[0].click()
             heartbeat = []
             self.application.processEvents()

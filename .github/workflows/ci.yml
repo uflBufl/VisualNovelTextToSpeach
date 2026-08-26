@@ -37,3 +37,23 @@ jobs:
 
       - name: Run unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
+
+  windows-unit-tests:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install locked dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Run Windows unit tests
+        run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
