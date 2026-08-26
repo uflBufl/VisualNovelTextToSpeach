@@ -27,6 +27,10 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _approved_manifest_entries,
@@ -36,6 +40,7 @@ from vntts.authoring.bulk_generation import (
     _validate_state_document,
     load_generation_state,
     process_is_alive,
+    validate_terminal_conflict_publication_authority,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -231,6 +236,13 @@ def publish_final_game_pack(
                 )
 
                 generated_manifest = staging / "generated" / "manifest.json"
+                try:
+                    validate_terminal_conflict_publication_authority(
+                        state_path,
+                        state,
+                    )
+                except BulkGenerationError as error:
+                    raise FinalGamePackError(str(error)) from error
                 generated_records = _approved_manifest_entries(state, state_path.parent)
                 live_fallback_records = _live_fallback_records(state, queue)
                 _validate_generated_story_records(generated_records, story)
@@ -356,14 +368,11 @@ class _PublicationLease:
     def __init__(self, destination):
         self.destination = destination
         self.path = destination.parent / f".{destination.name}.publication.json"
+        self.guard_path = self.path.with_suffix(".guard")
         self.owner = uuid4().hex
         self.committed = False
 
     def __enter__(self):
-        if _path_exists(self.destination):
-            raise FinalGamePackError(
-                f"Final game-pack destination already exists: {self.destination}"
-            )
         payload = {
             "schema": "vntts.game-pack-publication-lease",
             "schema_version": 1,
@@ -375,39 +384,61 @@ class _PublicationLease:
             "created_at": _now(),
         }
         encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
-        for _attempt in range(2):
-            try:
+        try:
+            with exclusive_advisory_lock(self.guard_path):
+                if _path_exists(self.destination):
+                    raise FinalGamePackError(
+                        "Final game-pack destination already exists: "
+                        f"{self.destination}"
+                    )
+                if self.path.exists():
+                    try:
+                        existing_payload = self.path.read_bytes()
+                        existing = json.loads(existing_payload.decode("utf-8"))
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise FinalGamePackError(
+                            f"Unable to inspect publication lease: {error}"
+                        ) from error
+                    if self._existing_is_live(existing):
+                        raise FinalGamePackError(
+                            f"Another final game-pack publication owns {self.path}"
+                        )
+                    self._archive_stale(existing_payload)
                 descriptor = os.open(
                     self.path,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                     0o600,
                 )
-            except FileExistsError:
-                if self._existing_is_live():
-                    raise FinalGamePackError(
-                        f"Another final game-pack publication owns {self.path}"
-                    )
-                self._archive_stale()
-                continue
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            return self
-        raise FinalGamePackError("Unable to acquire final game-pack publication lease")
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        except FileExistsError as error:
+            raise FinalGamePackError(
+                "Another final game-pack publication acquired the destination"
+            ) from error
+        except AdvisoryLockBusyError as error:
+            raise FinalGamePackError(
+                "Another final game-pack publication is acquiring the destination"
+            ) from error
+        return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        ownership_lost = False
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            if exc_type is None and not self.committed:
-                raise FinalGamePackError(
-                    "Final game-pack publication lease ownership was lost"
-                )
-            return False
-        if document.get("owner") == self.owner:
-            self.path.unlink()
-        elif exc_type is None and not self.committed:
+            with exclusive_advisory_lock(self.guard_path, blocking=True):
+                try:
+                    document = json.loads(self.path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    ownership_lost = True
+                else:
+                    if document.get("owner") == self.owner:
+                        self.path.unlink()
+                    else:
+                        ownership_lost = True
+        except AdvisoryLockBusyError:
+            ownership_lost = True
+        if ownership_lost and exc_type is None and not self.committed:
             raise FinalGamePackError(
                 "Final game-pack publication lease ownership was lost"
             )
@@ -428,10 +459,15 @@ class _PublicationLease:
     def mark_committed(self):
         self.committed = True
 
-    def _existing_is_live(self):
-        try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    def _existing_is_live(self, document):
+        if (
+            not isinstance(document, dict)
+            or document.get("schema") != "vntts.game-pack-publication-lease"
+            or document.get("schema_version") != 1
+            or not isinstance(document.get("owner"), str)
+            or not document["owner"]
+            or document.get("destination") != str(self.destination)
+        ):
             return True
         if document.get("hostname") != socket.gethostname():
             return True
@@ -443,17 +479,26 @@ class _PublicationLease:
             return True
         return _process_started_at(pid) == expected_start
 
-    def _archive_stale(self):
+    def _archive_stale(self, expected_payload):
         try:
-            digest = sha256_file(self.path)[:12]
+            payload = self.path.read_bytes()
         except OSError as error:
             raise FinalGamePackError(
                 f"Unable to inspect stale publication lease: {error}"
             ) from error
+        if payload != expected_payload:
+            raise FinalGamePackError(
+                "Final game-pack publication lease changed during stale recovery"
+            )
+        digest = hashlib.sha256(payload).hexdigest()[:12]
         archive = self.path.with_name(f"{self.path.name}.interrupted-{digest}")
         if _path_exists(archive):
             raise FinalGamePackError(
                 f"Stale publication lease archive already exists: {archive}"
+            )
+        if self.path.read_bytes() != expected_payload:
+            raise FinalGamePackError(
+                "Final game-pack publication lease changed during stale recovery"
             )
         os.replace(self.path, archive)
 

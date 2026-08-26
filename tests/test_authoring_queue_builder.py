@@ -15,11 +15,7 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    write_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.queue_builder import (
@@ -314,7 +310,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
             del raw["version"]
             manifest_path.write_text(json.dumps(raw), encoding="utf-8")
-            with self.assertRaisesRegex(VoiceManifestError, "requires version 2"):
+            with self.assertRaisesRegex(
+                GenerationQueueBuildError, "requires version 2"
+            ):
                 inspect_generation_queue(story_path, manifest_path)
 
     def test_unsafe_voice_reference_cannot_escape_preflight_or_publish_output(self):
@@ -330,7 +328,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 outside.write_bytes(b"outside")
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["voices"][0]["references"] = [reference]
-                write_voice_manifest(manifest_path, manifest)
+                manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                )
                 output = root / "queue.jsonl"
 
                 errors = io.StringIO()

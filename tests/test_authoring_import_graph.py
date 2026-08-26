@@ -20,6 +20,9 @@ from vntts.authoring.source_reference_quality import (
 from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
+from vntts.authoring.workbench import (
+    merge_terminal_conflict_resolution as compatibility_merge_terminal_conflict_resolution,
+)
 
 
 def _authoring_import_graph():
@@ -129,6 +132,9 @@ class AuthoringImportGraphTest(unittest.TestCase):
 
         self.assertEqual(
             merge_terminal_conflict_resolution.__module__, terminal_workspace
+        )
+        self.assertEqual(
+            compatibility_merge_terminal_conflict_resolution.__module__, workbench
         )
         self.assertIn(workbench, graph[terminal_workspace])
         self.assertNotIn(terminal_workspace, graph[workbench])

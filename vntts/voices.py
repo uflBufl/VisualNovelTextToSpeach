@@ -1,6 +1,10 @@
+import os
+import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -65,6 +69,7 @@ class CharacterVoice:
     reference: Path | None = None
     aliases: tuple[str, ...] = ()
     references: tuple[Path, ...] = ()
+    reference_root: Path | None = None
 
     def __post_init__(self):
         references = self.references
@@ -102,6 +107,7 @@ class CharacterVoiceRegistry:
                     _contained_manifest_reference(manifest_path, reference)
                     for reference in entry.references
                 ),
+                reference_root=manifest_path.parent.resolve(),
             )
             for entry in entries
         ]
@@ -110,8 +116,12 @@ class CharacterVoiceRegistry:
     def resolve(self, character):
         normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
-            return self.assignments[normalized_name]
-        return self.voices.get(normalized_name)
+            voice = self.assignments[normalized_name]
+        else:
+            voice = self.voices.get(normalized_name)
+        if voice is not None:
+            _validate_voice_reference_ownership(voice)
+        return voice
 
     def resolve_source(self, source_id):
         if source_id == default_voice_choice_id:
@@ -127,6 +137,7 @@ class CharacterVoiceRegistry:
                 raise VoiceManifestError(
                     f"The selected voice is no longer available: {value!r}"
                 )
+            _validate_voice_reference_ownership(voice)
             return voice
         raise VoiceManifestError(f"Unknown voice choice: {source_id!r}")
 
@@ -175,9 +186,12 @@ class CharacterVoiceRegistry:
     def resolve_closest(self, character, *, minimum_similarity=0.78):
         normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
-            return self.assignments[normalized_name]
+            voice = self.assignments[normalized_name]
+            _validate_voice_reference_ownership(voice)
+            return voice
         exact_voice = self.voices.get(normalized_name)
         if exact_voice is not None:
+            _validate_voice_reference_ownership(exact_voice)
             return exact_voice
         if len(normalized_name) < 3:
             return None
@@ -195,7 +209,10 @@ class CharacterVoiceRegistry:
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_voice = voice
-        return best_voice if best_similarity >= minimum_similarity else None
+        if best_similarity < minimum_similarity:
+            return None
+        _validate_voice_reference_ownership(best_voice)
+        return best_voice
 
     def _add_name(self, name, voice):
         normalized_name = normalize_character_name(name)
@@ -228,6 +245,32 @@ def _contained_manifest_reference(manifest_path, reference):
             "Voice reference must stay within the manifest directory"
         ) from error
     return resolved
+
+
+def _validate_voice_reference_ownership(voice):
+    root = voice.reference_root
+    if root is None:
+        return
+    root = Path(root).resolve()
+    for reference in voice.references:
+        lexical = Path(reference)
+        try:
+            relative = lexical.relative_to(root)
+        except ValueError as error:
+            raise VoiceManifestError(
+                "Voice reference must stay within the manifest directory"
+            ) from error
+        current = root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise VoiceManifestError("Voice reference must not use symlinks")
+        try:
+            lexical.resolve().relative_to(root)
+        except ValueError as error:
+            raise VoiceManifestError(
+                "Voice reference must stay within the manifest directory"
+            ) from error
 
 
 def find_default_voice_manifest(project_root=None):
@@ -270,10 +313,10 @@ class CharacterVoiceRouter:
         self.force_reference_audio = bool(force_reference_audio)
 
     def speak(self, character, text, *, playback_guard=None):
-        arguments = self._speech_arguments(character)
-        if playback_guard is not None:
-            arguments["playback_guard"] = playback_guard
-        return self.tts.speak(text, **arguments)
+        with self._speech_arguments(character) as arguments:
+            if playback_guard is not None:
+                arguments["playback_guard"] = playback_guard
+            return self.tts.speak(text, **arguments)
 
     def synthesize(
         self,
@@ -284,13 +327,14 @@ class CharacterVoiceRouter:
         cache_policy="use",
         cancellation=None,
     ):
-        return self.tts.synthesize(
-            text,
-            synthesis_options=synthesis_options,
-            cache_policy=cache_policy,
-            cancellation=cancellation,
-            **self._speech_arguments(character),
-        )
+        with self._speech_arguments(character) as arguments:
+            return self.tts.synthesize(
+                text,
+                synthesis_options=synthesis_options,
+                cache_policy=cache_policy,
+                cancellation=cancellation,
+                **arguments,
+            )
 
     def prepare_playback(
         self,
@@ -301,13 +345,14 @@ class CharacterVoiceRouter:
         cache_policy="use",
         cancellation=None,
     ):
-        return self.tts.prepare_synthesis(
-            text,
-            synthesis_options=synthesis_options,
-            cache_policy=cache_policy,
-            cancellation=cancellation,
-            **self._speech_arguments(character),
-        )
+        with self._speech_arguments(character) as arguments:
+            return self.tts.prepare_synthesis(
+                text,
+                synthesis_options=synthesis_options,
+                cache_policy=cache_policy,
+                cancellation=cancellation,
+                **arguments,
+            )
 
     def play(self, audio, *, playback_guard=None):
         return self.tts.play(audio, playback_guard=playback_guard)
@@ -324,37 +369,130 @@ class CharacterVoiceRouter:
         characters = ["Narrator", *(voice.character for voice in voices)]
         for current, character in enumerate(characters, start=1):
             progress(current, len(characters), character)
-            self.tts.synthesize(text, **self._speech_arguments(character))
+            with self._speech_arguments(character) as arguments:
+                self.tts.synthesize(text, **arguments)
         return len(characters)
 
+    @contextmanager
     def _speech_arguments(self, character):
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
             voice = self.narrator_voice
         if voice is None:
-            return {"speaker": self.narrator_speaker}
+            yield {"speaker": self.narrator_speaker}
+            return
 
-        speaker_wav = None
-        if self.force_reference_audio or not self.tts.has_speaker(voice.speaker):
-            if not voice.references:
-                raise VoiceManifestError(
-                    f"Voice {voice.character!r} is not cached and has no references"
-                )
-            missing_references = [
-                reference for reference in voice.references if not reference.is_file()
-            ]
-            if missing_references:
-                raise VoiceManifestError(
-                    f"Voice reference does not exist: {missing_references[0]}"
-                )
-            speaker_wav = [str(reference) for reference in voice.references]
-            if len(speaker_wav) == 1:
-                speaker_wav = speaker_wav[0]
+        needs_reference = self.force_reference_audio or not self.tts.has_speaker(
+            voice.speaker
+        )
+        if not needs_reference:
+            yield {"speaker": voice.speaker, "speaker_wav": None}
+            return
+        if not voice.references:
+            raise VoiceManifestError(
+                f"Voice {voice.character!r} is not cached and has no references"
+            )
+        with _immutable_voice_reference_snapshots(voice) as references:
+            speaker_wav = [str(reference) for reference in references]
+            yield {
+                "speaker": None if self.force_reference_audio else voice.speaker,
+                "speaker_wav": speaker_wav[0] if len(speaker_wav) == 1 else speaker_wav,
+            }
 
-        return {
-            "speaker": None if self.force_reference_audio else voice.speaker,
-            "speaker_wav": speaker_wav,
-        }
+
+@contextmanager
+def _immutable_voice_reference_snapshots(voice):
+    """Give a backend private bytes instead of a mutable manifest pathname."""
+    if voice.reference_root is None:
+        missing = [
+            reference for reference in voice.references if not reference.is_file()
+        ]
+        if missing:
+            raise VoiceManifestError(f"Voice reference does not exist: {missing[0]}")
+        yield voice.references
+        return
+
+    payloads = [
+        _read_owned_voice_reference(voice.reference_root, reference)
+        for reference in voice.references
+    ]
+    with TemporaryDirectory(prefix="vntts-voice-reference-") as directory:
+        snapshots = []
+        for index, (reference, payload) in enumerate(zip(voice.references, payloads)):
+            suffix = reference.suffix if reference.suffix else ".wav"
+            destination = Path(directory) / f"reference-{index + 1}{suffix}"
+            destination.write_bytes(payload)
+            snapshots.append(destination)
+        yield tuple(snapshots)
+
+
+def _read_owned_voice_reference(root, reference):
+    root = Path(root).resolve()
+    reference = Path(reference)
+    try:
+        reference.relative_to(root)
+    except ValueError as error:
+        raise VoiceManifestError(
+            "Voice reference must stay within the manifest directory"
+        ) from error
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(reference, flags)
+    except FileNotFoundError as error:
+        raise VoiceManifestError(
+            f"Voice reference does not exist: {reference}"
+        ) from error
+    except OSError as error:
+        raise VoiceManifestError(
+            f"Voice reference could not be opened without following links: {reference}"
+        ) from error
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise VoiceManifestError("Voice reference must be a regular file")
+        _validate_voice_reference_ownership(
+            CharacterVoice(
+                character="snapshot",
+                speaker="snapshot",
+                references=(reference,),
+                reference_root=root,
+            )
+        )
+        try:
+            current = os.stat(reference, follow_symlinks=False)
+        except OSError as error:
+            raise VoiceManifestError(
+                f"Voice reference changed while it was opened: {reference}"
+            ) from error
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise VoiceManifestError("Voice reference changed while it was opened")
+        chunks = []
+        while True:
+            try:
+                chunk = os.read(descriptor, 1024 * 1024)
+            except OSError as error:
+                raise VoiceManifestError(
+                    f"Voice reference became unreadable: {reference}"
+                ) from error
+            if not chunk:
+                break
+            chunks.append(chunk)
+        finished = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        ) != (
+            finished.st_dev,
+            finished.st_ino,
+            finished.st_size,
+            finished.st_mtime_ns,
+        ):
+            raise VoiceManifestError("Voice reference changed while it was read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def synthesis_character(character):

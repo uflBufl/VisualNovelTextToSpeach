@@ -974,9 +974,19 @@ class TrayApplication(QObject):
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation = None
+        self._live_stop_generation = None
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
+        self.initial_start_runner = LatestTaskRunner(self)
+        self.initial_start_runner.finished.connect(self._initial_start_finished)
+        self._initial_start_generation = None
         self._pending_profile_name = None
+        self._profile_restart_generation = None
+        self._lifecycle_generation = 0
+        self._controller_ready = False
+        self._controller_busy = False
+        self._shutting_down = False
+        self._onboarding_test_active = False
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
@@ -1155,13 +1165,33 @@ class TrayApplication(QObject):
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
         if self.settings.onboarding_completed:
-            Thread(target=self._initialize_controller, daemon=True).start()
+            generation = self._begin_controller_lifecycle()
+            self._initial_start_generation = generation
+            self.initial_start_runner.start(self._initialize_controller, generation)
         else:
             self.set_status("Setup required")
             QTimer.singleShot(0, self.run_onboarding)
 
-    def _initialize_controller(self):
-        ready = self.controller.start()
+    def _initialize_controller(self, generation):
+        try:
+            ready = self.controller.start()
+        except Exception:
+            self.controller.shutdown()
+            raise
+        if not self._lifecycle_is_current(generation):
+            self.controller.shutdown()
+            return False
+        return ready
+
+    def _initial_start_finished(self, ready, error):
+        generation = self._initial_start_generation
+        self._initial_start_generation = None
+        if not self._lifecycle_is_current(generation):
+            return
+        self._finish_controller_lifecycle()
+        if error is not None:
+            self.show_error(f"Unable to initialize controller: {error}")
+            ready = False
         self.signals.ready_changed.emit(ready)
         if ready:
             self.signals.hotkeys_requested.emit()
@@ -1543,6 +1573,7 @@ class TrayApplication(QObject):
     def run_onboarding_test(self, settings):
         cancel_event = Event()
         self.onboarding_cancel_event = cancel_event
+        self._onboarding_test_active = True
 
         def run_test():
             def cancelled():
@@ -1553,63 +1584,68 @@ class TrayApplication(QObject):
                 )
                 return True
 
-            if cancelled():
-                return
-            self.controller.apply_settings(settings)
-            if cancelled():
-                return
-            if settings.speech_backend == "coqui-xtts":
-                try:
-                    self.controller.model_assets.download(
-                        settings.tts_model,
-                        progress=self.signals.onboarding_test_progress.emit,
-                        cancel_event=cancel_event,
-                    )
-                except ModelDownloadCancelled as error:
-                    self.signals.onboarding_test_finished.emit(False, str(error))
+            try:
+                if cancelled():
                     return
+                self.controller.apply_settings(settings)
+                if cancelled():
+                    return
+                if settings.speech_backend == "coqui-xtts":
+                    try:
+                        self.controller.model_assets.download(
+                            settings.tts_model,
+                            progress=self.signals.onboarding_test_progress.emit,
+                            cancel_event=cancel_event,
+                        )
+                    except ModelDownloadCancelled as error:
+                        self.signals.onboarding_test_finished.emit(False, str(error))
+                        return
+                    except Exception as error:
+                        self.signals.onboarding_test_finished.emit(
+                            False,
+                            f"Model download or verification failed: {error}",
+                        )
+                        return
+                if cancelled():
+                    return
+                self.last_controller_error = None
+                started = self.controller.start()
+                if cancelled():
+                    return
+                if not started:
+                    self.signals.onboarding_test_finished.emit(
+                        False,
+                        self.last_controller_error
+                        or "The speech engine could not be initialized.",
+                    )
+                    return
+                try:
+                    character, text = self.controller.test_current_dialog()
                 except Exception as error:
                     self.signals.onboarding_test_finished.emit(
                         False,
-                        f"Model download or verification failed: {error}",
+                        format_runtime_error(error),
                     )
                     return
-            if cancelled():
-                return
-            self.last_controller_error = None
-            started = self.controller.start()
-            if cancelled():
-                return
-            if not started:
+                if cancelled():
+                    return
+                preview = " ".join(text.split())
+                if len(preview) > 160:
+                    preview = f"{preview[:157]}..."
                 self.signals.onboarding_test_finished.emit(
-                    False,
-                    self.last_controller_error
-                    or "The speech engine could not be initialized.",
+                    True,
+                    f"Success. Recognized {character}: {preview}",
                 )
-                return
-            try:
-                character, text = self.controller.test_current_dialog()
-            except Exception as error:
-                self.signals.onboarding_test_finished.emit(
-                    False,
-                    format_runtime_error(error),
-                )
-                return
-            if cancelled():
-                return
-            preview = " ".join(text.split())
-            if len(preview) > 160:
-                preview = f"{preview[:157]}..."
-            self.signals.onboarding_test_finished.emit(
-                True,
-                f"Success. Recognized {character}: {preview}",
-            )
+            finally:
+                if cancel_event.is_set():
+                    self.controller.shutdown()
+                self._onboarding_test_active = False
 
         Thread(target=run_test, daemon=True).start()
 
     def cancel_onboarding_download(self):
         self.onboarding_cancel_event.set()
-        self.controller.shutdown()
+        self.set_status("Cancelling setup test in background...")
 
     def open_settings(self):
         dialog = SettingsDialog(self.settings)
@@ -1702,6 +1738,9 @@ class TrayApplication(QObject):
         self.readiness_dialog.activateWindow()
 
     def open_profiles(self):
+        if self._controller_busy or self._shutting_down:
+            self.set_status("Controller reconfiguration is already in progress")
+            return
         dialog = GameProfilesDialog(
             self.settings,
             self.profile_store,
@@ -1713,22 +1752,37 @@ class TrayApplication(QObject):
         path = self.settings.save()
         profile = self.profile_store.get(self.settings.active_profile_id)
         self._pending_profile_name = profile.name if profile is not None else None
-        self.profiles_action.setEnabled(False)
+        generation = self._begin_controller_lifecycle()
+        self._profile_restart_generation = generation
         self.set_status(
             f"Applying profile {self._pending_profile_name!r} in background; "
             f"settings saved to {path}"
         )
         self.profile_restart_runner.start(
-            self._restart_controller_for_profile, self.settings
+            self._restart_controller_for_profile,
+            self.settings,
+            generation,
         )
 
-    def _restart_controller_for_profile(self, settings):
+    def _restart_controller_for_profile(self, settings, generation):
         self.controller.shutdown()
+        if not self._lifecycle_is_current(generation):
+            return False
         self.controller.apply_settings(settings)
-        return self.controller.start()
+        if not self._lifecycle_is_current(generation):
+            return False
+        ready = self.controller.start()
+        if not self._lifecycle_is_current(generation):
+            self.controller.shutdown()
+            return False
+        return ready
 
     def _profile_restart_finished(self, ready, error):
-        self.profiles_action.setEnabled(True)
+        generation = self._profile_restart_generation
+        self._profile_restart_generation = None
+        if not self._lifecycle_is_current(generation):
+            return
+        self._finish_controller_lifecycle()
         profile_name = self._pending_profile_name
         self._pending_profile_name = None
         if error is not None:
@@ -1743,6 +1797,8 @@ class TrayApplication(QObject):
         self.set_status(f"Profile {profile_name!r} selected")
 
     def _stop_live_then(self, continuation, status):
+        if self._shutting_down:
+            return False
         if self.live_stop_runner.active:
             self.set_status("Live capture is already stopping; please wait")
             return False
@@ -1752,7 +1808,10 @@ class TrayApplication(QObject):
         if running:
             self.set_status("Unable to stop live capture for this action")
             return False
+        self._lifecycle_generation += 1
+        self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = continuation
+        self._set_modal_launchers_enabled(False)
         self.set_status(status)
         if reader is None:
             QTimer.singleShot(0, lambda: self._live_stop_finished(True, None))
@@ -1766,8 +1825,13 @@ class TrayApplication(QObject):
         return True
 
     def _live_stop_finished(self, _result, error):
+        generation = self._live_stop_generation
+        self._live_stop_generation = None
         continuation = self._live_stop_continuation
         self._live_stop_continuation = None
+        if self._shutting_down or generation != self._lifecycle_generation:
+            return
+        self._set_modal_launchers_enabled(self._controller_ready)
         if error is not None:
             self.set_status(f"Unable to stop live capture: {error}")
             return
@@ -1821,6 +1885,8 @@ class TrayApplication(QObject):
         self._open_voice_previews_dialog(False)
 
     def _open_voice_previews_dialog(self, resume_live):
+        if self._shutting_down:
+            return
         dialog = VoicePreviewDialog(
             self.controller.available_voice_characters(),
             self.controller.available_voice_choices(),
@@ -1836,7 +1902,11 @@ class TrayApplication(QObject):
         try:
             dialog.exec()
         finally:
-            if resume_live and not self.controller.is_live_running:
+            if (
+                resume_live
+                and not self._shutting_down
+                and not self.controller.is_live_running
+            ):
                 self.toggle_live()
 
     def offer_speaker_mapping(self, speaker):
@@ -1936,6 +2006,8 @@ class TrayApplication(QObject):
         self.resume_live_after_unknown_mapping = False
 
     def _open_pending_speaker_mapping(self, speaker=None):
+        if self._shutting_down:
+            return
         speaker = speaker or self.pending_unknown_speaker
         self.resume_live_after_unknown_mapping = bool(
             self.resume_live_after_unknown_mapping or self.controller.is_live_running
@@ -2057,6 +2129,8 @@ class TrayApplication(QObject):
         self._open_history_dialog(False)
 
     def _open_history_dialog(self, resume_live):
+        if self._shutting_down:
+            return
         dialog = DialogueHistoryDialog(
             self.controller.history,
             self.controller.replay_dialog,
@@ -2064,7 +2138,11 @@ class TrayApplication(QObject):
         try:
             dialog.exec()
         finally:
-            if resume_live and not self.controller.is_live_running:
+            if (
+                resume_live
+                and not self._shutting_down
+                and not self.controller.is_live_running
+            ):
                 self.toggle_live()
 
     def export_support_bundle(self):
@@ -2145,17 +2223,74 @@ class TrayApplication(QObject):
         self.dashboard.set_dialogue(character, text)
         self.compact_controller.set_dialogue(character, text)
 
+    def _controller_actions(self):
+        return (
+            self.read_action,
+            self.live_action,
+            self.pause_action,
+            self.skip_action,
+            self.repeat_action,
+            self.clear_queue_action,
+            self.emergency_stop_action,
+            self.voice_preview_action,
+        )
+
+    def _controller_configuration_actions(self):
+        return (
+            self.calibrate_action,
+            self.diagnostics_action,
+            self.settings_action,
+            self.profiles_action,
+            self.corrections_action,
+            self.ocr_review_action,
+            self.setup_action,
+            self.assets_action,
+            self.speaker_mapping_action,
+            self.history_action,
+        )
+
+    def _apply_controller_action_state(self):
+        enabled = (
+            self._controller_ready
+            and not self._controller_busy
+            and not self._shutting_down
+        )
+        for action in self._controller_actions():
+            action.setEnabled(enabled)
+        configuration_enabled = not self._controller_busy and not self._shutting_down
+        for action in self._controller_configuration_actions():
+            action.setEnabled(configuration_enabled)
+        self.dashboard.set_ready(enabled)
+        self.compact_controller.set_ready(enabled)
+
+    def _set_modal_launchers_enabled(self, enabled):
+        available = (
+            bool(enabled) and not self._controller_busy and not self._shutting_down
+        )
+        self.voice_preview_action.setEnabled(available and self._controller_ready)
+        self.speaker_mapping_action.setEnabled(available)
+        self.history_action.setEnabled(available)
+
+    def _begin_controller_lifecycle(self):
+        self._lifecycle_generation += 1
+        self._controller_busy = True
+        self._apply_controller_action_state()
+        return self._lifecycle_generation
+
+    def _finish_controller_lifecycle(self):
+        self._controller_busy = False
+        self._apply_controller_action_state()
+
+    def _lifecycle_is_current(self, generation):
+        return (
+            isinstance(generation, int)
+            and generation == self._lifecycle_generation
+            and not self._shutting_down
+        )
+
     def set_ready(self, ready):
-        self.read_action.setEnabled(ready)
-        self.live_action.setEnabled(ready)
-        self.pause_action.setEnabled(ready)
-        self.skip_action.setEnabled(ready)
-        self.repeat_action.setEnabled(ready)
-        self.clear_queue_action.setEnabled(ready)
-        self.emergency_stop_action.setEnabled(ready)
-        self.voice_preview_action.setEnabled(ready)
-        self.dashboard.set_ready(ready)
-        self.compact_controller.set_ready(ready)
+        self._controller_ready = bool(ready)
+        self._apply_controller_action_state()
         if not ready:
             self.set_status("Unable to start")
 
@@ -2186,6 +2321,21 @@ class TrayApplication(QObject):
         self.signals.error_reported.emit(message)
 
     def shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._lifecycle_generation += 1
+        self._controller_busy = True
+        self._live_stop_continuation = None
+        self._live_stop_generation = None
+        self.live_stop_runner.cancel()
+        initial_shutdown_owned = self.initial_start_runner.active
+        self.initial_start_runner.cancel()
+        profile_shutdown_owned = self.profile_restart_runner.active
+        self.profile_restart_runner.cancel()
+        onboarding_shutdown_owned = self._onboarding_test_active
+        self.onboarding_cancel_event.set()
+        self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
         if self.live_voice_preflight_prompt is not None:
             self.live_voice_preflight_prompt.setProperty(
@@ -2212,12 +2362,20 @@ class TrayApplication(QObject):
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
             self.hotkey_listener = None
-        self.controller.shutdown()
+        if (
+            not initial_shutdown_owned
+            and not profile_shutdown_owned
+            and not onboarding_shutdown_owned
+        ):
+            self.controller.shutdown()
 
 
 def main(argv=None):
     freeze_support()
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(
+        prog="vntts-app",
+        description="Run the VNTTS desktop application.",
+    )
     parser.add_argument("--package-self-test", action="store_true")
     parser.add_argument("--package-self-test-report")
     parser.add_argument("--release-smoke-test-image")

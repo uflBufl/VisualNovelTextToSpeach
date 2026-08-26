@@ -351,6 +351,17 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertTrue(audio.is_file())
             self.assertIn('"backend": "fake"', report.read_text(encoding="utf-8"))
 
+    def test_wav_writer_downmixes_channels_without_flattening_time(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            stereo = np.array([[0.25, 0.75], [-0.5, 0.5], [0.0, 0.0]], dtype=np.float32)
+            audio = write_wav(root / "stereo.wav", stereo, 24_000)
+
+            with wave.open(str(audio), "rb") as stream:
+                self.assertEqual(stream.getnchannels(), 1)
+                self.assertEqual(stream.getnframes(), 3)
+                self.assertEqual(stream.getframerate(), 24_000)
+
     def test_loads_versioned_per_line_corpus(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "corpus.json"

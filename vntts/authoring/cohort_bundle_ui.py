@@ -103,6 +103,16 @@ def _prepare_sample(sample):
     return sample, prepare_review_audio(sample.item)
 
 
+def _write_observation_task(bundle_path, original_bundle, bundle, heard, bad):
+    return write_cohort_review_observations(
+        bundle_path,
+        original_bundle,
+        bundle,
+        heard,
+        bad,
+    )
+
+
 def _execute_bundle_decision_task(
     bundle,
     workspace_id,
@@ -199,6 +209,7 @@ class CohortReviewBundleDialog(QDialog):
         sample_loader=load_cohort_review_bundle_samples,
         playback_preparer=_prepare_sample,
         decision_executor=_execute_bundle_decision_task,
+        observation_writer=_write_observation_task,
         confirmer=None,
     ):
         super().__init__(parent)
@@ -213,6 +224,7 @@ class CohortReviewBundleDialog(QDialog):
         self.sample_loader = sample_loader
         self.playback_preparer = playback_preparer
         self.decision_executor = decision_executor
+        self.observation_writer = observation_writer
         self._resumable_load = (
             self.bundle_path is not None
             and sample_loader is load_cohort_review_bundle_samples
@@ -230,9 +242,13 @@ class CohortReviewBundleDialog(QDialog):
         self._load_active = False
         self._playback_prepare_active = False
         self._decision_active = False
+        self._observation_active = False
         self._load_serial = 0
         self._playback_serial = 0
         self._decision_serial = 0
+        self._observation_serial = 0
+        self._pending_observation = None
+        self._close_after_observation = False
         self._decision_started_at = None
         self._playback_target = None
         self._playback_buffer = None
@@ -440,6 +456,8 @@ class CohortReviewBundleDialog(QDialog):
         self._playback_signals.finished.connect(self._playback_finished)
         self._decision_signals = _TaskSignals(self)
         self._decision_signals.finished.connect(self._decision_finished)
+        self._observation_signals = _TaskSignals(self)
+        self._observation_signals.finished.connect(self._observation_finished)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(2)
         self._operation_timer = QTimer(self)
@@ -827,19 +845,54 @@ class CohortReviewBundleDialog(QDialog):
     def _checkpoint_observations(self):
         if not self._checkpoint_observations_enabled:
             return
-        try:
-            write_cohort_review_observations(
-                self.bundle_path,
-                self.original_bundle,
-                self.bundle,
-                self.heard,
-                self.bad,
+        snapshot = (
+            self.bundle_path,
+            self.original_bundle,
+            self.bundle,
+            {key: frozenset(value) for key, value in self.heard.items()},
+            {key: frozenset(value) for key, value in self.bad.items()},
+        )
+        if self._observation_active:
+            self._pending_observation = snapshot
+            return
+        self._start_observation_checkpoint(snapshot)
+
+    def _start_observation_checkpoint(self, snapshot):
+        self._observation_active = True
+        self._observation_serial += 1
+        serial = self._observation_serial
+        self.operation.setText(
+            "Saving listening progress in background; replay and decisions remain available."
+        )
+        self.thread_pool.start(
+            _Task(
+                serial,
+                self.observation_writer,
+                snapshot,
+                self._observation_signals,
             )
-        except Exception as error:
+        )
+
+    def _observation_finished(self, serial, _result, error):
+        if serial != self._observation_serial or not self._observation_active:
+            return
+        self._observation_active = False
+        if error is not None:
+            self._close_after_observation = False
             self.status.setText(
                 "LISTENING CHECKPOINT FAILED: keep this window open or replay "
                 f"samples after reopening ({error})"
             )
+        pending = self._pending_observation
+        self._pending_observation = None
+        if pending is not None:
+            self._start_observation_checkpoint(pending)
+            return
+        if self._close_after_observation:
+            self._close_after_observation = False
+            QTimer.singleShot(0, self.close)
+            return
+        self._update_actions()
 
     def apply_decision(self, decision):
         if self._decision_active:
@@ -960,7 +1013,6 @@ class CohortReviewBundleDialog(QDialog):
                 task_result.samples,
                 status=status,
             )
-            self._checkpoint_observations()
             return
         self.bundle = result.next_bundle
         self.status.setText(
@@ -1175,6 +1227,14 @@ class CohortReviewBundleDialog(QDialog):
                 "until the immutable playback buffer is ready."
             )
             return
+        if self._observation_active:
+            self.progress.show()
+            self.operation.setText(
+                "Saving listening progress in background; replay, navigation and "
+                "review decisions remain available. Closing waits for the latest "
+                "coalesced checkpoint."
+            )
+            return
         self.progress.hide()
         if self.retry_load.isVisible():
             self.operation.setText(
@@ -1194,7 +1254,14 @@ class CohortReviewBundleDialog(QDialog):
             self.operation.setText("All cohorts in this bundle are complete.")
 
     def closeEvent(self, event: QCloseEvent):
-        if self._load_active or self._playback_prepare_active or self._decision_active:
+        if (
+            self._load_active
+            or self._playback_prepare_active
+            or self._decision_active
+            or self._observation_active
+        ):
+            if self._observation_active:
+                self._close_after_observation = True
             self.status.setText(
                 "Close deferred until the current authority task finishes"
             )

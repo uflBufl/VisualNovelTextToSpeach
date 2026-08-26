@@ -57,3 +57,28 @@ jobs:
 
       - name: Run Windows unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
+
+  linux-x11-unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y espeak-ng libportaudio2 tesseract-ocr
+
+      - name: Install locked dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Run Linux X11 source unit tests
+        run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests

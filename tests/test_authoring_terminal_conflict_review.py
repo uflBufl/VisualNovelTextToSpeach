@@ -11,11 +11,14 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
 import tests.test_authoring_reconciliation as reconciliation_tests
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import inspect_generated_wav
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
     write_cohort_review_bundle,
 )
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reconciliation import (
     build_authoring_reconciliation,
     write_authoring_reconciliation,
@@ -29,6 +32,7 @@ from vntts.authoring.terminal_conflict_review import (
     load_terminal_conflict_review_progress,
     publish_terminal_conflict_review,
     record_terminal_conflict_decision,
+    validate_terminal_conflict_review_document,
 )
 
 
@@ -231,6 +235,48 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 [],
             )
 
+    def test_publication_failure_is_reported_as_a_review_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+
+            with (
+                patch(
+                    "vntts.authoring.terminal_conflict_review.rename_directory_no_replace",
+                    side_effect=AtomicPublicationError("simulated no-replace failure"),
+                ),
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError, "simulated no-replace failure"
+                ),
+            ):
+                publish_terminal_conflict_review(report_path, output)
+
+            self.assertFalse(output.exists())
+
+    def test_wire_validator_rejects_more_than_two_candidates(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            result = publish_terminal_conflict_review(
+                report_path, root / "conflict-review"
+            )
+            document = json.loads(result.review.read_text(encoding="utf-8"))
+            document["cases"][0]["candidates"].append(
+                dict(document["cases"][0]["candidates"][0])
+            )
+            document["candidate_count"] += 1
+            document["review_id"] = canonical_document_sha256(
+                {key: value for key, value in document.items() if key != "review_id"}
+            )
+
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "exactly two candidates"
+            ):
+                validate_terminal_conflict_review_document(
+                    document, root / "conflict-review"
+                )
+
     def test_dead_progress_lease_is_archived_and_review_continues(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -309,6 +355,29 @@ class TerminalConflictReviewTest(unittest.TestCase):
                     review["cases"][0]["case_id"],
                     NEITHER_ACCEPTABLE,
                 )
+
+    def test_progress_recovery_guard_blocks_a_successor_writer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report_path, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+
+            with (
+                exclusive_advisory_lock(output / ".progress.lock.guard"),
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError,
+                    "Another terminal conflict decision is being saved",
+                ),
+            ):
+                record_terminal_conflict_decision(
+                    output,
+                    review["cases"][0]["case_id"],
+                    NEITHER_ACCEPTABLE,
+                )
+
+            self.assertFalse((output / ".progress.lock").exists())
 
 
 if __name__ == "__main__":

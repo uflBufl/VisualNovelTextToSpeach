@@ -58,14 +58,12 @@ quality, generation-state and workbench modules. The authority module depends
 only on the standard library; it never imports a UI, workspace or synthesis
 implementation.
 
-An AST import-graph audit after the split found no cycle involving
-`reconciliation` or `reconciliation_schema`. Follow-up slices removed the
-listening/listening-UI and legacy/listening-import components by separating the
-CLI presentation adapter and shared import destination policy. Two older,
-independent authoring strongly connected components remain: game-pack/workbench
-failure-reference helpers and source-reference composition/review/quality UI.
-They are tracked as separate refactors because breaking them safely requires
-moving domain records or adapters, not changing reconciliation report behavior.
+An AST import-graph audit after the split found no strongly connected component
+among authoring modules. Follow-up slices removed the listening/listening-UI and
+legacy/listening-import components, separated terminal workspace application
+into a leaf orchestration module and kept the former direct `workbench` merge
+import as a lazy compatibility facade. That facade therefore preserves callers
+without restoring a static terminal-workflow import cycle.
 
 The item-level next actions are deliberately conservative:
 
@@ -139,3 +137,27 @@ only to the historical current-successor scope and must not be used as the
 final merge claim. Any report is planning evidence only: it does not authorize
 the final manifest until terminal decisions and supported fallbacks cover the
 selected game pack.
+
+## Lease and terminal-publication invariants
+
+Generation, publication and terminal-review progress use a persistent
+cross-process advisory guard around lease creation, stale recovery and cleanup.
+The guard file is never renamed or deleted, so every process locks the same
+inode. A process may archive a stale lease only while it owns that guard and
+only if the exact lease bytes still match the snapshot it classified as stale.
+Acquisition is non-blocking and reports the current owner; cleanup waits for a
+short concurrent transition so a committed operation cannot leave its own
+still-live lease behind. PID, host and process-start identity remain the
+operator-readable ownership record, while the advisory guard supplies the
+compare-and-swap boundary.
+
+Any generation-state item carrying `terminal_conflict_resolution` is
+publishable only from its canonical config-addressed workspace. Both the
+approved-only generated manifest and final game-pack publisher load and
+validate that complete workspace, bind the exact canonical queue/state bytes,
+and require the item-level provenance to equal the workspace merge ledger.
+An orphaned state, a shape-valid fabricated record, or a minimal replacement
+`workspace.json` is rejected before manifest entries or a destination pack are
+published. The terminal review wire format and supported UI deliberately
+require exactly two distinct candidates; no-replace filesystem errors are
+translated at each review, resolution and successor domain boundary.

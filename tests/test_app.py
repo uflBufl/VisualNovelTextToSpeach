@@ -1366,13 +1366,61 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         with patch("vntts.app.QTimer.singleShot") as single_shot:
-            tray_application._initialize_controller()
+            generation = tray_application._begin_controller_lifecycle()
+            tray_application._initial_start_generation = generation
+            ready = tray_application._initialize_controller(generation)
+            tray_application._initial_start_finished(ready, None)
 
         single_shot.assert_called_once_with(
             250,
             tray_application._start_hotkeys_safely,
         )
         tray_application.shutdown()
+
+    def test_quit_during_initial_start_forces_late_controller_cleanup(self):
+        started = Event()
+        release = Event()
+        runtime = {"live": False}
+        controller = Mock()
+
+        def start():
+            started.set()
+            release.wait(2)
+            runtime["live"] = True
+            return True
+
+        def shutdown():
+            runtime["live"] = False
+
+        controller.start.side_effect = start
+        controller.shutdown.side_effect = shutdown
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=True),
+            controller_factory=Mock(return_value=controller),
+        )
+        ready_events = []
+        hotkey_events = []
+        tray_application.signals.ready_changed.connect(ready_events.append)
+        tray_application.signals.hotkeys_requested.connect(
+            lambda: hotkey_events.append(True)
+        )
+
+        with (
+            patch.object(tray_application, "show_dashboard"),
+            patch.object(tray_application, "show_compact_controls"),
+            patch.object(tray_application.tray, "show"),
+        ):
+            tray_application.start()
+            self.assertTrue(started.wait(1))
+            tray_application.shutdown()
+            release.set()
+            self.wait_until(lambda: controller.shutdown.call_count == 1)
+
+        self.assertFalse(runtime["live"])
+        self.assertEqual(ready_events, [])
+        self.assertEqual(hotkey_events, [])
+        self.assertTrue(tray_application._shutting_down)
 
     def test_macos_skips_unstable_native_hotkey_listener(self):
         tray_application = TrayApplication(
@@ -1545,6 +1593,123 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(tray_application.profiles_action.isEnabled())
             tray_application.shutdown()
 
+    def test_profile_restart_disables_runtime_and_quit_prevents_restart(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Reverse: 1999", AppSettings())
+            selected_settings = profile.apply(AppSettings())
+            entered = Event()
+            release = Event()
+            controller = Mock()
+
+            def blocked_shutdown():
+                entered.set()
+                release.wait(2)
+
+            controller.shutdown.side_effect = blocked_shutdown
+            controller.start.return_value = True
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+                profile_store=store,
+            )
+            tray_application.set_ready(True)
+            dialog = Mock()
+            dialog.exec.return_value = SettingsDialog.DialogCode.Accepted
+            dialog.settings.return_value = selected_settings
+
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            ):
+                tray_application.open_profiles()
+                self.assertTrue(entered.wait(1))
+                self.application.processEvents()
+                self.assertFalse(tray_application.read_action.isEnabled())
+                self.assertFalse(tray_application.live_action.isEnabled())
+                self.assertFalse(tray_application.dashboard.read_button.isEnabled())
+                tray_application.shutdown()
+                release.set()
+                tray_application.profile_restart_runner.thread_pool.waitForDone(2_000)
+                self.application.processEvents()
+
+            controller.start.assert_not_called()
+            controller.apply_settings.assert_not_called()
+            self.assertFalse(tray_application.read_action.isEnabled())
+            self.assertFalse(tray_application.history_action.isEnabled())
+
+    def test_quit_during_profile_start_cleans_up_the_late_runtime(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Reverse: 1999", AppSettings())
+            selected_settings = profile.apply(AppSettings())
+            entered = Event()
+            release = Event()
+            controller = Mock()
+
+            def blocked_start():
+                entered.set()
+                release.wait(2)
+                return True
+
+            controller.start.side_effect = blocked_start
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+                profile_store=store,
+            )
+            tray_application.set_ready(True)
+            dialog = Mock()
+            dialog.exec.return_value = SettingsDialog.DialogCode.Accepted
+            dialog.settings.return_value = selected_settings
+
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            ):
+                tray_application.open_profiles()
+                self.assertTrue(entered.wait(1))
+                tray_application.shutdown()
+                release.set()
+                tray_application.profile_restart_runner.thread_pool.waitForDone(2_000)
+                self.application.processEvents()
+
+            controller.start.assert_called_once_with()
+            self.assertEqual(controller.shutdown.call_count, 2)
+            self.assertFalse(tray_application.read_action.isEnabled())
+
+    def test_shutdown_cancels_a_pending_live_stop_continuation(self):
+        controller = Mock()
+        controller.is_live_running = True
+        release = Event()
+
+        def toggle_live():
+            controller.is_live_running = False
+            return False
+
+        controller.toggle_live.side_effect = toggle_live
+        controller.live_reader.wait.side_effect = lambda: release.wait(2)
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.set_ready(True)
+
+        with patch.object(tray_application, "_open_history_dialog") as opened:
+            tray_application.open_history()
+            self.assertTrue(tray_application.live_stop_runner.active)
+            self.assertFalse(tray_application.history_action.isEnabled())
+            tray_application.shutdown()
+            release.set()
+            tray_application.live_stop_runner.thread_pool.waitForDone(2_000)
+            self.application.processEvents()
+
+        opened.assert_not_called()
+        self.assertFalse(tray_application.history_action.isEnabled())
+
     def test_incomplete_setup_opens_wizard_instead_of_loading_model(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -1684,6 +1849,27 @@ class TrayApplicationTest(unittest.TestCase):
         controller.shutdown.assert_called_once_with()
         controller.test_current_dialog.assert_not_called()
         self.assertEqual(results, [(False, "OCR-to-speech test cancelled.")])
+        tray_application.shutdown()
+
+    def test_onboarding_cancel_only_signals_the_background_owner(self):
+        controller = Mock()
+        controller.shutdown.side_effect = AssertionError(
+            "Qt cancellation must not shut the controller down"
+        )
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        heartbeat = []
+
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        tray_application.cancel_onboarding_download()
+        self.application.processEvents()
+
+        self.assertEqual(heartbeat, [True])
+        controller.shutdown.assert_not_called()
+        controller.shutdown.side_effect = None
         tray_application.shutdown()
 
     def test_package_self_test_does_not_start_qt_application(self):

@@ -2800,6 +2800,9 @@ def launch_authoring_workbench(workspace_directory):
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(value in {"-h", "--help"} for value in arguments):
+        print("usage: vntts-authoring-workbench WORKSPACE")
+        return 0
     if len(arguments) != 1:
         print("usage: vntts-authoring-workbench WORKSPACE", file=sys.stderr)
         return 2

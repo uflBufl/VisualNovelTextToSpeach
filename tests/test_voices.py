@@ -172,6 +172,42 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceManifestError, "symlink"):
                 CharacterVoiceRegistry.from_file(manifest_path)
 
+    def test_loaded_manifest_rechecks_reference_ownership_at_use_time(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            reference = manifest_root / "voice.wav"
+            reference.write_bytes(b"original")
+            manifest_path = manifest_root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Lucy",
+                                "speaker": "lucy",
+                                "references": ["voice.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = CharacterVoiceRegistry.from_file(manifest_path)
+            outside = root / "outside.wav"
+            outside.write_bytes(b"replacement")
+            reference.unlink()
+            reference.symlink_to(outside)
+
+            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                registry.resolve("Lucy")
+            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                registry.resolve_source("character:lucy")
+            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                registry.resolve_closest("Lucy")
+
     def test_duplicate_normalized_names_are_rejected(self):
         with self.assertRaisesRegex(VoiceManifestError, "Duplicate voice"):
             CharacterVoiceRegistry(
@@ -269,6 +305,103 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
 
 
 class CharacterVoiceRouterTest(unittest.TestCase):
+    def test_manifest_reference_swap_during_cache_probe_never_reaches_backend(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            reference = manifest_root / "voice.wav"
+            reference.write_bytes(b"owned voice")
+            manifest_path = manifest_root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Lucy",
+                                "speaker": "lucy",
+                                "references": ["voice.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            outside = root / "outside.wav"
+            outside.write_bytes(b"outside voice")
+            tts = Mock()
+
+            def replace_with_symlink(_speaker):
+                reference.unlink()
+                reference.symlink_to(outside)
+                return False
+
+            tts.has_speaker.side_effect = replace_with_symlink
+            router = CharacterVoiceRouter(
+                tts,
+                CharacterVoiceRegistry.from_file(manifest_path),
+            )
+
+            with self.assertRaisesRegex(
+                VoiceManifestError, "without following|symlink"
+            ):
+                router.speak("Lucy", "Hello.")
+
+            tts.speak.assert_not_called()
+
+    def test_manifest_reference_backend_receives_private_immutable_snapshot(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            reference = manifest_root / "voice.wav"
+            reference.write_bytes(b"owned voice")
+            manifest_path = manifest_root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Lucy",
+                                "speaker": "lucy",
+                                "references": ["voice.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            outside = root / "outside.wav"
+            outside.write_bytes(b"outside voice")
+            captured = {}
+            tts = Mock()
+            tts.has_speaker.return_value = False
+
+            def consume(_text, *, speaker, speaker_wav):
+                snapshot = Path(speaker_wav)
+                reference.unlink()
+                reference.symlink_to(outside)
+                captured.update(
+                    speaker=speaker,
+                    path=snapshot,
+                    payload=snapshot.read_bytes(),
+                )
+
+            tts.speak.side_effect = consume
+            router = CharacterVoiceRouter(
+                tts,
+                CharacterVoiceRegistry.from_file(manifest_path),
+            )
+
+            router.speak("Lucy", "Hello.")
+
+            self.assertEqual(captured["speaker"], "lucy")
+            self.assertEqual(captured["payload"], b"owned voice")
+            self.assertNotEqual(captured["path"], reference)
+            self.assertFalse(captured["path"].exists())
+
     def test_narrator_uses_configured_default_voice(self):
         tts = Mock()
         router = CharacterVoiceRouter(

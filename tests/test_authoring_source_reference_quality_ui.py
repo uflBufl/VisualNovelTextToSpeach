@@ -203,6 +203,30 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
         self.assertIn("checksum changed", message)
 
+    def test_generated_playback_is_cancelled_when_row_changes_during_prepare(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = write_quality_session(root)
+            dialog = SourceReferenceQualityDialog(session)
+            first = dialog.current["generated_samples"][0]
+            payload = (root / first["audio"]).read_bytes()
+
+            dialog.generated.setCurrentRow(1)
+            dialog._playback_prepared(
+                (
+                    dialog.current["variant_id"],
+                    first["queue_id"],
+                    first["audio_sha256"],
+                    payload,
+                ),
+                None,
+            )
+
+            self.assertIsNone(dialog._playing_token)
+            self.assertIn("audio selection changed", dialog.status.text())
+            self.assertIn("Sample 2", dialog.generated_details.text())
+            dialog.close()
+
     def test_missing_exact_portrait_uses_truthful_placeholder(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))

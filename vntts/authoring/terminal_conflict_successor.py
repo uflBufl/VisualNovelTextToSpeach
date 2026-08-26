@@ -18,7 +18,10 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 from vntts.authoring.reconciliation_schema import (
     RECONCILIATION_ACTIONS,
     TERMINAL_AUTHORITIES,
@@ -214,7 +217,12 @@ def publish_terminal_conflict_successor(
             shutil.rmtree(staging)
             staging = None
             return existing
-        _rename_directory_no_replace(staging, output)
+        try:
+            rename_directory_no_replace(staging, output)
+        except (AtomicPublicationError, OSError) as error:
+            raise TerminalConflictSuccessorError(
+                f"Unable to publish terminal conflict successor: {error}"
+            ) from error
         staging = None
     except BaseException:
         if staging is not None and staging.exists():

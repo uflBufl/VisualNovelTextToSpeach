@@ -4,10 +4,12 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import tests.test_authoring_reconciliation as reconciliation_tests
 import tests.test_authoring_terminal_conflict_review as review_tests
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionError,
     load_terminal_conflict_resolution,
@@ -48,6 +50,28 @@ class TerminalConflictResolutionTest(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 TerminalConflictResolutionError, "progress.*unavailable"
+            ):
+                publish_terminal_conflict_resolution(review, root / "resolution")
+
+            self.assertFalse((root / "resolution").exists())
+
+    def test_publication_failure_is_reported_as_a_resolution_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, review, document = self.create_review(root)
+            case = document["cases"][0]
+            record_terminal_conflict_decision(
+                review, case["case_id"], case["candidates"][0]["candidate_id"]
+            )
+
+            with (
+                patch(
+                    "vntts.authoring.terminal_conflict_resolution.rename_directory_no_replace",
+                    side_effect=AtomicPublicationError("simulated no-replace failure"),
+                ),
+                self.assertRaisesRegex(
+                    TerminalConflictResolutionError, "simulated no-replace failure"
+                ),
             ):
                 publish_terminal_conflict_resolution(review, root / "resolution")
 

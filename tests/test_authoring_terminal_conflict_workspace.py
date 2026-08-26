@@ -18,6 +18,7 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
     publish_generated_manifest,
+    validate_terminal_conflict_publication_authority,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import _load_bound_review_workspace
@@ -154,6 +155,25 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                 merge_terminal_conflict_resolution(primary, successor, workspaces)
 
             self.assertEqual(set(workspaces.glob("resume-*")), before)
+
+    def test_valid_merged_workspace_passes_canonical_publication_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, _secondary, _queue_id, _report, _review, successor = (
+                self.create_successor(root, "approved")
+            )
+            merged = merge_terminal_conflict_resolution(
+                primary, successor, root / "workspaces"
+            ).directory
+            state_path = merged / "generated-audio/generation-state.json"
+            state = load_generation_state(state_path, merged / "queue.jsonl")
+
+            with _GenerationLease(
+                state_path.parent,
+                state["queue_sha256"],
+                process_checker=process_is_alive,
+            ):
+                validate_terminal_conflict_publication_authority(state_path, state)
 
     def test_self_consistent_successor_source_substitution_is_rejected(self):
         with TemporaryDirectory() as directory:

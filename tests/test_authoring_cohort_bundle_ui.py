@@ -12,7 +12,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -342,7 +342,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
             dialog.toggle_bad()
             dialog.close()
-            self.application.processEvents()
+            self.wait_for(lambda: not dialog.isVisible())
 
             reopened = CohortReviewBundleDialog(publication)
             reopened.show()
@@ -353,6 +353,54 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(reopened.table.item(0, 0).text(), "Heard")
             self.assertEqual(reopened.table.item(0, 1).text(), "Sounds bad")
             self.assertTrue((root / "bundle.observations.json").is_file())
+
+    def test_observation_checkpoint_is_background_coalesced_and_close_safe(self):
+        started = threading.Event()
+        release = threading.Event()
+        snapshots = []
+
+        def slow_writer(*arguments):
+            snapshots.append(arguments)
+            started.set()
+            release.wait(2)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = self.create_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(
+                publication,
+                observation_writer=slow_writer,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(sample.item.queue_id)
+            heartbeat = []
+
+            QTimer.singleShot(0, lambda: heartbeat.append(True))
+            dialog._checkpoint_observations()
+            self.assertTrue(started.wait(1))
+            dialog.bad[key].add(sample.item.queue_id)
+            dialog._checkpoint_observations()
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.application.processEvents()
+
+            self.assertEqual(heartbeat, [True])
+            self.assertFalse(close_event.isAccepted())
+            self.assertTrue(dialog.replay.isEnabled())
+            self.assertTrue(dialog._close_after_observation)
+            release.set()
+            self.wait_for(
+                lambda: len(snapshots) == 2 and not dialog._observation_active
+            )
+            self.wait_for(lambda: not dialog.isVisible())
+
+            final_bad = snapshots[-1][-1]
+            self.assertIn(sample.item.queue_id, final_bad[key])
 
     def test_published_expand_reopens_with_exact_prior_assessments(self):
         with TemporaryDirectory() as directory:

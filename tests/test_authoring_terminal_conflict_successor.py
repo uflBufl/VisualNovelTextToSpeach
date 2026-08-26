@@ -8,6 +8,7 @@ from unittest.mock import patch
 import tests.test_authoring_terminal_conflict_review as review_tests
 import vntts.authoring.terminal_conflict_successor as successor_module
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
     publish_terminal_conflict_resolution,
 )
@@ -119,6 +120,29 @@ class TerminalConflictSuccessorTest(unittest.TestCase):
                 )
 
             self.assertFalse(output.exists())
+
+    def test_publication_failure_is_reported_as_a_successor_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _queue_id, report_path, resolution_root = self.create_resolution(
+                root, "approved"
+            )
+
+            with (
+                patch.object(
+                    successor_module,
+                    "rename_directory_no_replace",
+                    side_effect=AtomicPublicationError("simulated no-replace failure"),
+                ),
+                self.assertRaisesRegex(
+                    TerminalConflictSuccessorError, "simulated no-replace failure"
+                ),
+            ):
+                publish_terminal_conflict_successor(
+                    report_path, resolution_root, root / "successor"
+                )
+
+            self.assertFalse((root / "successor").exists())
 
     def test_changed_source_progress_blocks_successor_publication(self):
         with TemporaryDirectory() as directory:

@@ -19,7 +19,10 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     TerminalConflictReviewError,
@@ -219,7 +222,12 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
             shutil.rmtree(staging)
             staging = None
             return existing
-        _rename_directory_no_replace(staging, output)
+        try:
+            rename_directory_no_replace(staging, output)
+        except (AtomicPublicationError, OSError) as error:
+            raise TerminalConflictResolutionError(
+                f"Unable to publish terminal conflict resolution: {error}"
+            ) from error
         staging = None
     except BaseException:
         if staging is not None and staging.exists():

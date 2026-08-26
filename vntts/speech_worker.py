@@ -198,6 +198,9 @@ def _serialize_registry(registry):
                 "speaker": voice.speaker,
                 "aliases": list(voice.aliases),
                 "references": [str(value) for value in voice.references],
+                "reference_root": (
+                    None if voice.reference_root is None else str(voice.reference_root)
+                ),
             }
         )
     assignments = {}
@@ -210,6 +213,9 @@ def _serialize_registry(registry):
                 "speaker": voice.speaker,
                 "aliases": list(voice.aliases),
                 "references": [str(value) for value in voice.references],
+                "reference_root": (
+                    None if voice.reference_root is None else str(voice.reference_root)
+                ),
             }
         )
     return {"voices": voices, "assignments": assignments}
@@ -224,6 +230,11 @@ def _voice_from_document(value):
         speaker=value["speaker"],
         aliases=tuple(value.get("aliases", ())),
         references=references,
+        reference_root=(
+            None
+            if value.get("reference_root") is None
+            else Path(value["reference_root"]).expanduser().resolve()
+        ),
     )
 
 

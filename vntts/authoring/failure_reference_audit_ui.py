@@ -776,6 +776,9 @@ def failure_reference_audit_status(audit_directory):
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(value in {"-h", "--help"} for value in arguments):
+        print("usage: vntts-reference-audit AUDIT_DIRECTORY [--status]")
+        return 0
     status = "--status" in arguments
     if status:
         arguments.remove("--status")

@@ -401,8 +401,20 @@ class SourceReferenceQualityDialog(QDialog):
         if self.current is None or self.current["variant_id"] != variant_id:
             self.status.setText("Playback cancelled: review card changed")
             return
-        records = [self.current["reference"], *self.current["generated_samples"]]
-        if not any(record.get("audio_sha256") == digest for record in records):
+        if token == "reference":
+            selected = self.current["reference"]
+        else:
+            row = self.generated.currentRow()
+            selected = (
+                self.current["generated_samples"][row]
+                if 0 <= row < len(self.current["generated_samples"])
+                else None
+            )
+        if (
+            selected is None
+            or selected.get("audio_sha256") != digest
+            or (token != "reference" and selected.get("queue_id") != token)
+        ):
             self.status.setText("Playback cancelled: audio selection changed")
             return
         self._audio_buffer = QBuffer(self)

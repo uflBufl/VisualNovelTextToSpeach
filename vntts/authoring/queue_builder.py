@@ -21,6 +21,7 @@ from vntts_artifacts import (
 from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
+    VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
 )
@@ -302,7 +303,15 @@ def inspect_generation_queue(
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
     document = StoryIndexDocument.load(story_index_path)
-    _manifest, entries = load_voice_manifest(voice_manifest_path, allow_legacy=False)
+    try:
+        _manifest, entries = load_voice_manifest(
+            voice_manifest_path, allow_legacy=False
+        )
+    except VoiceManifestError as error:
+        raise GenerationQueueBuildError(
+            "Voice manifest reference leaves its canonical manifest directory or "
+            f"is otherwise unsafe: {error}"
+        ) from error
     return plan_generation_queue(
         document,
         entries,

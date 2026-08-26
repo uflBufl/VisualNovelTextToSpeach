@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib
 import json
 import re
 import shutil
@@ -4621,6 +4622,12 @@ def contained_workspace_path(root, relative, label):
     return _within(root, relative, label)
 
 
+def merge_terminal_conflict_resolution(*args, **kwargs):
+    """Compatibility facade for the former direct workbench export."""
+    module = importlib.import_module("vntts.authoring.terminal_conflict_workspace")
+    return module.merge_terminal_conflict_resolution(*args, **kwargs)
+
+
 def _require_sha256(value, label):
     if not isinstance(value, str) or len(value) != 64:
         raise AuthoringWorkbenchError(f"{label} must be a full SHA-256")
@@ -4688,6 +4695,7 @@ __all__ = [
     "list_workspace_collections",
     "list_review_items",
     "load_workspace_authority",
+    "merge_terminal_conflict_resolution",
     "merge_workspace_outcomes",
     "prepare_review_audio",
     "review_selected_item",

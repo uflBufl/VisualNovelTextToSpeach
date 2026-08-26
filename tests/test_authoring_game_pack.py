@@ -259,6 +259,36 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_forged_terminal_provenance_cannot_enter_final_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            queue_id = fixture["items"][0]["queue_id"]
+            review_generation_item(fixture["state"], queue_id, "approved")
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["items"][queue_id]["terminal_conflict_resolution"] = {
+                "source_workspace_id": "resume-" + "1" * 24 + "-" + "2" * 16,
+                "source_state_sha256": "3" * 64,
+                "source_item_sha256": "4" * 64,
+                "audio_sha256": state["items"][queue_id]["file_sha256"],
+                "status": "approved",
+                "review_status": "approved",
+                "selected_candidate_id": "5" * 64,
+                "next_action": "apply_selected_approved_outcome",
+            }
+            fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
+            destination = root / "pack"
+
+            with self.assertRaisesRegex(
+                FinalGamePackError,
+                "canonical workspace ledger",
+            ):
+                publish(fixture, destination)
+
+            self.assertFalse(destination.exists())
+
     def test_mixed_state_accepts_exact_failure_reference_overlay(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -907,6 +937,50 @@ class AuthoringGamePackTest(unittest.TestCase):
                     publish(fixture, root / "final-pack")
 
             self.assertFalse((root / "final-pack").exists())
+
+    def test_stale_publication_recovery_cannot_archive_a_replacement_owner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "final-pack"
+            lease_path = root / ".final-pack.publication.json"
+            stale = {
+                "schema": "vntts.game-pack-publication-lease",
+                "schema_version": 1,
+                "owner": "stale-owner",
+                "pid": 999999,
+                "hostname": game_pack_module.socket.gethostname(),
+                "process_started_at": "stale-start",
+                "destination": str(destination),
+                "created_at": "2026-08-26T12:00:00+00:00",
+            }
+            replacement = {**stale, "owner": "live-replacement"}
+            lease_path.write_text(json.dumps(stale), encoding="utf-8")
+            publication = game_pack_module._PublicationLease(destination)
+            archive = publication._archive_stale
+
+            def replace_before_archive(expected_payload):
+                lease_path.write_text(json.dumps(replacement), encoding="utf-8")
+                return archive(expected_payload)
+
+            with (
+                patch.object(
+                    game_pack_module,
+                    "process_is_alive",
+                    return_value=False,
+                ),
+                patch.object(
+                    publication,
+                    "_archive_stale",
+                    side_effect=replace_before_archive,
+                ),
+                self.assertRaisesRegex(FinalGamePackError, "changed during stale"),
+            ):
+                publication.__enter__()
+
+            self.assertEqual(
+                json.loads(lease_path.read_text(encoding="utf-8")), replacement
+            )
+            self.assertEqual(list(root.glob("*.interrupted-*")), [])
 
     def test_post_commit_lease_cleanup_ambiguity_does_not_report_failure(self):
         with TemporaryDirectory() as directory:

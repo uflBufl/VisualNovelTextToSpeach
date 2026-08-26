@@ -23,9 +23,9 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
     _canonical_sha256,
+    _write_generated_manifest_from_state,
     load_review_audio_bytes,
     process_is_alive,
-    publish_generated_manifest,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -498,7 +498,11 @@ def merge_terminal_conflict_resolution(
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
         try:
-            publish_generated_manifest(output / "generation-state.json")
+            _write_generated_manifest_from_state(
+                target_state,
+                output,
+                output / "manifest.json",
+            )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
         import_snapshot = _load_json(

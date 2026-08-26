@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 
+import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -58,7 +59,16 @@ def _rss_mb():
 
 
 def write_wav(path, audio, sample_rate):
-    return write_pcm16_wav(path, audio, sample_rate)
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim == 2 and samples.shape[1] in {1, 2}:
+        samples = (
+            samples[:, 0]
+            if samples.shape[1] == 1
+            else samples.mean(axis=1, dtype=np.float32)
+        )
+    if samples.ndim != 1:
+        raise ValueError("Benchmark renderer PCM must be mono or frames-by-channel")
+    return write_pcm16_wav(path, samples, sample_rate)
 
 
 def create_backend(

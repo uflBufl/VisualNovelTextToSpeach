@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -45,6 +46,10 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
@@ -2295,7 +2300,8 @@ def _write_generated_manifest_from_state(
         raise BulkGenerationError(str(error)) from error
 
 
-def _validate_terminal_conflict_manifest_authority(state_path, state):
+def validate_terminal_conflict_publication_authority(state_path, state):
+    """Bind marked state to one fully validated canonical workspace ledger."""
     marked = any(
         isinstance(result, dict) and "terminal_conflict_resolution" in result
         for result in state.get("items", {}).values()
@@ -2307,13 +2313,39 @@ def _validate_terminal_conflict_manifest_authority(state_path, state):
         raise BulkGenerationError(
             "Terminal conflict state requires its canonical workspace ledger"
         )
-    workspace = _load_json(workspace_path, "authoring workspace")
+    try:
+        workbench = importlib.import_module("vntts.authoring.workbench")
+        directory, workspace, _workspace_sha256 = workbench.load_workspace_authority(
+            workspace_path.parent
+        )
+        canonical_state_path = (
+            directory / "generated-audio" / "generation-state.json"
+        ).resolve()
+        if canonical_state_path != Path(state_path).resolve():
+            raise BulkGenerationError(
+                "Terminal conflict state is not the canonical workspace state"
+            )
+        current = load_generation_state(
+            canonical_state_path,
+            directory / "queue.jsonl",
+        )
+        if current != state:
+            raise BulkGenerationError(
+                "Terminal conflict state changed while publication was prepared"
+            )
+    except workbench.AuthoringWorkbenchError as error:
+        raise BulkGenerationError(str(error)) from error
     try:
         validate_terminal_conflict_state_binding(
             state, workspace.get("terminal_conflict_merge")
         )
     except TerminalConflictRecordError as error:
         raise BulkGenerationError(str(error)) from error
+
+
+_validate_terminal_conflict_manifest_authority = (
+    validate_terminal_conflict_publication_authority
+)
 
 
 def _approved_manifest_entries(state, output_directory, *, validate_files=True):
@@ -2923,68 +2955,91 @@ class _GenerationLease:
         self.document = None
 
     def __enter__(self):
-        if self.path.exists():
-            lease = _load_json(self.path, "generation lease")
-            if (
-                lease.get("schema") != LEASE_SCHEMA
-                or lease.get("schema_version") != LEASE_VERSION
-                or not isinstance(lease.get("queue_sha256"), str)
-            ):
-                raise BulkGenerationError(
-                    f"Unrecognized generation lease blocks output: {self.path}"
-                )
-            same_host = lease.get("hostname") in {None, socket.gethostname()}
-            live = same_host and self.process_checker(lease.get("pid"))
-            recorded_start = lease.get("process_started_at")
-            if live and recorded_start is not None:
-                actual_start = process_started_at(lease.get("pid"))
-                if actual_start is not None:
-                    live = recorded_start == actual_start
-            if not same_host or live:
-                raise BulkGenerationError(
-                    f"Another generation process is active with PID {lease.get('pid')}"
-                )
-            _archive_interrupted_artifact(self.output_directory, self.path)
-        lease = {
-            "schema": LEASE_SCHEMA,
-            "schema_version": LEASE_VERSION,
-            "queue_sha256": self.queue_sha256,
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "process_started_at": process_started_at(os.getpid()),
-            "lease_id": self.lease_id,
-            "started_at": _now(),
-        }
-        self.document = lease
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         try:
-            descriptor = os.open(self.path, flags, 0o600)
-        except FileExistsError as error:
+            with exclusive_advisory_lock(self.path.with_suffix(".guard")):
+                if self.path.exists():
+                    try:
+                        lease_payload = self.path.read_bytes()
+                        existing = json.loads(lease_payload.decode("utf-8"))
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise BulkGenerationError(
+                            f"Unable to read generation lease {self.path}: {error}"
+                        ) from error
+                    if (
+                        not isinstance(existing, dict)
+                        or existing.get("schema") != LEASE_SCHEMA
+                        or existing.get("schema_version") != LEASE_VERSION
+                        or not isinstance(existing.get("queue_sha256"), str)
+                    ):
+                        raise BulkGenerationError(
+                            f"Unrecognized generation lease blocks output: {self.path}"
+                        )
+                    same_host = existing.get("hostname") in {
+                        None,
+                        socket.gethostname(),
+                    }
+                    live = same_host and self.process_checker(existing.get("pid"))
+                    recorded_start = existing.get("process_started_at")
+                    if live and recorded_start is not None:
+                        actual_start = process_started_at(existing.get("pid"))
+                        if actual_start is not None:
+                            live = recorded_start == actual_start
+                    if not same_host or live:
+                        raise BulkGenerationError(
+                            "Another generation process is active with PID "
+                            f"{existing.get('pid')}"
+                        )
+                    _archive_interrupted_artifact(
+                        self.output_directory,
+                        self.path,
+                        expected_payload=lease_payload,
+                    )
+                lease = {
+                    "schema": LEASE_SCHEMA,
+                    "schema_version": LEASE_VERSION,
+                    "queue_sha256": self.queue_sha256,
+                    "pid": os.getpid(),
+                    "hostname": socket.gethostname(),
+                    "process_started_at": process_started_at(os.getpid()),
+                    "lease_id": self.lease_id,
+                    "started_at": _now(),
+                }
+                self.document = lease
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                try:
+                    descriptor = os.open(self.path, flags, 0o600)
+                except FileExistsError as error:
+                    raise BulkGenerationError(
+                        "Another generation process acquired the output"
+                    ) from error
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(lease, stream, sort_keys=True)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        except AdvisoryLockBusyError as error:
             raise BulkGenerationError(
                 "Another generation process acquired the output"
             ) from error
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(lease, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
         return self
 
     def __exit__(self, _error_type, _error, _traceback):
         ownership_error = None
         try:
-            current = _load_json(self.path, "generation lease")
-        except BulkGenerationError as error:
+            with exclusive_advisory_lock(
+                self.path.with_suffix(".guard"), blocking=True
+            ):
+                current = _load_json(self.path, "generation lease")
+                if current == self.document:
+                    self.path.unlink()
+                else:
+                    ownership_error = BulkGenerationError(
+                        "Generation lease ownership changed during the run"
+                    )
+        except (BulkGenerationError, AdvisoryLockBusyError) as error:
             ownership_error = error
-        else:
-            if current == self.document:
-                self.path.unlink()
-            else:
-                ownership_error = BulkGenerationError(
-                    "Generation lease ownership changed during the run"
-                )
         if ownership_error is not None and _error_type is None and not self.committed:
-            raise ownership_error
+            raise BulkGenerationError(str(ownership_error)) from ownership_error
 
     def assert_owned(self):
         current = _load_json(self.path, "generation lease")
@@ -4273,9 +4328,19 @@ def _audio_relative_path(voice, queue_id):
     return Path("audio") / voice_slug / f"{digest}.wav"
 
 
-def _archive_interrupted_artifact(output_directory, source):
+def _archive_interrupted_artifact(
+    output_directory,
+    source,
+    *,
+    expected_payload=None,
+):
     source = Path(source)
-    digest = sha256_file(source)[:12]
+    payload = source.read_bytes()
+    if expected_payload is not None and payload != expected_payload:
+        raise BulkGenerationError(
+            f"Interrupted artifact changed before recovery: {source}"
+        )
+    digest = hashlib.sha256(payload).hexdigest()[:12]
     archive_root = _within(
         output_directory, Path("interrupted"), "Interrupted artifact directory"
     )
@@ -4284,11 +4349,19 @@ def _archive_interrupted_artifact(output_directory, source):
     candidate = archive_root / f"{stem}-{digest}{source.suffix}"
     suffix = 2
     while candidate.exists():
-        if sha256_file(candidate) == sha256_file(source):
+        if candidate.read_bytes() == payload:
+            if expected_payload is not None and source.read_bytes() != expected_payload:
+                raise BulkGenerationError(
+                    f"Interrupted artifact changed before recovery: {source}"
+                )
             source.unlink()
             return candidate
         candidate = archive_root / f"{stem}-{digest}-{suffix}{source.suffix}"
         suffix += 1
+    if expected_payload is not None and source.read_bytes() != expected_payload:
+        raise BulkGenerationError(
+            f"Interrupted artifact changed before recovery: {source}"
+        )
     os.replace(source, candidate)
     return candidate
 

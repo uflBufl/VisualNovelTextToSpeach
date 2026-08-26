@@ -402,7 +402,14 @@ def show_calibration_overlay(geometry=None, *, background=None):
     return overlay
 
 
-def main():
+def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(value in {"-h", "--help"} for value in arguments):
+        print("usage: vntts-calibrate")
+        return 0
+    if arguments:
+        print("usage: vntts-calibrate", file=sys.stderr)
+        return 2
     application = QApplication.instance() or QApplication(sys.argv)
     application.calibration_overlay = show_calibration_overlay()
     return application.exec()

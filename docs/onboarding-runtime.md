@@ -8,6 +8,15 @@ down the controller. Isolated backend workers poll the controller shutdown token
 while waiting for model health and terminate their exact child process when it
 is set; the orchestration also checks cancellation before and after each stage.
 A cancelled run is never reported as a startup failure or a successful test.
+The Qt Cancel action only sets the shared token and updates visible status; the
+background operation that owns startup also owns teardown. This prevents a Qt
+slot from blocking on controller shutdown or racing a controller that is still
+starting. Final application shutdown invalidates profile and live-stop
+generation tokens, disables every controller-mutating action, discards modal
+continuations and ensures any startup that crossed the cancellation boundary is
+shut down when it returns. The ordinary initial post-onboarding controller start
+uses the same generation-owned lifecycle: Quit suppresses its readiness and
+hotkey signals and forces compensating cleanup if a blocked start returns late.
 
 Readiness and onboarding diagnostics run on the shared Qt thread pool while the
 GUI displays indeterminate progress. Retry starts a new launch identity; cancel,

@@ -187,7 +187,9 @@ uses `REFRESH`, then verifies an exact `USE` memory hit, clears memory, and
 verifies an exact persistent hit when that cache exists. It rejects incomplete
 renders, identity/diagnostic mismatches, and an unexpected cache source before
 publishing any WAV. It does not open an audio device, so its underrun fields are
-deliberately unknown rather than scraped from mutable playback state.
+deliberately unknown rather than scraped from mutable playback state. Typed
+renderer PCM is normalized to mono by channel-axis downmix before the strict
+shared WAV writer; channel arrays are never flattened into a longer time axis.
 
 ## Unattributed speaker policy
 

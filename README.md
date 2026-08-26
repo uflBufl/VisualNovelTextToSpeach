@@ -55,7 +55,9 @@ on macOS. Linux support is limited to X11.
 - Linux: run under an X11 desktop session with `DISPLAY` set. Screen-region and
   selected-window capture are supported. Native Wayland, headless, and SSH
   sessions are rejected because reliable global capture and hotkeys are not
-  available.
+  available. CI runs the complete source unit suite on an offscreen Linux/X11
+  dependency environment in addition to the macOS and Windows jobs; real
+  display, hotkey and audio-device acceptance remains a hardware gate.
 
 ## Run
 
@@ -63,6 +65,11 @@ on macOS. Linux support is limited to X11.
 uv sync --no-dev
 uv run vntts-app
 ```
+
+Every shipped console entry point, including the Qt workbench, calibration and
+reference-audit launchers, handles `-h/--help` before creating a Qt application,
+opening screen capture or touching native services. Help is therefore safe in
+headless shells and returns exit status zero.
 
 The application opens a compact control window and can optionally keep running
 in the system tray. Its settings are stored in the current user's application-data
@@ -164,7 +171,14 @@ deliberate override case.
 Standalone voice and generated-audio manifests own their referenced files.
 References must be POSIX-relative paths contained beneath the manifest
 directory; absolute, traversal, backslash and symlinked paths are rejected
-before a local WAV can reach synthesis or playback.
+before a local WAV can reach synthesis or playback. The voice registry retains
+the canonical manifest root across the isolated speech-worker boundary and
+rechecks containment and every symlink component when the character is
+resolved. When a reference is actually required, it is opened without following
+the file itself where the platform supports that flag, checked against its
+post-open path identity, and copied into a private byte-for-byte snapshot before
+backend handoff. A replacement during cache lookup cannot escape the manifest
+root.
 
 Loading a story index does not change this policy. The full Dashboard shows the
 configured engine and policy, whether the generated-audio manifest is available,

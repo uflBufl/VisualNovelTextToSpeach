@@ -7,6 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from unittest.mock import patch
 
 import numpy as np
@@ -1099,6 +1100,85 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     SyntheticRenderer(),
                     process_checker=lambda _pid: True,
                 )
+
+    def test_stale_lease_recovery_cannot_archive_a_replacement_owner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            output.mkdir()
+            lease_path = output / ".generation-lease.json"
+            stale = {
+                "schema": "vntts.authoring-generation-lease",
+                "schema_version": 1,
+                "queue_sha256": sha256_file(queue),
+                "pid": 999999,
+                "hostname": bulk_module.socket.gethostname(),
+                "process_started_at": "stale-start",
+                "lease_id": "stale-owner",
+            }
+            replacement = {
+                **stale,
+                "pid": os.getpid(),
+                "process_started_at": bulk_module.process_started_at(os.getpid()),
+                "lease_id": "live-replacement",
+            }
+            atomic_write_json(lease_path, stale)
+            archive = bulk_module._archive_interrupted_artifact
+
+            def replace_before_archive(*args, **kwargs):
+                atomic_write_json(lease_path, replacement)
+                return archive(*args, **kwargs)
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "_archive_interrupted_artifact",
+                    side_effect=replace_before_archive,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "changed before recovery"),
+            ):
+                self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(),
+                    process_checker=lambda _pid: False,
+                )
+
+            self.assertEqual(
+                json.loads(lease_path.read_text(encoding="utf-8")), replacement
+            )
+            self.assertEqual(list((output / "interrupted").glob("*.json")), [])
+
+    def test_generation_lease_cleanup_waits_for_guard_and_removes_its_owner(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            lease = bulk_module._GenerationLease(
+                output,
+                "1" * 64,
+                process_checker=lambda _pid: False,
+            )
+            lease.__enter__()
+            acquired = Event()
+
+            def hold_guard():
+                with bulk_module.exclusive_advisory_lock(
+                    output / ".generation-lease.guard"
+                ):
+                    acquired.set()
+                    Event().wait(0.05)
+
+            holder = Thread(target=hold_guard)
+            holder.start()
+            self.assertTrue(acquired.wait(1))
+
+            lease.__exit__(None, None, None)
+            holder.join(1)
+
+            self.assertFalse((output / ".generation-lease.json").exists())
+            self.assertFalse(holder.is_alive())
 
     def test_live_lease_with_unknown_start_identity_blocks_takeover(self):
         with TemporaryDirectory() as directory:
