@@ -2353,6 +2353,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "attempts_by_provider",
             "cohort_review",
             "outcome_merge",
+            "terminal_conflict_resolution",
             "seed_applied",
         ):
             if field in result:

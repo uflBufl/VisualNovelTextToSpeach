@@ -755,6 +755,7 @@ def create_failure_reference_workspace(
             base_document.get("carry_forward"),
             base_document.get("outcome_merge"),
             binding_config,
+            base_document.get("terminal_conflict_merge"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -987,6 +988,7 @@ def merge_workspace_outcomes(
         base_document.get("carry_forward"),
         outcome_merge,
         base_document.get("failure_reference_binding"),
+        base_document.get("terminal_conflict_merge"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1119,6 +1121,528 @@ def merge_workspace_outcomes(
                 f"Unable to publish outcome merge workspace: {error}"
             ) from error
         staging = None
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+    return WorkspaceCreationResult(destination, True)
+
+
+def merge_terminal_conflict_resolution(
+    base_workspace,
+    successor_directory,
+    workspaces_root=None,
+):
+    """Create one immutable-config workspace from completed conflict choices."""
+    from vntts.authoring.authority import (
+        AuthoringAuthorityError,
+        assert_authority_snapshot,
+        capture_authority_file,
+    )
+    from vntts.authoring.reconciliation_schema import (
+        AuthoringReconciliationSchemaError,
+        validate_authoring_reconciliation_document,
+    )
+    from vntts.authoring.terminal_conflict_resolution import (
+        TerminalConflictResolutionError,
+        assert_terminal_conflict_resolution_source_authorities,
+        validate_terminal_conflict_resolution_document,
+    )
+    from vntts.authoring.terminal_conflict_review import (
+        TerminalConflictReviewError,
+        validate_terminal_conflict_review_document,
+    )
+    from vntts.authoring.terminal_conflict_successor import (
+        APPLY_APPROVED_OUTCOME,
+        NEW_REPAIR_HYPOTHESIS,
+        RETAIN_EXPLICIT_REJECTION,
+        TerminalConflictSuccessorError,
+        validate_terminal_conflict_successor_document,
+    )
+
+    successor_root = Path(successor_directory).expanduser().resolve()
+    try:
+        successor_snapshot = capture_authority_file(
+            successor_root / "successor.json", "terminal conflict successor"
+        )
+        successor = validate_terminal_conflict_successor_document(
+            successor_snapshot.json_document("terminal conflict successor"),
+            successor_root,
+        )
+        resolution_path = Path(successor["terminal_resolution"]).resolve()
+        resolution_root = resolution_path.parent
+        resolution_snapshot = capture_authority_file(
+            resolution_path, "terminal conflict resolution"
+        )
+        if resolution_snapshot.sha256 != successor["terminal_resolution_sha256"]:
+            raise AuthoringWorkbenchError(
+                "Terminal conflict successor resolution changed"
+            )
+        resolution = validate_terminal_conflict_resolution_document(
+            resolution_snapshot.json_document("terminal conflict resolution"),
+            resolution_root,
+        )
+        if (
+            resolution["resolution_id"] != successor["terminal_resolution_id"]
+            or assert_terminal_conflict_resolution_source_authorities(resolution_root)
+            != resolution
+        ):
+            raise AuthoringWorkbenchError(
+                "Terminal conflict successor resolution identity changed"
+            )
+        report_snapshot = capture_authority_file(
+            successor["source_reconciliation"],
+            "terminal conflict source reconciliation",
+        )
+        if report_snapshot.sha256 != successor["source_reconciliation_sha256"]:
+            raise AuthoringWorkbenchError(
+                "Terminal conflict source reconciliation changed"
+            )
+        report = validate_authoring_reconciliation_document(
+            report_snapshot.json_document("terminal conflict source reconciliation")
+        )
+        review_snapshot = capture_authority_file(
+            resolution["source_review"], "terminal conflict source review"
+        )
+        review = validate_terminal_conflict_review_document(
+            review_snapshot.json_document("terminal conflict source review"),
+            review_snapshot.path.parent,
+        )
+    except (
+        AuthoringAuthorityError,
+        AuthoringReconciliationSchemaError,
+        TerminalConflictResolutionError,
+        TerminalConflictReviewError,
+        TerminalConflictSuccessorError,
+    ) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+
+    if (
+        report["report_id"] != successor["source_report_id"]
+        or report["report_id"] != resolution["source_report_id"]
+    ):
+        raise AuthoringWorkbenchError(
+            "Terminal conflict workspace sources have different reports"
+        )
+    records = successor["resolved_terminal_conflicts"]
+    resolution_by_id = {item["queue_id"]: item for item in resolution["resolutions"]}
+    report_conflicts = {item["queue_id"]: item for item in report["terminal_conflicts"]}
+    if (
+        {item["queue_id"] for item in records} != set(resolution_by_id)
+        or set(resolution_by_id) != set(report_conflicts)
+        or any(
+            item["resolution"] != resolution_by_id[item["queue_id"]]
+            or item["historical_conflict"] != report_conflicts[item["queue_id"]]
+            for item in records
+        )
+    ):
+        raise AuthoringWorkbenchError(
+            "Terminal conflict successor no longer matches its exact sources"
+        )
+    if any(item["next_action"] == NEW_REPAIR_HYPOTHESIS for item in records):
+        raise AuthoringWorkbenchError(
+            "A neither-acceptable conflict requires a new repair hypothesis"
+        )
+    base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
+        base_workspace, "terminal conflict base"
+    )
+    if base_document["workspace_id"] != report["primary_workspace_id"]:
+        raise AuthoringWorkbenchError(
+            "Terminal conflict merge must use the reconciled primary workspace"
+        )
+    report_workspaces = {item["workspace_id"]: item for item in report["workspaces"]}
+    base_report = report_workspaces.get(base_document["workspace_id"])
+    if (
+        base_report is None
+        or Path(base_report["workspace"]).resolve() != base_directory
+    ):
+        raise AuthoringWorkbenchError(
+            "Terminal conflict base workspace differs from its reconciliation"
+        )
+    base_queue, base_state, _base_payload, base_state_sha256 = _stable_workspace_state(
+        base_directory, base_document, "terminal conflict base"
+    )
+    base_queue_sha256 = sha256_file(base_directory / "queue.jsonl")
+    if (
+        base_report["state_sha256"] != base_state_sha256
+        or base_report["queue_sha256"] != base_queue_sha256
+    ):
+        raise AuthoringWorkbenchError(
+            "Terminal conflict base authority changed after reconciliation"
+        )
+
+    review_cases = {item["queue_id"]: item for item in review["cases"]}
+    resolution_records = {item["queue_id"]: item for item in resolution["resolutions"]}
+    selected_items = {}
+    selected_audio = {}
+    selected_snapshots = []
+    source_directories = {base_directory}
+    source_records = {}
+    source_counts = Counter()
+    ledgers = []
+    for projected in records:
+        queue_id = projected["queue_id"]
+        resolved = resolution_records[queue_id]
+        case = review_cases.get(queue_id)
+        if case is None or resolved["selected_candidate_id"] is None:
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict resolution is not applicable: {queue_id}"
+            )
+        candidate = next(
+            (
+                item
+                for item in case["candidates"]
+                if item["candidate_id"] == resolved["selected_candidate_id"]
+            ),
+            None,
+        )
+        if candidate is None:
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict candidate disappeared: {queue_id}"
+            )
+        authorities = sorted(
+            candidate["source_authorities"], key=lambda item: item["workspace_id"]
+        )
+        base_authorities = [
+            item
+            for item in authorities
+            if item["workspace_id"] == base_document["workspace_id"]
+        ]
+        if base_authorities:
+            source = base_authorities[0]
+        elif len(authorities) == 1:
+            source = authorities[0]
+        elif (
+            len({item["review_authority"]["item_sha256"] for item in authorities}) == 1
+        ):
+            source = authorities[0]
+        else:
+            raise AuthoringWorkbenchError(
+                f"Selected conflict has ambiguous state provenance: {queue_id}"
+            )
+        source_record = report_workspaces.get(source["workspace_id"])
+        if source_record is None:
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict source workspace is unavailable: {queue_id}"
+            )
+        source_directory, source_document, source_workspace_sha256 = (
+            _load_workspace_snapshot(
+                source_record["workspace"], "terminal conflict source"
+            )
+        )
+        source_directories.add(source_directory)
+        state_path = Path(source["state"]).resolve()
+        queue_path = Path(source["queue"]).resolve()
+        if (
+            source_directory / "generated-audio/generation-state.json" != state_path
+            or source_directory / "queue.jsonl" != queue_path
+            or source_document["source"] != base_document["source"]
+            or source_record["config_fingerprint"]
+            != source_document["config_fingerprint"]
+            or source_record["state_sha256"]
+            != source["review_authority"]["state_sha256"]
+            or source_record["queue_sha256"] != base_queue_sha256
+        ):
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict source authority is inconsistent: {queue_id}"
+            )
+        authority = ReviewAuthority(**source["review_authority"])
+        try:
+            audio_payload = load_review_audio_bytes(
+                state_path, queue_path, queue_id, authority
+            )
+            state_snapshot = capture_authority_file(
+                state_path, "terminal conflict source state"
+            )
+        except (AuthoringAuthorityError, BulkGenerationError) as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        if state_snapshot.sha256 != authority.state_sha256:
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict source state changed: {queue_id}"
+            )
+        try:
+            source_state = json.loads(state_snapshot.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        source_item = source_state.get("items", {}).get(queue_id)
+        if (
+            not isinstance(source_item, dict)
+            or _canonical_sha256(source_item) != authority.item_sha256
+            or source_item.get("file_sha256") != candidate["audio_sha256"]
+        ):
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict source item changed: {queue_id}"
+            )
+        expected_status = (
+            ("approved", "approved")
+            if projected["next_action"] == APPLY_APPROVED_OUTCOME
+            else ("generated", "rejected")
+        )
+        if (
+            projected["next_action"]
+            not in {APPLY_APPROVED_OUTCOME, RETAIN_EXPLICIT_REJECTION}
+            or (source_item.get("status"), source_item.get("review_status"))
+            != expected_status
+        ):
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict selected authority changed: {queue_id}"
+            )
+        resolution_audio = _within(
+            resolution_root,
+            _safe_relative(
+                resolved["selected_audio"], "Terminal conflict resolution WAV"
+            ),
+            "Terminal conflict resolution WAV",
+        )
+        try:
+            resolution_audio_snapshot = capture_authority_file(
+                resolution_audio,
+                "terminal conflict resolution WAV",
+                root=resolution_root,
+            )
+        except AuthoringAuthorityError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        if (
+            resolution_audio_snapshot.sha256 != candidate["audio_sha256"]
+            or resolution_audio_snapshot.payload != audio_payload
+        ):
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict selected WAV changed: {queue_id}"
+            )
+        if "terminal_conflict_resolution" in source_item:
+            raise AuthoringWorkbenchError(
+                f"Terminal conflict source was already resolved: {queue_id}"
+            )
+        ledger = {
+            "queue_id": queue_id,
+            "source_workspace_id": source_document["workspace_id"],
+            "source_state_sha256": state_snapshot.sha256,
+            "source_item_sha256": _canonical_sha256(source_item),
+            "audio_sha256": resolution_audio_snapshot.sha256,
+            "status": source_item["status"],
+            "review_status": source_item["review_status"],
+            "selected_candidate_id": candidate["candidate_id"],
+            "next_action": projected["next_action"],
+        }
+        selected_items[queue_id] = copy.deepcopy(source_item)
+        selected_audio[queue_id] = resolution_audio_snapshot
+        ledgers.append(ledger)
+        source_counts[source_document["workspace_id"]] += 1
+        source_records[source_document["workspace_id"]] = {
+            "workspace_id": source_document["workspace_id"],
+            "config_fingerprint": source_document["config_fingerprint"],
+            "state_sha256": state_snapshot.sha256,
+            "terminal_item_count": 0,
+        }
+        selected_snapshots.extend(
+            (
+                state_snapshot,
+                resolution_audio_snapshot,
+                (source_directory / "workspace.json", source_workspace_sha256),
+                (queue_path, base_queue_sha256),
+            )
+        )
+
+    for workspace_id, count in source_counts.items():
+        source_records[workspace_id]["terminal_item_count"] = count
+    ledgers.sort(key=lambda item: item["queue_id"])
+    merge = {
+        "schema": "vntts.authoring-terminal-conflict-workspace-merge",
+        "schema_version": 1,
+        "base_workspace_id": base_document["workspace_id"],
+        "base_state_sha256": base_state_sha256,
+        "source_report_id": report["report_id"],
+        "source_reconciliation_sha256": report_snapshot.sha256,
+        "terminal_resolution_id": resolution["resolution_id"],
+        "terminal_resolution_sha256": resolution_snapshot.sha256,
+        "terminal_successor_id": successor["successor_id"],
+        "terminal_successor_sha256": successor_snapshot.sha256,
+        "sources": sorted(
+            source_records.values(), key=lambda item: item["workspace_id"]
+        ),
+        "items": ledgers,
+    }
+    config_fingerprint = _workspace_config_fingerprint(
+        base_document["source"]["import_id"],
+        base_document.get("story_index"),
+        base_document.get("voice_manifest"),
+        base_document["narrator_character"],
+        base_document["run_config"],
+        base_document.get("carry_forward"),
+        base_document.get("outcome_merge"),
+        base_document.get("failure_reference_binding"),
+        merge,
+    )
+    workspace_id = (
+        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
+        f"{config_fingerprint[:16]}"
+    )
+    root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    destination = _within(root, Path(workspace_id), "Conflict merge destination")
+    staging = Path(
+        tempfile.mkdtemp(prefix=".conflict-merge-staging-", dir=root)
+    ).resolve()
+    base_snapshots = [
+        (base_directory / "workspace.json", base_workspace_sha256),
+        (
+            base_directory / "generated-audio/generation-state.json",
+            base_state_sha256,
+        ),
+    ]
+    try:
+        for tree_name in ("provenance", "inputs"):
+            _copy_workspace_tree_snapshot(
+                base_directory / tree_name,
+                staging / tree_name,
+                base_snapshots,
+            )
+        queue_payload = _read_file_bytes(
+            base_directory / "queue.jsonl", "terminal conflict base queue"
+        )
+        (staging / "queue.jsonl").write_bytes(queue_payload)
+        base_snapshots.append((base_directory / "queue.jsonl", base_queue_sha256))
+        output = staging / "generated-audio"
+        output.mkdir()
+        target_state = copy.deepcopy(base_state)
+        path_owners = {}
+        for queue_id, result in base_state["items"].items():
+            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+                continue
+            relative = _safe_relative(
+                result["path"], f"Base generation item {queue_id!r} path"
+            )
+            owner = path_owners.setdefault(relative.as_posix(), queue_id)
+            if owner != queue_id:
+                raise AuthoringWorkbenchError(
+                    f"Base generation WAV path collides with {owner!r}"
+                )
+            source_audio_path = _within(
+                base_directory / "generated-audio",
+                relative,
+                "Base generation WAV",
+            )
+            payload = _read_file_bytes(source_audio_path, "base generation WAV")
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest != _require_sha256(
+                result.get("file_sha256"),
+                f"Base item {queue_id!r} WAV SHA-256",
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Base generation WAV changed for {queue_id!r}"
+                )
+            target = _within(output, relative, "Conflict merge base WAV")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            base_snapshots.append((source_audio_path, digest))
+        for ledger in ledgers:
+            queue_id = ledger["queue_id"]
+            source_item = selected_items[queue_id]
+            relative = _safe_relative(
+                source_item["path"], f"Conflict result {queue_id!r} path"
+            )
+            previous = target_state["items"].get(queue_id)
+            previous_path = previous.get("path") if isinstance(previous, dict) else None
+            if previous_path and previous_path != relative.as_posix():
+                previous_target = _within(
+                    output,
+                    _safe_relative(previous_path, "Replaced conflict WAV"),
+                    "Replaced conflict WAV",
+                )
+                if previous_target.is_file():
+                    previous_target.unlink()
+            owner = path_owners.get(relative.as_posix())
+            if owner not in {None, queue_id}:
+                raise AuthoringWorkbenchError(
+                    f"Terminal conflict WAV path collides with {owner!r}"
+                )
+            target = _within(output, relative, "Resolved terminal conflict WAV")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(selected_audio[queue_id].payload)
+            copied = copy.deepcopy(source_item)
+            copied["terminal_conflict_resolution"] = {
+                key: value for key, value in ledger.items() if key != "queue_id"
+            }
+            target_state["items"][queue_id] = copied
+        atomic_write_json(
+            output / "generation-state.json", target_state, sort_keys=True
+        )
+        try:
+            publish_generated_manifest(output / "generation-state.json")
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        workspace = copy.deepcopy(base_document)
+        workspace.update(
+            {
+                "workspace_id": workspace_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "terminal_conflict_merge": merge,
+                "config_fingerprint": config_fingerprint,
+            }
+        )
+        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+        import_snapshot = _load_json(
+            staging / "provenance/import.json", "conflict merge import snapshot"
+        )
+        _validate_workspace_carry_forward(staging, workspace)
+        _validate_workspace_input_config(staging, workspace, import_snapshot)
+        _validate_workspace_offline_fallback_state(staging, workspace)
+        _validate_workspace_outcome_merge(staging, workspace)
+        _validate_workspace_terminal_conflict_merge(staging, workspace)
+        for path, digest in base_snapshots:
+            if not path.is_file() or sha256_file(path) != digest:
+                raise AuthoringWorkbenchError(
+                    "Terminal conflict base changed before workspace publication"
+                )
+        for snapshot in selected_snapshots:
+            if hasattr(snapshot, "payload"):
+                assert_authority_snapshot(snapshot, "terminal conflict source")
+            else:
+                path, digest = snapshot
+                if not path.is_file() or sha256_file(path) != digest:
+                    raise AuthoringWorkbenchError(
+                        "Terminal conflict source changed before workspace publication"
+                    )
+        assert_authority_snapshot(successor_snapshot, "terminal conflict successor")
+        assert_authority_snapshot(resolution_snapshot, "terminal conflict resolution")
+        assert_authority_snapshot(
+            report_snapshot, "terminal conflict source reconciliation"
+        )
+        assert_authority_snapshot(review_snapshot, "terminal conflict source review")
+        if (
+            assert_terminal_conflict_resolution_source_authorities(resolution_root)
+            != resolution
+        ):
+            raise AuthoringWorkbenchError(
+                "Terminal conflict sources changed before workspace publication"
+            )
+        for source_directory in source_directories:
+            source_output = source_directory / "generated-audio"
+            if (source_output / ".generation-lease.json").exists() or any(
+                source_output.rglob("*.partial.wav")
+            ):
+                raise AuthoringWorkbenchError(
+                    "Terminal conflict source became active before publication"
+                )
+        if destination.exists():
+            _directory, existing = _load_workspace(destination)
+            if existing.get("terminal_conflict_merge") != merge:
+                raise AuthoringWorkbenchError(
+                    "Terminal conflict workspace conflicts with another resolution"
+                )
+            return WorkspaceCreationResult(destination, False)
+        try:
+            _rename_directory_no_replace(staging, destination)
+        except (OSError, FinalGamePackError) as error:
+            if destination.exists():
+                _directory, existing = _load_workspace(destination)
+                if existing.get("terminal_conflict_merge") == merge:
+                    return WorkspaceCreationResult(destination, False)
+            raise AuthoringWorkbenchError(
+                f"Unable to publish terminal conflict workspace: {error}"
+            ) from error
+        staging = None
+    except (AuthoringAuthorityError, OSError) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging)
@@ -3028,6 +3552,7 @@ def _load_workspace(workspace_directory):
     _validate_workspace_failure_reference_binding(directory, workspace)
     _validate_workspace_offline_fallback_state(directory, workspace)
     _validate_workspace_outcome_merge(directory, workspace)
+    _validate_workspace_terminal_conflict_merge(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3037,6 +3562,7 @@ def _load_workspace(workspace_directory):
         workspace.get("carry_forward"),
         workspace.get("outcome_merge"),
         workspace.get("failure_reference_binding"),
+        workspace.get("terminal_conflict_merge"),
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -4023,6 +4549,202 @@ def _validate_workspace_outcome_merge(directory, workspace):
         )
 
 
+def _validate_workspace_terminal_conflict_merge(directory, workspace):
+    merge = workspace.get("terminal_conflict_merge")
+    if merge is None:
+        return
+    fields = {
+        "schema",
+        "schema_version",
+        "base_workspace_id",
+        "base_state_sha256",
+        "source_report_id",
+        "source_reconciliation_sha256",
+        "terminal_resolution_id",
+        "terminal_resolution_sha256",
+        "terminal_successor_id",
+        "terminal_successor_sha256",
+        "sources",
+        "items",
+    }
+    if (
+        not isinstance(merge, dict)
+        or set(merge) != fields
+        or merge.get("schema") != "vntts.authoring-terminal-conflict-workspace-merge"
+        or merge.get("schema_version") != 1
+    ):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict merge provenance is malformed"
+        )
+    base_workspace_id = _required_text(
+        merge.get("base_workspace_id"), "Terminal conflict base workspace ID"
+    )
+    if not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", base_workspace_id):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict base identity is invalid"
+        )
+    for field in (
+        "base_state_sha256",
+        "source_report_id",
+        "source_reconciliation_sha256",
+        "terminal_resolution_id",
+        "terminal_resolution_sha256",
+        "terminal_successor_id",
+        "terminal_successor_sha256",
+    ):
+        _require_sha256(
+            merge.get(field),
+            f"Terminal conflict {field.replace('_', ' ')}",
+        )
+    sources = merge.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict source ledger is empty"
+        )
+    source_by_id = {}
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {
+            "workspace_id",
+            "config_fingerprint",
+            "state_sha256",
+            "terminal_item_count",
+        }:
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict source is malformed"
+            )
+        workspace_id = _required_text(
+            source.get("workspace_id"), "Terminal conflict source workspace ID"
+        )
+        if (
+            not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
+            or workspace_id in source_by_id
+        ):
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict source identity is invalid"
+            )
+        _require_sha256(
+            source.get("config_fingerprint"),
+            "Terminal conflict source configuration fingerprint",
+        )
+        _require_sha256(
+            source.get("state_sha256"),
+            "Terminal conflict source state SHA-256",
+        )
+        count = source.get("terminal_item_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict source count is invalid"
+            )
+        source_by_id[workspace_id] = source
+    if sources != sorted(sources, key=lambda value: value["workspace_id"]):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict sources are not canonical"
+        )
+    items = merge.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict item ledger is empty"
+        )
+    try:
+        state = load_generation_state(
+            directory / "generated-audio/generation-state.json",
+            directory / "queue.jsonl",
+        )
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    queue_ids = []
+    counts = Counter()
+    for item in items:
+        item_fields = {
+            "queue_id",
+            "source_workspace_id",
+            "source_state_sha256",
+            "source_item_sha256",
+            "audio_sha256",
+            "status",
+            "review_status",
+            "selected_candidate_id",
+            "next_action",
+        }
+        if not isinstance(item, dict) or set(item) != item_fields:
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict item is malformed"
+            )
+        queue_id = _required_text(item.get("queue_id"), "Terminal conflict queue ID")
+        source = source_by_id.get(item.get("source_workspace_id"))
+        if (
+            source is None
+            or item.get("source_state_sha256") != source["state_sha256"]
+            or (item.get("status"), item.get("review_status"))
+            not in {("approved", "approved"), ("generated", "rejected")}
+            or item.get("next_action")
+            not in {
+                "apply_selected_approved_outcome",
+                "retain_explicit_rejection",
+            }
+        ):
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict item provenance is inconsistent"
+            )
+        _require_sha256(
+            item.get("source_item_sha256"),
+            "Terminal conflict source item SHA-256",
+        )
+        _require_sha256(item.get("audio_sha256"), "Terminal conflict WAV SHA-256")
+        _require_sha256(
+            item.get("selected_candidate_id"),
+            "Terminal conflict selected candidate ID",
+        )
+        expected_action = (
+            "apply_selected_approved_outcome"
+            if item["review_status"] == "approved"
+            else "retain_explicit_rejection"
+        )
+        if item["next_action"] != expected_action:
+            raise AuthoringWorkbenchError(
+                "Workspace terminal conflict action is inconsistent"
+            )
+        result = state["items"].get(queue_id)
+        if not isinstance(result, dict) or not _terminal_review_outcome(result):
+            raise AuthoringWorkbenchError(
+                f"Workspace terminal conflict result is not terminal for {queue_id!r}"
+            )
+        observed = result.get("terminal_conflict_resolution")
+        expected = {key: value for key, value in item.items() if key != "queue_id"}
+        if observed != expected:
+            raise AuthoringWorkbenchError(
+                f"Workspace terminal conflict result changed for {queue_id!r}"
+            )
+        source_result = copy.deepcopy(result)
+        source_result.pop("terminal_conflict_resolution", None)
+        if _canonical_sha256(source_result) != item["source_item_sha256"]:
+            raise AuthoringWorkbenchError(
+                f"Workspace terminal conflict source item changed for {queue_id!r}"
+            )
+        audio_path = _within(
+            directory / "generated-audio",
+            _safe_relative(result.get("path"), "Terminal conflict WAV path"),
+            "Terminal conflict WAV",
+        )
+        if not audio_path.is_file() or sha256_file(audio_path) != item["audio_sha256"]:
+            raise AuthoringWorkbenchError(
+                f"Workspace terminal conflict WAV changed for {queue_id!r}"
+            )
+        queue_ids.append(queue_id)
+        counts[item["source_workspace_id"]] += 1
+    if queue_ids != sorted(set(queue_ids)):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict item ledger is not canonical"
+        )
+    if any(
+        counts[workspace_id] != source["terminal_item_count"]
+        for workspace_id, source in source_by_id.items()
+    ):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict source counts are inconsistent"
+        )
+
+
 def _workspace_config_fingerprint(
     import_id,
     story_config,
@@ -4032,6 +4754,7 @@ def _workspace_config_fingerprint(
     carry_forward=None,
     outcome_merge=None,
     failure_reference_binding=None,
+    terminal_conflict_merge=None,
 ):
     fingerprint = {
         "import_id": import_id,
@@ -4044,6 +4767,8 @@ def _workspace_config_fingerprint(
         fingerprint["carry_forward"] = carry_forward
     if outcome_merge is not None:
         fingerprint["outcome_merge"] = outcome_merge
+    if terminal_conflict_merge is not None:
+        fingerprint["terminal_conflict_merge"] = terminal_conflict_merge
     if failure_reference_binding is not None:
         fingerprint["failure_reference_binding"] = failure_reference_binding
     payload = json.dumps(
@@ -4485,6 +5210,8 @@ __all__ = [
     "list_workspace_collections",
     "list_review_items",
     "load_workspace_authority",
+    "merge_terminal_conflict_resolution",
+    "merge_workspace_outcomes",
     "prepare_review_audio",
     "review_selected_item",
     "review_workspace_item",

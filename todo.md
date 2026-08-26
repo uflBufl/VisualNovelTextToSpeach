@@ -25,10 +25,11 @@ The reconciled baseline and exact remaining identities are recorded in
       authorities and copied selected WAV bytes (or an explicit no-WAV
       `neither` result). Then publish the implemented resolution-aware successor
       projection, which retains the full historical occurrence ledger and
-      resolves only exact matching case/candidate identities. Finally create a
-      config-addressed successor workspace that copies each selected state
-      item/WAV under compare-and-swap authority. A `neither` result must remain
-      non-publishable and require a new repair hypothesis.
+      resolves only exact matching case/candidate identities. Finally invoke
+      the implemented config-addressed terminal-conflict merge to copy each
+      selected state item/WAV under compare-and-swap authority and rebuild the
+      approved-only manifest. A `neither` result must remain non-publishable and
+      require a new repair hypothesis.
       No phase may overwrite the review bundle, a historical workspace or an
       existing successor output, and every source must be rechecked immediately
       before its atomic publication.

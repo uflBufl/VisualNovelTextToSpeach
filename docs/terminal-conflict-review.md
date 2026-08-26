@@ -65,8 +65,24 @@ Only the exact matching resolution adds one explicit next action:
 - neither acceptable -> `new_repair_hypothesis_required`.
 
 The successor projection does not mutate a workspace, suppress historical
-authority or make a `neither` case publishable. A config-addressed successor
-workspace copy remains the final, separately validated application phase.
+authority or make a `neither` case publishable.
+
+`merge_terminal_conflict_resolution` is the final application boundary. It
+requires the primary workspace recorded by the reconciliation, derives the
+selected state authority from the exact blind candidate, and prefers that
+primary authority when identical approved audio exists in more than one
+workspace. Otherwise it requires one source or identical state-item authority;
+ambiguous state metadata fails closed. It copies the selected terminal state
+item and the resolution-owned WAV into a new config-addressed workspace, binds
+the report, successor, resolution, source workspace/state/item and WAV hashes,
+and rebuilds the approved-only manifest. Existing `outcome_merge` provenance in
+the selected item remains intact beneath the new terminal-conflict ledger.
+
+The merge rechecks every source immediately before atomic no-replace
+publication and never changes the primary or historical workspaces. Approved
+choices enter the derived manifest, rejected choices remain explicit terminal
+rejections outside it, and any `neither` choice prevents workspace creation
+until a separately versioned repair hypothesis exists.
 
 ## Verified current Character Story bundle
 
