@@ -20,6 +20,18 @@ The reconciled baseline and exact remaining identities are recorded in
       separate fail-closed transaction and publish a successor reconciliation.
       Do not infer a winner from workspace age, filename, majority or the newer
       approval, and do not mutate or suppress the historical source authorities.
+      The application transaction must proceed in three explicit phases:
+      first publish an immutable resolution artifact binding the exact
+      `review.json`, complete `progress.json`, current source authorities and
+      copied selected WAV bytes (or an explicit no-WAV `neither` result); then
+      teach successor reconciliation to retain the full historical occurrence
+      ledger while resolving only exact matching case/candidate identities; and
+      finally create a config-addressed successor workspace that copies the
+      selected state item/WAV under compare-and-swap authority. A `neither`
+      result must remain non-publishable and require a new repair hypothesis.
+      No phase may overwrite the review bundle, a historical workspace or an
+      existing successor output, and every source must be rechecked immediately
+      before its atomic publication.
 - [ ] Complete the real long-pause comparison pipeline: compare independent
       sentence segmentation with the center-only silence-compression candidate
       on an exact matched corpus, preserve equal text and speaker/control

@@ -713,6 +713,16 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
         return load_terminal_conflict_review_progress(directory)
 
 
+def validate_terminal_conflict_review_progress_document(progress, review):
+    """Return validated mutable decisions for an already validated review."""
+    return _validate_progress(progress, review)
+
+
+def assert_terminal_conflict_review_source_authorities(review):
+    """Require every source state, queue, item and WAV to match the review."""
+    _assert_source_authorities(review)
+
+
 def _assert_source_authorities(review):
     try:
         report_snapshot = capture_authority_file(
@@ -919,6 +929,7 @@ __all__ = [
     "TERMINAL_CONFLICT_REVIEW_VERSION",
     "TerminalConflictReview",
     "TerminalConflictReviewError",
+    "assert_terminal_conflict_review_source_authorities",
     "load_terminal_conflict_review",
     "load_terminal_conflict_candidate_audio",
     "load_terminal_conflict_review_document",
@@ -926,4 +937,5 @@ __all__ = [
     "publish_terminal_conflict_review",
     "record_terminal_conflict_decision",
     "validate_terminal_conflict_review_document",
+    "validate_terminal_conflict_review_progress_document",
 ]

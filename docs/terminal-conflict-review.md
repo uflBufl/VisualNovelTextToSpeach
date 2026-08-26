@@ -45,6 +45,15 @@ completed choices must be a separate fail-closed transaction that copies the
 selected exact outcome through the normal review/merge workflow and then
 publishes a successor reconciliation report.
 
+`publish_terminal_conflict_resolution` is the first application boundary. It
+refuses incomplete progress, binds the exact immutable review and mutable
+progress payloads, rechecks every source `ReviewAuthority`, and copies only the
+selected candidate WAVs into a new no-replace publication. A `neither` decision
+is retained explicitly with no selected WAV and the policy `new repair
+hypothesis required`. The resolution publication still does not rewrite a
+workspace or hide a historical occurrence. Successor reconciliation and a
+config-addressed workspace copy remain later, separately validated phases.
+
 ## Verified current Character Story bundle
 
 On 2026-08-26 the current original-scope reconciliation was published as the
