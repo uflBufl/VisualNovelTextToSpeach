@@ -61,6 +61,7 @@ vntts-authoring-workbench = "vntts.authoring.workbench_ui:main"
 vntts-review-bundle = "vntts.authoring.cohort_bundle_ui:main"
 vntts-reference-audit = "vntts.authoring.failure_reference_audit_ui:main"
 vntts-authoring-reconcile = "vntts.authoring.reconciliation_cli:main"
+vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 
 [tool.uv.sources]
 torch = [

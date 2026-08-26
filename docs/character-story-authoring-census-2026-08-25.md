@@ -110,10 +110,13 @@ generation pass. It is:
 
 The reusable read-only reconciliation contract and exact command are documented
 in [`authoring-authority-reconciliation.md`](authoring-authority-reconciliation.md).
-The final 2026-08-25 report validates all seven current v2 bundle publications,
+The original-scope 2026-08-25 successor report validates all seven current v2 bundle publications,
 their 28 provenance workspaces, the primary merged queue/state/manifest, every
 reported pending WAV, and exactly the current Mrs. Owen and Hotelier quality
-cards. It found no conflicting terminal authority. Its current actionable
+cards. It preserves five exact cross-workspace conflicts where an older
+rejected WAV and a newer approved WAV share the same queue-record/text identity;
+those conflicts require the bounded review described in
+[`terminal-conflict-review.md`](terminal-conflict-review.md). Its current actionable
 projection is 25 exact cohort items, two source-quality decisions, 129 pending
 primary WAVs needing a risk-based review plan, 15 failures requiring a new
 hypothesis and 164 missing-voice lines requiring a source or explicit fallback.

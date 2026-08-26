@@ -19,7 +19,15 @@ The reconciled baseline and exact remaining identities are recorded in
       bounded decision set and require an explicit human winner for each; do
       not choose by workspace age, filename, or majority. Publish a successor
       report only after the winning authorities have been recorded through the
-      normal review workflow.
+      normal review workflow. Implement this as a versioned self-contained
+      conflict-review artifact: capture the exact reconciliation bytes, collapse
+      duplicate occurrences only when WAV and terminal authority are identical,
+      copy and hash every distinct WAV, expose blind candidate playback plus an
+      explicit `neither acceptable` choice, and persist decisions in a separate
+      atomic progress document. Revalidate report, workspace state, queue and WAV
+      authority before publication and again before accepting a decision. Do not
+      mutate a workspace or suppress a reconciliation conflict in this slice;
+      applying the five human choices remains a separate fail-closed transaction.
 - [ ] Complete the real long-pause comparison pipeline: compare independent
       sentence segmentation with the center-only silence-compression candidate
       on an exact matched corpus, preserve equal text and speaker/control
