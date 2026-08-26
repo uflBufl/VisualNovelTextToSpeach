@@ -3959,6 +3959,19 @@ def _validate_workspace_outcome_merge(directory, workspace):
     items = merge.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Workspace outcome merge item ledger is empty")
+    terminal_merge = workspace.get("terminal_conflict_merge")
+    terminal_items = (
+        terminal_merge.get("items") if isinstance(terminal_merge, dict) else None
+    )
+    terminal_queue_ids = (
+        {
+            value.get("queue_id")
+            for value in terminal_items
+            if isinstance(value, dict) and isinstance(value.get("queue_id"), str)
+        }
+        if isinstance(terminal_items, list)
+        else set()
+    )
     queue_ids = []
     counts = Counter()
     try:
@@ -4009,6 +4022,8 @@ def _validate_workspace_outcome_merge(directory, workspace):
             )
         source_result = copy.deepcopy(result)
         source_result.pop("outcome_merge", None)
+        if queue_id in terminal_queue_ids:
+            source_result.pop("terminal_conflict_resolution", None)
         if _canonical_sha256(source_result) != source_item_sha256:
             raise AuthoringWorkbenchError(
                 f"Workspace merged source item changed for {queue_id!r}"

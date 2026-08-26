@@ -163,3 +163,42 @@ the primary state SHA-256 remains
 `2cdd8a18b4826f423bad7e06b719b07cd6b6a83e4bbd6ec38cf5e93893407f4e`.
 The immutable v1 directory remains historical evidence and must not receive new
 decisions.
+
+## Completed v2 application
+
+All five v2 cases were heard and decided on 2026-08-27. The checksum-bound
+progress contains five selected candidates and no `neither` result. Three
+selected candidates retain approved authority; two retain explicit rejected
+authority. The decisions were applied through the supported three-stage
+pipeline without changing the v1/v2 review directories or any historical
+workspace:
+
+- resolution ID
+  `0682bded2ae44ea9f82c638428afb107a37dc9cefe0814d89c56fdfedc8d2d4d`,
+  document SHA-256
+  `34495f36040dc4bc1c30bfee32a56e0b1a380794c53d82c9270afcbabada82d5`;
+- successor ID
+  `fa7919b517dd78fde33797ca48faeea3e6f25189335ffbc1c1b89ba8b5d41702`,
+  document SHA-256
+  `1ce7342225be36239b9fc89255322e1783f774375bb8564ac49fe16c279b3aab`;
+- merged workspace
+  `resume-395a5e5eec0327a3a793b66d-63324a22121bb35e`, workspace-document
+  SHA-256
+  `959f4300dc97120972a518e56987d8b237013c76774280ec9d3e0ae762823e41`.
+
+The merge changed exactly the five conflicted state items. It retained approved
+outcomes for `314602:110`, `314608:35` and `314608:71`, retained explicit
+rejections for `314602:92` and `314608:27`, and rebuilt a 324-entry
+approved-only manifest. The merged state SHA-256 is
+`53fca4bfe34636798733cc78880a6155bbf31551aa8a292f81526cb78d64813a`;
+the derived manifest SHA-256 is
+`65efde88b69b2d699e5d2768700ff218573344c2ff7069ffc06facfb7f2cc436`.
+Canonical workspace and terminal-publication authority validation passed, and
+an exact repeat returned `created=false`.
+
+This real application exposed one provenance-composition defect: validating an
+older `outcome_merge` layer included the newer
+`terminal_conflict_resolution` overlay in the older source-item hash. The
+validator now removes that later overlay only when the same queue ID is present
+in the terminal merge ledger. An otherwise identical unbound overlay still
+fails closed.

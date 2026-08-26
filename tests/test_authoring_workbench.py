@@ -1575,6 +1575,37 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(
                 workspace["outcome_merge"]["items"][0]["queue_id"], fixture["queue_id"]
             )
+
+            overlaid_state = json.loads(json.dumps(merged_state))
+            overlaid_item = overlaid_state["items"][fixture["queue_id"]]
+            overlaid_item["terminal_conflict_resolution"] = {
+                "source_workspace_id": merged.directory.name,
+                "source_state_sha256": "1" * 64,
+                "source_item_sha256": workbench_module._canonical_sha256(item),
+                "audio_sha256": item["file_sha256"],
+                "status": "approved",
+                "review_status": "approved",
+                "selected_candidate_id": "2" * 64,
+                "next_action": "apply_selected_approved_outcome",
+            }
+            with patch.object(
+                workbench_module,
+                "load_generation_state",
+                return_value=overlaid_state,
+            ):
+                with self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "merged source item changed"
+                ):
+                    workbench_module._validate_workspace_outcome_merge(
+                        merged.directory, workspace
+                    )
+                stacked_workspace = json.loads(json.dumps(workspace))
+                stacked_workspace["terminal_conflict_merge"] = {
+                    "items": [{"queue_id": fixture["queue_id"]}]
+                }
+                workbench_module._validate_workspace_outcome_merge(
+                    merged.directory, stacked_workspace
+                )
             self.assertEqual(source_state_path.read_bytes(), source_state_before)
             self.assertEqual(repair_state_path.read_bytes(), repair_state_before)
 

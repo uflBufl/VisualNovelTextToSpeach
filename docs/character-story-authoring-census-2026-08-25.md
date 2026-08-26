@@ -178,3 +178,14 @@ directory is `current-character-story-terminal-conflicts-v2`, with the same five
 cases, zero initial decisions and current primary state authority. Details and
 the fail-closed recovery are recorded in
 [`terminal-conflict-review.md`](terminal-conflict-review.md).
+
+All five refreshed cases were subsequently heard and selected. The immutable
+resolution and successor retain three approved and two explicitly rejected
+authorities, with no `neither` result. They were merged into config-addressed
+workspace `resume-395a5e5eec0327a3a793b66d-63324a22121bb35e`; it contains 324
+approved items, 82 explicit rejections, 15 failures and 164 missing-reference
+lines. Exactly the five conflicted state records differ from the 326-approved
+primary authority, and its derived manifest contains the 324 approved outcomes
+only. The original primary, all source workspaces and both review bundles
+remain immutable. Exact document identities and SHA-256 values are recorded in
+[`terminal-conflict-review.md`](terminal-conflict-review.md).

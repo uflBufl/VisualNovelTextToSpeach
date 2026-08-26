@@ -11,33 +11,6 @@ come from the current checksum-bound state, bundle and manifest authorities.
 The reconciled baseline and exact remaining identities are recorded in
 [`docs/character-story-authoring-census-2026-08-25.md`](docs/character-story-authoring-census-2026-08-25.md).
 
-- [ ] Review the five exact cross-workspace terminal conflicts in the current
-      app-data bundle
-      `authoring/review-bundles/current-character-story-terminal-conflicts-v2`.
-      The immutable v1 bundle remains historical evidence but became stale
-      after the completed 129-WAV Centurion review changed the primary state;
-      its fail-closed save produced no progress decision. Version 2 must bind
-      reconciliation report `091d56596664...` and the current 326-approved
-      primary authority without changing either candidate WAV in any case.
-      Hear both blind candidates for `314602:92`, `314602:110`, `314608:27`,
-      `314608:35` and `314608:71`, then choose one candidate or explicitly mark
-      neither acceptable. After all five decisions exist, apply them through a
-      separate fail-closed transaction and publish a successor reconciliation.
-      Do not infer a winner from workspace age, filename, majority or the newer
-      approval, and do not mutate or suppress the historical source authorities.
-      After review, publish the implemented immutable resolution artifact from
-      the exact `review.json`, complete `progress.json`, current source
-      authorities and copied selected WAV bytes (or an explicit no-WAV
-      `neither` result). Then publish the implemented resolution-aware successor
-      projection, which retains the full historical occurrence ledger and
-      resolves only exact matching case/candidate identities. Finally invoke
-      the implemented config-addressed terminal-conflict merge to copy each
-      selected state item/WAV under compare-and-swap authority and rebuild the
-      approved-only manifest. A `neither` result must remain non-publishable and
-      require a new repair hypothesis.
-      No phase may overwrite the review bundle, a historical workspace or an
-      existing successor output, and every source must be rechecked immediately
-      before its atomic publication.
 - [ ] Complete the real long-pause comparison pipeline: compare independent
       sentence segmentation with the center-only silence-compression candidate
       on an exact matched corpus, preserve equal text and speaker/control
@@ -285,6 +258,21 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P0 - Establish a MOSS quality and latency gate
 
+- [ ] Make MOSS an identity-preferred but quality-routed primary rather than an
+      automatically publishable default. Build one checksum-bound robustness
+      corpus from listened acceptable and rejected Character Story outputs,
+      including natural pauses, multi-second sentence gaps, missed EOS,
+      repetitions, discontinuities, noise and other audible artifacts. Extend
+      the current structural checks with evidence-scored artifact/content
+      signals, report every reason independently, and calibrate them against
+      the human labels before any new signal may reject production audio.
+      Route a non-passing MOSS line through the existing safe sentence repair
+      when eligible, then one bounded provider-local retry, then a typed
+      per-line XTTS or Pocket fallback; never weaken the strict silence gate,
+      publish a truncated prefix or regenerate an already approved WAV. The
+      direct listening verdict is that MOSS has the better voice identity, but
+      its audible artifacts and unintended pauses still make unchecked output
+      unacceptable.
 - [ ] When a suitable CUDA host becomes available, run MOSS Delay 8B on the
       installed checksum-bound 46-line corpus (22 unresolved MOSS failures, 12
       MOSS-to-Pocket recoveries and 12 MOSS controls). No CUDA host is currently

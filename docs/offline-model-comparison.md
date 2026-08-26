@@ -176,7 +176,13 @@ MOSS Local 4B won seven trials, XTTS won one, one trial had no preference and
 one marked both models unacceptable. The report therefore ranks MOSS first
 with preference rate 0.8333 against XTTS at 0.1667. XTTS's 46/46 technical
 completion does not overcome this human-quality result, so MOSS Local 4B stays
-the offline authoring default and approved WAVs are not regenerated. If Delay
-8B becomes available later, compare it only against MOSS in a new bounded
+the identity-preferred offline authoring primary and approved WAVs are not
+regenerated. This is not blanket publication authority. Later Character Story
+listening confirmed that its voice match can be preferable while unintended
+pauses and audible artifacts still ruin individual results. Every MOSS WAV must
+therefore pass the structural gate and the applicable human-risk sample; a
+failure is routed through a bounded repair or typed per-line fallback instead
+of being accepted because the model won the aggregate comparison. If Delay 8B
+becomes available later, compare it only against MOSS in a new bounded
 follow-up. The earlier `v1` session is bound to the pre-snapshot v2 reports and
 must not replace this evidence.
