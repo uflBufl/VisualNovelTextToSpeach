@@ -102,6 +102,18 @@ Follow the evidence-backed order and invariants in
       seven remaining Dobharchú outputs from this listen-through: the expanded
       real-story sample already found a cohort-level pacing/pause defect, so
       leave those exact items pending until the repair comparison below.
+- [ ] Review the 129 primary pending Narrator WAVs through published bundle
+      `current-character-story-primary-pending-risk-review-v1.json`. Its three
+      exact Centurion/MOSS/stable seed cohorts contain `88`, `25` and `16` WAVs
+      but require only 36 samples: all 27 advisory technical-attention items
+      plus one deterministic clean short/medium/long sample per seed cohort.
+      The reusable gate
+      `current-character-story-centurion-voice-quality-gate-v1.json` proves the
+      exact narrator/model/reference/profile controls match the previously
+      accepted Centurion baseline; it never approves a new story WAV. Expand a
+      cohort only after a heard sample exposes a substantive defect, then merge
+      only checksum-bound terminal decisions and rebuild the approved-only
+      manifest.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).

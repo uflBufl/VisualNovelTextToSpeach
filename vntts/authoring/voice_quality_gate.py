@@ -195,6 +195,11 @@ def _reusable_identity(directory, workspace, cohort_identity):
     voice_character = _required_text(
         cohort_identity.get("voice_character"), "Voice character"
     )
+    manifest_voice_character = voice_character
+    if normalize_character_name(voice_character) == "narrator":
+        manifest_voice_character = _required_text(
+            workspace.get("narrator_character"), "Workspace narrator character"
+        )
     manifest_config = workspace.get("voice_manifest")
     if not isinstance(manifest_config, dict) or not isinstance(
         manifest_config.get("path"), str
@@ -206,7 +211,7 @@ def _reusable_identity(directory, workspace, cohort_identity):
         _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
     except (ValueError, VoiceManifestError) as error:
         raise VoiceQualityGateError(str(error)) from error
-    wanted = normalize_character_name(voice_character)
+    wanted = normalize_character_name(manifest_voice_character)
     matches = [
         voice
         for voice in voices
@@ -218,7 +223,8 @@ def _reusable_identity(directory, workspace, cohort_identity):
     ]
     if len(matches) != 1 or not matches[0].references:
         raise VoiceQualityGateError(
-            f"Voice-quality variant is absent or ambiguous: {voice_character!r}"
+            "Voice-quality variant is absent or ambiguous: "
+            f"{manifest_voice_character!r}"
         )
     reference_hashes = []
     for reference in matches[0].references:

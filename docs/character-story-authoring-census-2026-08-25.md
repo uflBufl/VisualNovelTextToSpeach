@@ -38,6 +38,7 @@ experiments without mutating it.
 | `current-character-story-dobharchu-natural-expansion-v1.json` | `d0f42e5e...` | 2/4 cohorts complete, 17 exact samples/items left; current bundle `4fdab0cd...` | human review remains required |
 | `current-character-story-exhausted-primary-pocket-fallbacks-v1.json` | `3cf27ce5...` | 0/3 cohorts complete, 7 exact samples/items left | human review remains required |
 | `current-character-story-rhiannon-inline-pocket-fallback-v1.json` | `3b26c781...` | 0/1 cohort complete, 1 exact sample/item left; no progress checkpoint | human review remains required |
+| `current-character-story-primary-pending-risk-review-v1.json` | `3760c1ba...` | 0/3 cohorts complete, 36 exact samples covering 129 pending WAVs; no progress checkpoint | human review remains required |
 
 Older JSON documents rejected by the current cohort-bundle loader are legacy
 plans, decisions or superseded bundle schemas. Their presence does not reopen a
@@ -121,3 +122,36 @@ projection is 25 exact cohort items, two source-quality decisions, 129 pending
 primary WAVs needing a risk-based review plan, 15 failures requiring a new
 hypothesis and 164 missing-voice lines requiring a source or explicit fallback.
 No app-data decision, state, WAV, bundle progress or manifest was changed.
+
+## Read-only verification and Narrator risk plan, 2026-08-26
+
+A second full public reconciliation rebuilt the same report ID
+`8e49fc5171f4f1fd5bc07bc8c802d05f7126a8701654e24d7e1cf9d6a5836bbe`.
+The primary state remains exactly 197 approved, 129 generated/pending, 80
+generated/rejected and 15 failed; its approved-only manifest remains 197
+entries. The action projection is unchanged: 25 cohort-review items, two
+source-quality decisions, 129 primary pending WAVs, 15 new-hypothesis failures,
+164 missing-reference/fallback lines and five terminal conflicts. The terminal
+review still has zero of five decisions, so no resolution, successor or merge
+is authorized.
+
+The ordinary primary cohort planner produces three exact Narrator cohorts by
+seed: 88 seed-0 WAVs, 25 seed-1 WAVs and 16 seed-2 WAVs. Across them it selects
+all 27 technical-attention WAVs and nine deterministic clean controls, for 36
+required samples total and zero blocked items. An earlier accepted Narrator
+cohort has the same reusable controls once the synthetic `Narrator` role is
+resolved through the workspace's explicit `narrator_character=Centurion`:
+provider `moss-tts`, stable profile, the exact local model digest, speaker
+`reverse-1999-centurion-v2`, three ordered reference hashes, unapplied empty
+prompt and `short-trailing-ellipsis-v1` transform all match for seeds 0, 1 and
+2. The no-replace gate is
+`current-character-story-centurion-voice-quality-gate-v1.json`, gate ID
+`09720aa2f8fb10d0ac25c081bcdae1945deefa34190d96ad871ad40e6da236f5`.
+It proves only control compatibility and cannot approve later WAVs.
+
+The corresponding no-replace review publication is
+`current-character-story-primary-pending-risk-review-v1.json`, root bundle ID
+`3760c1ba0b251baf2f60d2cd30557f461cca45487b7aca4a1942124af8047205`.
+It starts at 0/3 cohorts, 36/36 samples remaining and no progress checkpoint.
+Publishing the gate and bundle did not run generation, apply any review
+decision, change state/WAV/manifest authority or publish a final pack.

@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import vntts.authoring.voice_quality_gate as voice_quality_gate_module
 from tests import test_authoring_cohort_review
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.cli import main as authoring_main
@@ -67,6 +68,120 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
         self.assertEqual(compatibility.differences, ())
         self.assertNotIn("seed", gate.document["identity"])
         self.assertIsInstance(gate.document["source_review"]["source_seed"], int)
+
+    def test_narrator_gate_resolves_explicit_workspace_character(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id, _plan, _decision = self.create_review(root)
+            state = json.loads(state_path.read_text())
+            state["items"][queue_id]["voice_character"] = "Narrator"
+            state_path.write_text(json.dumps(state, sort_keys=True))
+            workspace, _state, _queue_id, plan, decision = (
+                self.create_review_from_workspace(workspace, state_path, queue_id)
+            )
+
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            compatibility = inspect_voice_quality_gate(gate, workspace, queue_id)
+
+        self.assertEqual(gate.document["identity"]["voice_character"], "Narrator")
+        self.assertEqual(gate.document["identity"]["voice_speaker"], "Rhiannon")
+        self.assertEqual(compatibility.status, "control_match_story_sample_required")
+
+    def test_narrator_gate_detects_changed_workspace_character(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, state_path, queue_id, _plan, _decision = self.create_review(
+                root / "source"
+            )
+            state = json.loads(state_path.read_text())
+            state["items"][queue_id]["voice_character"] = "Narrator"
+            state_path.write_text(json.dumps(state, sort_keys=True))
+            source, _state, _queue_id, plan, decision = (
+                self.create_review_from_workspace(source, state_path, queue_id)
+            )
+            gate = build_voice_quality_gate(source, plan, decision)
+
+            fixture, imported, _created = create_test_workspace(root / "later")
+            manifest_path = Path(fixture["job"]["voice_manifest"])
+            manifest = json.loads(manifest_path.read_text())
+            other_reference = manifest_path.with_name("other.wav")
+            other_reference.write_bytes(b"other-reference")
+            manifest["voices"].append(
+                {
+                    "character": "Other Narrator",
+                    "speaker": "other-narrator",
+                    "reference": other_reference.name,
+                }
+            )
+            manifest_path.write_text(json.dumps(manifest))
+            later = create_resume_workspace(
+                imported,
+                root / "later-workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=manifest_path,
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Other Narrator",
+            )
+            later_state = later.directory / "generated-audio/generation-state.json"
+            later_document = json.loads(later_state.read_text())
+            later_queue_id, result = next(iter(later_document["items"].items()))
+            result.update(
+                {
+                    "status": "generated",
+                    "review_status": "pending_review",
+                    "provider": "moss-tts",
+                    "model": "model with spaces",
+                    "generation_profile": "stable",
+                    "voice_character": "Narrator",
+                    "prompt_applied": False,
+                    "synthesis_provenance_sha256": "b" * 64,
+                }
+            )
+            later_state.write_text(json.dumps(later_document, sort_keys=True))
+
+            compatibility = inspect_voice_quality_gate(
+                gate, later.directory, later_queue_id
+            )
+
+        self.assertEqual(compatibility.status, "new_review")
+        self.assertIn("voice_speaker", compatibility.differences)
+        self.assertIn("ordered_reference_sha256", compatibility.differences)
+
+    def test_narrator_gate_rejects_missing_or_ambiguous_workspace_character(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id, _plan, _decision = self.create_review(root)
+            state = json.loads(state_path.read_text())
+            state["items"][queue_id]["voice_character"] = "Narrator"
+            state_path.write_text(json.dumps(state, sort_keys=True))
+            workspace, _state, _queue_id, plan, decision = (
+                self.create_review_from_workspace(workspace, state_path, queue_id)
+            )
+            workspace_path = Path(workspace) / "workspace.json"
+            workspace_document = json.loads(workspace_path.read_text())
+
+            missing = dict(workspace_document)
+            missing["narrator_character"] = "Missing Narrator"
+            with self.assertRaisesRegex(VoiceQualityGateError, "absent or ambiguous"):
+                voice_quality_gate_module._reusable_identity(
+                    Path(workspace), missing, plan.document["cohorts"][0]["identity"]
+                )
+
+            manifest_path = Path(workspace) / "inputs/voice/manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            duplicate = dict(manifest["voices"][0])
+            duplicate["character"] = "Duplicate"
+            duplicate["aliases"] = [workspace_document["narrator_character"]]
+            manifest["voices"].append(duplicate)
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(VoiceQualityGateError, "Duplicate voice"):
+                voice_quality_gate_module._reusable_identity(
+                    Path(workspace),
+                    workspace_document,
+                    plan.document["cohorts"][0]["identity"],
+                )
 
     def test_reordered_references_require_new_review(self):
         with TemporaryDirectory() as directory:
