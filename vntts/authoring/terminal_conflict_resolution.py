@@ -273,6 +273,116 @@ def load_terminal_conflict_resolution_document(directory):
     return document
 
 
+def assert_terminal_conflict_resolution_source_authorities(directory):
+    """Recheck resolution, review, progress and every historical source CAS."""
+    root = _directory(directory, "terminal conflict resolution")
+    try:
+        resolution_snapshot = capture_authority_file(
+            root / "resolution.json", "terminal conflict resolution"
+        )
+        resolution = validate_terminal_conflict_resolution_document(
+            resolution_snapshot.json_document("terminal conflict resolution"), root
+        )
+        review_snapshot = capture_authority_file(
+            resolution["source_review"], "terminal conflict source review"
+        )
+        progress_snapshot = capture_authority_file(
+            resolution["source_progress"], "terminal conflict source progress"
+        )
+        if (
+            review_snapshot.sha256 != resolution["source_review_sha256"]
+            or progress_snapshot.sha256 != resolution["source_progress_sha256"]
+        ):
+            raise TerminalConflictResolutionError(
+                "Terminal conflict resolution sources changed"
+            )
+        review = validate_terminal_conflict_review_document(
+            review_snapshot.json_document("terminal conflict source review"),
+            review_snapshot.path.parent,
+        )
+        progress = validate_terminal_conflict_review_progress_document(
+            progress_snapshot.json_document("terminal conflict source progress"),
+            review,
+        )
+        if (
+            review["review_id"] != resolution["source_review_id"]
+            or review["source_report_id"] != resolution["source_report_id"]
+        ):
+            raise TerminalConflictResolutionError(
+                "Terminal conflict resolution source identity changed"
+            )
+        assert_terminal_conflict_review_source_authorities(review)
+        decisions = {item["case_id"]: item for item in progress["decisions"]}
+        cases = {item["case_id"]: item for item in review["cases"]}
+        selected_snapshots = []
+        for record in resolution["resolutions"]:
+            case = cases.get(record["case_id"])
+            decision = decisions.get(record["case_id"])
+            if (
+                case is None
+                or decision is None
+                or case["queue_id"] != record["queue_id"]
+                or case["line_id"] != record["line_id"]
+                or case["queue_record_sha256"] != record["queue_record_sha256"]
+                or case["text_sha256"] != record["text_sha256"]
+                or [item["candidate_id"] for item in case["candidates"]]
+                != record["candidate_ids"]
+            ):
+                raise TerminalConflictResolutionError(
+                    "Terminal conflict resolution no longer matches its review"
+                )
+            if decision["reviewed_at"] != record["reviewed_at"]:
+                raise TerminalConflictResolutionError(
+                    "Terminal conflict resolution decision timestamp changed"
+                )
+            if decision["decision"] == NEITHER_ACCEPTABLE:
+                if record["decision"] != NEITHER_ACCEPTABLE:
+                    raise TerminalConflictResolutionError(
+                        "Terminal conflict neither decision changed"
+                    )
+                continue
+            candidate = next(
+                (
+                    item
+                    for item in case["candidates"]
+                    if item["candidate_id"] == decision["decision"]
+                ),
+                None,
+            )
+            if (
+                candidate is None
+                or record["decision"] != "selected_candidate"
+                or record["selected_candidate_id"] != candidate["candidate_id"]
+                or record["selected_authority"] != candidate["authority"]
+                or record["selected_audio_sha256"] != candidate["audio_sha256"]
+            ):
+                raise TerminalConflictResolutionError(
+                    "Selected terminal conflict resolution changed"
+                )
+            selected_snapshot = capture_authority_file(
+                _contained_file(
+                    root, record["selected_audio"], "selected resolution WAV"
+                ),
+                "selected resolution WAV",
+                root=root,
+            )
+            if selected_snapshot.sha256 != record["selected_audio_sha256"]:
+                raise TerminalConflictResolutionError(
+                    "Selected terminal conflict resolution WAV changed"
+                )
+            selected_snapshots.append(selected_snapshot)
+        assert_authority_snapshot(resolution_snapshot, "terminal conflict resolution")
+        assert_authority_snapshot(review_snapshot, "terminal conflict source review")
+        assert_authority_snapshot(
+            progress_snapshot, "terminal conflict source progress"
+        )
+        for snapshot in selected_snapshots:
+            assert_authority_snapshot(snapshot, "selected resolution WAV")
+    except (AuthoringAuthorityError, TerminalConflictReviewError) as error:
+        raise TerminalConflictResolutionError(str(error)) from error
+    return resolution
+
+
 def validate_terminal_conflict_resolution_document(document, directory):
     value = copy.deepcopy(document)
     fields = {
@@ -554,6 +664,7 @@ __all__ = [
     "TERMINAL_CONFLICT_RESOLUTION_VERSION",
     "TerminalConflictResolution",
     "TerminalConflictResolutionError",
+    "assert_terminal_conflict_resolution_source_authorities",
     "load_terminal_conflict_resolution",
     "load_terminal_conflict_resolution_document",
     "publish_terminal_conflict_resolution",

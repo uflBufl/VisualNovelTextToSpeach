@@ -51,8 +51,22 @@ progress payloads, rechecks every source `ReviewAuthority`, and copies only the
 selected candidate WAVs into a new no-replace publication. A `neither` decision
 is retained explicitly with no selected WAV and the policy `new repair
 hypothesis required`. The resolution publication still does not rewrite a
-workspace or hide a historical occurrence. Successor reconciliation and a
-config-addressed workspace copy remain later, separately validated phases.
+workspace or hide a historical occurrence.
+
+`publish_terminal_conflict_successor` is the second boundary. It accepts only
+the exact reconciliation report named by the resolution, validates both from
+one captured byte snapshot, rechecks the review, progress, selected resolution
+WAVs and all historical workspace authorities, and publishes a no-replace
+`successor.json`. Every original occurrence remains in the successor ledger.
+Only the exact matching resolution adds one explicit next action:
+
+- selected approved audio -> `apply_selected_approved_outcome`;
+- selected rejected audio -> `retain_explicit_rejection`; or
+- neither acceptable -> `new_repair_hypothesis_required`.
+
+The successor projection does not mutate a workspace, suppress historical
+authority or make a `neither` case publishable. A config-addressed successor
+workspace copy remains the final, separately validated application phase.
 
 ## Verified current Character Story bundle
 
