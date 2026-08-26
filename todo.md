@@ -11,23 +11,15 @@ come from the current checksum-bound state, bundle and manifest authorities.
 The reconciled baseline and exact remaining identities are recorded in
 [`docs/character-story-authoring-census-2026-08-25.md`](docs/character-story-authoring-census-2026-08-25.md).
 
-- [ ] Resolve the five exact cross-workspace terminal conflicts in the current
-      original-scope reconciliation report. Each has identical queue-record and
-      text identity but an older rejected authority and one or more newer
-      approved authorities: `314602:92`, `314602:110`, `314608:27`,
-      `314608:35`, and `314608:71`. Present the immutable WAV evidence as a
-      bounded decision set and require an explicit human winner for each; do
-      not choose by workspace age, filename, or majority. Publish a successor
-      report only after the winning authorities have been recorded through the
-      normal review workflow. Implement this as a versioned self-contained
-      conflict-review artifact: capture the exact reconciliation bytes, collapse
-      duplicate occurrences only when WAV and terminal authority are identical,
-      copy and hash every distinct WAV, expose blind candidate playback plus an
-      explicit `neither acceptable` choice, and persist decisions in a separate
-      atomic progress document. Revalidate report, workspace state, queue and WAV
-      authority before publication and again before accepting a decision. Do not
-      mutate a workspace or suppress a reconciliation conflict in this slice;
-      applying the five human choices remains a separate fail-closed transaction.
+- [ ] Review the five exact cross-workspace terminal conflicts in the published
+      app-data bundle
+      `authoring/review-bundles/current-character-story-terminal-conflicts-v1`.
+      Hear both blind candidates for `314602:92`, `314602:110`, `314608:27`,
+      `314608:35` and `314608:71`, then choose one candidate or explicitly mark
+      neither acceptable. After all five decisions exist, apply them through a
+      separate fail-closed transaction and publish a successor reconciliation.
+      Do not infer a winner from workspace age, filename, majority or the newer
+      approval, and do not mutate or suppress the historical source authorities.
 - [ ] Complete the real long-pause comparison pipeline: compare independent
       sentence segmentation with the center-only silence-compression candidate
       on an exact matched corpus, preserve equal text and speaker/control

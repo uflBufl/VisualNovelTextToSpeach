@@ -44,3 +44,32 @@ rewrite a workspace or suppress conflicts in a later reconciliation. Applying
 completed choices must be a separate fail-closed transaction that copies the
 selected exact outcome through the normal review/merge workflow and then
 publishes a successor reconciliation report.
+
+## Verified current Character Story bundle
+
+On 2026-08-26 the current original-scope reconciliation was published as the
+app-data review bundle
+`authoring/review-bundles/current-character-story-terminal-conflicts-v1`.
+Its immutable identity is
+`f9727c91128f4c56193eaa082830837eff41882a20cb5cf070df72316b1b39a3`.
+It contains five cases, exactly two candidates per case and ten copied WAVs:
+
+- `reverse1999:314602:110`;
+- `reverse1999:314602:92`;
+- `reverse1999:314608:27`;
+- `reverse1999:314608:35`; and
+- `reverse1999:314608:71`.
+
+The immutable bundle tree digest is
+`f7e6555052cf9b06d9acc4bbc8e4428354b2b35ac5cbc758c0389284fe39f143`.
+Repeated publication returned `created=false` with the same review identity.
+No progress document exists before human review. The source reconciliation
+remains SHA-256
+`60bf25a3d163c534392947203ab3995439872593ede53b8a7a876b36a2379b16`,
+and the four referenced workspace state hashes remained unchanged after both
+publication checks.
+
+The real-data acceptance measured one-time publication at 26.64 seconds,
+candidate loading at 0.087 seconds and a full source-authority decision save at
+0.27 seconds. Publication is an operator/setup operation; playback and decision
+saves are the interactive path, and saving stays outside the Qt thread.
