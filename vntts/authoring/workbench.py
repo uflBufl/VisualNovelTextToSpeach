@@ -98,6 +98,9 @@ from vntts.voices import (
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
 WORKSPACE_VERSION = 1
+REVIEW_ATTENTION_POLICY_VERSION = 2
+REVIEW_NOTABLE_SILENCE_RATIO = 0.30
+REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.0
 _IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
@@ -1304,9 +1307,15 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
             flags.append("slow pace")
         elif words_per_minute > 200:
             flags.append("fast pace")
-    if isinstance(silence_ratio, (int, float)) and silence_ratio >= 0.15:
+    if (
+        isinstance(silence_ratio, (int, float))
+        and silence_ratio >= REVIEW_NOTABLE_SILENCE_RATIO
+    ):
         flags.append("notable silence")
-    if isinstance(internal_silence, (int, float)) and internal_silence >= 0.5:
+    if (
+        isinstance(internal_silence, (int, float))
+        and internal_silence >= REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS
+    ):
         flags.append("notable pause")
     return duration, words_per_minute, peak, tuple(flags)
 

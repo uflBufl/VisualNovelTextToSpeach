@@ -694,6 +694,14 @@ sampled. Clean items are sampled deterministically from short (up to 6 words),
 medium (7-15) and long (16 or more) buckets; increasing
 `--clean-samples-per-bucket` produces a new plan identity.
 
+New plans bind review-attention policy version 2: silence ratio `>= 0.30` adds
+`notable silence`, and longest internal silence `>= 1.0 s` adds `notable
+pause`. These are advisory sample-selection signals, not rejection or
+publication limits. Version-1 plans remain readable with their original
+implicit `0.15`/`0.5 s` boundaries, so a published bundle never changes beneath
+an operator. The evidence and unchanged strict safety limits are documented in
+[`review-attention-silence-policy.md`](review-attention-silence-policy.md).
+
 Use repeated `--queue-id QUEUE_ID` arguments when a bounded generation run
 produced a small exact subset inside a workspace that also contains older
 pending outcomes. The selection is part of the plan identity, every selected ID

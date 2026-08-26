@@ -51,6 +51,14 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(first.document["schema_version"], 1)
+        self.assertEqual(first.document["policy"]["schema_version"], 2)
+        self.assertEqual(
+            first.document["policy"]["attention_thresholds"],
+            {
+                "silence_ratio_at_least": 0.3,
+                "internal_pause_seconds_at_least": 1.0,
+            },
+        )
         self.assertEqual(first.document["cohort_count"], 1)
         self.assertEqual(first.document["pending_item_count"], 1)
         self.assertEqual(first.document["sample_item_count"], 1)
@@ -60,6 +68,39 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertTrue(cohort["items"][0]["technical_flags"])
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
+
+    def test_legacy_policy_v1_plan_remains_readable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id = self.create_pending_workspace(root)
+            document = deepcopy(build_cohort_review_plan(workspace).document)
+            document["policy"]["schema_version"] = 1
+            document["policy"].pop("attention_thresholds")
+            document["plan_id"] = _canonical_sha256(
+                {key: value for key, value in document.items() if key != "plan_id"}
+            )
+            path = root / "legacy-plan.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            loaded = load_cohort_review_plan(path)
+
+        self.assertEqual(loaded.document["policy"]["schema_version"], 1)
+        self.assertNotIn("attention_thresholds", loaded.document["policy"])
+
+    def test_policy_v2_threshold_tamper_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id = self.create_pending_workspace(root)
+            document = deepcopy(build_cohort_review_plan(workspace).document)
+            document["policy"]["attention_thresholds"]["silence_ratio_at_least"] = 0.15
+            document["plan_id"] = _canonical_sha256(
+                {key: value for key, value in document.items() if key != "plan_id"}
+            )
+            path = root / "tampered-plan.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(CohortReviewError, "thresholds are invalid"):
+                load_cohort_review_plan(path)
 
     def test_terminal_item_is_not_planned_again(self):
         with TemporaryDirectory() as directory:

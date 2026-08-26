@@ -423,11 +423,13 @@ The accepted Pocket evidence also bounds the review-only silence heuristic.
 The seven accepted WAVs include silence ratios up to `0.2576` and longest
 internal silent spans up to `1.12` seconds; the operator explicitly reported
 that at least one `notable silence` label did not correspond to an abnormal
-audible pause. These measurements remain conservative sample-selection signals,
-not rejection verdicts. The UI therefore presents them as advisory and says
-that listening decides. The stricter publication safety gate is unchanged.
-Changing risk thresholds still requires matched rejected evidence rather than
-overfitting to this all-accepted cohort.
+audible pause. Together with the completed Centurion review and rejected
+multi-second Dobharchu evidence, this calibrated review-attention policy version
+2 to `0.30` silence ratio and `1.0 s` internal pause. The accepted `1.12 s`
+Pocket outlier remains intentionally selected for listening. These measurements
+remain advisory sample-selection signals, not rejection verdicts, and the
+stricter publication safety gate is unchanged. See
+[`review-attention-silence-policy.md`](review-attention-silence-policy.md).
 
 The next exact MOSS repair successor is
 `resume-395a5e5eec0327a3a793b66d-25dc94e1e521dab8`. It selected only four

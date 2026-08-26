@@ -17,6 +17,9 @@ from vntts.authoring.bulk_generation import (
     _review_generation_cohort,
 )
 from vntts.authoring.workbench import (
+    REVIEW_ATTENTION_POLICY_VERSION,
+    REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,
+    REVIEW_NOTABLE_SILENCE_RATIO,
     WORKSPACE_SCHEMA,
     WORKSPACE_VERSION,
     AuthoringWorkbenchError,
@@ -28,7 +31,8 @@ from vntts.authoring.workbench import (
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
-COHORT_REVIEW_POLICY_VERSION = 1
+COHORT_REVIEW_POLICY_VERSION = REVIEW_ATTENTION_POLICY_VERSION
+SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2})
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
 COHORT_REVIEW_DECISION_VERSION = 1
 COHORT_REVIEW_PROVENANCE_SCHEMA = "vntts.authoring-cohort-review-provenance"
@@ -233,6 +237,10 @@ def build_cohort_review_plan(
             "medium_max_words": 15,
         },
         "attention_rule": "all technical flags",
+        "attention_thresholds": {
+            "silence_ratio_at_least": REVIEW_NOTABLE_SILENCE_RATIO,
+            "internal_pause_seconds_at_least": (REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS),
+        },
     }
     if selected_queue_ids is not None:
         policy["selected_queue_ids"] = list(selected_queue_ids)
@@ -686,8 +694,22 @@ def _plan_identity_and_document(document):
     policy = document.get("policy")
     if not isinstance(policy, dict):
         raise CohortReviewError("Cohort review plan policy must be an object")
-    if policy.get("schema_version") != COHORT_REVIEW_POLICY_VERSION:
+    policy_version = policy.get("schema_version")
+    if policy_version not in SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS:
         raise CohortReviewError("Cohort review plan policy version is unsupported")
+    if policy.get("attention_rule") != "all technical flags":
+        raise CohortReviewError("Cohort review plan attention rule is invalid")
+    thresholds = policy.get("attention_thresholds")
+    if policy_version == 1:
+        if thresholds is not None:
+            raise CohortReviewError(
+                "Legacy cohort review plan thresholds must be implicit"
+            )
+    elif thresholds != {
+        "silence_ratio_at_least": REVIEW_NOTABLE_SILENCE_RATIO,
+        "internal_pause_seconds_at_least": (REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS),
+    }:
+        raise CohortReviewError("Cohort review plan attention thresholds are invalid")
     clean_samples = policy.get("clean_samples_per_bucket")
     if (
         not isinstance(clean_samples, int)
@@ -776,7 +798,10 @@ def _validated_decision_document(document):
     if decision not in {"accepted", "rejected", "expand"}:
         raise CohortReviewError("Cohort review decision is unsupported")
     policy = document.get("plan_policy")
-    if not isinstance(policy, dict) or policy.get("schema_version") != 1:
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema_version") not in SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS
+    ):
         raise CohortReviewError("Cohort review decision policy is invalid")
     current_samples = policy.get("clean_samples_per_bucket")
     if (

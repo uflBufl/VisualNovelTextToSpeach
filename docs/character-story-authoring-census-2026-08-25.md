@@ -38,7 +38,7 @@ experiments without mutating it.
 | `current-character-story-dobharchu-natural-expansion-v1.json` | `d0f42e5e...` | 2/4 cohorts complete, 17 exact samples/items left; current bundle `4fdab0cd...` | human review remains required |
 | `current-character-story-exhausted-primary-pocket-fallbacks-v1.json` | `3cf27ce5...` | 0/3 cohorts complete, 7 exact samples/items left | human review remains required |
 | `current-character-story-rhiannon-inline-pocket-fallback-v1.json` | `3b26c781...` | 0/1 cohort complete, 1 exact sample/item left; no progress checkpoint | human review remains required |
-| `current-character-story-primary-pending-risk-review-v1.json` | `3760c1ba...` | 0/3 cohorts complete, 36 exact samples covering 129 pending WAVs; no progress checkpoint | human review remains required |
+| `current-character-story-primary-pending-risk-review-v1.json` | `3760c1ba...` | 3/3 cohorts complete, 0 samples left; all 129 exact WAVs accepted | retain as completed evidence |
 
 Older JSON documents rejected by the current cohort-bundle loader are legacy
 plans, decisions or superseded bundle schemas. Their presence does not reopen a
@@ -155,3 +155,18 @@ The corresponding no-replace review publication is
 It starts at 0/3 cohorts, 36/36 samples remaining and no progress checkpoint.
 Publishing the gate and bundle did not run generation, apply any review
 decision, change state/WAV/manifest authority or publish a final pack.
+
+## Completed primary Narrator review, 2026-08-27
+
+The current checksum-bound resume loader reports all three Centurion/MOSS/stable
+cohorts complete and zero samples or pending items left. Their 129 exact WAVs
+were accepted through the published bundle. The source workspace now contains
+326 approved items, 80 explicit rejections and 15 failures; its approved-only
+manifest contains exactly 326 entries. The authoritative state SHA-256 is
+`2cdd8a18b4826f423bad7e06b719b07cd6b6a83e4bbd6ec38cf5e93893407f4e`.
+
+The original version-1 plan remains immutable. Review-attention policy version
+2 reduces its 24 silence/pause advisory selections to zero when projected
+read-only from the same measurements, while leaving the strict synthesis gate
+unchanged. The calibration and compatibility rules are recorded in
+[`review-attention-silence-policy.md`](review-attention-silence-policy.md).

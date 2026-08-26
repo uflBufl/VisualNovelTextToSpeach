@@ -102,21 +102,6 @@ Follow the evidence-backed order and invariants in
       seven remaining Dobharchú outputs from this listen-through: the expanded
       real-story sample already found a cohort-level pacing/pause defect, so
       leave those exact items pending until the repair comparison below.
-- [ ] Review the 129 primary pending Narrator WAVs through published bundle
-      `current-character-story-primary-pending-risk-review-v1.json`. Its three
-      exact Centurion/MOSS/stable seed cohorts contain `88`, `25` and `16` WAVs
-      but require only 36 samples: all 27 advisory technical-attention items
-      plus one deterministic clean short/medium/long sample per seed cohort.
-      The reusable gate
-      `current-character-story-centurion-voice-quality-gate-v1.json` proves the
-      exact narrator/model/reference/profile controls match the previously
-      accepted Centurion baseline; it never approves a new story WAV. Expand a
-      cohort only after a heard sample exposes a substantive defect, then merge
-      only checksum-bound terminal decisions and rebuild the approved-only
-      manifest. Open the bundle with `vntts-review-bundle BUNDLE.json
-      --quality-gate GATE.json`; the persistent baseline banner must identify
-      accepted Centurion and the three cohorts must remain line-review
-      decisions rather than another narrator-choice task.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
@@ -190,17 +175,6 @@ Follow the evidence-backed order and invariants in
       any new WAVs through a checksum-bound bundle, merge only terminal
       decisions, and keep generation, review and final-pack publication as
       separate transactions.
-- [ ] Calibrate review-only silence-risk thresholds using matched accepted and
-      rejected evidence. The completed seven-WAV Pocket bundle was all accepted,
-      including silence ratios up to `0.2576` and internal spans up to `1.12`
-      seconds, so it proves the old label can be a false-positive verdict but
-      cannot by itself identify a safe new threshold. Keep technical flags as
-      advisory sample selectors and preserve the strict publication gate. Once
-      a checksum-bound rejected long-silence control exists for the same
-      provider/profile, compare features, version any threshold change and
-      retain regressions that distinguish natural accepted pauses from genuine
-      long internal silence.
-
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

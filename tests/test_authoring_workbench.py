@@ -2128,7 +2128,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(peak, 0.99)
         self.assertEqual(
             flags,
-            ("near clipping", "slow pace", "notable silence", "notable pause"),
+            ("near clipping", "slow pace"),
         )
         item = SimpleNamespace(
             duration_seconds=6.0,
@@ -2141,7 +2141,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         summary = workbench_module.review_technical_summary(item)
         self.assertIn("advisory measurements (listen to decide):", summary)
-        self.assertIn("notable silence", summary)
+        self.assertNotIn("notable silence", summary)
         self.assertEqual(
             workbench_module._review_technical_metrics({}, "No WAV"),
             (None, None, None, ()),
@@ -2223,6 +2223,39 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 SimpleNamespace(speaker="???", voice_character="Hero"), {}
             ),
             "Narrator",
+        )
+
+    def test_review_silence_attention_policy_v2_boundaries(self):
+        def flags(silence_ratio, internal_pause):
+            result = {
+                "quality": {"duration_seconds": 1.5, "peak": 0.2},
+                "speech_quality": {
+                    "silence_ratio": silence_ratio,
+                    "longest_internal_silence_seconds": internal_pause,
+                },
+            }
+            return workbench_module._review_technical_metrics(
+                result, "Three deliberate words"
+            )[3]
+
+        self.assertEqual(workbench_module.REVIEW_ATTENTION_POLICY_VERSION, 2)
+        self.assertEqual(flags(0.2245, 0.96), ())
+        self.assertEqual(flags(0.2999, 0.999), ())
+        self.assertEqual(flags(0.30, 1.0), ("notable silence", "notable pause"))
+        self.assertEqual(flags(0.40, 2.4), ("notable silence", "notable pause"))
+
+        self.assertEqual(bulk_generation_module.MAX_SILENCE_RATIO, 0.5)
+        self.assertEqual(
+            bulk_generation_module.MAX_INTERNAL_SILENCE_SECONDS,
+            1.2,
+        )
+        self.assertEqual(
+            bulk_generation_module.MAX_LEADING_SILENCE_SECONDS,
+            0.8,
+        )
+        self.assertEqual(
+            bulk_generation_module.MAX_TRAILING_SILENCE_SECONDS,
+            0.8,
         )
 
     def test_legacy_review_metrics_remeasure_digest_bound_nonzero_pause(self):
