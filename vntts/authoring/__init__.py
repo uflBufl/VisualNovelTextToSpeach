@@ -245,6 +245,15 @@ from vntts.authoring.reference_selection import (
     select_voice_reference,
     validate_reference_selection_provenance,
 )
+from vntts.authoring.robustness_asr import (
+    SPEECH_ROBUSTNESS_ASR_SCHEMA,
+    SPEECH_ROBUSTNESS_ASR_VERSION,
+    SpeechRobustnessAsrError,
+    SpeechRobustnessAsrReport,
+    build_speech_robustness_asr_report,
+    compare_speech_transcript,
+    write_speech_robustness_asr_report,
+)
 from vntts.authoring.robustness_corpus import (
     SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
     SPEECH_ROBUSTNESS_CORPUS_SCHEMA,
@@ -403,6 +412,10 @@ from vntts.authoring.workbench import (
 )
 
 __all__ = [
+    "SPEECH_ROBUSTNESS_ASR_SCHEMA",
+    "SPEECH_ROBUSTNESS_ASR_VERSION",
+    "SpeechRobustnessAsrError",
+    "SpeechRobustnessAsrReport",
     "SPEECH_ROBUSTNESS_ANALYSIS_VERSION",
     "SPEECH_ROBUSTNESS_CORPUS_SCHEMA",
     "SPEECH_ROBUSTNESS_CORPUS_VERSION",
@@ -557,6 +570,7 @@ __all__ = [
     "benchmark_model_variants",
     "benchmark_renderer",
     "build_benchmark_corpus",
+    "build_speech_robustness_asr_report",
     "build_authoring_reconciliation",
     "build_cohort_review_decision",
     "build_cohort_review_bundle",
@@ -633,6 +647,7 @@ __all__ = [
     "is_spoken_queue_item",
     "inline_sentence_pause_prompt",
     "compress_single_sentence_boundary_silence",
+    "compare_speech_transcript",
     "next_pending_trial",
     "plan_generation_queue",
     "portrait_identity_by_variant",
@@ -714,6 +729,7 @@ __all__ = [
     "write_portrait_alias_decision",
     "write_portrait_alias_plan",
     "write_specialist_failure_plan",
+    "write_speech_robustness_asr_report",
     "write_voice_quality_gate",
     "write_voice_repair_comparison_plan",
     "assert_authority_snapshot",

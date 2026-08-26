@@ -17,6 +17,12 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_plan,
     write_cohort_review_decision,
 )
+from vntts.authoring.robustness_asr import (
+    SpeechRobustnessAsrError,
+    build_speech_robustness_asr_report,
+    compare_speech_transcript,
+    write_speech_robustness_asr_report,
+)
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
     analyze_speech_robustness_bytes,
@@ -79,6 +85,15 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_word_comparison_reports_insertions_deletions_and_substitutions(self):
+        comparison = compare_speech_transcript(
+            "The barrier begins to crack", "The barrier begins and cracks again"
+        )
+
+        self.assertEqual(comparison["expected_word_count"], 5)
+        self.assertGreater(comparison["distance"], 0)
+        self.assertGreater(comparison["insertions"], 0)
+
     def test_exact_active_pcm_repetition_is_diagnostic_only(self):
         rng = np.random.default_rng(42)
         segment = rng.integers(-8_000, 8_000, size=12 * 320, dtype=np.int16)
@@ -214,6 +229,53 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
         self.assertEqual(check_code, 0)
         self.assertEqual(json.loads(published.getvalue())["sample_count"], 1)
         self.assertEqual(json.loads(checked.getvalue())["sample_count"], 1)
+
+    def test_asr_report_is_model_and_corpus_bound_and_no_replace(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "asr-model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"exact-model")
+            progress = root / "asr-progress.json"
+
+            report = build_speech_robustness_asr_report(
+                corpus,
+                model,
+                transcriber=lambda _payload: "Earlier failure",
+                progress_path=progress,
+            )
+            output = root / "asr-report.json"
+            write_speech_robustness_asr_report(report, output)
+
+            self.assertEqual(report.document["corpus_schema_version"], 2)
+            self.assertEqual(report.document["summary"]["sample_count"], 1)
+            self.assertTrue(report.document["policy"]["diagnostic_only"])
+            self.assertGreater(
+                report.document["records"][0]["comparison"]["word_error_rate"], 0
+            )
+            resumed = build_speech_robustness_asr_report(
+                corpus,
+                model,
+                transcriber=lambda _payload: self.fail("completed sample reran"),
+                progress_path=progress,
+            )
+            self.assertEqual(resumed.document, report.document)
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "output exists"):
+                write_speech_robustness_asr_report(report, output)
+            with self.assertRaisesRegex(
+                SpeechRobustnessAsrError, "outside the immutable corpus"
+            ):
+                write_speech_robustness_asr_report(
+                    report, corpus / "forbidden-report.json"
+                )
+            with self.assertRaisesRegex(
+                SpeechRobustnessAsrError, "validated corpus authority"
+            ):
+                write_speech_robustness_asr_report(report.to_dict(), root / "raw.json")
 
 
 if __name__ == "__main__":

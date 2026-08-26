@@ -14,7 +14,7 @@ reads it aloud with Pocket TTS or another configured speech engine.
 Put the Tesseract executable in `PATH`, or configure its location in code:
 
 ```py
-pytesseract.pytesseract.tesseract_cmd = r'<path-to-tesseract>'
+pytesseract.pytesseract.tesseract_cmd = r"<path-to-tesseract>"
 ```
 
 Install the external tools on macOS with:
@@ -499,6 +499,9 @@ self-contained, checksum-bound speech robustness corpus with
 `speech-robustness-check`. Its waveform signals are diagnostic only until they
 are calibrated against the human labels; see the
 [speech robustness corpus contract](docs/speech-robustness-corpus.md).
+Corpus v2 binds exact requested text, and `speech-robustness-asr` can produce a
+resumable offline Whisper comparison without granting ASR automatic rejection
+authority.
 
 For a large history with parallel repair workspaces and retained old review
 documents, `vntts-authoring-reconcile` produces a no-overwrite, read-only

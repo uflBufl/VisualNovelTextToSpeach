@@ -121,6 +121,11 @@ from vntts.authoring.reference_selection import (
     inspect_voice_reference_candidates,
     select_voice_reference,
 )
+from vntts.authoring.robustness_asr import (
+    SpeechRobustnessAsrError,
+    build_speech_robustness_asr_report,
+    write_speech_robustness_asr_report,
+)
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
     load_speech_robustness_corpus,
@@ -576,6 +581,19 @@ def create_parser():
         help="Validate a published speech robustness corpus and every artifact",
     )
     robustness_check.add_argument("directory", type=Path)
+    robustness_asr = subparsers.add_parser(
+        "speech-robustness-asr",
+        help="Compare a v2 robustness corpus with one local ASR model",
+    )
+    robustness_asr.add_argument("corpus", type=Path)
+    robustness_asr.add_argument("model", type=Path)
+    robustness_asr.add_argument("--output", type=Path, required=True)
+    robustness_asr.add_argument("--device", default="cpu")
+    robustness_asr.add_argument(
+        "--progress",
+        type=Path,
+        help="Checksum-bound resumable per-sample progress document",
+    )
     specialist_failures = subparsers.add_parser(
         "specialist-failure-plan",
         help="Cluster terminal repair failures into checksum-bound next actions",
@@ -1355,6 +1373,42 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "speech-robustness-asr":
+            corpus_root = arguments.corpus.expanduser().resolve()
+            output = arguments.output.expanduser().resolve()
+            try:
+                output.relative_to(corpus_root)
+            except ValueError:
+                pass
+            else:
+                raise SpeechRobustnessAsrError(
+                    "ASR report must be outside the immutable corpus directory"
+                )
+            report = build_speech_robustness_asr_report(
+                arguments.corpus,
+                arguments.model,
+                device=arguments.device,
+                progress_path=(
+                    arguments.progress
+                    if arguments.progress is not None
+                    else arguments.output.with_suffix(
+                        arguments.output.suffix + ".progress.json"
+                    )
+                ),
+            )
+            write_speech_robustness_asr_report(report, output)
+            print(
+                json.dumps(
+                    {
+                        "output": str(output),
+                        "report_id": report.report_id,
+                        "summary": report.document["summary"],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "specialist-failure-plan":
             plan = build_specialist_failure_plan(arguments.workspace)
             if arguments.output is not None:
@@ -1848,6 +1902,7 @@ def main(argv=None):
         ReferenceRenderComparisonError,
         SilenceComparisonError,
         SpeechRobustnessCorpusError,
+        SpeechRobustnessAsrError,
         SourceReferenceReviewError,
         SourceReferenceQualityError,
         SourceReferenceBindingError,

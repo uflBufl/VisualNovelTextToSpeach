@@ -8,7 +8,9 @@ allowed to affect publication.
 ## Contract
 
 `vntts-pregenerate speech-robustness-corpus` consumes immutable cohort decision
-documents and optional stable failure workspaces. For every explicit
+documents and optional stable failure workspaces. Corpus v2 also binds exact
+requested queue text, speaker, voice character and queue SHA-256 for
+content/timing evaluation. For every explicit
 `acceptable` or `bad` assessment it binds:
 
 - the exact workspace, queue item, state item, WAV SHA-256 and decision ID;
@@ -60,6 +62,21 @@ uv run --no-sync vntts-pregenerate speech-robustness-check \
 An identical republish is idempotent. Changed source authority or a conflicting
 destination fails closed.
 
+Run the optional local, offline ASR comparison with an explicit model snapshot:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync vntts-pregenerate speech-robustness-asr \
+  /path/to/v2-corpus /path/to/local-whisper-snapshot \
+  --output /path/to/asr-report.json --device cpu
+```
+
+The command maintains a checksum-bound `.progress.json` beside the requested
+output and resumes its exact completed prefix after interruption. The final
+report records model-tree SHA-256 plus word substitutions, insertions,
+deletions and WER. ASR errors are evidence-scored diagnostics, never direct
+publication authority.
+
 ## Current Character Story baseline
 
 The first real publication on 2026-08-27 produced corpus
@@ -84,9 +101,42 @@ discontinuity signals. This is a useful negative result: simply tightening
 waveform thresholds would reject good audio while leaving the heard artifacts
 untouched.
 
-The next detector work therefore needs content/timing evidence, including
-repetition or dropped-content comparison and pause placement relative to the
-requested text. It must report each reason separately and remain diagnostic
-until calibrated. The safe routing sequence remains MOSS candidate -> eligible
-sentence repair -> one bounded provider-local retry -> typed per-line XTTS or
-Pocket fallback. Approved WAVs are immutable and excluded from regeneration.
+Corpus v2
+`fae25dc41b80c58a09644fec2b514fce3e68e9f8306113e2c4f49b657f783925`
+adds requested text and proportional word-position timing diagnostics. That
+initial heuristic marked 9 fast and 2 unmatched-pause candidates; all 11 were
+human-acceptable and none of the 13 human-bad WAVs were marked. It therefore
+also remains diagnostic-only and explicitly identifies its alignment as
+`proportional_word_position_without_asr` rather than claiming forced alignment.
+
+The first complete local Whisper `tiny.en` pass produced immutable report
+`124cce4df545bfa0d4c4c62b4ef7e8a57738b88a3f074e7b908bd0b8f17a49d9`
+for all 178 WAVs. Its exact report and resumable progress authority live outside
+the corpus under `authoring/robustness-reports`. The model was loaded from one
+offline tree whose SHA-256 is recorded in the report; CPU was used because MPS
+was unavailable in the active runtime.
+
+| Provider and human verdict | Count | Median WER | Mean WER |
+| --- | ---: | ---: | ---: |
+| MOSS acceptable | 62 | 10.642857 | 13.176252 |
+| MOSS bad | 5 | 3.208333 | 6.970581 |
+| Pocket acceptable | 103 | 0.041667 | 0.076901 |
+| Pocket bad | 8 | 0.218750 | 0.367188 |
+
+This is another negative production-gate result. Whisper frequently expanded
+accepted MOSS audio into long repeated transcripts. A post-hoc MOSS threshold
+of WER >= 2 found 4/5 bad WAVs but also falsely marked 43/62 accepted WAVs. For
+Pocket, the best exploratory WER >= 0.1875 split found 5/8 bad WAVs and falsely
+marked 12/103 accepted WAVs, but the threshold was selected on the same tiny
+eight-bad-WAV sample and three human-bad Pocket WAVs had exact transcripts.
+Those exact-transcript failures demonstrate that content ASR cannot detect
+every pacing, timbre or artifact defect even when transcription succeeds.
+Neither threshold is production authority.
+
+The next detector work needs explicit human defect reasons and a larger bad
+sample before evaluating a stronger ASR/forced aligner on a held-out split.
+Pacing, repetition, truncation, pronunciation, timbre/artifact and speaker
+identity must remain separate reasons. The safe routing sequence remains MOSS
+candidate -> eligible sentence repair -> one bounded provider-local retry ->
+typed per-line XTTS or Pocket fallback. Approved WAVs are immutable and
+excluded from regeneration.

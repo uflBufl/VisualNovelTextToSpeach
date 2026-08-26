@@ -260,21 +260,23 @@ while one-sentence controls remained below 0.25 seconds.
 
 - [ ] Make MOSS an identity-preferred but quality-routed primary rather than an
       automatically publishable default. Use the published checksum-bound
-      human-labelled robustness corpus to add content/timing signals for
-      repeated or dropped speech and text-relative pause placement. Report
-      every reason independently and calibrate it against the human labels
-      before any new signal may reject production audio; the initial waveform
-      signals intentionally remain diagnostic because all five clipping
-      candidates were human-acceptable while none of 13 human-bad WAVs fired a
-      new signal. Route a non-passing MOSS line through the existing safe
-      sentence repair when eligible, then one bounded provider-local retry,
-      then a typed per-line XTTS or Pocket fallback; never weaken the strict
-      silence gate, publish a truncated prefix or regenerate an already
-      approved WAV. The direct listening verdict is that MOSS has the better
-      voice identity, but its audible artifacts and unintended pauses still
-      make unchecked output unacceptable. The corpus contract, commands and
-      178-WAV/15-failure baseline are durable in
-      `docs/speech-robustness-corpus.md`.
+      human-labelled robustness corpus, but do not promote any current waveform,
+      proportional-pause or Whisper signal into a reject gate: all three failed
+      calibration, including reversed/noisy MOSS WER separation. Extend future
+      review evidence with explicit independent defect reasons for pacing,
+      repetition, truncation, pronunciation, timbre/artifact and speaker
+      identity. Accumulate enough bad examples per provider/reason to reserve a
+      held-out validation split, then compare a stronger local ASR or forced
+      aligner before selecting thresholds. A production signal must demonstrate
+      its false-positive and false-negative bounds on that untouched split.
+      Until then route a non-passing MOSS line through the existing safe sentence
+      repair when eligible, then one bounded provider-local retry, then a typed
+      per-line XTTS or Pocket fallback; never weaken the strict silence gate,
+      publish a truncated prefix or regenerate an already approved WAV. The
+      direct listening verdict is that MOSS has the better voice identity, but
+      its audible artifacts and unintended pauses still make unchecked output
+      unacceptable. The complete v1/v2 corpus, timing and local-ASR results are
+      durable in `docs/speech-robustness-corpus.md`.
 - [ ] When a suitable CUDA host becomes available, run MOSS Delay 8B on the
       installed checksum-bound 46-line corpus (22 unresolved MOSS failures, 12
       MOSS-to-Pocket recoveries and 12 MOSS controls). No CUDA host is currently
