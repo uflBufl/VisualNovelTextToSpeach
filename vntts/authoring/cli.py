@@ -121,6 +121,11 @@ from vntts.authoring.reference_selection import (
     inspect_voice_reference_candidates,
     select_voice_reference,
 )
+from vntts.authoring.robustness_corpus import (
+    SpeechRobustnessCorpusError,
+    load_speech_robustness_corpus,
+    publish_speech_robustness_corpus,
+)
 from vntts.authoring.silence_comparison import (
     SilenceComparisonError,
     create_silence_comparison_session,
@@ -547,6 +552,30 @@ def create_parser():
     )
     failures.add_argument("--state", type=Path, required=True)
     failures.add_argument("--queue", type=Path, required=True)
+    robustness_corpus = subparsers.add_parser(
+        "speech-robustness-corpus",
+        help="Publish immutable human-labelled WAV and typed failure evidence",
+    )
+    robustness_corpus.add_argument("output", type=Path)
+    robustness_corpus.add_argument(
+        "--decision-root",
+        action="append",
+        type=Path,
+        required=True,
+        help="Cohort decision file or directory; repeat as needed",
+    )
+    robustness_corpus.add_argument(
+        "--failure-workspace",
+        action="append",
+        type=Path,
+        default=[],
+        help="Stable workspace whose typed failed items should be included",
+    )
+    robustness_check = subparsers.add_parser(
+        "speech-robustness-check",
+        help="Validate a published speech robustness corpus and every artifact",
+    )
+    robustness_check.add_argument("directory", type=Path)
     specialist_failures = subparsers.add_parser(
         "specialist-failure-plan",
         help="Cluster terminal repair failures into checksum-bound next actions",
@@ -1303,6 +1332,29 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "speech-robustness-corpus":
+            result = publish_speech_robustness_corpus(
+                arguments.decision_root,
+                arguments.failure_workspace,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "speech-robustness-check":
+            corpus = load_speech_robustness_corpus(arguments.directory)
+            print(
+                json.dumps(
+                    {
+                        "directory": str(corpus.directory),
+                        "corpus_id": corpus.corpus_id,
+                        "sample_count": corpus.sample_count,
+                        "failure_count": corpus.failure_count,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "specialist-failure-plan":
             plan = build_specialist_failure_plan(arguments.workspace)
             if arguments.output is not None:
@@ -1795,6 +1847,7 @@ def main(argv=None):
         ReferenceSelectionError,
         ReferenceRenderComparisonError,
         SilenceComparisonError,
+        SpeechRobustnessCorpusError,
         SourceReferenceReviewError,
         SourceReferenceQualityError,
         SourceReferenceBindingError,

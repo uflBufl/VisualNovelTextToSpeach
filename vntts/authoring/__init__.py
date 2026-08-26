@@ -245,6 +245,17 @@ from vntts.authoring.reference_selection import (
     select_voice_reference,
     validate_reference_selection_provenance,
 )
+from vntts.authoring.robustness_corpus import (
+    SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
+    SPEECH_ROBUSTNESS_CORPUS_SCHEMA,
+    SPEECH_ROBUSTNESS_CORPUS_VERSION,
+    SpeechRobustnessCorpus,
+    SpeechRobustnessCorpusError,
+    SpeechRobustnessCorpusResult,
+    analyze_speech_robustness_bytes,
+    load_speech_robustness_corpus,
+    publish_speech_robustness_corpus,
+)
 from vntts.authoring.silence_comparison import (
     SILENCE_COMPARISON_INPUT_SCHEMA,
     SILENCE_COMPARISON_INPUT_VERSION,
@@ -392,6 +403,12 @@ from vntts.authoring.workbench import (
 )
 
 __all__ = [
+    "SPEECH_ROBUSTNESS_ANALYSIS_VERSION",
+    "SPEECH_ROBUSTNESS_CORPUS_SCHEMA",
+    "SPEECH_ROBUSTNESS_CORPUS_VERSION",
+    "SpeechRobustnessCorpus",
+    "SpeechRobustnessCorpusError",
+    "SpeechRobustnessCorpusResult",
     "APPLY_APPROVED_OUTCOME",
     "AUTHORING_RECONCILIATION_SCHEMA",
     "AUTHORING_RECONCILIATION_VERSION",
@@ -533,6 +550,7 @@ __all__ = [
     "VoiceRepairComparisonError",
     "VoiceRepairComparisonPlan",
     "aggregate_listening_report",
+    "analyze_speech_robustness_bytes",
     "annotate_delivery",
     "apply_cohort_review_decision",
     "apply_delivery_policy",
@@ -589,6 +607,7 @@ __all__ = [
     "load_portrait_alias_decision",
     "load_portrait_alias_plan",
     "load_generation_state",
+    "load_speech_robustness_corpus",
     "load_failure_regeneration_plan",
     "load_failure_reference_audit",
     "load_failure_reference_binding",
@@ -618,6 +637,7 @@ __all__ = [
     "plan_generation_queue",
     "portrait_identity_by_variant",
     "publish_generation_queue",
+    "publish_speech_robustness_corpus",
     "publish_silence_comparison",
     "publish_reference_render_comparison",
     "publish_exact_bank_reference_composite",

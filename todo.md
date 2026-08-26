@@ -259,20 +259,22 @@ while one-sentence controls remained below 0.25 seconds.
 ### P0 - Establish a MOSS quality and latency gate
 
 - [ ] Make MOSS an identity-preferred but quality-routed primary rather than an
-      automatically publishable default. Build one checksum-bound robustness
-      corpus from listened acceptable and rejected Character Story outputs,
-      including natural pauses, multi-second sentence gaps, missed EOS,
-      repetitions, discontinuities, noise and other audible artifacts. Extend
-      the current structural checks with evidence-scored artifact/content
-      signals, report every reason independently, and calibrate them against
-      the human labels before any new signal may reject production audio.
-      Route a non-passing MOSS line through the existing safe sentence repair
-      when eligible, then one bounded provider-local retry, then a typed
-      per-line XTTS or Pocket fallback; never weaken the strict silence gate,
-      publish a truncated prefix or regenerate an already approved WAV. The
-      direct listening verdict is that MOSS has the better voice identity, but
-      its audible artifacts and unintended pauses still make unchecked output
-      unacceptable.
+      automatically publishable default. Use the published checksum-bound
+      human-labelled robustness corpus to add content/timing signals for
+      repeated or dropped speech and text-relative pause placement. Report
+      every reason independently and calibrate it against the human labels
+      before any new signal may reject production audio; the initial waveform
+      signals intentionally remain diagnostic because all five clipping
+      candidates were human-acceptable while none of 13 human-bad WAVs fired a
+      new signal. Route a non-passing MOSS line through the existing safe
+      sentence repair when eligible, then one bounded provider-local retry,
+      then a typed per-line XTTS or Pocket fallback; never weaken the strict
+      silence gate, publish a truncated prefix or regenerate an already
+      approved WAV. The direct listening verdict is that MOSS has the better
+      voice identity, but its audible artifacts and unintended pauses still
+      make unchecked output unacceptable. The corpus contract, commands and
+      178-WAV/15-failure baseline are durable in
+      `docs/speech-robustness-corpus.md`.
 - [ ] When a suitable CUDA host becomes available, run MOSS Delay 8B on the
       installed checksum-bound 46-line corpus (22 unresolved MOSS failures, 12
       MOSS-to-Pocket recoveries and 12 MOSS controls). No CUDA host is currently

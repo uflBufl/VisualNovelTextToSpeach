@@ -493,6 +493,13 @@ versioned policy rather than claiming the fallback is the original speaker.
 See the [workspace contract](docs/authoring-workspaces.md) for the typed API and
 review behavior.
 
+Human `acceptable`/`bad` cohort assessments can be published as a
+self-contained, checksum-bound speech robustness corpus with
+`vntts-pregenerate speech-robustness-corpus`, then independently checked with
+`speech-robustness-check`. Its waveform signals are diagnostic only until they
+are calibrated against the human labels; see the
+[speech robustness corpus contract](docs/speech-robustness-corpus.md).
+
 For a large history with parallel repair workspaces and retained old review
 documents, `vntts-authoring-reconcile` produces a no-overwrite, read-only
 authority report from one explicit primary workspace, current v2 cohort
