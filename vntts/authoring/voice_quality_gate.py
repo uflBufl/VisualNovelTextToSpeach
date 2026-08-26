@@ -67,6 +67,28 @@ class VoiceQualityCompatibility:
         }
 
 
+@dataclass(frozen=True)
+class VoiceQualityCohortCompatibility:
+    gate_id: str
+    workspace_id: str
+    resolved_voice_character: str
+    voice_speaker: str
+    status: str
+    differences: tuple[str, ...]
+    story_sample_required: bool
+
+    def to_dict(self):
+        return {
+            "gate_id": self.gate_id,
+            "workspace_id": self.workspace_id,
+            "resolved_voice_character": self.resolved_voice_character,
+            "voice_speaker": self.voice_speaker,
+            "status": self.status,
+            "differences": list(self.differences),
+            "story_sample_required": self.story_sample_required,
+        }
+
+
 def build_voice_quality_gate(workspace_directory, plan, decision):
     """Build one reusable control gate from an accepted exact cohort review."""
     plan_document = _plan_document(plan)
@@ -174,6 +196,36 @@ def inspect_voice_quality_gate(gate, workspace_directory, queue_id):
     )
 
 
+def inspect_voice_quality_cohort(gate, workspace_directory, cohort_identity):
+    """Compare one already validated cohort identity without rescanning its WAVs."""
+    document = _validated_gate_document(gate)
+    if not isinstance(cohort_identity, dict):
+        raise VoiceQualityGateError("Voice-quality cohort identity is malformed")
+    try:
+        directory, workspace = _load_workspace(workspace_directory)
+    except AuthoringWorkbenchError as error:
+        raise VoiceQualityGateError(str(error)) from error
+    current = _reusable_identity(directory, workspace, cohort_identity)
+    expected = document["identity"]
+    differences = tuple(
+        key
+        for key in sorted(set(expected) | set(current))
+        if expected.get(key) != current.get(key)
+    )
+    voice_character = _required_text(
+        cohort_identity.get("voice_character"), "Voice character"
+    )
+    return VoiceQualityCohortCompatibility(
+        document["gate_id"],
+        _required_text(workspace.get("workspace_id"), "Workspace ID"),
+        _manifest_voice_character(workspace, voice_character),
+        _required_text(current.get("voice_speaker"), "Voice speaker"),
+        "control_match_story_sample_required" if not differences else "new_review",
+        differences,
+        True,
+    )
+
+
 def _reusable_identity(directory, workspace, cohort_identity):
     run_config = workspace.get("run_config")
     if not isinstance(run_config, dict):
@@ -195,11 +247,7 @@ def _reusable_identity(directory, workspace, cohort_identity):
     voice_character = _required_text(
         cohort_identity.get("voice_character"), "Voice character"
     )
-    manifest_voice_character = voice_character
-    if normalize_character_name(voice_character) == "narrator":
-        manifest_voice_character = _required_text(
-            workspace.get("narrator_character"), "Workspace narrator character"
-        )
+    manifest_voice_character = _manifest_voice_character(workspace, voice_character)
     manifest_config = workspace.get("voice_manifest")
     if not isinstance(manifest_config, dict) or not isinstance(
         manifest_config.get("path"), str
@@ -293,6 +341,14 @@ def _reusable_identity(directory, workspace, cohort_identity):
         "repair_strategy": cohort_identity.get("repair_strategy"),
         "source_reference_binding": binding,
     }
+
+
+def _manifest_voice_character(workspace, voice_character):
+    if normalize_character_name(voice_character) != "narrator":
+        return voice_character
+    return _required_text(
+        workspace.get("narrator_character"), "Workspace narrator character"
+    )
 
 
 def _validated_gate_document(gate):
@@ -430,10 +486,12 @@ def _required_bool(value, label):
 __all__ = [
     "VOICE_QUALITY_GATE_SCHEMA",
     "VOICE_QUALITY_GATE_VERSION",
+    "VoiceQualityCohortCompatibility",
     "VoiceQualityCompatibility",
     "VoiceQualityGate",
     "VoiceQualityGateError",
     "build_voice_quality_gate",
+    "inspect_voice_quality_cohort",
     "inspect_voice_quality_gate",
     "load_voice_quality_gate",
     "write_voice_quality_gate",

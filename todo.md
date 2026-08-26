@@ -113,7 +113,10 @@ Follow the evidence-backed order and invariants in
       accepted Centurion baseline; it never approves a new story WAV. Expand a
       cohort only after a heard sample exposes a substantive defect, then merge
       only checksum-bound terminal decisions and rebuild the approved-only
-      manifest.
+      manifest. Open the bundle with `vntts-review-bundle BUNDLE.json
+      --quality-gate GATE.json`; the persistent baseline banner must identify
+      accepted Centurion and the three cohorts must remain line-review
+      decisions rather than another narrator-choice task.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).

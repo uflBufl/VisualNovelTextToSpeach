@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -27,6 +28,14 @@ try:
     )
     from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
     from vntts.authoring.cohort_bundle_ui import main as review_bundle_main
+    from vntts.authoring.cohort_review import (
+        build_cohort_review_decision,
+        build_cohort_review_plan,
+    )
+    from vntts.authoring.voice_quality_gate import (
+        build_voice_quality_gate,
+        write_voice_quality_gate,
+    )
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
         raise
@@ -67,6 +76,51 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         first = fixture.create_pending_workspace(root / "first")[0]
         second = fixture.create_pending_workspace(root / "second")[0]
         return build_cohort_review_bundle((first, second))
+
+    def create_quality_gated_bundle(self, root, *, mismatch=False):
+        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
+        first, first_state, queue_id = fixture.create_pending_workspace(root / "first")
+        second, second_state, _second_queue = fixture.create_pending_workspace(
+            root / "second"
+        )
+        for state_path in (first_state, second_state):
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            result = next(iter(state["items"].values()))
+            result.update(
+                {
+                    "provider": "moss-tts",
+                    "model": "model with spaces",
+                    "generation_profile": "stable",
+                }
+            )
+            state_path.write_text(
+                json.dumps(state, sort_keys=True),
+                encoding="utf-8",
+            )
+        if mismatch:
+            state = json.loads(second_state.read_text(encoding="utf-8"))
+            next(iter(state["items"].values()))["prompt_sha256"] = "c" * 64
+            second_state.write_text(
+                json.dumps(state, sort_keys=True),
+                encoding="utf-8",
+            )
+        plan = build_cohort_review_plan(first)
+        decision = build_cohort_review_decision(
+            plan,
+            plan.document["cohorts"][0]["cohort_id"],
+            "accepted",
+            reviewed_queue_ids=[queue_id],
+            sample_assessments={queue_id: "acceptable"},
+        )
+        gate = build_voice_quality_gate(first, plan, decision)
+        bundle_path = root / "bundle.json"
+        gate_path = root / "quality-gate.json"
+        write_cohort_review_bundle(
+            build_cohort_review_bundle((first, second)),
+            bundle_path,
+        )
+        write_voice_quality_gate(gate, gate_path)
+        return bundle_path, gate_path, gate
 
     def test_replay_keeps_controls_and_marks_only_finished_audio_heard(self):
         with TemporaryDirectory() as directory:
@@ -503,6 +557,84 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             ],
             [],
         )
+
+    def test_quality_gate_explains_baseline_without_projecting_a_decision(self):
+        with TemporaryDirectory() as directory:
+            bundle_path, gate_path, gate = self.create_quality_gated_bundle(
+                Path(directory)
+            )
+            dialog = CohortReviewBundleDialog(
+                bundle_path,
+                quality_gate=gate_path,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+
+            self.assertTrue(dialog.quality_baseline.isVisible())
+            self.assertIn(
+                "VOICE BASELINE ALREADY ACCEPTED",
+                dialog.quality_baseline.text(),
+            )
+            self.assertIn(
+                "not choosing the narrator again",
+                dialog.quality_baseline.text(),
+            )
+            self.assertIn(gate.gate_id, dialog.quality_baseline.toolTip())
+            self.assertIn(
+                "matched 2 remaining cohorts", dialog.quality_baseline.toolTip()
+            )
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertEqual(dialog.bundle.document["pending_item_count"], 2)
+            self.assertTrue((Path(directory) / "bundle.progress.json").is_file())
+
+    def test_missing_quality_gate_fails_closed_and_status_validates_gate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle_path, gate_path, _gate = self.create_quality_gated_bundle(root)
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                status_exit = review_bundle_main(
+                    [
+                        str(bundle_path),
+                        "--quality-gate",
+                        str(gate_path),
+                        "--status",
+                    ]
+                )
+            self.assertEqual(status_exit, 0)
+            self.assertIn('"remaining_cohorts": 2', stdout.getvalue())
+
+            dialog = CohortReviewBundleDialog(
+                bundle_path,
+                quality_gate=root / "missing-gate.json",
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.retry_load.isEnabled())
+
+            self.assertIn("BLOCKED", dialog.status.text())
+            self.assertFalse(dialog.quality_baseline.isVisible())
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse((root / "bundle.progress.json").exists())
+
+    def test_mismatched_quality_gate_blocks_every_cohort_decision(self):
+        with TemporaryDirectory() as directory:
+            bundle_path, gate_path, _gate = self.create_quality_gated_bundle(
+                Path(directory),
+                mismatch=True,
+            )
+            dialog = CohortReviewBundleDialog(
+                bundle_path,
+                quality_gate=gate_path,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.retry_load.isEnabled())
+
+            self.assertIn("does not match every remaining cohort", dialog.status.text())
+            self.assertIn("prompt_sha256", dialog.status.text())
+            self.assertEqual(dialog.table.rowCount(), 0)
+            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse((Path(directory) / "bundle.progress.json").exists())
 
 
 if __name__ == "__main__":

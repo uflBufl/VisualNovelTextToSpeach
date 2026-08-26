@@ -56,6 +56,11 @@ from vntts.authoring.cohort_bundle import (
     write_cohort_review_observations,
     write_cohort_review_progress,
 )
+from vntts.authoring.cohort_review import CohortReviewError
+from vntts.authoring.voice_quality_gate import (
+    inspect_voice_quality_cohort,
+    load_voice_quality_gate,
+)
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
 
 
@@ -97,6 +102,83 @@ class _DecisionTaskResult:
     commit_seconds: float
     checkpoint_seconds: float
     refresh_seconds: float
+
+
+@dataclass(frozen=True)
+class _QualityGateContext:
+    gate_id: str
+    resolved_voice_character: str
+    voice_speaker: str
+    cohort_count: int
+
+
+def _load_quality_gated_review_session(bundle_path, gate_path, persist=True):
+    gate = load_voice_quality_gate(gate_path)
+    session = load_resumable_cohort_review_session(bundle_path, persist=False)
+    resume, bundle, _samples, _assessments = session
+    cached = {}
+    compatibilities = []
+    for cohort in bundle.document["cohorts"]:
+        identity = cohort["identity"]
+        reusable_key = json.dumps(
+            {
+                key: value
+                for key, value in identity.items()
+                if key
+                not in {
+                    "seed",
+                    "synthesis_provenance_sha256",
+                    "workspace_config_fingerprint",
+                }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        key = (cohort["workspace"], reusable_key)
+        compatibility = cached.get(key)
+        if compatibility is None:
+            compatibility = inspect_voice_quality_cohort(
+                gate,
+                cohort["workspace"],
+                identity,
+            )
+            cached[key] = compatibility
+        compatibilities.append(compatibility)
+    mismatches = [
+        value
+        for value in compatibilities
+        if value.status != "control_match_story_sample_required"
+    ]
+    if mismatches:
+        differences = sorted(
+            {item for value in mismatches for item in value.differences}
+        )
+        raise CohortReviewError(
+            "Voice-quality gate does not match every remaining cohort: "
+            + ", ".join(differences)
+        )
+    if not compatibilities:
+        context = None
+    else:
+        resolved = {value.resolved_voice_character for value in compatibilities}
+        speakers = {value.voice_speaker for value in compatibilities}
+        if len(resolved) != 1 or len(speakers) != 1:
+            raise CohortReviewError(
+                "Voice-quality gate resolves remaining cohorts to different voices"
+            )
+        context = _QualityGateContext(
+            gate.gate_id,
+            next(iter(resolved)),
+            next(iter(speakers)),
+            len(compatibilities),
+        )
+    if persist and not resume.progress_current:
+        write_cohort_review_progress(
+            resume.publication,
+            resume.original,
+            resume.current,
+        )
+    return (*session, context)
 
 
 def _prepare_sample(sample):
@@ -211,11 +293,20 @@ class CohortReviewBundleDialog(QDialog):
         decision_executor=_execute_bundle_decision_task,
         observation_writer=_write_observation_task,
         confirmer=None,
+        quality_gate=None,
     ):
         super().__init__(parent)
         self.bundle_path = None
         self.original_bundle = None
+        self.quality_gate_path = (
+            None if quality_gate is None else Path(quality_gate).expanduser().resolve()
+        )
+        self.quality_gate_context = None
         if isinstance(bundle, CohortReviewBundle):
+            if self.quality_gate_path is not None:
+                raise CohortReviewError(
+                    "A reusable voice-quality gate requires a published bundle path"
+                )
             self.bundle = bundle
         else:
             self.bundle_path = Path(bundle).expanduser().resolve()
@@ -270,6 +361,11 @@ class CohortReviewBundleDialog(QDialog):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.summary.setObjectName("reviewSummary")
+        self.quality_baseline = QLabel()
+        self.quality_baseline.setWordWrap(True)
+        self.quality_baseline.setObjectName("qualityBaseline")
+        self.quality_baseline.setAccessibleName("Reusable voice quality baseline")
+        self.quality_baseline.hide()
         self.overall_progress = QProgressBar()
         self.overall_progress.setAccessibleName("Overall cohort review progress")
         self.overall_progress.setTextVisible(True)
@@ -386,11 +482,12 @@ class CohortReviewBundleDialog(QDialog):
 
         progress_layout = QGridLayout()
         progress_layout.addWidget(self.summary, 0, 0)
-        progress_layout.addWidget(self.overall_progress, 1, 0)
-        progress_layout.addWidget(self.status, 2, 0)
-        progress_layout.addWidget(self.operation, 3, 0)
-        progress_layout.addWidget(self.progress, 4, 0)
-        progress_layout.addWidget(self.retry_load, 5, 0)
+        progress_layout.addWidget(self.quality_baseline, 1, 0)
+        progress_layout.addWidget(self.overall_progress, 2, 0)
+        progress_layout.addWidget(self.status, 3, 0)
+        progress_layout.addWidget(self.operation, 4, 0)
+        progress_layout.addWidget(self.progress, 5, 0)
+        progress_layout.addWidget(self.retry_load, 6, 0)
         progress_group = QGroupBox("Review progress")
         progress_group.setLayout(progress_layout)
 
@@ -432,6 +529,8 @@ class CohortReviewBundleDialog(QDialog):
             "QLabel#reviewHeading { font-size: 22px; font-weight: 700; }"
             "QLabel#reviewGuide { font-size: 14px; }"
             "QLabel#reviewStatus { font-weight: 600; }"
+            "QLabel#qualityBaseline { padding: 6px; font-weight: 600; "
+            "  background: palette(alternate-base); border: 1px solid palette(mid); }"
             "QLabel#samplePosition { font-weight: 600; }"
             "QLabel#sampleIdentity { font-size: 13px; }"
             "QLabel#sampleText { font-size: 17px; padding: 8px; "
@@ -505,8 +604,12 @@ class CohortReviewBundleDialog(QDialog):
         operation = self.sample_loader
         arguments = (self.bundle,)
         if self._resumable_load:
-            operation = load_resumable_cohort_review_session
-            arguments = (self.bundle_path,)
+            if self.quality_gate_path is None:
+                operation = load_resumable_cohort_review_session
+                arguments = (self.bundle_path,)
+            else:
+                operation = _load_quality_gated_review_session
+                arguments = (self.bundle_path, self.quality_gate_path)
         self.thread_pool.start(_Task(serial, operation, arguments, self._load_signals))
 
     def _load_finished(self, serial, result, error):
@@ -514,6 +617,8 @@ class CohortReviewBundleDialog(QDialog):
             return
         self._load_active = False
         if error is not None:
+            self.quality_gate_context = None
+            self.quality_baseline.hide()
             self.samples = ()
             self.samples_by_cohort = {}
             self.status.setText(f"BLOCKED: {error}")
@@ -523,7 +628,16 @@ class CohortReviewBundleDialog(QDialog):
             return
         self.retry_load.hide()
         if self._resumable_load:
-            _resume, bundle, samples, assessments = result
+            if self.quality_gate_path is None:
+                _resume, bundle, samples, assessments = result
+            else:
+                (
+                    _resume,
+                    bundle,
+                    samples,
+                    assessments,
+                    self.quality_gate_context,
+                ) = result
             for assessment in assessments:
                 key = (assessment.workspace_id, assessment.cohort_id)
                 self.heard[key].add(assessment.queue_id)
@@ -577,6 +691,21 @@ class CohortReviewBundleDialog(QDialog):
             f"{self.bundle.document['blocked_item_count']} inherited blocked items "
             "are excluded from this review."
         )
+        if self.quality_gate_context is None or remaining == 0:
+            self.quality_baseline.hide()
+        else:
+            context = self.quality_gate_context
+            self.quality_baseline.setText(
+                "VOICE BASELINE ALREADY ACCEPTED: "
+                f"{context.resolved_voice_character} ({context.voice_speaker}). "
+                "You are not choosing the narrator again. Hear the listed samples "
+                "to validate these new story WAVs; Accept applies only to the "
+                "current exact cohort."
+            )
+            self.quality_baseline.setToolTip(
+                f"Gate {context.gate_id}; matched {remaining} remaining cohorts"
+            )
+            self.quality_baseline.show()
         self.status.setText(status or "READY: play the selected sample")
         self._populate_cohorts()
 
@@ -1271,10 +1400,10 @@ class CohortReviewBundleDialog(QDialog):
         event.accept()
 
 
-def launch_cohort_review_bundle(bundle_path):
+def launch_cohort_review_bundle(bundle_path, *, quality_gate=None):
     application = QApplication.instance() or QApplication(sys.argv)
     try:
-        dialog = CohortReviewBundleDialog(bundle_path)
+        dialog = CohortReviewBundleDialog(bundle_path, quality_gate=quality_gate)
     except Exception as error:
         QMessageBox.critical(None, "Unable to open review bundle", str(error))
         return 1
@@ -1288,6 +1417,14 @@ def build_parser():
     )
     parser.add_argument("bundle", type=Path)
     parser.add_argument(
+        "--quality-gate",
+        type=Path,
+        help=(
+            "require every remaining cohort to match this accepted reusable "
+            "voice-quality gate"
+        ),
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="print reconciled review progress without opening Qt",
@@ -1299,10 +1436,19 @@ def main(argv=None):
     arguments = build_parser().parse_args(argv)
     if arguments.status:
         try:
-            status = load_resumable_cohort_review_bundle(
-                arguments.bundle,
-                persist=False,
-            )
+            if arguments.quality_gate is None:
+                status = load_resumable_cohort_review_bundle(
+                    arguments.bundle,
+                    persist=False,
+                )
+            else:
+                status, _bundle, _samples, _assessments, _context = (
+                    _load_quality_gated_review_session(
+                        arguments.bundle,
+                        arguments.quality_gate,
+                        False,
+                    )
+                )
         except Exception as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -1310,7 +1456,10 @@ def main(argv=None):
             json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
         )
         return 0
-    return launch_cohort_review_bundle(arguments.bundle)
+    return launch_cohort_review_bundle(
+        arguments.bundle,
+        quality_gate=arguments.quality_gate,
+    )
 
 
 if __name__ == "__main__":

@@ -190,8 +190,10 @@ authorize an explicit cohort decision. That decision must retain the sampled
 queue IDs and WAV hashes and project terminal decisions to each covered item.
 A new story samples its new generated cohort; it does not repeat source-voice
 discovery or a full listen-all pass unless the sample exposes a defect. The
-current authoring state still lacks this cohort-decision transaction, so final
-publication otherwise continues to require individual terminal decisions.
+authoring pipeline now owns this checksum-bound cohort-decision transaction,
+including reusable voice-control gates and line-specific terminal projection.
+Final publication still requires every line to have terminal approved/rejected
+authority; an accepted voice gate alone is never line approval.
 
 ## Explicit unknown-role Narrator policy
 

@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import vntts.authoring as authoring_package
 import vntts.authoring.voice_quality_gate as voice_quality_gate_module
 from tests import test_authoring_cohort_review
 from tests.test_authoring_workbench import create_test_workspace
@@ -18,6 +19,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.voice_quality_gate import (
     VoiceQualityGateError,
     build_voice_quality_gate,
+    inspect_voice_quality_cohort,
     inspect_voice_quality_gate,
     load_voice_quality_gate,
     write_voice_quality_gate,
@@ -26,6 +28,16 @@ from vntts.authoring.workbench import create_resume_workspace
 
 
 class AuthoringVoiceQualityGateTest(unittest.TestCase):
+    def test_cohort_compatibility_api_is_public(self):
+        self.assertIs(
+            authoring_package.inspect_voice_quality_cohort,
+            inspect_voice_quality_cohort,
+        )
+        self.assertIs(
+            authoring_package.VoiceQualityCohortCompatibility,
+            voice_quality_gate_module.VoiceQualityCohortCompatibility,
+        )
+
     def create_review(self, root):
         fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
         workspace, state_path, queue_id = fixture.create_pending_workspace(root)
@@ -82,10 +94,21 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
 
             gate = build_voice_quality_gate(workspace, plan, decision)
             compatibility = inspect_voice_quality_gate(gate, workspace, queue_id)
+            cohort_compatibility = inspect_voice_quality_cohort(
+                gate,
+                workspace,
+                plan.document["cohorts"][0]["identity"],
+            )
 
         self.assertEqual(gate.document["identity"]["voice_character"], "Narrator")
         self.assertEqual(gate.document["identity"]["voice_speaker"], "Rhiannon")
         self.assertEqual(compatibility.status, "control_match_story_sample_required")
+        self.assertEqual(
+            cohort_compatibility.status,
+            "control_match_story_sample_required",
+        )
+        self.assertEqual(cohort_compatibility.resolved_voice_character, "Rhiannon")
+        self.assertEqual(cohort_compatibility.voice_speaker, "Rhiannon")
 
     def test_narrator_gate_detects_changed_workspace_character(self):
         with TemporaryDirectory() as directory:

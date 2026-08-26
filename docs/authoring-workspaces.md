@@ -798,6 +798,26 @@ exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 and no bad marker, `Reject cohort` requires heard evidence, and `Need another
 sample` is enabled only when the exact cohort has an unsampled clean item.
 
+When the same exact voice controls were accepted in an earlier story, bind that
+evidence explicitly instead of asking the operator to infer it from the cohort:
+
+```bash
+uv run vntts-review-bundle BUNDLE.json \
+  --quality-gate ACCEPTED-VOICE-QUALITY-GATE.json
+```
+
+The worker validates every remaining cohort against the gate before Qt enables
+review actions. The comparison binds the effective manifest character and
+speaker, ordered reference hashes, provider, model bytes or identifier,
+generation profile, prompt controls, text transform, repair strategy and
+source-reference binding; seed and line-specific synthesis provenance remain
+new-story dimensions. A persistent banner then says that the voice baseline is
+already accepted and that the listed samples validate only the new exact story
+WAVs. The gate never approves or rejects those WAVs. A missing, stale,
+ambiguous or mismatched gate blocks the dialog and `--status` with no authority
+change. A completed bundle remains valid and simply has no remaining baseline
+banner.
+
 The publication remains immutable, while `BUNDLE.progress.json` is its mutable
 checksum-bound continuation pointer. After every terminal or expanded cohort
 decision, the worker commits source-local evidence/state first and then writes
