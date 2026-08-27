@@ -389,6 +389,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 ).document
             )
             document["schema_version"] = 1
+            document.pop("item_review_statuses")
             for assessment in document["sample_assessments"]:
                 assessment.pop("defect_reasons")
             document["decision_id"] = _canonical_sha256(
@@ -400,6 +401,93 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             loaded = load_cohort_review_decision(path)
 
         self.assertNotIn("defect_reasons", loaded.document["sample_assessments"][0])
+
+    def test_split_decision_binds_each_individually_sampled_target(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = deepcopy(build_cohort_review_plan(workspace).document)
+            cohort = plan["cohorts"][0]
+            second = deepcopy(cohort["items"][0])
+            second.update(
+                {
+                    "queue_id": f"{queue_id}-second",
+                    "line_id": f"{second['line_id']}-second",
+                    "text_sha256": "c" * 64,
+                    "audio_sha256": "d" * 64,
+                    "sampled": True,
+                }
+            )
+            cohort["items"].append(second)
+            cohort["item_count"] = 2
+            cohort["sample_queue_ids"].append(second["queue_id"])
+            plan["pending_item_count"] = 2
+            plan["sample_item_count"] = 2
+            plan["plan_id"] = _canonical_sha256(
+                {key: value for key, value in plan.items() if key != "plan_id"}
+            )
+
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "split",
+                reviewed_queue_ids=[queue_id, second["queue_id"]],
+                sample_assessments={
+                    queue_id: {
+                        "assessment": "bad",
+                        "defect_reasons": ["pause_or_pacing"],
+                    },
+                    second["queue_id"]: "acceptable",
+                },
+            )
+
+        self.assertIsNone(decision.document["projection_review_status"])
+        self.assertEqual(
+            decision.document["item_review_statuses"],
+            [
+                {"queue_id": queue_id, "review_status": "rejected"},
+                {"queue_id": second["queue_id"], "review_status": "approved"},
+            ],
+        )
+
+    def test_split_decision_never_projects_an_unsampled_target(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = deepcopy(build_cohort_review_plan(workspace).document)
+            cohort = plan["cohorts"][0]
+            second = deepcopy(cohort["items"][0])
+            second.update(
+                {
+                    "queue_id": f"{queue_id}-unsampled",
+                    "line_id": f"{second['line_id']}-unsampled",
+                    "text_sha256": "c" * 64,
+                    "audio_sha256": "d" * 64,
+                    "sampled": False,
+                }
+            )
+            cohort["items"].append(second)
+            cohort["item_count"] = 2
+            plan["pending_item_count"] = 2
+            plan["plan_id"] = _canonical_sha256(
+                {key: value for key, value in plan.items() if key != "plan_id"}
+            )
+
+            with self.assertRaisesRegex(CohortReviewError, "unsampled targets"):
+                build_cohort_review_decision(
+                    plan,
+                    cohort["cohort_id"],
+                    "split",
+                    reviewed_queue_ids=[queue_id],
+                    sample_assessments={
+                        queue_id: {
+                            "assessment": "bad",
+                            "defect_reasons": ["pause_or_pacing"],
+                        }
+                    },
+                )
 
     def test_expand_requires_complete_current_sample_and_larger_bound(self):
         with TemporaryDirectory() as directory:

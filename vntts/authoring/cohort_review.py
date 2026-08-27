@@ -34,8 +34,8 @@ COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = REVIEW_ATTENTION_POLICY_VERSION
 SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2})
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
-COHORT_REVIEW_DECISION_VERSION = 2
-SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2})
+COHORT_REVIEW_DECISION_VERSION = 3
+SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2, 3})
 COHORT_REVIEW_DEFECT_REASONS = (
     "pause_or_pacing",
     "repetition",
@@ -47,7 +47,7 @@ COHORT_REVIEW_DEFECT_REASONS = (
     "unspecified",
 )
 COHORT_REVIEW_PROVENANCE_SCHEMA = "vntts.authoring-cohort-review-provenance"
-COHORT_REVIEW_PROVENANCE_VERSION = 1
+COHORT_REVIEW_PROVENANCE_VERSION = 2
 DEFAULT_CLEAN_SAMPLES_PER_BUCKET = 1
 MAX_CLEAN_SAMPLES_PER_BUCKET = 5
 WORD_PATTERN = re.compile(r"[\w’'-]+", flags=re.UNICODE)
@@ -85,13 +85,18 @@ class CohortReviewProjection:
 
     decision_id: str
     queue_ids: tuple[str, ...]
-    review_status: str
+    review_status: str | None
+    item_review_statuses: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self):
         return {
             "decision_id": self.decision_id,
             "queue_ids": list(self.queue_ids),
             "review_status": self.review_status,
+            "item_review_statuses": [
+                {"queue_id": queue_id, "review_status": review_status}
+                for queue_id, review_status in self.item_review_statuses
+            ],
         }
 
 
@@ -304,8 +309,10 @@ def build_cohort_review_decision(
     """Bind a human decision to exact sampled and projected WAV identities."""
     document = _validated_plan_document(plan)
     cohort_id = _required_sha256(cohort_id, "Cohort ID")
-    if decision not in {"accepted", "rejected", "expand"}:
-        raise CohortReviewError("Cohort decision must be accepted, rejected, or expand")
+    if decision not in {"accepted", "rejected", "split", "expand"}:
+        raise CohortReviewError(
+            "Cohort decision must be accepted, rejected, split, or expand"
+        )
     cohort = next(
         (value for value in document["cohorts"] if value.get("cohort_id") == cohort_id),
         None,
@@ -328,7 +335,7 @@ def build_cohort_review_decision(
         raise CohortReviewError(
             f"Reviewed queue IDs are outside the cohort sample: {unexpected}"
         )
-    if decision in {"accepted", "expand"} and set(reviewed) != set(sampled):
+    if decision in {"accepted", "split", "expand"} and set(reviewed) != set(sampled):
         missing = sorted(set(sampled) - set(reviewed))
         raise CohortReviewError(
             f"Every sampled WAV must be reviewed before {decision}: {missing}"
@@ -367,6 +374,41 @@ def build_cohort_review_decision(
         raise CohortReviewError("Cohort item queue IDs must be unique")
     reviewed_evidence = [_decision_item(by_id[queue_id]) for queue_id in reviewed]
     target_items = [_decision_item(value) for value in items]
+    target_ids = [value["queue_id"] for value in target_items]
+    assessment_by_id = {value["queue_id"]: value["assessment"] for value in assessments}
+    if decision == "split":
+        if set(sampled) != set(target_ids):
+            missing = sorted(set(target_ids) - set(sampled))
+            raise CohortReviewError(
+                "A split cohort decision requires an individually sampled WAV "
+                f"for every target; unsampled targets: {missing}"
+            )
+        bad_count = sum(value == "bad" for value in assessment_by_id.values())
+        if bad_count == 0 or bad_count == len(target_ids):
+            raise CohortReviewError(
+                "A split cohort decision requires both bad and acceptable WAVs"
+            )
+    item_review_statuses = (
+        [
+            {
+                "queue_id": queue_id,
+                "review_status": (
+                    "rejected" if assessment_by_id[queue_id] == "bad" else "approved"
+                ),
+            }
+            for queue_id in target_ids
+        ]
+        if decision == "split"
+        else [
+            {
+                "queue_id": queue_id,
+                "review_status": ("approved" if decision == "accepted" else "rejected"),
+            }
+            for queue_id in target_ids
+        ]
+        if decision in {"accepted", "rejected"}
+        else []
+    )
     body = {
         "schema": COHORT_REVIEW_DECISION_SCHEMA,
         "schema_version": COHORT_REVIEW_DECISION_VERSION,
@@ -381,6 +423,7 @@ def build_cohort_review_decision(
         "reviewed_samples": reviewed_evidence,
         "sample_assessments": assessments,
         "target_items": target_items,
+        "item_review_statuses": item_review_statuses,
         "projection_review_status": (
             "approved"
             if decision == "accepted"
@@ -567,13 +610,21 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         "sample_queue_ids": decision_document["sample_queue_ids"],
         "reviewed_samples": decision_document["reviewed_samples"],
         "sample_assessments": decision_document.get("sample_assessments", []),
+        "item_review_statuses": decision_document.get("item_review_statuses", []),
     }
+    item_review_statuses = decision_document.get("item_review_statuses", [])
+    item_decisions = {
+        value["queue_id"]: value["review_status"] for value in item_review_statuses
+    }
+    projection_status = decision_document["projection_review_status"]
     try:
         commits = _review_generation_cohort(
             state_path,
             queue_path,
             authorities,
-            decision_document["projection_review_status"],
+            item_decisions
+            if decision_document["decision"] == "split"
+            else projection_status,
             provenance=provenance,
         )
     except BulkGenerationError as error:
@@ -581,7 +632,8 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     return CohortReviewProjection(
         decision_document["decision_id"],
         tuple(commit.queue_id for commit in commits),
-        decision_document["projection_review_status"],
+        projection_status,
+        tuple((commit.queue_id, commit.review_status) for commit in commits),
     )
 
 
@@ -838,7 +890,7 @@ def _validated_decision_document(document):
     _required_sha256(document.get("plan_id"), "Plan ID")
     _required_sha256(document.get("cohort_id"), "Cohort ID")
     decision = document.get("decision")
-    if decision not in {"accepted", "rejected", "expand"}:
+    if decision not in {"accepted", "rejected", "split", "expand"}:
         raise CohortReviewError("Cohort review decision is unsupported")
     policy = document.get("plan_policy")
     if (
@@ -888,7 +940,7 @@ def _validated_decision_document(document):
         if value.get("assessment") not in {"heard", "acceptable", "bad"}:
             raise CohortReviewError("Cohort sample assessment is unsupported")
         expected_fields = {"queue_id", "assessment"}
-        if version == 2:
+        if version >= 2:
             expected_fields.add("defect_reasons")
             reasons = value.get("defect_reasons")
             if (
@@ -912,7 +964,9 @@ def _validated_decision_document(document):
         value["assessment"] == "bad" for value in assessments
     ):
         raise CohortReviewError("Accepted cohort contains a bad sample assessment")
-    if decision in {"accepted", "expand"} and set(reviewed_ids) != set(sampled):
+    if decision in {"accepted", "split", "expand"} and set(reviewed_ids) != set(
+        sampled
+    ):
         raise CohortReviewError("Cohort review decision is missing reviewed samples")
     if decision == "rejected" and not reviewed_ids:
         raise CohortReviewError("Rejected cohort decision has no reviewed evidence")
@@ -925,6 +979,71 @@ def _validated_decision_document(document):
     )
     if document.get("projection_review_status") != expected_projection:
         raise CohortReviewError("Cohort review projection status is invalid")
+    item_review_statuses = document.get("item_review_statuses")
+    if version < 3:
+        if item_review_statuses is not None:
+            raise CohortReviewError(
+                "Legacy cohort decision cannot contain item review statuses"
+            )
+    else:
+        if not isinstance(item_review_statuses, list):
+            raise CohortReviewError("Cohort item review statuses must be a list")
+        normalized_statuses = []
+        for value in item_review_statuses:
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"queue_id", "review_status"}
+                or value.get("review_status") not in {"approved", "rejected"}
+            ):
+                raise CohortReviewError("Cohort item review status is invalid")
+            normalized_statuses.append(
+                {
+                    "queue_id": _required_text(
+                        value.get("queue_id"), "Cohort item review queue ID"
+                    ),
+                    "review_status": value["review_status"],
+                }
+            )
+        if decision == "expand":
+            expected_statuses = []
+        elif decision == "accepted":
+            expected_statuses = [
+                {"queue_id": queue_id, "review_status": "approved"}
+                for queue_id in target_ids
+            ]
+        elif decision == "rejected":
+            expected_statuses = [
+                {"queue_id": queue_id, "review_status": "rejected"}
+                for queue_id in target_ids
+            ]
+        else:
+            if set(sampled) != set(target_ids):
+                raise CohortReviewError(
+                    "Split cohort decision cannot cover unsampled target WAVs"
+                )
+            assessment_by_id = {
+                value["queue_id"]: value["assessment"] for value in assessments
+            }
+            expected_statuses = [
+                {
+                    "queue_id": queue_id,
+                    "review_status": (
+                        "rejected"
+                        if assessment_by_id.get(queue_id) == "bad"
+                        else "approved"
+                    ),
+                }
+                for queue_id in target_ids
+            ]
+            projected = {value["review_status"] for value in expected_statuses}
+            if projected != {"approved", "rejected"}:
+                raise CohortReviewError(
+                    "Split cohort decision requires bad and acceptable WAVs"
+                )
+        if normalized_statuses != expected_statuses:
+            raise CohortReviewError(
+                "Cohort item review statuses do not match the exact decision"
+            )
     next_samples = document.get("next_clean_samples_per_bucket")
     if decision == "expand":
         if (

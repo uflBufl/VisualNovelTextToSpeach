@@ -2468,10 +2468,22 @@ def _review_generation_cohort(
     provenance,
 ):
     """Commit one exact cohort decision in a single state transaction."""
-    if decision not in {"approved", "rejected"}:
-        raise BulkGenerationError("Cohort review decision must be approved or rejected")
     if not isinstance(authorities, dict) or not authorities:
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
+    if isinstance(decision, str):
+        decisions = {queue_id: decision for queue_id in authorities}
+    elif isinstance(decision, dict):
+        decisions = dict(decision)
+    else:
+        raise BulkGenerationError(
+            "Cohort review decision must be approved, rejected, or an exact item map"
+        )
+    if set(decisions) != set(authorities) or any(
+        value not in {"approved", "rejected"} for value in decisions.values()
+    ):
+        raise BulkGenerationError(
+            "Cohort review item decisions must bind every authority to approved or rejected"
+        )
     if not isinstance(provenance, dict):
         raise BulkGenerationError("Cohort review provenance must be an object")
     state_path = Path(state_path).expanduser().resolve()
@@ -2502,14 +2514,16 @@ def _review_generation_cohort(
         proposed = copy.deepcopy(state)
         updated_at = _now()
         for queue_id, authority in authorities.items():
+            item_decision = decisions[queue_id]
             proposed_item = proposed["items"][queue_id]
-            proposed_item["review_status"] = decision
+            proposed_item["review_status"] = item_decision
             proposed_item["status"] = (
-                "approved" if decision == "approved" else "generated"
+                "approved" if item_decision == "approved" else "generated"
             )
             proposed_item["updated_at"] = updated_at
             proposed_item["cohort_review"] = {
                 **copy.deepcopy(provenance),
+                "projection_review_status": item_decision,
                 "target_audio_sha256": authority.audio_sha256,
             }
         manifest_path = state_path.parent / "manifest.json"
@@ -2523,8 +2537,13 @@ def _review_generation_cohort(
         staged_manifest = manifest_path.with_name(
             f".{manifest_path.name}.{transaction_id}.tmp"
         )
+        staged_conservative_manifest = manifest_path.with_name(
+            f".{manifest_path.name}.{transaction_id}.conservative.tmp"
+        )
+        is_mixed = len(set(decisions.values())) > 1
         try:
             atomic_write_json(staged_state, proposed, sort_keys=True)
+            proposed_state_sha256 = sha256_file(staged_state)
             _write_generated_manifest_from_state(
                 proposed,
                 state_path.parent,
@@ -2532,6 +2551,19 @@ def _review_generation_cohort(
                 entries=entries,
                 validate_files=False,
             )
+            if is_mixed:
+                conservative_entries = _approved_manifest_entries(
+                    state,
+                    state_path.parent,
+                    validate_files=False,
+                )
+                _write_generated_manifest_from_state(
+                    state,
+                    state_path.parent,
+                    staged_conservative_manifest,
+                    entries=conservative_entries,
+                    validate_files=False,
+                )
             _assert_review_authorities(state_path, authorities, queue_path)
             validated_entries = _approved_manifest_entries(
                 proposed,
@@ -2551,7 +2583,43 @@ def _review_generation_cohort(
                     "Cohort review queue changed before the final commit"
                 )
             lease.assert_owned()
-            if decision == "rejected":
+            if is_mixed:
+                # A mixed projection first publishes the conservative manifest,
+                # then the exact per-item state, then its approved-only manifest.
+                # A crash or ownership loss at either boundary can omit a new
+                # approval temporarily, but can never publish a rejected WAV.
+                try:
+                    os.replace(staged_conservative_manifest, manifest_path)
+                    lease.assert_owned()
+                    _assert_review_authorities(state_path, authorities, queue_path)
+                    lease.assert_owned()
+                    os.replace(staged_state, state_path)
+                    lease.assert_owned()
+                    if sha256_file(state_path) != proposed_state_sha256:
+                        raise BulkGenerationError(
+                            "Mixed cohort state changed before manifest publication"
+                        )
+                    if sha256_file(queue_path) != authority_values[0].queue_sha256:
+                        raise BulkGenerationError(
+                            "Cohort review queue changed before manifest publication"
+                        )
+                    current_entries = _approved_manifest_entries(
+                        proposed,
+                        state_path.parent,
+                        validate_files=True,
+                    )
+                    if current_entries != entries:
+                        raise BulkGenerationError(
+                            "Mixed cohort manifest authority changed before publication"
+                        )
+                    lease.assert_owned()
+                    os.replace(staged_manifest, manifest_path)
+                except OSError as error:
+                    raise BulkGenerationError(
+                        "Mixed cohort review did not fully commit; the published "
+                        f"manifest remains fail-closed: {error}"
+                    ) from error
+            elif next(iter(decisions.values())) == "rejected":
                 # Revocation must reach the derived manifest before authority is
                 # committed. A later state failure leaves a conservative
                 # pending item, never a rejected WAV that is still published.
@@ -2588,7 +2656,11 @@ def _review_generation_cohort(
                         f"{error}"
                     ) from error
         finally:
-            for staged in (staged_state, staged_manifest):
+            for staged in (
+                staged_state,
+                staged_manifest,
+                staged_conservative_manifest,
+            ):
                 staged.unlink(missing_ok=True)
         lease.mark_committed()
     committed_state_sha256 = sha256_file(state_path)
@@ -2596,7 +2668,7 @@ def _review_generation_cohort(
         ReviewCommit(
             queue_id=queue_id,
             status=proposed["items"][queue_id]["status"],
-            review_status=decision,
+            review_status=decisions[queue_id],
             updated_at=updated_at,
             authority=ReviewAuthority(
                 queue_sha256=proposed["queue_sha256"],

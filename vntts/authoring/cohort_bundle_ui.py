@@ -360,6 +360,7 @@ class CohortReviewBundleDialog(QDialog):
         self._pending_observation = None
         self._close_after_observation = False
         self._decision_started_at = None
+        self._decision_scope_text = ""
         self._playback_target = None
         self._playback_buffer = None
         self._initial_cohort_count = self.bundle.document["cohort_count"]
@@ -372,7 +373,8 @@ class CohortReviewBundleDialog(QDialog):
         self.heading.setAccessibleName("Specialist voice review")
         self.guide = QLabel(
             "1. Play every required sample   2. Mark any bad sample   "
-            "3. Accept, reject, or request more evidence. Technical attention "
+            "3. Repair marked, accept, reject all, or request more evidence. "
+            "Technical attention "
             "only selects samples for listening; it is not a rejection verdict."
         )
         self.guide.setWordWrap(True)
@@ -461,6 +463,9 @@ class CohortReviewBundleDialog(QDialog):
         self.next = QPushButton("Next sample")
         self.mark_bad = QPushButton("Sample sounds bad")
         self.need_another = QPushButton("Need more evidence")
+        self.leave_undecided = QPushButton("Leave undecided")
+        self.repair_marked = QPushButton("Send marked WAVs to repair and continue")
+        self.repair_marked.setObjectName("repairMarkedWavs")
         self.accept = QPushButton("Accept cohort")
         self.accept.setObjectName("acceptCohort")
         self.reject = QPushButton("Reject cohort")
@@ -473,6 +478,8 @@ class CohortReviewBundleDialog(QDialog):
         self.next.clicked.connect(lambda: self._move(1))
         self.mark_bad.clicked.connect(self.toggle_bad)
         self.need_another.clicked.connect(lambda: self.apply_decision("expand"))
+        self.leave_undecided.clicked.connect(self.close)
+        self.repair_marked.clicked.connect(lambda: self.apply_decision("split"))
         self.accept.clicked.connect(lambda: self.apply_decision("accepted"))
         self.reject.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
@@ -480,14 +487,17 @@ class CohortReviewBundleDialog(QDialog):
         navigation = QHBoxLayout()
         for widget in (self.previous, self.replay, self.stop, self.next):
             navigation.addWidget(widget)
-        decisions = QHBoxLayout()
-        for widget in (
-            self.mark_bad,
-            self.need_another,
-            self.accept,
-            self.reject,
-        ):
-            decisions.addWidget(widget)
+        evidence_actions = QHBoxLayout()
+        evidence_actions.addWidget(self.mark_bad)
+        evidence_actions.addWidget(self.need_another)
+        evidence_actions.addWidget(self.leave_undecided)
+        terminal_actions = QHBoxLayout()
+        terminal_actions.addWidget(self.repair_marked)
+        terminal_actions.addWidget(self.accept)
+        terminal_actions.addWidget(self.reject)
+        decisions = QVBoxLayout()
+        decisions.addLayout(evidence_actions)
+        decisions.addLayout(terminal_actions)
         self.defect_checks = {}
         defect_layout = QGridLayout()
         for index, (reason, label) in enumerate(_DEFECT_REASON_LABELS.items()):
@@ -505,7 +515,8 @@ class CohortReviewBundleDialog(QDialog):
         self.decision_help.setObjectName("decisionHelp")
         self.shortcuts_help = QLabel(
             "Double-click a row or press Space to play/replay | Left/Right sample | "
-            "B mark bad | Ctrl+Enter accept | Ctrl+Backspace reject"
+            "B mark bad | Ctrl+Shift+Enter repair marked | Ctrl+Enter accept | "
+            "Ctrl+Backspace reject all"
         )
         self.shortcuts_help.setWordWrap(True)
         self.shortcuts_help.setObjectName("shortcutHelp")
@@ -616,6 +627,11 @@ class CohortReviewBundleDialog(QDialog):
             QKeySequence("Ctrl+Return"),
             self,
             activated=lambda: self.apply_decision("accepted"),
+        )
+        QShortcut(
+            QKeySequence("Ctrl+Shift+Return"),
+            self,
+            activated=lambda: self.apply_decision("split"),
         )
         QShortcut(
             QKeySequence("Ctrl+Backspace"),
@@ -1150,7 +1166,9 @@ class CohortReviewBundleDialog(QDialog):
             if sample.item.queue_id in self.heard[key]
         ]
         bad = self.bad[key]
-        if decision in {"accepted", "expand"} and len(reviewed) != len(samples):
+        if decision in {"accepted", "split", "expand"} and len(reviewed) != len(
+            samples
+        ):
             self.status.setText("BLOCKED: hear every current sample first")
             return
         if decision == "accepted" and bad:
@@ -1164,6 +1182,30 @@ class CohortReviewBundleDialog(QDialog):
             for value in self.bundle.document["cohorts"]
             if (value["workspace_id"], value["cohort_id"]) == key
         )
+        if decision == "split":
+            source = next(
+                value
+                for value in self.bundle.document["sources"]
+                if value["workspace_id"] == key[0]
+            )
+            plan_cohort = next(
+                value
+                for value in source["plan"]["cohorts"]
+                if value["cohort_id"] == key[1]
+            )
+            sampled_ids = {sample.item.queue_id for sample in samples}
+            target_ids = {value["queue_id"] for value in plan_cohort["items"]}
+            if sampled_ids != target_ids:
+                self.status.setText(
+                    "BLOCKED: mixed review requires one heard sample for every "
+                    "target WAV; request more evidence or leave this cohort undecided"
+                )
+                return
+            if not bad or len(bad) == len(samples):
+                self.status.setText(
+                    "BLOCKED: mixed review requires both marked-bad and acceptable WAVs"
+                )
+                return
         if not self.confirmer(decision, cohort, len(reviewed), len(bad)):
             return
         source = next(
@@ -1179,6 +1221,23 @@ class CohortReviewBundleDialog(QDialog):
             }
             for queue_id in reviewed
         }
+        if decision == "split":
+            self._decision_scope_text = (
+                f"rejecting {len(bad)} marked WAVs for repair; approving "
+                f"{len(reviewed) - len(bad)} individually heard WAVs; leaving "
+                "0 unreviewed WAVs pending"
+            )
+        elif decision == "expand":
+            self._decision_scope_text = (
+                f"requesting more evidence after {len(reviewed)} heard samples; "
+                "changing 0 WAV decisions"
+            )
+        else:
+            verb = "approving" if decision == "accepted" else "rejecting"
+            self._decision_scope_text = (
+                f"{verb} all {cohort['item_count']} cohort WAVs after "
+                f"{len(reviewed)} heard samples"
+            )
         self._decision_active = True
         self._decision_serial += 1
         self._decision_started_at = time.perf_counter()
@@ -1275,6 +1334,14 @@ class CohortReviewBundleDialog(QDialog):
                 f"You heard {reviewed} samples; {bad} are marked bad. "
                 "No WAV will be accepted or rejected."
             )
+        elif decision == "split":
+            acceptable = reviewed - bad
+            title = f"Repair {bad} WAVs and accept {acceptable}?"
+            prompt = (
+                f"Reject exactly {bad} individually heard and marked WAVs for repair, "
+                f"and approve exactly {acceptable} individually heard acceptable WAVs?\n"
+                "No unreviewed WAV is affected. The whole cohort is not rejected."
+            )
         else:
             verb = "Accept" if decision == "accepted" else "Reject"
             title = f"{verb} {item_count} WAVs?"
@@ -1326,6 +1393,7 @@ class CohortReviewBundleDialog(QDialog):
         self.accept.setEnabled(authority_ready and all_heard and not bad)
         self.reject.setEnabled(authority_ready and bool(heard))
         current_clean = 5
+        source = None
         if key is not None:
             source = next(
                 (
@@ -1371,7 +1439,30 @@ class CohortReviewBundleDialog(QDialog):
         self.need_another.setEnabled(
             authority_ready and all_heard and has_more_clean and current_clean < 5
         )
+        self.leave_undecided.setEnabled(
+            not self._decision_active and not self._observation_active
+        )
+        target_ids = (
+            {value["queue_id"] for value in source_plan_cohort["items"]}
+            if source_plan_cohort is not None
+            else set()
+        )
+        sample_ids = {value.item.queue_id for value in samples}
+        split_covers_every_target = bool(target_ids) and sample_ids == target_ids
+        split_acceptable_count = len(samples) - len(bad)
+        self.repair_marked.setEnabled(
+            authority_ready
+            and all_heard
+            and bool(bad)
+            and split_acceptable_count > 0
+            and split_covers_every_target
+        )
         item_count = cohort["item_count"] if cohort is not None else 0
+        self.repair_marked.setText(
+            f"Repair {len(bad)} marked; accept {split_acceptable_count} heard"
+            if bad
+            else "Send marked WAVs to repair and continue"
+        )
         self.accept.setText(
             f"Accept all {item_count} WAVs" if item_count else "Accept cohort"
         )
@@ -1411,10 +1502,20 @@ class CohortReviewBundleDialog(QDialog):
                 "A sample-level bad mark does not reject anything by itself."
             )
         elif bad:
-            decision_text = (
-                f"All samples are heard; {len(bad)} are marked bad. Clear the marks, "
-                "request more evidence, or reject the whole cohort."
-            )
+            if split_covers_every_target and split_acceptable_count:
+                decision_text = (
+                    f"All {len(samples)} target WAVs were individually heard: "
+                    f"repair/reject exactly {len(bad)} marked WAVs and approve exactly "
+                    f"{split_acceptable_count} acceptable WAVs, or deliberately reject "
+                    f"all {item_count}."
+                )
+            else:
+                unsampled = max(0, item_count - len(sample_ids))
+                decision_text = (
+                    f"{len(bad)} heard samples are marked bad, but {unsampled} target "
+                    "WAVs were not individually sampled. Mixed review is blocked so no "
+                    "sibling is approved implicitly; request more evidence or leave undecided."
+                )
         else:
             decision_text = (
                 f"All {len(samples)} required samples sound acceptable. Accept will "
@@ -1438,8 +1539,22 @@ class CohortReviewBundleDialog(QDialog):
         self.reject.setToolTip(
             "Reject applies to every WAV in this exact cohort; hear at least one sample first."
         )
+        self.repair_marked.setToolTip(
+            "Reject only marked WAVs and approve only individually heard acceptable WAVs."
+            if split_covers_every_target
+            else "Unavailable until every target WAV is represented by an individually heard sample."
+        )
         self.need_another.setToolTip(
-            "Request another clean checksum-bound sample when the current evidence is inconclusive."
+            "Hear every current sample before requesting more evidence."
+            if not all_heard
+            else "The five-sample evidence bound has been reached."
+            if current_clean >= 5
+            else "No unsampled technically clean evidence remains in this cohort."
+            if not has_more_clean
+            else "Request one more clean checksum-bound sample without changing WAV authority."
+        )
+        self.leave_undecided.setToolTip(
+            "Close with heard and defect observations checkpointed; no WAV is approved or rejected."
         )
         self._update_selected_sample_details()
         self._update_operation_status()
@@ -1453,8 +1568,8 @@ class CohortReviewBundleDialog(QDialog):
                 else 0.0
             )
             self.operation.setText(
-                f"Saving in background ({elapsed:.1f}s): Accept, Reject and Mark "
-                "bad are disabled "
+                f"Saving in background ({elapsed:.1f}s), {self._decision_scope_text}: "
+                "Accept, Reject, repair and Mark bad are disabled "
                 "to prevent a second state mutation. Replay and sample navigation "
                 "remain available until the decision commits."
             )

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -68,6 +69,68 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(CohortReviewError, "inventory changed"):
                 load_cohort_review_bundle(path)
+
+    def test_reconciliation_accepts_only_the_exact_mixed_item_projection(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            items = []
+            queue = {}
+            state_items = {}
+            statuses = ("rejected", "approved")
+            for index, review_status in enumerate(statuses, start=1):
+                queue_id = f"queue-{index}"
+                text = f"Exact line {index}."
+                audio = output / f"audio-{index}.wav"
+                audio.write_bytes(f"audio-{index}".encode())
+                audio_sha256 = hashlib.sha256(audio.read_bytes()).hexdigest()
+                items.append(
+                    {
+                        "queue_id": queue_id,
+                        "line_id": f"line-{index}",
+                        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        "audio_sha256": audio_sha256,
+                        "technical_flags": [],
+                    }
+                )
+                queue[queue_id] = {"text": text}
+                state_items[queue_id] = {
+                    "status": (
+                        "approved" if review_status == "approved" else "generated"
+                    ),
+                    "review_status": review_status,
+                    "path": audio.name,
+                    "file_sha256": audio_sha256,
+                }
+            cohort = {"cohort_id": "a" * 64, "items": items}
+            decision = {
+                "cohort_id": cohort["cohort_id"],
+                "decision": "split",
+                "projection_review_status": None,
+                "target_items": items,
+                "item_review_statuses": [
+                    {"queue_id": item["queue_id"], "review_status": status}
+                    for item, status in zip(items, statuses, strict=True)
+                ],
+            }
+            current = {
+                "queue": queue,
+                "items": state_items,
+                "output": output,
+                "artifacts": [],
+            }
+
+            outcome = cohort_bundle_module._reconciled_cohort_outcome(
+                cohort, current, [decision]
+            )
+            state_items["queue-1"].update(
+                {"status": "approved", "review_status": "approved"}
+            )
+            with self.assertRaisesRegex(CohortReviewError, "mixed or inconsistent"):
+                cohort_bundle_module._reconciled_cohort_outcome(
+                    cohort, current, [decision]
+                )
+
+        self.assertTrue(outcome["terminal"])
 
     def test_refresh_rejects_changed_source_authority(self):
         with TemporaryDirectory() as directory:
@@ -315,6 +378,82 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ())
+
+    def test_successor_restores_only_exact_remaining_observations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            keys = {
+                (cohort["workspace_id"], cohort["cohort_id"]): {
+                    sample["queue_id"] for sample in cohort["samples"]
+                }
+                for cohort in bundle.document["cohorts"]
+            }
+            cohort_by_key = {
+                (cohort["workspace_id"], cohort["cohort_id"]): cohort
+                for cohort in bundle.document["cohorts"]
+            }
+            cohort_bundle_module.write_cohort_review_observations(
+                publication,
+                bundle,
+                bundle,
+                keys,
+                {next(iter(keys)): set(next(iter(keys.values())))},
+                {
+                    next(iter(keys)): {
+                        next(iter(next(iter(keys.values())))): {"pause_or_pacing"}
+                    }
+                },
+            )
+            completed_key = next(iter(keys))
+            completed = cohort_by_key[completed_key]
+            projection = execute_cohort_bundle_decision(
+                bundle,
+                completed["workspace_id"],
+                completed["cohort_id"],
+                "rejected",
+                reviewed_queue_ids=[completed["samples"][0]["queue_id"]],
+            )
+
+            recovered = cohort_bundle_module.load_cohort_review_observations(
+                publication,
+                bundle,
+                projection.next_bundle,
+            )
+            observations_path = cohort_bundle_module.cohort_review_observations_path(
+                publication
+            )
+            forged = json.loads(observations_path.read_text(encoding="utf-8"))
+            foreign = dict(forged["observations"][0])
+            foreign["queue_id"] = "foreign-queue"
+            forged["observations"].append(foreign)
+            forged["observations_id"] = cohort_bundle_module._canonical_sha256(
+                {
+                    key: value
+                    for key, value in forged.items()
+                    if key != "observations_id"
+                }
+            )
+            observations_path.write_text(
+                json.dumps(forged, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(CohortReviewError, "authority is invalid"):
+                cohort_bundle_module.load_cohort_review_observations(
+                    publication,
+                    bundle,
+                    projection.next_bundle,
+                )
+
+        remaining_ids = {
+            sample["queue_id"]
+            for cohort in projection.next_bundle.document["cohorts"]
+            for sample in cohort["samples"]
+        }
+        self.assertEqual({value.queue_id for value in recovered}, remaining_ids)
+        self.assertTrue(all(value.assessment == "heard" for value in recovered))
 
     def test_cli_publishes_the_exact_bundle(self):
         with TemporaryDirectory() as directory:

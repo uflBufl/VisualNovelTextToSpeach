@@ -17,6 +17,8 @@ from vntts.authoring.cohort_review import (
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
     _load_document,
+    _required_sha256,
+    _required_text,
     _validate_decision_against_plan,
     _validated_decision_document,
     _validated_plan_document,
@@ -374,8 +376,17 @@ def load_cohort_review_observations(publication, original, current):
         or document.get("observations_id") != _canonical_sha256(body)
     ):
         raise CohortReviewError("Cohort review observations identity is invalid")
-    if document.get("current_bundle_id") != active["bundle_id"]:
-        return ()
+    observed_bundle_id = _required_sha256(
+        document.get("current_bundle_id"), "Cohort observations current bundle ID"
+    )
+    current_identity_matches = observed_bundle_id == active["bundle_id"]
+    root_allowed = {
+        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
+            "audio_sha256"
+        ]
+        for cohort in root["cohorts"]
+        for sample in cohort["samples"]
+    }
     allowed = {
         (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
             "audio_sha256"
@@ -392,25 +403,26 @@ def load_cohort_review_observations(publication, original, current):
     for entry in entries:
         if not isinstance(entry, dict):
             raise CohortReviewError("Cohort review observation must be an object")
+        if set(entry) != {
+            "workspace_id",
+            "cohort_id",
+            "queue_id",
+            "audio_sha256",
+            "assessment",
+            *({"defect_reasons"} if version == 2 else set()),
+        }:
+            raise CohortReviewError("Cohort review observation authority is invalid")
         key = (
-            entry.get("workspace_id"),
-            entry.get("cohort_id"),
-            entry.get("queue_id"),
+            _required_text(
+                entry.get("workspace_id"), "Cohort observation workspace ID"
+            ),
+            _required_sha256(entry.get("cohort_id"), "Cohort observation cohort ID"),
+            _required_text(entry.get("queue_id"), "Cohort observation queue ID"),
         )
-        if (
-            key in seen
-            or allowed.get(key) != entry.get("audio_sha256")
-            or entry.get("assessment") not in {"heard", "bad"}
-            or set(entry)
-            != {
-                "workspace_id",
-                "cohort_id",
-                "queue_id",
-                "audio_sha256",
-                "assessment",
-                *({"defect_reasons"} if version == 2 else set()),
-            }
-        ):
+        audio_sha256 = _required_sha256(
+            entry.get("audio_sha256"), "Cohort observation audio sha256"
+        )
+        if key in seen or entry.get("assessment") not in {"heard", "bad"}:
             raise CohortReviewError("Cohort review observation authority is invalid")
         reasons = entry.get("defect_reasons", [])
         if (
@@ -424,6 +436,14 @@ def load_cohort_review_observations(publication, original, current):
                 "Cohort review observation defect reasons are invalid"
             )
         seen.add(key)
+        if key not in allowed:
+            if current_identity_matches or root_allowed.get(key) != audio_sha256:
+                raise CohortReviewError(
+                    "Cohort review observation authority is invalid"
+                )
+            continue
+        if allowed[key] != audio_sha256:
+            raise CohortReviewError("Cohort review observation authority is invalid")
         recovered.append(
             CohortReviewRecoveredAssessment(
                 workspace_id=key[0],
@@ -780,8 +800,20 @@ def _reconciled_cohort_outcome(cohort, current, decisions):
     ]
     expansions = [value for value in matching if value["decision"] == "expand"]
     terminal = [value for value in matching if value["decision"] != "expand"]
-    terminal_statuses = {value["projection_review_status"] for value in terminal}
-    if len(terminal_statuses) > 1:
+    terminal_projections = []
+    for value in terminal:
+        item_statuses = value.get("item_review_statuses")
+        if isinstance(item_statuses, list):
+            projection = tuple(
+                (item["queue_id"], item["review_status"]) for item in item_statuses
+            )
+        else:
+            projection = tuple(
+                (item["queue_id"], value["projection_review_status"])
+                for item in value["target_items"]
+            )
+        terminal_projections.append(projection)
+    if len(set(terminal_projections)) > 1:
         raise CohortReviewError("Cohort review evidence has conflicting decisions")
     clean_samples = max(
         [
@@ -792,6 +824,7 @@ def _reconciled_cohort_outcome(cohort, current, decisions):
         or [1]
     )
     observed = []
+    observed_by_id = {}
     for item in target:
         queue_id = item["queue_id"]
         queue_item = current["queue"].get(queue_id)
@@ -817,7 +850,9 @@ def _reconciled_cohort_outcome(cohort, current, decisions):
         ):
             raise CohortReviewError(f"Bundle cohort WAV changed: {queue_id}")
         current["artifacts"].append((audio, item["audio_sha256"], queue_id))
-        observed.append((result.get("status"), result.get("review_status")))
+        outcome = (result.get("status"), result.get("review_status"))
+        observed.append(outcome)
+        observed_by_id[queue_id] = outcome
     pending = set(observed) == {("generated", "pending_review")}
     if pending:
         if terminal:
@@ -826,15 +861,22 @@ def _reconciled_cohort_outcome(cohort, current, decisions):
             "terminal": False,
             "clean_samples_per_bucket": clean_samples,
         }
-    if not terminal or len(terminal_statuses) != 1:
+    if not terminal:
         raise CohortReviewError("Cohort changed without exact terminal evidence")
-    review_status = next(iter(terminal_statuses))
-    expected = (
-        ("approved", "approved")
-        if review_status == "approved"
-        else ("generated", "rejected")
-    )
-    if set(observed) != {expected}:
+    expected_by_id = {
+        queue_id: (
+            ("approved", "approved")
+            if review_status == "approved"
+            else ("generated", "rejected")
+        )
+        for queue_id, review_status in terminal_projections[0]
+    }
+    if set(expected_by_id) != {item["queue_id"] for item in target}:
+        raise CohortReviewError("Cohort terminal projection is incomplete")
+    if any(
+        observed_by_id[queue_id] != expected
+        for queue_id, expected in expected_by_id.items()
+    ):
         raise CohortReviewError("Cohort terminal state is mixed or inconsistent")
     return {"terminal": True, "clean_samples_per_bucket": clean_samples}
 

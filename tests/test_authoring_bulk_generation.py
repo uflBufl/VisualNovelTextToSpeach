@@ -1014,6 +1014,158 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(result.state.read_bytes(), state_before)
             self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
+    def test_mixed_cohort_commit_projects_each_item_and_only_approved_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = {
+                item["queue_id"]: generation_review_authority(
+                    result.state, item["queue_id"]
+                )
+                for item in (first, second)
+            }
+
+            commits = bulk_module._review_generation_cohort(
+                result.state,
+                queue,
+                authorities,
+                {
+                    first["queue_id"]: "rejected",
+                    second["queue_id"]: "approved",
+                },
+                provenance={"test": "mixed-cohort"},
+            )
+
+            state = load_generation_state(result.state)
+            manifest = GeneratedAudioIndex.load(result.manifest)
+
+        self.assertEqual(
+            {
+                queue_id: (item["status"], item["review_status"])
+                for queue_id, item in state["items"].items()
+            },
+            {
+                first["queue_id"]: ("generated", "rejected"),
+                second["queue_id"]: ("approved", "approved"),
+            },
+        )
+        self.assertEqual(
+            [(commit.queue_id, commit.review_status) for commit in commits],
+            [
+                (first["queue_id"], "rejected"),
+                (second["queue_id"], "approved"),
+            ],
+        )
+        self.assertEqual(
+            [entry.line_id for entry in manifest.entries],
+            [second["line_id"]],
+        )
+
+    def test_mixed_cohort_wav_change_during_staging_commits_nothing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = {
+                item["queue_id"]: generation_review_authority(
+                    result.state, item["queue_id"]
+                )
+                for item in (first, second)
+            }
+            state = load_generation_state(result.state, queue)
+            audio = result.state.parent / state["items"][first["queue_id"]]["path"]
+            state_before = result.state.read_bytes()
+            manifest_before = result.manifest.read_bytes()
+            original_writer = bulk_module._write_generated_manifest_from_state
+            writes = 0
+
+            def mutate_after_conservative_staging(*arguments, **options):
+                nonlocal writes
+                written = original_writer(*arguments, **options)
+                writes += 1
+                if writes == 2:
+                    write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
+                return written
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "_write_generated_manifest_from_state",
+                    side_effect=mutate_after_conservative_staging,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "authority changed"),
+            ):
+                bulk_module._review_generation_cohort(
+                    result.state,
+                    queue,
+                    authorities,
+                    {
+                        first["queue_id"]: "rejected",
+                        second["queue_id"]: "approved",
+                    },
+                    provenance={"test": "mixed-wav-race"},
+                )
+
+            self.assertEqual(result.state.read_bytes(), state_before)
+            self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
+    def test_mixed_cohort_lease_loss_after_state_keeps_manifest_conservative(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            queue = write_queue(root / "queue.jsonl", [first, second])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = {
+                item["queue_id"]: generation_review_authority(
+                    result.state, item["queue_id"]
+                )
+                for item in (first, second)
+            }
+            original_replace = os.replace
+
+            def steal_after_state_replace(source, destination):
+                replaced = original_replace(source, destination)
+                if Path(destination).resolve() == result.state.resolve():
+                    lease_path = result.state.parent / ".generation-lease.json"
+                    lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                    lease["lease_id"] = "stolen-after-mixed-state"
+                    atomic_write_json(lease_path, lease, sort_keys=True)
+                return replaced
+
+            with (
+                patch.object(
+                    bulk_module.os,
+                    "replace",
+                    side_effect=steal_after_state_replace,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
+            ):
+                bulk_module._review_generation_cohort(
+                    result.state,
+                    queue,
+                    authorities,
+                    {
+                        first["queue_id"]: "rejected",
+                        second["queue_id"]: "approved",
+                    },
+                    provenance={"test": "mixed-lease-race"},
+                )
+
+            state = load_generation_state(result.state, queue)
+            manifest = GeneratedAudioIndex.load(result.manifest)
+
+        self.assertEqual(state["items"][first["queue_id"]]["review_status"], "rejected")
+        self.assertEqual(
+            state["items"][second["queue_id"]]["review_status"], "approved"
+        )
+        self.assertEqual(manifest.entries, ())
+
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

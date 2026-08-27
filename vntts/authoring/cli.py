@@ -770,7 +770,7 @@ def create_parser():
     cohort_bundle_apply.add_argument("workspace_id")
     cohort_bundle_apply.add_argument("cohort_id")
     cohort_bundle_apply.add_argument(
-        "decision", choices=("accepted", "rejected", "expand")
+        "decision", choices=("accepted", "rejected", "split", "expand")
     )
     cohort_bundle_apply.add_argument("--reviewed-queue-id", action="append", default=[])
     cohort_bundle_apply.add_argument("--bad-queue-id", action="append", default=[])
@@ -813,12 +813,20 @@ def create_parser():
     )
     cohort_decision.add_argument("plan", type=Path)
     cohort_decision.add_argument("cohort_id")
-    cohort_decision.add_argument("decision", choices=("accepted", "rejected", "expand"))
+    cohort_decision.add_argument(
+        "decision", choices=("accepted", "rejected", "split", "expand")
+    )
     cohort_decision.add_argument(
         "--reviewed-queue-id",
         action="append",
         default=[],
         help="Exact sampled queue ID actually reviewed; repeat for each WAV",
+    )
+    cohort_decision.add_argument(
+        "--bad-queue-id",
+        action="append",
+        default=[],
+        help="Reviewed queue ID marked bad; repeat as needed",
     )
     cohort_decision.add_argument("--next-clean-samples-per-bucket", type=int)
     cohort_decision.add_argument("--output", type=Path, required=True)
@@ -1602,13 +1610,10 @@ def main(argv=None):
                 raise CohortReviewError(
                     f"Bad queue IDs were not reviewed: {unexpected}"
                 )
-            assessments = [
-                {
-                    "queue_id": queue_id,
-                    "assessment": "bad" if queue_id in bad else "heard",
-                }
+            assessments = {
+                queue_id: "bad" if queue_id in bad else "acceptable"
                 for queue_id in arguments.reviewed_queue_id
-            ]
+            }
             projection = execute_cohort_bundle_decision(
                 load_cohort_review_bundle(arguments.bundle),
                 arguments.workspace_id,
@@ -1731,11 +1736,25 @@ def main(argv=None):
             )
             return 0
         if arguments.command == "cohort-review-decision":
+            bad = set(arguments.bad_queue_id)
+            unexpected = sorted(bad - set(arguments.reviewed_queue_id))
+            if unexpected:
+                raise CohortReviewError(
+                    f"Bad queue IDs were not reviewed: {unexpected}"
+                )
             decision = build_cohort_review_decision(
                 load_cohort_review_plan(arguments.plan),
                 arguments.cohort_id,
                 arguments.decision,
                 reviewed_queue_ids=arguments.reviewed_queue_id,
+                sample_assessments=(
+                    {
+                        queue_id: "bad" if queue_id in bad else "acceptable"
+                        for queue_id in arguments.reviewed_queue_id
+                    }
+                    if bad or arguments.decision == "split"
+                    else None
+                ),
                 next_clean_samples_per_bucket=(arguments.next_clean_samples_per_bucket),
             )
             write_cohort_review_decision(decision, arguments.output)

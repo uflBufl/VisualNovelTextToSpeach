@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stdout
+from copy import deepcopy
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -163,6 +164,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.accept.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
             self.assertTrue(dialog.mark_bad.isEnabled())
+            self.assertTrue(dialog.leave_undecided.isVisible())
             self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
             self.assertIn("All 1 required samples", dialog.decision_help.text())
 
@@ -246,6 +248,126 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             },
         )
 
+    def test_mixed_action_projects_only_individually_heard_marked_scope(self):
+        calls = []
+
+        def execute(*arguments):
+            calls.append(arguments)
+            return SimpleNamespace(next_bundle=arguments[0])
+
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(
+                bundle,
+                confirmer=lambda *_args: True,
+                decision_executor=execute,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            second_item = replace(
+                first.item,
+                queue_id=f"{first.item.queue_id}-second",
+                line_id=f"{first.item.line_id}-second",
+                text="Second individually heard generated WAV.",
+            )
+            second = replace(first, item=second_item)
+            key = dialog._current_key()
+            dialog.samples_by_cohort[key] = (first, second)
+            bundle_cohort = next(
+                value
+                for value in dialog.bundle.document["cohorts"]
+                if (value["workspace_id"], value["cohort_id"]) == key
+            )
+            second_sample = deepcopy(bundle_cohort["samples"][0])
+            second_sample["queue_id"] = second_item.queue_id
+            second_sample["line_id"] = second_item.line_id
+            second_sample["text"] = second_item.text
+            bundle_cohort["samples"].append(second_sample)
+            bundle_cohort["item_count"] = 2
+            source = next(
+                value
+                for value in dialog.bundle.document["sources"]
+                if value["workspace_id"] == key[0]
+            )
+            plan_cohort = next(
+                value
+                for value in source["plan"]["cohorts"]
+                if value["cohort_id"] == key[1]
+            )
+            second_target = deepcopy(plan_cohort["items"][0])
+            second_target["queue_id"] = second_item.queue_id
+            second_target["line_id"] = second_item.line_id
+            second_target["sampled"] = True
+            plan_cohort["items"].append(second_target)
+            plan_cohort["sample_queue_ids"].append(second_item.queue_id)
+            plan_cohort["item_count"] = 2
+            dialog.heard[key].update({first.item.queue_id, second_item.queue_id})
+            dialog.bad[key].add(first.item.queue_id)
+            dialog.bad_reasons[key][first.item.queue_id] = {"pause_or_pacing"}
+            dialog._show_current_cohort()
+
+            self.assertTrue(dialog.repair_marked.isEnabled())
+            self.assertEqual(
+                dialog.repair_marked.text(), "Repair 1 marked; accept 1 heard"
+            )
+            self.assertIn("individually heard", dialog.decision_help.text())
+            dialog.apply_decision("split")
+            self.wait_for(lambda: bool(calls) and not dialog._decision_active)
+
+        self.assertEqual(calls[0][3], "split")
+        self.assertEqual(calls[0][4], [first.item.queue_id, second_item.queue_id])
+        self.assertEqual(
+            calls[0][5],
+            {
+                first.item.queue_id: {
+                    "assessment": "bad",
+                    "defect_reasons": ["pause_or_pacing"],
+                },
+                second_item.queue_id: {
+                    "assessment": "acceptable",
+                    "defect_reasons": [],
+                },
+            },
+        )
+
+    def test_mixed_action_is_disabled_when_a_target_was_not_sampled(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            source = next(
+                value
+                for value in dialog.bundle.document["sources"]
+                if value["workspace_id"] == key[0]
+            )
+            plan_cohort = next(
+                value
+                for value in source["plan"]["cohorts"]
+                if value["cohort_id"] == key[1]
+            )
+            unsampled = deepcopy(plan_cohort["items"][0])
+            unsampled["queue_id"] = f"{sample.item.queue_id}-unsampled"
+            unsampled["sampled"] = False
+            plan_cohort["items"].append(unsampled)
+            plan_cohort["item_count"] = 2
+            bundle_cohort = next(
+                value
+                for value in dialog.bundle.document["cohorts"]
+                if (value["workspace_id"], value["cohort_id"]) == key
+            )
+            bundle_cohort["item_count"] = 2
+            dialog.heard[key].add(sample.item.queue_id)
+            dialog.bad[key].add(sample.item.queue_id)
+            dialog.bad_reasons[key][sample.item.queue_id] = {"pause_or_pacing"}
+            dialog._show_current_cohort()
+
+        self.assertFalse(dialog.repair_marked.isEnabled())
+        self.assertIn("not individually sampled", dialog.decision_help.text())
+
     def test_space_and_bad_shortcuts_work_from_table_at_compact_size(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
@@ -311,6 +433,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertFalse(dialog.accept.isEnabled())
             self.assertTrue(dialog.progress.isVisible())
             self.assertIn("Saving in background", dialog.operation.text())
+            self.assertIn("approving all 1 cohort WAVs", dialog.operation.text())
             release.set()
             self.wait_for(lambda: bool(calls) and not dialog._decision_active)
 

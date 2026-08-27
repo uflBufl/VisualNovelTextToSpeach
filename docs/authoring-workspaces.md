@@ -734,7 +734,9 @@ Publish a plan with `--output PLAN.json`, then use
 `vntts-pregenerate cohort-review-decision PLAN.json COHORT_ID DECISION` with one
 `--reviewed-queue-id` for every WAV actually heard. An `accepted` decision
 requires every sampled WAV; `rejected` requires at least one exact sampled WAV
-as evidence; `expand` requires the complete current sample and a larger bounded
+as evidence; `split` requires every target WAV to be individually sampled and
+heard, at least one bad WAV and at least one acceptable WAV; `expand` requires
+the complete current sample and a larger bounded
 `--next-clean-samples-per-bucket`. The no-replace decision document binds the
 plan/cohort identity, every reviewed sample and every target line/text/WAV hash.
 It records human evidence only: it does not change generation state, approvals,
@@ -744,7 +746,12 @@ DECISION.json` reloads only the controls bound by the exact plan, rejects any
 changed workspace/configuration identity, state, queue, item or WAV authority,
 and commits every target item in one leased state
 transaction. Approved-manifest projection retains the decision, sample and
-target-audio provenance. `expand` decisions cannot be applied.
+target-audio provenance. A split transaction projects an exact per-queue-ID
+approved/rejected map. It publishes a conservative manifest before changing
+state and publishes the final approved-only manifest only after the exact mixed
+state is authoritative; an interrupted transaction can temporarily omit a new
+approval but cannot publish a rejected WAV. `expand` decisions cannot be
+applied.
 
 The workbench exposes the same flow under `Checksum-bound cohort review`.
 Planning and projection run off the Qt thread. A visible ordered table shows
@@ -772,17 +779,24 @@ or pacing, repetition, truncation/missing words, pronunciation/wrong words,
 timbre/audio artifact, wrong speaker identity, or other/unclear. The quick bad
 button selects `other/unclear`; it never invents a more specific cause. Clearing
 every reason clears the reversible sample-level bad assessment. A bad marker
-does not reject the cohort, but blocks `Accept cohort` until cleared;
-`Reject cohort` remains an explicit separate action. The confirmation reports
-the heard-sample count, bad-sample count and exact target-WAV count.
+does not reject the cohort, but blocks `Accept cohort` until cleared. When every
+target WAV is an individually heard sample and the set contains both bad and
+acceptable WAVs, `Send marked WAVs to repair and continue` rejects only the
+marked identities and approves only the individually heard acceptable
+identities. If any target is unsampled, that mixed action is disabled rather
+than guessing a sibling outcome. `Reject cohort` remains an explicit separate
+action affecting every target. The confirmation reports the exact bad,
+acceptable, unreviewed and whole-cohort scopes.
 
-Decision schema version 2 binds the sorted independent defect reasons beside
-every ordered `acceptable` or `bad` sample assessment. Listening-observation
+Decision schema version 3 adds an ordered per-item projection to the version-2
+sorted independent defect reasons beside every ordered `acceptable` or `bad`
+sample assessment. Listening-observation
 schema version 2 checkpoints those reasons in the background so close/reopen
-does not lose them. Version-1 decisions and observations remain readable with
-no guessed reason; a new API caller that supplies only `bad` records the honest
-`unspecified` reason. Reasons are diagnostic evidence only and do not alter the
-terminal approve/reject projection. The workbench writes idempotent immutable
+does not lose them. Version-1 and version-2 decisions and version-1 observations
+remain readable with no guessed reason; a new API caller that supplies only
+`bad` records the honest `unspecified` reason. Reasons are diagnostic evidence;
+only an explicit terminal action turns them into a bound per-item or
+whole-cohort projection. The workbench writes idempotent immutable
 plan/decision evidence under the workspace
 `cohort-reviews/` directory before a terminal projection, asks for confirmation,
 and reloads authority afterwards. The controls never auto-apply anything on
@@ -812,8 +826,10 @@ Previous/Replay/Stop/Next in one fixed row and leaves playback/navigation live
 while a source-local decision is saving. A sample counts as heard only after
 exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 Bad reasons are reversible, `Accept cohort` requires every current sample and
-no bad marker, `Reject cohort` requires heard evidence, and `Need another
-sample` is enabled only when the exact cohort has an unsampled clean item.
+no bad marker, `Reject cohort` requires heard evidence, and `Need more evidence`
+is enabled only when the exact cohort has an unsampled clean item. The mixed
+repair action is a separate stable button and is enabled only when every target
+is individually sampled and heard.
 
 When the same exact voice controls were accepted in an earlier story, bind that
 evidence explicitly instead of asking the operator to infer it from the cohort:
@@ -847,9 +863,11 @@ automatically. If the process stops in the narrow window
 after the authoritative review commit but before the progress write, recovery
 scans only immutable `cohort-reviews/plan-*.json` and
 `cohort-reviews/decision-*.json` evidence, requires every target queue/text/WAV
-identity and a uniform terminal state, and reconstructs the successor. A mixed
-cohort, missing decision, changed queue, state or WAV blocks instead of being
-guessed. Progress files cannot be symlinks and cannot introduce a workspace,
+identity and its terminal state, and reconstructs the successor. A mixed state
+is accepted only when a version-3 split decision binds the exact status of every
+target; an unbound mixed cohort, missing decision, changed queue, state or WAV
+blocks instead of being guessed. Progress files cannot be symlinks and cannot
+introduce a workspace,
 cohort or item outside the published task.
 
 An `expand` recovery permits only deterministic growth of the cohort's sampled
@@ -896,8 +914,9 @@ cohort then disappears from the bundle and the first remaining cohort is
 selected automatically.
 
 The reviewer is organized around the operator's three actual steps: play every
-required sample, mark any sample that sounds bad, then accept/reject the cohort
-or request more evidence. Overall cohort progress, current heard/bad counts and
+required sample, mark any sample that sounds bad, then repair the exact marked
+WAVs, accept/reject the cohort, or request more evidence. Overall cohort
+progress, current heard/bad counts and
 the exact number of WAVs affected by a terminal decision stay visible. The full
 spoken text has its own selectable card; the sample list keeps source label and
 generated role distinct so `Narrator` is not presented as a character/reference
@@ -912,8 +931,9 @@ the independent publication safety gate.
 
 Playback is available by button, row double-click or Space. Left/Right changes
 the selected sample, B toggles its bad evidence after a complete listen,
-Ctrl+Enter accepts and Ctrl+Backspace rejects when the same visible gates allow
-the corresponding button. Disabled actions retain an adjacent plain-language
+Ctrl+Shift+Enter applies the exact mixed repair action, Ctrl+Enter accepts and
+Ctrl+Backspace rejects when the same visible gates allow the corresponding
+button. Disabled actions retain an adjacent plain-language
 reason and explanatory tooltip. The layout was rendered against the current
 18-cohort bundle at 1280x820 and at its 900x820 minimum without overlapping the
 sample table, playback controls or decision area; Qt regressions retain those
@@ -925,7 +945,9 @@ checkpoint is bound to the root bundle, current successor bundle, workspace,
 cohort, queue ID and WAV SHA-256. Closing and reopening therefore does not force
 unchanged samples to be heard again. The sidecar is deliberately
 non-authoritative: it cannot approve/reject a cohort, and observations from a
-different successor identity are ignored.
+different successor restore only entries whose current workspace, cohort,
+queue ID and WAV SHA-256 still match exactly. Entries for already completed
+cohorts are ignored; changed or foreign current entries fail closed.
 
 The real ten-source specialist bundle opened its 81 exact samples in 0.078
 seconds through the targeted loader; an offscreen dialog populated 18 cohorts
