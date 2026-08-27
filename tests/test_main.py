@@ -2661,6 +2661,95 @@ class MainTest(unittest.TestCase):
         self.assertEqual(narrator, "Narrator")
         self.assertEqual(backend.prepare_calls[-1], ("Narrator", "Narrator."))
 
+    def test_fallback_role_mode_announces_only_bound_generated_narrator_roles(self):
+        backend = RecordingAnnouncementBackend()
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="narrator-fallback-roles"),
+            tts_factory=Mock(),
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+
+        def generated(role=None):
+            return GeneratedAudioRoute(
+                PreparedGeneratedAudio(
+                    "game:1",
+                    "a" * 64,
+                    np.array([0.0], dtype=np.float32),
+                    24_000,
+                    narrator_fallback_role=role,
+                ),
+                stub_route_trace("generated", "game:1"),
+            )
+
+        true_narrator, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(1, "Narrator", "Narration.", ordinal=1), generated()
+        )
+        poacher, poacher_label = controller._prepare_speaker_announcement(
+            SpeechChunk(2, "Poacher I", "Stop there.", ordinal=1),
+            generated("Poacher I"),
+        )
+        same_poacher, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(3, "Poacher I", "Again.", ordinal=1),
+            generated("Poacher I"),
+        )
+        narrator_again, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(4, "Narrator", "Narration.", ordinal=1), generated()
+        )
+        poacher_again, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(5, "Poacher I", "Return.", ordinal=1),
+            generated("Poacher I"),
+        )
+        unknown, unknown_label = controller._prepare_speaker_announcement(
+            SpeechChunk(6, "???", "Who am I?", ordinal=1), generated("Unknown")
+        )
+
+        self.assertIsNone(true_narrator)
+        self.assertIsNotNone(poacher)
+        self.assertEqual(poacher_label, "Poacher I")
+        self.assertIsNone(same_poacher)
+        self.assertIsNone(narrator_again)
+        self.assertIsNotNone(poacher_again)
+        self.assertIsNotNone(unknown)
+        self.assertEqual(unknown_label, "Unknown")
+        self.assertEqual(
+            backend.prepare_calls,
+            [
+                ("Narrator", "Poacher I."),
+                ("Narrator", "Poacher I."),
+                ("Narrator", "Unknown."),
+            ],
+        )
+
+    def test_fallback_role_mode_does_not_announce_live_or_game_routes(self):
+        backend = RecordingAnnouncementBackend()
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="narrator-fallback-roles"),
+            tts_factory=Mock(),
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+        live = backend.prepare_playback("Narrator", "Line.")
+        source = SourceAudioRoute(
+            PreparedSourceAudioPassThrough("game:1", "a" * 64, "voice-1", 1.0),
+            stub_route_trace("game-source", "game:1"),
+        )
+
+        live_announcement, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(1, "Poacher I", "Line.", ordinal=1), live
+        )
+        source_announcement, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(2, "Poacher I", "Original.", ordinal=1), source
+        )
+
+        self.assertIsNone(live_announcement)
+        self.assertIsNone(source_announcement)
+        self.assertEqual(backend.prepare_calls, [("Narrator", "Line.")])
+
     def test_failed_speaker_announcement_does_not_skip_dialogue(self):
         errors = []
         backend = RecordingAnnouncementBackend(

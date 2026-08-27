@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 23
+settings_schema_version = 24
 
 audio_source_policies = {
     "live-tts-only",
@@ -17,6 +17,11 @@ audio_source_policies = {
     "prefer-game-audio",
 }
 default_audio_source_policy = "live-tts-only"
+speaker_announcement_modes = {
+    "off",
+    "all-speakers",
+    "narrator-fallback-roles",
+}
 restart_required_setting_names = (
     "speech_backend",
     "tts_model",
@@ -76,6 +81,8 @@ class AppSettings:
     live_idle_flush_ms: int = 400
     live_min_chunk_characters: int = 20
     auto_advance_enabled: bool = False
+    speaker_announcement_mode: str = "off"
+    # Compatibility for callers and settings written before schema 24.
     announce_speaker_changes: bool = False
     auto_advance_key: str = "space"
     auto_advance_delay_ms: int = 350
@@ -126,6 +133,7 @@ class AppSettings:
             "auto_advance_key",
             "speech_backend",
             "audio_source_policy",
+            "speaker_announcement_mode",
             "emergency_stop_hotkey",
         )
         optional_string_fields = (
@@ -237,6 +245,15 @@ class AppSettings:
             warn("Invalid 'audio_source_policy' setting; using its default")
             parsed["audio_source_policy"] = defaults.audio_source_policy
 
+        if parsed["speaker_announcement_mode"] not in speaker_announcement_modes:
+            warn("Invalid 'speaker_announcement_mode' setting; using its default")
+            parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
+        if (
+            "speaker_announcement_mode" not in values
+            and parsed["announce_speaker_changes"]
+        ):
+            parsed["speaker_announcement_mode"] = "all-speakers"
+
         voice_assignments = values.get("voice_assignments", defaults.voice_assignments)
         if isinstance(voice_assignments, dict) and all(
             isinstance(character, str)
@@ -263,6 +280,14 @@ class AppSettings:
             parsed["force_live_narrator"] = True
 
         return cls(**parsed)
+
+    @property
+    def effective_speaker_announcement_mode(self):
+        if self.speaker_announcement_mode != "off":
+            return self.speaker_announcement_mode
+        if self.announce_speaker_changes:
+            return "all-speakers"
+        return "off"
 
     def with_environment_overrides(self, environment=None, *, warn=None):
         environment = os.environ if environment is None else environment

@@ -13,15 +13,15 @@ from time import monotonic
 import numpy as np
 from vntts_artifacts.audio import Pcm16MonoWavError
 from vntts_artifacts.generated_audio import (
-    GeneratedAudioIndex,
     GeneratedAudioManifestError,
+    load_generated_audio_document,
 )
 
 from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
-from vntts.voices import synthesis_character
+from vntts.voices import is_unattributed_speaker, synthesis_character
 
 LIVE_FALLBACK_REASONS = frozenset(
     {
@@ -38,6 +38,7 @@ class PreparedGeneratedAudio:
     text_sha256: str
     samples: np.ndarray
     sample_rate: int
+    narrator_fallback_role: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,7 +158,8 @@ RouteDecision = (
 
 
 def _validate_generated_audio_paths(index):
-    root = index.manifest_path.parent.resolve()
+    manifest_path = getattr(index, "manifest_path", None) or getattr(index, "path")
+    root = manifest_path.parent.resolve()
     for entry in index.entries:
         try:
             entry.audio.resolve().relative_to(root)
@@ -175,13 +177,18 @@ class GeneratedAudioLibrary:
         self.cache = BoundedCache(cache_size)
         self.warned_entries = set()
         self.live_fallbacks = _live_fallback_index(index.metadata)
+        self.narrator_fallback_roles = {
+            (entry.line_id, entry.text_sha256): role
+            for entry in index.entries
+            if (role := _narrator_fallback_role(entry)) is not None
+        }
 
     @classmethod
     def load_optional(cls, path, *, warn=None, cache_size=32):
         if not path:
             return None
         try:
-            index = GeneratedAudioIndex.load(path)
+            index = load_generated_audio_document(path)
             return cls(index, warn=warn, cache_size=cache_size)
         except (GeneratedAudioManifestError, ValueError) as error:
             if warn is not None:
@@ -234,6 +241,9 @@ class GeneratedAudioLibrary:
             text_sha256=entry.text_sha256,
             samples=samples,
             sample_rate=sample_rate,
+            narrator_fallback_role=self.narrator_fallback_roles.get(
+                (entry.line_id, entry.text_sha256)
+            ),
         )
         self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"
@@ -247,6 +257,58 @@ class GeneratedAudioLibrary:
             return
         self.warned_entries.add(identity)
         self.warn(message)
+
+
+def _narrator_fallback_role(entry):
+    document = getattr(entry, "document", None)
+    if not isinstance(document, dict):
+        return None
+    speaker = document.get("speaker")
+    requested = document.get("requested_voice_character")
+    effective = document.get("voice_character")
+    fallback = document.get("synthesis_fallback")
+    if is_unattributed_speaker(speaker):
+        if requested == "Narrator" and effective == "Narrator" and fallback is None:
+            return "Unknown"
+        raise GeneratedAudioManifestError(
+            "Unattributed generated audio has inconsistent Narrator provenance"
+        )
+    if fallback is None:
+        return None
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "policy",
+        "source_voice_character",
+        "synthesis_voice_character",
+        "narrator_character",
+    }
+    if not isinstance(fallback, dict) or set(fallback) != expected_fields:
+        raise GeneratedAudioManifestError(
+            "Generated audio Narrator fallback provenance is malformed"
+        )
+    source = fallback.get("source_voice_character")
+    policy = fallback.get("policy")
+    if (
+        fallback.get("schema_version") != 1
+        or fallback.get("kind") != "missing_voice_to_narrator"
+        or not isinstance(source, str)
+        or not source.strip()
+        or requested != source
+        or fallback.get("synthesis_voice_character") != "Narrator"
+        or effective != "Narrator"
+        or not isinstance(fallback.get("narrator_character"), str)
+        or not fallback["narrator_character"].strip()
+        or not isinstance(policy, dict)
+        or policy.get("schema_version") != 1
+        or policy.get("mode") != "narrator_roles"
+        or not isinstance(policy.get("roles"), list)
+        or source not in policy["roles"]
+    ):
+        raise GeneratedAudioManifestError(
+            "Generated audio Narrator fallback provenance is inconsistent"
+        )
+    return source.strip()
 
 
 class GeneratedAudioFallbackBackend:

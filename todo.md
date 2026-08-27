@@ -161,25 +161,13 @@ while one-sentence controls remained below 0.25 seconds.
 
 ## Live mode
 
-### P0 - Distinguish Narrator fallback dialogue by ear
+### P0 - Accept Narrator fallback role cues in real gameplay
 
-- [ ] Add a playback mode that announces only named source roles whose exact
-      generated route uses `missing_voice_to_narrator`. A bare Centurion line
-      remains true Narrator; fallback dialogue plays one short source-role cue
-      on speaker change (for example `Poacher I.`) and then the unchanged
-      canonical line. Preserve the original speaker/requested role and keep the
-      cue outside the pregenerated WAV, text and checksum authority. Exact
-      `???` retains Narrator synthesis but must use the audible cue `Unknown`,
-      never `Narrator`; this distinguishes an unattributed character from true
-      narration without inventing identity. Revalidate route and generation at
-      cue playback, cancel stale cues, do not announce game-source audio, and
-      cover consecutive fallback lines, unknown-to-Narrator and named
-      fallback-to-Narrator transitions, disabled mode, interruption and
-      auto-advance in controller/replay tests. Expose this as a distinct
-      `Narrator fallback roles only` setting instead of silently changing the
-      existing all-speaker accessibility mode; complete only after a real
-      Character Story listening pass confirms the cue is informative without
-      becoming repetitive.
+- [ ] Enable the distinct `Narrator fallback roles only` setting for one real
+      Character Story pass. Confirm that named fallback cues and the `Unknown`
+      cue distinguish dialogue from true Narrator/Centurion lines without
+      becoming repetitive, interrupting dialogue, or changing auto advance.
+      Keep the mode disabled by default until this human listening gate passes.
 
 ### P0 - Repair failures observed in the latest Character Story run
 

@@ -231,15 +231,19 @@ generated-first audio policy, verified pregenerated tracks keep priority and
 the selected voice handles only live fallback. Enable the separate force-live
 checkbox only when every Narrator line should bypass pregenerated tracks.
 
-The optional **Speaker announcements** setting is disabled by default. When
-enabled, the Narrator voice says the visible speaker name once before the first
-spoken chunk after that name changes. The announcement is a separate typed live
-route: it is never written into canonical story WAVs, never replaces the
-dialogue route, and never creates its own auto-advance action. Repeated chunks
-and consecutive lines by the same visible speaker are not announced again.
-Declared original game-audio pass-through is not overlaid because that audio is
-already playing when VNTTS observes the line. Exact `???` is announced as
-Narrator rather than pronouncing punctuation.
+The optional **Speaker announcements** setting is disabled by default. Choose
+**Narrator fallback roles only** to hear a short source-role cue only when an
+exact pregenerated line is provenance-bound as `missing_voice_to_narrator`.
+True Narrator/Centurion lines remain unannounced, while exact unattributed `???`
+lines use the cue `Unknown`. **All speaker changes** retains the broader
+accessibility mode and announces each visible name; in that mode `???` is read
+as Narrator rather than as punctuation. Both modes announce once on a speaker
+change and use a separate typed live route: the cue is never written into
+canonical story WAVs, never replaces the dialogue route, and never creates its
+own auto-advance action. Repeated chunks and consecutive lines by the same
+visible speaker are not announced again. Declared original game-audio
+pass-through is never overlaid because that audio is already playing when VNTTS
+observes the line.
 
 When auto advance is enabled, original game audio is selected only if the story
 index supplies completion duration. A source line without trustworthy timing

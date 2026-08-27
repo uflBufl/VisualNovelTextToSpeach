@@ -1752,15 +1752,30 @@ class AppController:
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _prepare_speaker_announcement(self, chunk, dialogue_route):
-        if not self.settings.announce_speaker_changes or chunk.ordinal not in {None, 1}:
+        mode = self.settings.effective_speaker_announcement_mode
+        if mode == "off" or chunk.ordinal not in {None, 1}:
             return None, None
         visible_speaker = str(chunk.character or "Narrator").strip() or "Narrator"
-        announcement_speaker = (
-            "Narrator" if is_unattributed_speaker(visible_speaker) else visible_speaker
-        )
-        speaker_key = normalize_character_name(announcement_speaker) or "narrator"
+        if mode == "narrator-fallback-roles":
+            announcement_speaker = (
+                dialogue_route.prepared.narrator_fallback_role
+                if isinstance(dialogue_route, GeneratedAudioRoute)
+                else None
+            )
+        else:
+            announcement_speaker = (
+                "Narrator"
+                if is_unattributed_speaker(visible_speaker)
+                else visible_speaker
+            )
+        speaker_key = normalize_character_name(
+            announcement_speaker or visible_speaker
+        ) or ("unknown" if is_unattributed_speaker(visible_speaker) else "narrator")
         with self.speaker_announcement_lock:
             if speaker_key == self.last_visible_speaker_key:
+                return None, None
+            if announcement_speaker is None:
+                self.last_visible_speaker_key = speaker_key
                 return None, None
             if isinstance(
                 dialogue_route,

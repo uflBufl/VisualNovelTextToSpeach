@@ -762,10 +762,16 @@ class TrayApplicationTest(unittest.TestCase):
     def test_settings_expose_disabled_by_default_speaker_announcements(self):
         dialog = SettingsDialog(AppSettings(announce_speaker_changes=True))
 
-        self.assertTrue(dialog.announce_speaker_changes.isChecked())
-        dialog.announce_speaker_changes.setChecked(False)
+        self.assertEqual(dialog.speaker_announcement_mode.currentData(), "all-speakers")
+        dialog.speaker_announcement_mode.setCurrentIndex(
+            dialog.speaker_announcement_mode.findData("narrator-fallback-roles")
+        )
 
         self.assertFalse(dialog.settings().announce_speaker_changes)
+        self.assertEqual(
+            dialog.settings().speaker_announcement_mode,
+            "narrator-fallback-roles",
+        )
         dialog.deleteLater()
 
     def test_settings_control_startup_voice_warmup(self):

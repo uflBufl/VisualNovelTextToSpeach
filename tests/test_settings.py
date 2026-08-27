@@ -88,10 +88,23 @@ class SettingsTest(unittest.TestCase):
 
     def test_speaker_change_announcements_are_disabled_by_default(self):
         self.assertFalse(AppSettings().announce_speaker_changes)
+        self.assertEqual(AppSettings().effective_speaker_announcement_mode, "off")
 
         enabled = AppSettings.from_mapping({"announce_speaker_changes": True})
 
         self.assertTrue(enabled.announce_speaker_changes)
+        self.assertEqual(enabled.effective_speaker_announcement_mode, "all-speakers")
+
+    def test_narrator_fallback_announcement_mode_is_distinct(self):
+        settings = AppSettings.from_mapping(
+            {"speaker_announcement_mode": "narrator-fallback-roles"}
+        )
+
+        self.assertFalse(settings.announce_speaker_changes)
+        self.assertEqual(
+            settings.effective_speaker_announcement_mode,
+            "narrator-fallback-roles",
+        )
 
     def test_legacy_narrator_assignment_preserves_force_live_behavior(self):
         settings = AppSettings.from_mapping(

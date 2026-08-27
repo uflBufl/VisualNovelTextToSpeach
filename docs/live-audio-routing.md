@@ -42,18 +42,27 @@ same stage/chunk merge, while multiple chunks in one OCR generation remain
 distinct. Live synthesis continues to use the backend's existing cache policy;
 source and generated routes bypass live synthesis caches.
 
-Speaker-change announcements are an optional accessibility layer above this
-selector and are disabled by default. For the first chunk after a visible
-speaker changes, the controller prepares a separate Narrator `LiveTTSRoute`
-whose trace source is `live-accessibility-announcement` and whose artifact state
-is `speaker-announcement-v1`. The announcement is played before the already
+Speaker-change announcements are an optional layer above this selector and are
+disabled by default. `all-speakers` is the broad accessibility mode: for the
+first chunk after any visible speaker changes, the controller prepares a
+separate Narrator `LiveTTSRoute`; unattributed `???` uses the spoken name
+Narrator. `narrator-fallback-roles` is narrower. The generated-audio loader
+retains and validates each lossless producer record, and only a verified
+`missing_voice_to_narrator` route receives its original named-role cue. A true
+Narrator/Centurion route receives no cue. An exact `???` record whose preserved
+source speaker is unattributed and whose requested/effective synthesis role is
+Narrator receives the cue `Unknown`. A malformed or inconsistent fallback
+record disables the generated manifest instead of guessing from display text.
+
+In either mode the trace source is `live-accessibility-announcement` and the
+artifact state is `speaker-announcement-v1`. The cue plays before the already
 selected dialogue route, has its own route/outcome timeline stages, and is never
 stored as generated story audio. It does not seal the dialogue or dispatch auto
 advance; the one canonical dialogue chunk remains the only completion
 considered by the reader. Consecutive lines from the same speaker and later
-chunks in one dialogue do not repeat it. Original game-audio routes skip the
-announcement to avoid talking over audio that the game has already started.
-Unattributed `???` labels use the spoken name Narrator.
+chunks in one dialogue do not repeat it. Original game-audio and unbound live
+TTS routes skip the narrow announcement mode, so it cannot invent fallback
+authority or talk over audio that the game has already started.
 
 `GeneratedAudioFallbackBackend` is an internal route selector/player, not an
 exported backend API. All repository callers use `prepare_route()` and

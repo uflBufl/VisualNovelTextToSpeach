@@ -122,6 +122,80 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("manifest directory", warnings[0])
 
+    def test_lossless_manifest_exposes_bound_narrator_fallback_role(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio" / "line.wav"
+            audio.parent.mkdir()
+            write_wav(audio, [0.0, 0.25, -0.25, 0.0])
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest,
+                {},
+                [
+                    {
+                        "line_id": "game:1",
+                        "text_sha256": text_sha256("Hello."),
+                        "audio": "audio/line.wav",
+                        "audio_format": "wav-pcm16-mono",
+                        "audio_sha256": sha256_file(audio),
+                        "sample_rate": 24_000,
+                        "sample_count": 4,
+                        "speaker": "Poacher I",
+                        "requested_voice_character": "Poacher I",
+                        "voice_character": "Narrator",
+                        "synthesis_fallback": {
+                            "schema_version": 1,
+                            "kind": "missing_voice_to_narrator",
+                            "policy": {
+                                "schema_version": 1,
+                                "mode": "narrator_roles",
+                                "roles": ["Poacher I"],
+                            },
+                            "source_voice_character": "Poacher I",
+                            "synthesis_voice_character": "Narrator",
+                            "narrator_character": "Centurion",
+                        },
+                    }
+                ],
+            )
+
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            prepared = library.find("game:1", text_sha256("Hello."))
+
+        self.assertEqual(prepared.narrator_fallback_role, "Poacher I")
+
+    def test_lossless_manifest_maps_unattributed_narrator_to_unknown(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "line.wav"
+            write_wav(audio, [0.0, 0.25, -0.25, 0.0])
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest,
+                {},
+                [
+                    {
+                        "line_id": "game:unknown",
+                        "text_sha256": text_sha256("Who is there?"),
+                        "audio": "line.wav",
+                        "audio_format": "wav-pcm16-mono",
+                        "audio_sha256": sha256_file(audio),
+                        "sample_rate": 24_000,
+                        "sample_count": 4,
+                        "speaker": "???",
+                        "requested_voice_character": "Narrator",
+                        "voice_character": "Narrator",
+                    }
+                ],
+            )
+
+            prepared = GeneratedAudioLibrary.load_optional(manifest).find(
+                "game:unknown", text_sha256("Who is there?")
+            )
+
+        self.assertEqual(prepared.narrator_fallback_role, "Unknown")
+
     def create_resolver(
         self,
         *,
@@ -204,7 +278,7 @@ class GeneratedAudioTest(unittest.TestCase):
             },
             [],
         )
-        return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest))
+        return GeneratedAudioLibrary.load_optional(manifest)
 
     def test_explicit_live_fallback_uses_only_bound_pocket_backend(self):
         with TemporaryDirectory() as directory:

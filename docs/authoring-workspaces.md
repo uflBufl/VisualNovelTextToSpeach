@@ -682,6 +682,12 @@ its `Character` column shows the effective synthesis role; the header names the
 selected Narrator character. Canonical audio contains only the original story
 text and never prepends a speaker announcement.
 
+At runtime, the separate `Narrator fallback roles only` announcement mode reads
+this exact approved-manifest provenance through the lossless generated-audio
+document API. It says the preserved source role once when the speaker changes,
+then plays the unchanged pregenerated WAV. It does not infer fallback status
+from the visible name or from the selected Narrator character.
+
 The same configuration is available without a Python snippet:
 
 ```sh
