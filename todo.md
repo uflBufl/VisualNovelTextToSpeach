@@ -93,32 +93,34 @@ Follow the evidence-backed order and invariants in
       human review and exact outcome merge.
       `Neither` leaves the line failed for explicit live fallback; it does not
       authorize another MOSS seed or automatic Pocket transition.
-- [ ] Resolve the five source-local Dobharchú failures before reusing this voice
-      in another story. The four real cohorts are terminal: workspace
-      `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20 approvals and
-      one rejection, and its exact accepted outcomes are already represented in
-      the composed current workspace. Preserve that authority. Sentence repair
-      still failed for
+- [ ] Resolve the five source-local Dobharchú rejections before reusing this
+      voice in another story. They are not current generation failures and must
+      not be retried automatically. The four real cohorts are terminal:
+      workspace `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20
+      approvals and one rejection, and its exact accepted outcomes are already
+      represented in the composed current workspace. Preserve that authority.
+      The current composed workspace keeps explicit rejected outcomes for
       `reverse1999:314605:102:1ab22c5fa4f30490`,
-      `reverse1999:314605:95:ebc446c3c6e843bb` and
-      `reverse1999:314608:8:7c5e047cb7785953`; exact reference comparison is
-      still required for `reverse1999:314608:29:7be68e27f6d36933` and
-      `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
-      until a new bounded, evidence-backed hypothesis and review gate exist;
-      do not extend the portrait alias to unbound portrait `534705`.
-- [ ] Resolve the exact 12-failure tail without another broad retry. Current
-      post-reference reconciliation report
-      `efa05a3fe7706a2983e170ce54c3b837bd451b8e597054ad59a700b02da084b4`
-      has zero conflicts/merges and classifies only the four older Narrator
-      lines `314608:58`, `314608:94`, `314606:43`, `314606:6` plus newly
-      exhausted `314601:28`, `314601:47`, `314601:83`,
-      `314601:96`, `314603:13`, `314603:14`, `314605:4` and `314608:86`
-      as `new_hypothesis_required`. Preserve the completed evidence described in
+      `reverse1999:314605:95:ebc446c3c6e843bb`,
+      `reverse1999:314608:8:7c5e047cb7785953`,
+      `reverse1999:314608:29:7be68e27f6d36933` and
+      `reverse1999:314608:38:4988416dc161621c`. For each line, either retain the
+      rejection and record an explicit Pocket live-fallback decision, or first
+      publish a genuinely new reference hypothesis and checksum-bound output
+      comparison. Do not repeat an exhausted seed/repair, treat a rejection as
+      a failure, or extend the portrait alias to unbound portrait `534705`.
+- [ ] Resolve the exact current five-failure tail without another broad retry.
+      Poacher II is handled by its separate blind reference task above. The
+      remaining four exact Narrator lines are `314608:58`, `314608:94`,
+      `314606:43` and `314606:6`; the current repair plan classifies all four as
+      `provenance_recovery_or_regeneration` because the carried legacy failures
+      lack complete provider/model/profile/control provenance. Recover exact
+      immutable evidence if it exists; otherwise create a current-control,
+      exact-ID successor and run one bounded generation hypothesis before any
+      repair or Pocket fallback. Preserve the completed older 12-failure
+      evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
-      and do not repeat an exhausted seed/provider/repair. For each remaining
-      failure, require a new bounded hypothesis, exact-ID successor, validated
-      WAV, checksum-bound review and reconciled composed successor as separate
-      transactions.
+      and do not repeat an exhausted seed/provider/repair.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

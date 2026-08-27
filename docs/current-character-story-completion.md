@@ -717,3 +717,35 @@ has zero terminal conflicts, 12 `new_hypothesis_required` actions and 118
 
 Every real mutation is a separately authorized controlled run. A failed or
 bounded render remains failure evidence and is not silently retried.
+
+## Current composed authority census, 2026-08-27
+
+The later terminal merge successor
+`resume-395a5e5eec0327a3a793b66d-9ec4454f35d082e4` supersedes the older
+12-failure planning snapshot for current operational decisions. Its exact
+queue SHA-256 is
+`1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`;
+its current state SHA-256 is
+`a9c72e1fd345cd53c66e8b773374fac4b8005a0cd2ba59a15c188723b675fd0c`.
+Public status reports 399 approved, 78 generated with explicit rejection, five
+failed and no active attempt. The 78 rejected WAVs are terminal human outcomes,
+not retryable generation failures.
+
+The current typed failure-repair plan has exactly five records:
+
+- Poacher II `reverse1999:314606:62:e3f44f0529c8ced0` is a
+  `reference_comparison` action and remains bound to its separate blind
+  reference task;
+- Narrator `reverse1999:314606:43:09977e2b04515b66`,
+  `reverse1999:314606:6:3511125b2e41a19f`,
+  `reverse1999:314608:58:c3e23840e6ecc840` and
+  `reverse1999:314608:94:f6c23264391ffae3` are
+  `provenance_recovery_or_regeneration` actions. Their carried legacy failure
+  records do not contain complete current provider/model/profile/control
+  provenance, so no repair or terminal live fallback may be inferred directly.
+
+Five formerly described Dobharchú failures are also explicit rejections in
+this successor: `314605:102`, `314605:95`, `314608:8`, `314608:29` and
+`314608:38`. They may remain rejected for live fallback or enter a new
+checksum-bound reference comparison, but must not be silently retried or
+counted among the five current failures.
