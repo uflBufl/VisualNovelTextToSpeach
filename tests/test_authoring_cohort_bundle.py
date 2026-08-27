@@ -132,6 +132,187 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertTrue(outcome["terminal"])
 
+    def test_reconciliation_keeps_only_exact_pending_items_after_partial_split(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            items = []
+            queue = {}
+            state_items = {}
+            for index, review_status in enumerate(
+                ("rejected", "approved", "pending_review"), start=1
+            ):
+                queue_id = f"queue-{index}"
+                text = f"Exact line {index}."
+                audio = output / f"audio-{index}.wav"
+                audio.write_bytes(f"audio-{index}".encode())
+                audio_sha256 = hashlib.sha256(audio.read_bytes()).hexdigest()
+                items.append(
+                    {
+                        "queue_id": queue_id,
+                        "line_id": f"line-{index}",
+                        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        "audio_sha256": audio_sha256,
+                        "technical_flags": [],
+                    }
+                )
+                queue[queue_id] = {"text": text}
+                state_items[queue_id] = {
+                    "status": (
+                        "approved" if review_status == "approved" else "generated"
+                    ),
+                    "review_status": review_status,
+                    "path": audio.name,
+                    "file_sha256": audio_sha256,
+                }
+            cohort = {"cohort_id": "a" * 64, "items": items}
+            decision = {
+                "cohort_id": cohort["cohort_id"],
+                "decision": "split",
+                "projection_review_status": None,
+                "target_items": items,
+                "item_review_statuses": [
+                    {"queue_id": item["queue_id"], "review_status": status}
+                    for item, status in zip(
+                        items,
+                        ("rejected", "approved", "pending_review"),
+                        strict=True,
+                    )
+                ],
+            }
+            current = {
+                "queue": queue,
+                "items": state_items,
+                "output": output,
+                "artifacts": [],
+            }
+
+            outcome = cohort_bundle_module._reconciled_cohort_outcome(
+                cohort, current, [decision]
+            )
+
+        self.assertFalse(outcome["terminal"])
+        self.assertEqual(
+            [item["queue_id"] for item in outcome["remaining_items"]],
+            ["queue-3"],
+        )
+
+    def test_partial_split_rebuilds_successor_for_only_the_pending_item(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            items = []
+            queue = {}
+            state_items = {}
+            statuses = ("rejected", "approved", "pending_review")
+            for index, review_status in enumerate(statuses, start=1):
+                queue_id = f"queue-{index}"
+                text = f"Exact line {index}."
+                audio = output / f"audio-{index}.wav"
+                audio.write_bytes(f"audio-{index}".encode())
+                digest = hashlib.sha256(audio.read_bytes()).hexdigest()
+                items.append(
+                    {
+                        "queue_id": queue_id,
+                        "line_id": f"line-{index}",
+                        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        "audio_sha256": digest,
+                        "word_count": 3,
+                        "length_bucket": "short",
+                        "technical_flags": [],
+                        "sampled": index < 3,
+                    }
+                )
+                queue[queue_id] = {"text": text}
+                state_items[queue_id] = {
+                    "status": (
+                        "approved" if review_status == "approved" else "generated"
+                    ),
+                    "review_status": review_status,
+                    "path": audio.name,
+                    "file_sha256": digest,
+                }
+            cohort = {
+                "cohort_id": "a" * 64,
+                "identity": {"voice": "Hero"},
+                "item_count": 3,
+                "attention_count": 0,
+                "sample_queue_ids": ["queue-1", "queue-2"],
+                "items": items,
+            }
+            policy = {
+                "schema_version": 2,
+                "clean_samples_per_bucket": 1,
+                "length_buckets": {"short_max_words": 6, "medium_max_words": 15},
+                "attention_rule": "all technical flags",
+                "attention_thresholds": {
+                    "silence_ratio_at_least": 0.3,
+                    "internal_pause_seconds_at_least": 1.0,
+                },
+            }
+            plan_body = {
+                "schema": "vntts.authoring-cohort-review-plan",
+                "schema_version": 1,
+                "policy": policy,
+                "workspace_id": "workspace",
+                "workspace_config_fingerprint": "b" * 64,
+                "queue_sha256": "c" * 64,
+                "state_sha256": "d" * 64,
+                "cohort_count": 1,
+                "pending_item_count": 3,
+                "sample_item_count": 2,
+                "blocked_item_count": 0,
+                "blocked_items": [],
+                "cohorts": [cohort],
+            }
+            plan = {
+                **plan_body,
+                "plan_id": cohort_bundle_module._canonical_sha256(plan_body),
+            }
+            source = {
+                "workspace": str(output.resolve()),
+                "workspace_id": "workspace",
+                "plan": plan,
+            }
+            decision = {
+                "cohort_id": cohort["cohort_id"],
+                "decision": "split",
+                "projection_review_status": None,
+                "target_items": items,
+                "item_review_statuses": [
+                    {"queue_id": item["queue_id"], "review_status": status}
+                    for item, status in zip(items, statuses, strict=True)
+                ],
+            }
+            current = {
+                "queue": queue,
+                "items": state_items,
+                "output": output,
+                "artifacts": [],
+                "state_sha256": "e" * 64,
+            }
+            with (
+                patch.object(
+                    cohort_bundle_module,
+                    "_current_source_snapshot",
+                    return_value=current,
+                ),
+                patch.object(
+                    cohort_bundle_module,
+                    "_source_cohort_decisions",
+                    return_value=[decision],
+                ),
+                patch.object(cohort_bundle_module, "_assert_current_source_snapshot"),
+            ):
+                _workspace, successor = cohort_bundle_module._reconcile_cohort_source(
+                    source
+                )
+
+        self.assertEqual(successor["pending_item_count"], 1)
+        self.assertEqual(successor["sample_item_count"], 1)
+        self.assertEqual(
+            [item["queue_id"] for item in successor["cohorts"][0]["items"]],
+            ["queue-3"],
+        )
+
     def test_refresh_rejects_changed_source_authority(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))

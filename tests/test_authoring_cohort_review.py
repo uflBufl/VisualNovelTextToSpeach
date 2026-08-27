@@ -451,7 +451,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             ],
         )
 
-    def test_split_decision_never_projects_an_unsampled_target(self):
+    def test_split_decision_leaves_an_unsampled_target_pending(self):
         with TemporaryDirectory() as directory:
             workspace, _state_path, queue_id = self.create_pending_workspace(
                 Path(directory)
@@ -475,19 +475,27 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 {key: value for key, value in plan.items() if key != "plan_id"}
             )
 
-            with self.assertRaisesRegex(CohortReviewError, "unsampled targets"):
-                build_cohort_review_decision(
-                    plan,
-                    cohort["cohort_id"],
-                    "split",
-                    reviewed_queue_ids=[queue_id],
-                    sample_assessments={
-                        queue_id: {
-                            "assessment": "bad",
-                            "defect_reasons": ["pause_or_pacing"],
-                        }
-                    },
-                )
+            decision = build_cohort_review_decision(
+                plan,
+                cohort["cohort_id"],
+                "split",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={
+                    queue_id: {
+                        "assessment": "bad",
+                        "defect_reasons": ["pause_or_pacing"],
+                    }
+                },
+            )
+
+        self.assertEqual(decision.document["schema_version"], 4)
+        self.assertEqual(
+            decision.document["item_review_statuses"],
+            [
+                {"queue_id": queue_id, "review_status": "rejected"},
+                {"queue_id": second["queue_id"], "review_status": "pending_review"},
+            ],
+        )
 
     def test_expand_requires_complete_current_sample_and_larger_bound(self):
         with TemporaryDirectory() as directory:

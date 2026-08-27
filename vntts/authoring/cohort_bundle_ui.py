@@ -1193,17 +1193,12 @@ class CohortReviewBundleDialog(QDialog):
                 for value in source["plan"]["cohorts"]
                 if value["cohort_id"] == key[1]
             )
-            sampled_ids = {sample.item.queue_id for sample in samples}
             target_ids = {value["queue_id"] for value in plan_cohort["items"]}
-            if sampled_ids != target_ids:
+            unreviewed_count = len(target_ids - set(reviewed))
+            if not bad or (len(bad) == len(samples) and unreviewed_count == 0):
                 self.status.setText(
-                    "BLOCKED: mixed review requires one heard sample for every "
-                    "target WAV; request more evidence or leave this cohort undecided"
-                )
-                return
-            if not bad or len(bad) == len(samples):
-                self.status.setText(
-                    "BLOCKED: mixed review requires both marked-bad and acceptable WAVs"
+                    "BLOCKED: mixed review requires a marked-bad WAV and at least "
+                    "one acceptable or unreviewed WAV"
                 )
                 return
         if not self.confirmer(decision, cohort, len(reviewed), len(bad)):
@@ -1222,10 +1217,11 @@ class CohortReviewBundleDialog(QDialog):
             for queue_id in reviewed
         }
         if decision == "split":
+            unreviewed = max(0, cohort["item_count"] - len(reviewed))
             self._decision_scope_text = (
                 f"rejecting {len(bad)} marked WAVs for repair; approving "
                 f"{len(reviewed) - len(bad)} individually heard WAVs; leaving "
-                "0 unreviewed WAVs pending"
+                f"{unreviewed} unreviewed WAVs pending"
             )
         elif decision == "expand":
             self._decision_scope_text = (
@@ -1336,11 +1332,13 @@ class CohortReviewBundleDialog(QDialog):
             )
         elif decision == "split":
             acceptable = reviewed - bad
+            unreviewed = max(0, item_count - reviewed)
             title = f"Repair {bad} WAVs and accept {acceptable}?"
             prompt = (
                 f"Reject exactly {bad} individually heard and marked WAVs for repair, "
                 f"and approve exactly {acceptable} individually heard acceptable WAVs?\n"
-                "No unreviewed WAV is affected. The whole cohort is not rejected."
+                f"Leave exactly {unreviewed} unreviewed WAVs pending in a checksum-bound "
+                "successor. The whole cohort is not rejected."
             )
         else:
             verb = "Accept" if decision == "accepted" else "Reject"
@@ -1448,18 +1446,22 @@ class CohortReviewBundleDialog(QDialog):
             else set()
         )
         sample_ids = {value.item.queue_id for value in samples}
-        split_covers_every_target = bool(target_ids) and sample_ids == target_ids
+        split_unreviewed_count = len(target_ids - sample_ids)
         split_acceptable_count = len(samples) - len(bad)
         self.repair_marked.setEnabled(
             authority_ready
             and all_heard
             and bool(bad)
-            and split_acceptable_count > 0
-            and split_covers_every_target
+            and (split_acceptable_count > 0 or split_unreviewed_count > 0)
         )
         item_count = cohort["item_count"] if cohort is not None else 0
         self.repair_marked.setText(
             f"Repair {len(bad)} marked; accept {split_acceptable_count} heard"
+            + (
+                f"; leave {split_unreviewed_count} pending"
+                if split_unreviewed_count
+                else ""
+            )
             if bad
             else "Send marked WAVs to repair and continue"
         )
@@ -1502,12 +1504,14 @@ class CohortReviewBundleDialog(QDialog):
                 "A sample-level bad mark does not reject anything by itself."
             )
         elif bad:
-            if split_covers_every_target and split_acceptable_count:
+            if split_acceptable_count or split_unreviewed_count:
                 decision_text = (
-                    f"All {len(samples)} target WAVs were individually heard: "
-                    f"repair/reject exactly {len(bad)} marked WAVs and approve exactly "
-                    f"{split_acceptable_count} acceptable WAVs, or deliberately reject "
-                    f"all {item_count}."
+                    f"All {len(samples)} required samples were heard: repair/reject "
+                    f"exactly {len(bad)} marked WAVs, approve exactly "
+                    f"{split_acceptable_count} individually heard acceptable WAVs, "
+                    "and leave "
+                    f"{split_unreviewed_count} unsampled WAVs pending; or deliberately "
+                    f"reject all {item_count}."
                 )
             else:
                 unsampled = max(0, item_count - len(sample_ids))
@@ -1540,9 +1544,8 @@ class CohortReviewBundleDialog(QDialog):
             "Reject applies to every WAV in this exact cohort; hear at least one sample first."
         )
         self.repair_marked.setToolTip(
-            "Reject only marked WAVs and approve only individually heard acceptable WAVs."
-            if split_covers_every_target
-            else "Unavailable until every target WAV is represented by an individually heard sample."
+            "Reject only marked WAVs, approve only individually heard acceptable WAVs, "
+            "and keep every unsampled sibling pending in the successor."
         )
         self.need_another.setToolTip(
             "Hear every current sample before requesting more evidence."

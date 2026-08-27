@@ -779,18 +779,21 @@ or pacing, repetition, truncation/missing words, pronunciation/wrong words,
 timbre/audio artifact, wrong speaker identity, or other/unclear. The quick bad
 button selects `other/unclear`; it never invents a more specific cause. Clearing
 every reason clears the reversible sample-level bad assessment. A bad marker
-does not reject the cohort, but blocks `Accept cohort` until cleared. When every
-target WAV is an individually heard sample and the set contains both bad and
-acceptable WAVs, `Send marked WAVs to repair and continue` rejects only the
-marked identities and approves only the individually heard acceptable
-identities. If any target is unsampled, that mixed action is disabled rather
-than guessing a sibling outcome. `Reject cohort` remains an explicit separate
-action affecting every target. The confirmation reports the exact bad,
-acceptable, unreviewed and whole-cohort scopes.
+does not reject the cohort, but blocks `Accept cohort` until cleared. When the
+heard sample set contains a bad WAV and at least one acceptable or unsampled
+WAV, `Send marked WAVs to repair and continue` rejects only the marked
+identities and approves only the individually heard acceptable identities.
+Every unsampled target remains byte-for-byte pending and is carried into a
+checksum-bound successor cohort; no sibling outcome is inferred. `Reject
+cohort` remains an explicit separate action affecting every target. The
+confirmation reports the exact bad, acceptable, unreviewed and whole-cohort
+scopes.
 
-Decision schema version 3 adds an ordered per-item projection to the version-2
-sorted independent defect reasons beside every ordered `acceptable` or `bad`
-sample assessment. Listening-observation
+Decision schema version 3 added an ordered terminal per-item projection to the
+version-2 sorted independent defect reasons. Version 4 permits the exact
+`pending_review` projection only for unsampled targets in a split decision, so
+partial mixed review can publish a deterministic remaining-target successor.
+Listening-observation
 schema version 2 checkpoints those reasons in the background so close/reopen
 does not lose them. Version-1 and version-2 decisions and version-1 observations
 remain readable with no guessed reason; a new API caller that supplies only
@@ -828,8 +831,10 @@ exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
 Bad reasons are reversible, `Accept cohort` requires every current sample and
 no bad marker, `Reject cohort` requires heard evidence, and `Need more evidence`
 is enabled only when the exact cohort has an unsampled clean item. The mixed
-repair action is a separate stable button and is enabled only when every target
-is individually sampled and heard.
+repair action is a separate stable button. It is enabled after every required
+sample is heard and a bad WAV is marked; it approves only heard acceptable
+identities, rejects only marked identities, and states how many unsampled
+targets remain pending.
 
 When the same exact voice controls were accepted in an earlier story, bind that
 evidence explicitly instead of asking the operator to infer it from the cohort:
@@ -863,10 +868,12 @@ automatically. If the process stops in the narrow window
 after the authoritative review commit but before the progress write, recovery
 scans only immutable `cohort-reviews/plan-*.json` and
 `cohort-reviews/decision-*.json` evidence, requires every target queue/text/WAV
-identity and its terminal state, and reconstructs the successor. A mixed state
-is accepted only when a version-3 split decision binds the exact status of every
-target; an unbound mixed cohort, missing decision, changed queue, state or WAV
-blocks instead of being guessed. Progress files cannot be symlinks and cannot
+identity and its resulting state, and reconstructs the successor. Version-3
+split evidence must bind a terminal status for every target. Version-4 split
+evidence may instead bind unsampled targets to `pending_review`; recovery walks
+the exact nested target sets in order and retains only that pending subset. An
+unbound mixed cohort, missing decision, changed queue, state or WAV blocks
+instead of being guessed. Progress files cannot be symlinks and cannot
 introduce a workspace,
 cohort or item outside the published task.
 

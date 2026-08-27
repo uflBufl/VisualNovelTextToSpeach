@@ -27,13 +27,6 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ### P0 - Make mixed-quality cohort review expressible and understandable
 
-- [ ] Extend the strict version-3 mixed decision beyond cohorts where every
-      target is already an individual sample. For a representative cohort,
-      reject only exact heard/marked WAVs, approve only exact individually heard
-      acceptable WAVs, leave unsampled targets pending and publish a successor
-      cohort containing only those undecided targets. Keep the current mixed
-      button disabled until this remaining-target successor is checksum-bound;
-      never infer an unsampled sibling decision.
 - [ ] Complete the one remaining real Dobharchú cohort through the redesigned
       dialog. The checksum-bound session already restores all 15 heard samples,
       exactly one `pause_or_pacing` bad marker, and an exact 15/15 sample/target

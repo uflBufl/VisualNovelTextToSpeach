@@ -331,7 +331,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             },
         )
 
-    def test_mixed_action_is_disabled_when_a_target_was_not_sampled(self):
+    def test_mixed_action_keeps_an_unsampled_target_pending(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
             dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
@@ -365,8 +365,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.bad_reasons[key][sample.item.queue_id] = {"pause_or_pacing"}
             dialog._show_current_cohort()
 
-        self.assertFalse(dialog.repair_marked.isEnabled())
-        self.assertIn("not individually sampled", dialog.decision_help.text())
+        self.assertTrue(dialog.repair_marked.isEnabled())
+        self.assertEqual(
+            dialog.repair_marked.text(),
+            "Repair 1 marked; accept 0 heard; leave 1 pending",
+        )
+        self.assertIn("leave 1 unsampled WAVs pending", dialog.decision_help.text())
 
     def test_space_and_bad_shortcuts_work_from_table_at_compact_size(self):
         with TemporaryDirectory() as directory:

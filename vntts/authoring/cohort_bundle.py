@@ -289,7 +289,23 @@ def _reconcile_cohort_source(source):
         outcome = _reconciled_cohort_outcome(cohort, current, decisions)
         if outcome["terminal"]:
             continue
-        remaining.append(cohort)
+        remaining_items = outcome["remaining_items"]
+        remaining_ids = {value["queue_id"] for value in remaining_items}
+        remaining.append(
+            {
+                **cohort,
+                "item_count": len(remaining_items),
+                "attention_count": sum(
+                    bool(value["technical_flags"]) for value in remaining_items
+                ),
+                "sample_queue_ids": [
+                    queue_id
+                    for queue_id in cohort["sample_queue_ids"]
+                    if queue_id in remaining_ids
+                ],
+                "items": remaining_items,
+            }
+        )
         clean_samples = max(clean_samples, outcome["clean_samples_per_bucket"])
     _assert_current_source_snapshot(current)
     if not remaining:
@@ -791,38 +807,69 @@ def _recovered_expansion_assessments(bundle):
 
 def _reconciled_cohort_outcome(cohort, current, decisions):
     target = cohort["items"]
-    target_identity = _cohort_target_identity(target)
-    matching = [
-        decision
-        for decision in decisions
-        if decision["cohort_id"] == cohort["cohort_id"]
-        and _cohort_target_identity(decision["target_items"]) == target_identity
-    ]
-    expansions = [value for value in matching if value["decision"] == "expand"]
-    terminal = [value for value in matching if value["decision"] != "expand"]
-    terminal_projections = []
-    for value in terminal:
-        item_statuses = value.get("item_review_statuses")
-        if isinstance(item_statuses, list):
-            projection = tuple(
-                (item["queue_id"], item["review_status"]) for item in item_statuses
-            )
-        else:
-            projection = tuple(
-                (item["queue_id"], value["projection_review_status"])
-                for item in value["target_items"]
-            )
-        terminal_projections.append(projection)
-    if len(set(terminal_projections)) > 1:
-        raise CohortReviewError("Cohort review evidence has conflicting decisions")
-    clean_samples = max(
-        [
-            value["next_clean_samples_per_bucket"]
-            for value in expansions
-            if value["next_clean_samples_per_bucket"] is not None
+    remaining = list(target)
+    expected_by_id = {}
+    clean_samples = 1
+    used_terminal = False
+    seen_target_identities = set()
+    while remaining:
+        target_identity = _cohort_target_identity(remaining)
+        if target_identity in seen_target_identities:
+            raise CohortReviewError("Cohort review successor chain is cyclic")
+        seen_target_identities.add(target_identity)
+        matching = [
+            decision
+            for decision in decisions
+            if decision["cohort_id"] == cohort["cohort_id"]
+            and _cohort_target_identity(decision["target_items"]) == target_identity
         ]
-        or [1]
-    )
+        expansions = [value for value in matching if value["decision"] == "expand"]
+        clean_samples = max(
+            [
+                clean_samples,
+                *[
+                    value["next_clean_samples_per_bucket"]
+                    for value in expansions
+                    if value["next_clean_samples_per_bucket"] is not None
+                ],
+            ]
+        )
+        terminal = [value for value in matching if value["decision"] != "expand"]
+        terminal_projections = []
+        for value in terminal:
+            item_statuses = value.get("item_review_statuses")
+            if isinstance(item_statuses, list):
+                projection = tuple(
+                    (item["queue_id"], item["review_status"]) for item in item_statuses
+                )
+            else:
+                projection = tuple(
+                    (item["queue_id"], value["projection_review_status"])
+                    for item in value["target_items"]
+                )
+            terminal_projections.append(projection)
+        if len(set(terminal_projections)) > 1:
+            raise CohortReviewError("Cohort review evidence has conflicting decisions")
+        if not terminal_projections:
+            break
+        used_terminal = True
+        projection = dict(terminal_projections[0])
+        remaining_ids = {value["queue_id"] for value in remaining}
+        if set(projection) != remaining_ids:
+            raise CohortReviewError("Cohort terminal projection is incomplete")
+        next_remaining = []
+        for item in remaining:
+            queue_id = item["queue_id"]
+            review_status = projection[queue_id]
+            if review_status == "pending_review":
+                next_remaining.append(item)
+                continue
+            expected_by_id[queue_id] = (
+                ("approved", "approved")
+                if review_status == "approved"
+                else ("generated", "rejected")
+            )
+        remaining = next_remaining
     observed = []
     observed_by_id = {}
     for item in target:
@@ -853,32 +900,22 @@ def _reconciled_cohort_outcome(cohort, current, decisions):
         outcome = (result.get("status"), result.get("review_status"))
         observed.append(outcome)
         observed_by_id[queue_id] = outcome
-    pending = set(observed) == {("generated", "pending_review")}
-    if pending:
-        if terminal:
-            raise CohortReviewError("Terminal cohort evidence was not fully committed")
-        return {
-            "terminal": False,
-            "clean_samples_per_bucket": clean_samples,
-        }
-    if not terminal:
+    remaining_ids = {value["queue_id"] for value in remaining}
+    expected_by_id.update(
+        {queue_id: ("generated", "pending_review") for queue_id in remaining_ids}
+    )
+    if not used_terminal and set(observed) != {("generated", "pending_review")}:
         raise CohortReviewError("Cohort changed without exact terminal evidence")
-    expected_by_id = {
-        queue_id: (
-            ("approved", "approved")
-            if review_status == "approved"
-            else ("generated", "rejected")
-        )
-        for queue_id, review_status in terminal_projections[0]
-    }
-    if set(expected_by_id) != {item["queue_id"] for item in target}:
-        raise CohortReviewError("Cohort terminal projection is incomplete")
     if any(
         observed_by_id[queue_id] != expected
         for queue_id, expected in expected_by_id.items()
     ):
         raise CohortReviewError("Cohort terminal state is mixed or inconsistent")
-    return {"terminal": True, "clean_samples_per_bucket": clean_samples}
+    return {
+        "terminal": not remaining,
+        "remaining_items": remaining,
+        "clean_samples_per_bucket": clean_samples,
+    }
 
 
 def _assert_current_source_snapshot(current):
@@ -940,11 +977,18 @@ def _validate_reconciled_source(original, remaining, rebuilt):
         raise CohortReviewError("Reconciled cohort inventory changed")
     for cohort_id, old in expected.items():
         new = actual[cohort_id]
-        if new["identity"] != old["identity"] or [
-            _cohort_item_authority(value) for value in new["items"]
-        ] != [_cohort_item_authority(value) for value in old["items"]]:
+        old_by_id = {value["queue_id"]: value for value in old["items"]}
+        new_ids = [value["queue_id"] for value in new["items"]]
+        if (
+            new["identity"] != old["identity"]
+            or not new_ids
+            or not set(new_ids).issubset(old_by_id)
+            or [_cohort_item_authority(value) for value in new["items"]]
+            != [_cohort_item_authority(old_by_id[queue_id]) for queue_id in new_ids]
+        ):
             raise CohortReviewError("Reconciled cohort authority changed")
-        if not set(old["sample_queue_ids"]).issubset(new["sample_queue_ids"]):
+        retained_samples = set(old["sample_queue_ids"]) & set(new_ids)
+        if not retained_samples.issubset(new["sample_queue_ids"]):
             raise CohortReviewError("Reconciled cohort lost required samples")
 
 

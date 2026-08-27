@@ -2479,11 +2479,15 @@ def _review_generation_cohort(
             "Cohort review decision must be approved, rejected, or an exact item map"
         )
     if set(decisions) != set(authorities) or any(
-        value not in {"approved", "rejected"} for value in decisions.values()
+        value not in {"approved", "rejected", "pending_review"}
+        for value in decisions.values()
     ):
         raise BulkGenerationError(
-            "Cohort review item decisions must bind every authority to approved or rejected"
+            "Cohort review item decisions must bind every authority to approved, "
+            "rejected, or unchanged pending review"
         )
+    if set(decisions.values()) == {"pending_review"}:
+        raise BulkGenerationError("Cohort review decision does not change any item")
     if not isinstance(provenance, dict):
         raise BulkGenerationError("Cohort review provenance must be an object")
     state_path = Path(state_path).expanduser().resolve()
@@ -2515,6 +2519,8 @@ def _review_generation_cohort(
         updated_at = _now()
         for queue_id, authority in authorities.items():
             item_decision = decisions[queue_id]
+            if item_decision == "pending_review":
+                continue
             proposed_item = proposed["items"][queue_id]
             proposed_item["review_status"] = item_decision
             proposed_item["status"] = (
@@ -2678,6 +2684,7 @@ def _review_generation_cohort(
             ),
         )
         for queue_id, authority in authorities.items()
+        if decisions[queue_id] != "pending_review"
     )
 
 

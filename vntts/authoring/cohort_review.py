@@ -34,8 +34,8 @@ COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = REVIEW_ATTENTION_POLICY_VERSION
 SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2})
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
-COHORT_REVIEW_DECISION_VERSION = 3
-SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2, 3})
+COHORT_REVIEW_DECISION_VERSION = 4
+SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2, 3, 4})
 COHORT_REVIEW_DEFECT_REASONS = (
     "pause_or_pacing",
     "repetition",
@@ -377,23 +377,24 @@ def build_cohort_review_decision(
     target_ids = [value["queue_id"] for value in target_items]
     assessment_by_id = {value["queue_id"]: value["assessment"] for value in assessments}
     if decision == "split":
-        if set(sampled) != set(target_ids):
-            missing = sorted(set(target_ids) - set(sampled))
-            raise CohortReviewError(
-                "A split cohort decision requires an individually sampled WAV "
-                f"for every target; unsampled targets: {missing}"
-            )
         bad_count = sum(value == "bad" for value in assessment_by_id.values())
-        if bad_count == 0 or bad_count == len(target_ids):
+        if bad_count == 0 or (
+            set(sampled) == set(target_ids) and bad_count == len(target_ids)
+        ):
             raise CohortReviewError(
-                "A split cohort decision requires both bad and acceptable WAVs"
+                "A split cohort decision requires a marked-bad WAV and at least "
+                "one acceptable or unsampled WAV"
             )
     item_review_statuses = (
         [
             {
                 "queue_id": queue_id,
                 "review_status": (
-                    "rejected" if assessment_by_id[queue_id] == "bad" else "approved"
+                    "rejected"
+                    if assessment_by_id.get(queue_id) == "bad"
+                    else "approved"
+                    if queue_id in assessment_by_id
+                    else "pending_review"
                 ),
             }
             for queue_id in target_ids
@@ -993,7 +994,12 @@ def _validated_decision_document(document):
             if (
                 not isinstance(value, dict)
                 or set(value) != {"queue_id", "review_status"}
-                or value.get("review_status") not in {"approved", "rejected"}
+                or value.get("review_status")
+                not in (
+                    {"approved", "rejected", "pending_review"}
+                    if version >= 4
+                    else {"approved", "rejected"}
+                )
             ):
                 raise CohortReviewError("Cohort item review status is invalid")
             normalized_statuses.append(
@@ -1017,7 +1023,7 @@ def _validated_decision_document(document):
                 for queue_id in target_ids
             ]
         else:
-            if set(sampled) != set(target_ids):
+            if version == 3 and set(sampled) != set(target_ids):
                 raise CohortReviewError(
                     "Split cohort decision cannot cover unsampled target WAVs"
                 )
@@ -1031,14 +1037,23 @@ def _validated_decision_document(document):
                         "rejected"
                         if assessment_by_id.get(queue_id) == "bad"
                         else "approved"
+                        if queue_id in assessment_by_id
+                        else "pending_review"
                     ),
                 }
                 for queue_id in target_ids
             ]
             projected = {value["review_status"] for value in expected_statuses}
-            if projected != {"approved", "rejected"}:
+            if version == 3 and projected != {"approved", "rejected"}:
                 raise CohortReviewError(
                     "Split cohort decision requires bad and acceptable WAVs"
+                )
+            if version >= 4 and (
+                "rejected" not in projected or projected == {"rejected"}
+            ):
+                raise CohortReviewError(
+                    "Split cohort decision requires a marked-bad WAV and at least "
+                    "one acceptable or unsampled WAV"
                 )
         if normalized_statuses != expected_statuses:
             raise CohortReviewError(

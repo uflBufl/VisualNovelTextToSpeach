@@ -1064,6 +1064,55 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             [second["line_id"]],
         )
 
+    def test_partial_mixed_cohort_leaves_unsampled_authority_pending(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = queue_item("first")
+            second = queue_item("second")
+            third = queue_item("third")
+            queue = write_queue(root / "queue.jsonl", [first, second, third])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = {
+                item["queue_id"]: generation_review_authority(
+                    result.state, item["queue_id"]
+                )
+                for item in (first, second, third)
+            }
+            pending_before = load_generation_state(result.state)["items"][
+                third["queue_id"]
+            ]
+
+            commits = bulk_module._review_generation_cohort(
+                result.state,
+                queue,
+                authorities,
+                {
+                    first["queue_id"]: "rejected",
+                    second["queue_id"]: "approved",
+                    third["queue_id"]: "pending_review",
+                },
+                provenance={"test": "partial-mixed-cohort"},
+            )
+
+            state = load_generation_state(result.state)
+            manifest = GeneratedAudioIndex.load(result.manifest)
+
+        self.assertEqual(
+            [(commit.queue_id, commit.review_status) for commit in commits],
+            [(first["queue_id"], "rejected"), (second["queue_id"], "approved")],
+        )
+        self.assertEqual(
+            (
+                state["items"][third["queue_id"]]["status"],
+                state["items"][third["queue_id"]]["review_status"],
+            ),
+            ("generated", "pending_review"),
+        )
+        self.assertEqual(state["items"][third["queue_id"]], pending_before)
+        self.assertEqual(
+            [entry.line_id for entry in manifest.entries], [second["line_id"]]
+        )
+
     def test_mixed_cohort_wav_change_during_staging_commits_nothing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
