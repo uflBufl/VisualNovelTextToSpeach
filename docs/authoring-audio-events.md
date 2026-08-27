@@ -172,6 +172,17 @@ voice evidence and does not itself change generation state, a generated
 manifest, approval or a final pack. Production use still requires the exact
 composition ledger below.
 
+The exact-copy production composition is now published at
+`authoring/audio-event-compositions/current-character-story-tsk-game-v1`.
+Composition ID
+`a3750a73c90f556ca4febe366810801600acb864edcc4477cf196c0807da2245`
+binds the same queue item and final WAV SHA-256
+`492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
+Its ledger has sample offset zero, gain 1.0, zero fades, exact-copy bytes,
+`speaker_identity_claim=false`, and no synthesis provider or voice. The final
+composition decision remains unset; no workspace state or manifest projection
+has been created.
+
 ## Required composition ledger
 
 A future accepted mixed WAV must bind all of the following:

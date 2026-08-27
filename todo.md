@@ -65,18 +65,18 @@ Follow the evidence-backed order and invariants in
       `current-character-story-tsk-game-v1`, review ID
       `938ff6f824a1fe7ebb5e98b350d77dc16f7097f19604d94f17d59a1639364ac8`.
       The human accepted its exact WAV as a speaker-neutral tongue-click. Build
-      the production composition successor in this order: publish a
-      self-contained accepted-event binding over the exact review/decision,
-      queue, event plan, game event/bank/media and WAV hashes; create one
-      config-addressed successor that copies the base state and stores that
-      binding under immutable inputs; project the exact unchanged event WAV as
-      `generated/pending_review` with a composition ledger that explicitly says
-      no speech or speaker identity was synthesized; validate that workspace,
-      state and later manifest publication all require the same ledger; then
-      obtain one final individual human verdict on the production projection.
-      Approval may enter the normal outcome merge, while rejection leaves the
-      line unresolved. Do not treat the accepted effect as Poacher I voice
-      evidence, alter its bytes, or read `Tsk` aloud.
+      the production composition successor in this order. The self-contained
+      exact-copy composition is published as
+      `current-character-story-tsk-game-v1`, composition ID `a3750a73c...`, and
+      binds the review/decision, queue, event plan, game event/bank/media and WAV
+      hashes with `speaker_identity_claim=false`. Obtain one explicit final
+      approve/reject decision on that production composition. Only after
+      approval, create one config-addressed successor that copies the base state
+      and stores the composition under immutable inputs; project the unchanged
+      event WAV as `generated/pending_review`; and validate that workspace,
+      state and later manifest publication all require the same ledger.
+      Rejection leaves the line unresolved. Do not treat the accepted effect as
+      Poacher I voice evidence, alter its bytes, or read `Tsk` aloud.
       The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical
       losses (`LIMITED` at the unchanged 3.0-second cap), and the ambiguous
       `common_npc05` media is excluded. When CUDA is available,
