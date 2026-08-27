@@ -3,20 +3,6 @@
 Keep this file limited to actionable work. Remove completed items and empty
 sections after their implementation has been verified and committed.
 
-## P1 - Restore the monolithic macOS test gate
-
-- [ ] Eliminate the reproducible PySide6 `SIGSEGV` in
-      `python -m unittest discover -s tests`. The crash occurs in
-      `TrayApplicationTest.test_live_preflight_blocks_start_until_named_speakers_are_approved`
-      only after the complete test module inventory has been imported; the same
-      `test_app` module passes 74/74 alone and the full inventory passes 1,449
-      tests when split into Qt-safe process shards. Minimize the triggering
-      import/object-lifetime set, then either fix the owning Qt lifecycle or make
-      the supported runner isolate incompatible GUI groups explicitly on macOS.
-      Keep one CI-equivalent regression that proves every test is collected and
-      executed exactly once; do not hide a product crash by merely ignoring
-      exit 139.
-
 ## P0 - Reconcile and close the remaining Character Story authoring tail
 
 Complete this sweep in dependency order. Do not infer review decisions from an

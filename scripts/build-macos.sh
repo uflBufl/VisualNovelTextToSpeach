@@ -63,7 +63,7 @@ uv sync --group dev --frozen
 if [[ $skip_tests != "true" ]]; then
     uv run --frozen ruff format --check .
     uv run --frozen ruff check .
-    uv run --frozen python -m unittest discover -s tests
+    uv run --frozen python scripts/run_ci_unittests.py discover -s tests
 fi
 
 export VNTTS_TESSERACT_DIR="$tesseract_directory"
