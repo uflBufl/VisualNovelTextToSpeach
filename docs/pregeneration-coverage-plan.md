@@ -196,7 +196,14 @@ bundle `current-character-story-poacher-glyndwr-narrator-fallback-v1.json`
 (bundle ID
 `a484f39149abc5f4a1415791541dd70c4aea159c69b082fcaae2f2bd1b69aa07`)
 binds exactly those eight pending WAVs in one cohort with seven required
-samples. No terminal review decision has been projected.
+samples. The operator completed and accepted the cohort on 2026-08-27. The
+current reconciled bundle has ID
+`3be4165e81b9ca9e5c3cbf5b0d0c1af6fbe604ae10f32c514f53e1fa098c1820`,
+reports one completed cohort and zero remaining cohorts, and projected all
+eight exact WAVs as approved. The state still preserves each original source
+role and requested character while recording effective `Narrator`, selected
+Centurion and `missing_voice_to_narrator`; acceptance does not rewrite Poacher
+or Glyndŵr into Narrator source identity.
 
 The exact post-run failure report is bound to state SHA-256
 `2cd6f7c0efcc28e6029b2669c97e0ac7b180f4edb72dfd5cd2fc7956d48d7e81`.
@@ -206,10 +213,37 @@ missed-EOS/audio-limit cases and two speech-silence cases. The deterministic
 repair classifier proposes ten bounded seed retries, three safe
 sentence-boundary segmentation candidates, one reference comparison and one
 inline-pause-marker comparison for the new cohort; the four legacy records
-still require provenance recovery or controlled regeneration. This is planning
-evidence only. Because accepting or rejecting the pending fallback cohort will
-change the state authority, publish a fresh repair plan after that review rather
-than treating this transient classification as executable authority.
+still require provenance recovery or controlled regeneration. This is
+historical planning evidence only. The accepted cohort changed state authority,
+so every follow-up must publish a fresh repair plan from the current state
+rather than treating this pre-review classification as executable authority.
+
+The 15 post-review fallback failures were then processed through only the
+fresh classifier's supported transitions. Ten bounded-seed MOSS repairs
+produced three pending WAVs and seven exhausted failures. Three safe
+sentence-boundary repairs produced one pending WAV and two failures. The one
+inline-marker comparison failed without a WAV. The latter three failures used
+their final remaining MOSS seed and all stayed typed limited. The seven first
+branch failures and those three final failures then received their single
+unseeded Pocket fallback; all ten Pocket attempts produced technically valid
+pending-review WAVs. Every branch ended with `active=null`, no generation
+lease, no partial WAV and a zero-entry approved manifest. No output was
+implicitly approved and the 392-approved composed source workspace was not
+mutated.
+
+The final immutable human task is
+`current-character-story-poacher-glyndwr-repairs-v3.json`, root bundle ID
+`ffeac3d23da277350be9f51878451bf23897e43040f9e6b41070d8899ceb076d`.
+It contains five exact source workspaces, six cohorts, 14 pending items and 14
+required samples. Intermediate four-item v1 and eleven-item v2 publications
+are superseded planning artifacts and must not receive operator decisions.
+One original failure remains outside that bundle:
+`reverse1999:314606:62:e3f44f0529c8ced0` is an unrepairable-by-inference
+speech-silence result. Its narrow immutable audit
+`current-character-story-poacher-ii-reference-audit-v1` has audit ID
+`2c650210df98ab58e3cb18c7dc334a64927048ab1dbc238cc39b65ea52457def`,
+one case and three blinded Centurion candidates. Selecting a reference is a
+separate listening authority, not approval of generated speech.
 
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four

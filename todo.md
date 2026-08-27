@@ -40,13 +40,24 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Listen to the one exact Poacher/Glyndŵr Narrator-fallback cohort in
-      `current-character-story-poacher-glyndwr-narrator-fallback-v1.json`.
-      It contains seven required samples covering eight checksum-bound pending
-      WAVs. Accept only if Centurion remains a suitable explicit fallback for
-      all three source roles; otherwise mark the exact bad samples or reject the
-      cohort. Do not project a terminal decision or retry the 15 typed failures
-      until this human gate is complete.
+- [ ] Review the final Poacher I, Poacher II and Glyndŵr repair bundle
+      `current-character-story-poacher-glyndwr-repairs-v3.json`: six required
+      cohorts contain 14 checksum-bound WAVs (four MOSS repairs and ten Pocket
+      fallbacks). Every sample is required; keep individual bad-WAV marking
+      separate from whole-cohort rejection. After the task is terminal, merge
+      only its exact approved/rejected outcomes into a new config-addressed
+      successor of the 392-approved composed workspace and verify the complete
+      source-state/WAV/lease/manifest ledger. Do not reuse intermediate v1/v2
+      bundles, repeat an exhausted strategy or regenerate a reviewed WAV.
+- [ ] Resolve Poacher II failure
+      `reverse1999:314606:62:e3f44f0529c8ced0` through the narrow immutable
+      audit `current-character-story-poacher-ii-reference-audit-v1`. Compare
+      its three blinded Centurion references on generated output before
+      selecting an exact next reference hypothesis; raw-reference quality alone
+      is insufficient. A selected hypothesis still needs one bounded render,
+      technical validation, individual human review and exact outcome merge.
+      `Neither` leaves the line failed for explicit live fallback; it does not
+      authorize another MOSS seed or automatic Pocket transition.
 - [ ] Resolve the five source-local Dobharchú failures before reusing this voice
       in another story. The four real cohorts are terminal: workspace
       `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20 approvals and
@@ -135,6 +146,23 @@ while one-sentence controls remained below 0.25 seconds.
       whenever that sample finds a substantive cohort defect.
 
 ## Live mode
+
+### P0 - Distinguish Narrator fallback dialogue by ear
+
+- [ ] Add a playback mode that announces only named source roles whose exact
+      generated route uses `missing_voice_to_narrator`. A bare Centurion line
+      remains true Narrator; fallback dialogue plays one short source-role cue
+      on speaker change (for example `Poacher I.`) and then the unchanged
+      canonical line. Preserve the original speaker/requested role and keep the
+      cue outside the pregenerated WAV, text and checksum authority. Exact
+      `???` remains Narrator by policy. Revalidate route and generation at cue
+      playback, cancel stale cues, do not announce game-source audio, and cover
+      consecutive fallback lines, fallback-to-Narrator transitions, disabled
+      mode, interruption and auto-advance in controller/replay tests. Expose
+      this as a distinct `Narrator fallback roles only` setting instead of
+      silently changing the existing all-speaker accessibility mode; complete
+      only after a real Character Story listening pass confirms the cue is
+      informative without becoming repetitive.
 
 ### P0 - Repair failures observed in the latest Character Story run
 
