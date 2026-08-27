@@ -165,11 +165,36 @@ lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those
 four outputs are all below the existing 110-WPM technical-attention threshold,
 so pacing remains a review flag rather than an automatic generation failure.
 The child portrait variant sounded unacceptable on story text despite its
-previously acceptable source clip and fixed evaluation; one generated child
-line was rejected, one remains pending and one failed synthesis. A successor
-quality decision/binding must exclude or replace that child synthesis variant.
-The immutable v3 review and v4 binding remain preserved as the evidence that
-was actually used for this run.
+previously acceptable source clip and fixed evaluation. The immutable v3 review
+and v4/v5 bindings remain preserved as the evidence that was actually used for
+this run.
+
+The child portrait variant was retired on 2026-08-27 through immutable binding
+successor `character-story-20260827-v6-child-aderyn-retired`. Its manifest
+SHA-256 is
+`0c74667fdf8c617fb311c26f01d4f66989a9019ebc733fb56a9942c27a84d7ff`.
+The version-3 ledger binds portrait `533706`, variant
+`cluster-6a3c52e451a4abb5a69c32a8-anchor-1`, reference SHA-256
+`49a0a42bc2cbac573ab0a0518e54edfb8c59709f76feb64f5cc41e7fd99e42b8`
+and its three exact queue IDs. The reference remains copied as inactive
+provenance, but the active manifest has six selected variants and 104 queue
+overrides; none of the three retired IDs can select it.
+
+Config-addressed seed workspace
+`resume-395a5e5eec0327a3a793b66d-231fde5834d2ede6` retains Centurion, MOSS stable
+and the exact Hotelier-only Narrator fallback. No-generation rebase successor
+`resume-395a5e5eec0327a3a793b66d-e80f38bf49a43635` carries the existing 406
+terminal decisions unchanged: 324 approvals and 82 rejections. Exactly the
+three retired child IDs are `retired_rejected`; their target-reference lists
+are empty, they are absent from the active overrides and approved-only
+324-entry manifest, and approvals could not have crossed this boundary. The
+successor workspace SHA-256 is
+`f5dde41cccbe1a9a0b4f9d369555e0b193c4e731951e519a1929db51f0829de6` and
+state SHA-256 is
+`da7a45d9b9c5eda7b8ac70a8633eccec3574a1922d6c0465f10725e74caed9b7`.
+There is no active attempt, lease or partial WAV. The source and seed workspace
+and state hashes exactly match the snapshots recorded by the rebase ledger,
+and an exact repeat returned `created=false`.
 
 The subsequent real-story Dobharchú review found a different failure mode:
 the source identity can produce good lines, but MOSS delivery is inconsistent.

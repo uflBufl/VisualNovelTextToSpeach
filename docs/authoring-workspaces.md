@@ -55,6 +55,28 @@ target route contains the exact source bytes. A removed/changed reference,
 incompatible route, active attempt, partial WAV, path collision or concurrent
 source mutation aborts before publication.
 
+An accepted source-reference variant can later be retired without rewriting
+its earlier listening evidence:
+
+```sh
+uv run vntts-pregenerate retire-reference-bindings \
+  --base-binding-manifest CURRENT/voice-manifest.json \
+  --variant-id EXACT_VARIANT_ID \
+  --reason real_story_quality_failure \
+  --output IMMUTABLE_SUCCESSOR
+```
+
+The version-3 successor removes only the retired variant's exact queue
+overrides, retains the copied reference as inactive checksum-bound provenance,
+and records its plan, variant, reference and queue identities. Future binding
+extensions preserve this retirement ledger. Config rebase may carry a retired
+route only when its existing terminal outcome is an exact rejection. The
+target route is then recorded with no active references and the item is marked
+`retired_rejected`; an approval, pending item or unrelated rejection fails
+closed. A chained rebase uses the immediately preceding target route while the
+new source-item hash binds the complete prior ledger, so historical voice
+labels are not re-resolved or flattened.
+
 The successor snapshots both workspace/state authorities and the source input
 controls. Its approved-only manifest retains an additive `config_rebase`
 record. Workspace loading, manifest rebuilding and final game-pack publication
