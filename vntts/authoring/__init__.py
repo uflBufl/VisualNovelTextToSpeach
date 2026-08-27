@@ -61,6 +61,12 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_decision,
     write_cohort_review_plan,
 )
+from vntts.authoring.config_rebase import (
+    CONFIG_REBASE_SCHEMA,
+    CONFIG_REBASE_VERSION,
+    rebase_workspace_config,
+    validate_config_rebase_workspace,
+)
 from vntts.authoring.delivery import (
     DELIVERY_ANNOTATION_VERSION,
     LEGACY_ENGLISH_POLICY,
@@ -446,6 +452,8 @@ __all__ = [
     "CohortReviewError",
     "CohortReviewPlan",
     "CohortReviewProjection",
+    "CONFIG_REBASE_SCHEMA",
+    "CONFIG_REBASE_VERSION",
     "DEFAULT_MAX_DHASH_DISTANCE",
     "DELIVERY_ANNOTATION_VERSION",
     "LEGACY_ENGLISH_POLICY",
@@ -674,7 +682,9 @@ __all__ = [
     "record_trial_preference",
     "record_failure_reference_decision",
     "refresh_cohort_review_bundle",
+    "rebase_workspace_config",
     "review_generation_item",
+    "validate_config_rebase_workspace",
     "render_sentence_segments",
     "run_bulk_generation",
     "safe_sentence_segments",

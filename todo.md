@@ -51,56 +51,30 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Publish a lossless multi-plan source-reference binding successor after the
-      accepted Mrs. Owen exact-bank review. Preserve every existing accepted
-      variant, queue override and copied reference from the current v4 binding,
-      add only the 34 exact Mrs. Owen queue IDs, retain version-1 manifest
-      compatibility, reject cross-plan queue/voice conflicts, and bind every
-      contributing plan and quality-review SHA-256. Then create a new
-      config-addressed workspace and prove exact preflight without generation.
-      Keep the completed Hotelier `needs_sample` decision as an explicit
-      Hotelier-only Narrator fallback; do not invent or search for another voice.
+- [ ] Rebase the 406 existing terminal review outcomes onto the immutable
+      Mrs. Owen plus Hotelier-fallback configuration without forging synthesis
+      provenance. The source is workspace
+      `resume-395a5e5eec0327a3a793b66d-63324a22121bb35e`; the config-addressed
+      target is `resume-395a5e5eec0327a3a793b66d-de274b0e064597e0` and must
+      remain untouched. Publish a third no-replace successor that preserves the
+      exact queue/story, source item/WAV/state hashes and terminal decisions,
+      records both source and target authorities, and re-attests an item only
+      when its effective queue override/fallback route and exact reference-byte
+      identity are unchanged. Added Mrs. Owen mappings and the Hotelier-only
+      Narrator fallback may affect only previously nonterminal items. Reject any
+      changed existing reference, alias collision, effective character change,
+      missing source authority, active lease or concurrent mutation. Centralize
+      the validation so approved-manifest and final-pack publication both reject
+      orphaned or tampered rebase ledgers. Prove idempotency and fail-closed race
+      behavior in tests, then inspect the real successor without generation.
 
-- [ ] Finish the two remaining exact-source Character Story quality gates.
-      Review the published Mrs. Owen `0/1` card by hearing original media
-      `562400954` and valid `fixed-1`; then publish a successor binding only if
-      that generated voice is accepted. Do not retry its two speech-silence
-      failures without a new repair hypothesis. For Hotelier, do not search
-      other versions, public recordings, Wiki audio, reused portrait `505401`,
-      generic NPC labels or similar voices. Build a bounded fixed-corpus
-      evaluation from the published complete five-clip composite and require a
-      separate quality decision. Its bounded run now has two valid fixed samples
-      and one exhausted inline-pause comparison. Review the published `0/1`
-      Hotelier card by hearing the composite plus `fixed-1` and `fixed-3`; then
-      accept, reject or select needs-sample. If it fails, retain `needs_sample`
-      and use an explicit Hotelier-only Narrator fallback instead of guessing.
-      The
-      expanded review
-      is complete
-      `7/7`: six accepted variants bind 73 exact queue IDs, all 15 terminal
-      Rhiannon decisions were carried into the new config-addressed workspace,
-      and preflight reduced missing references from 184 to 164 lines. Mrs.
-      Owen remains `needs_sample`; Hotelier has no technical pass. Keep 41
-      lower-priority unreviewed candidates pending rather than promoting them
-      automatically. Preserve Aderyn as source identity, keep adult and child
-      portrait groups separate, retain crying-only rejects, and publish a new
-      immutable quality decision/binding that excludes or replaces the current
-      child variant: real-story synthesis sounded bad even though its source
-      clip passed the earlier fixed evaluation. Do not mutate the v3 review or
-      v4 binding. Do not merge `Poacher I`, `Poacher II` or Glyndŵr or treat
+- [ ] Replace or explicitly retire the accepted child Aderyn source variant.
+      Real-story synthesis sounded bad even though its source clip passed the
+      fixed evaluation. Preserve Aderyn as source identity, keep adult and child
+      portrait groups separate, retain crying-only rejects and do not mutate the
+      v3 review or v4 binding. Keep the 41 lower-priority unreviewed candidates
+      pending; do not merge `Poacher I`, `Poacher II` or Glyndwr or treat
       configured-unavailable audio as installed.
-- [ ] Finish review of the remaining technically valid source-bound Character
-      Story WAVs using
-      every technical-attention item plus a stratified clean sample from each
-      of the six exact reference variants. Expand a variant's review if the
-      sample finds a substantive voice, pronunciation, pacing or contamination
-      defect. The initial Aderyn pass approved two natural adult lines, rejected
-      four adult lines with pauses/slow pacing and rejected one child line.
-      Reject only listened artifacts; do not promote the remaining child output
-      or apply adult decisions across unrelated portrait variants. Exclude the
-      seven remaining Dobharchú outputs from this listen-through: the expanded
-      real-story sample already found a cohort-level pacing/pause defect, so
-      leave those exact items pending until the repair comparison below.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
@@ -108,15 +82,11 @@ Follow the evidence-backed order and invariants in
       never as a pause repair. Compare it with the 2.38-second reference only
       after both use the selected corrected-pause strategy documented below.
       Review the published bundle
-      `current-character-story-dobharchu-natural-expansion-v1.json`: it contains
-      exactly 24 pending WAVs in four cohorts, comprising 17 direct natural
-      outputs and seven bounded sentence repairs. Every item is currently a
-      mandatory sample because it is technical-attention evidence or the
-      deterministic clean sample for its exact portrait/reference cohort. The
-      current checksum-bound progress is `2/4` terminal cohorts, with 17 exact
-      samples/items remaining in the two unresolved reference cohorts according
-      to the 2026-08-23 read-only status reconciliation. Apply only explicit
-      source-local cohort decisions, then merge terminal reviewed
+      `current-character-story-dobharchu-natural-expansion-v1.json`. Three of
+      four cohorts are terminal. The remaining cohort has 15/15 restored heard
+      samples and one explicit `pause_or_pacing` bad marker, but no terminal
+      decision. Apply only an explicit
+      source-local cohort decision, then merge terminal reviewed
       repair outcomes into successor
       `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`; preserve its four
       existing approvals, the 15 primary approvals, the two accepted portrait
@@ -129,51 +99,16 @@ Follow the evidence-backed order and invariants in
       still required for `reverse1999:314608:29:7be68e27f6d36933` and
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist.
-- [ ] Finish the exact 15-failure tail in merged workspace
-      `resume-395a5e5eec0327a3a793b66d-cd54b7632c220de2` without another broad
-      retry. Its checksum-bound projection is four safe sentence-boundary
-      segmentations, seven exhausted-primary Pocket fallbacks, one final
-      provider-local bounded MOSS seed and three reference comparisons. First
-      publish and execute one config-addressed MOSS successor containing only
-      the four segmentation IDs and one bounded-seed ID, then recompute the
-      plan. Publish a separate Pocket successor only for records still marked
-      `offline_fallback_backend`. The first five-ID MOSS successor is terminal
-      with no WAV: its four failed segmentations now require reference
-      comparison and its bounded-seed result requires a separate inline-pause
-      comparison. The exhausted raw-silence planner/constructor mismatch is
-      closed with exact creation, persisted-state and runtime regressions, so
-      the separate Pocket successor
-      `resume-395a5e5eec0327a3a793b66d-dee61c5ea3baf68c` has now run exactly those
-      seven fallbacks once. All seven produced validated pending-review WAVs,
-      no decision was applied, and the exact seven-item review bundle is
-      `authoring/review-bundles/current-character-story-exhausted-primary-pocket-fallbacks-v1.json`
-      with bundle ID `3cf27ce5ef86a6b52468ef795eca13a79a791464ec4b75cad759a9fef7fdc0cf`.
-      Complete its three cohorts and seven mandatory samples, then atomically
-      merge only terminal decisions back into the 15-item base successor.
-      Do not render any of the resulting eight comparison-only records without
-      a new exact hypothesis. One exact hypothesis already exists for
-      `reverse1999:314605:9:1d0f968d85af2125`. Its separate versioned 180 ms
-      inline-marker attempt is complete and failed closed at the 8.5-second
-      missed-EOS limit, with no WAV. The exact planner now permits one unseeded
-      Pocket fallback from that terminal marker workspace. The first successor
-      creation exposed a persisted-workspace validator mismatch and public load
-      failed closed before synthesis; align planner, constructor and runtime
-      validation is now covered by an exact regression. The repaired successor
-      `resume-395a5e5eec0327a3a793b66d-a2c30805e8846457` produced one validated
-      pending-review WAV in its sole unseeded Pocket attempt. Review it through
-      `authoring/review-bundles/current-character-story-rhiannon-inline-pocket-fallback-v1.json`
-      (bundle ID `3b26c7811a6458dc1e610e405316cf688f99f21a06d3df74deec5d3dc6c2426f`),
-      then merge only a terminal decision.
-      The seven exact alternative-reference experiments are now published and
-      documented in
-      [`docs/alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md).
-      Review only the one matched Narrator A/B trial. Two unmatched Narrator
-      completions and four all-limited lines remain blocked and do not authorize
-      another seed. Preserve all 197 approvals, every
-      unrelated state/WAV hash and the 197-entry approved-only manifest. Review
-      any new WAVs through a checksum-bound bundle, merge only terminal
-      decisions, and keep generation, review and final-pack publication as
-      separate transactions.
+- [ ] Resolve the exact 15-failure tail without another broad retry. The current
+      read-only reconciliation report
+      `7afae2ccdab9863a2942d4a45d5a4f75c1b4560e42cfc528a4aeba34eae6b1e3`
+      classifies all 15 as `new_hypothesis_required`; all previously generated
+      Pocket, inline-pause, selected-reference and alternative-reference review
+      cohorts are terminal. Preserve the completed evidence described in
+      [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
+      and do not repeat an exhausted seed/provider/repair. For each remaining
+      failure, require a new bounded hypothesis, exact-ID successor, validated
+      WAV, checksum-bound review and terminal merge as separate transactions.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

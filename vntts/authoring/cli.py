@@ -44,6 +44,7 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_decision,
     write_cohort_review_plan,
 )
+from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.delivery import (
     LEGACY_ENGLISH_POLICY,
     PRESERVE_DELIVERY_POLICY,
@@ -441,6 +442,15 @@ def create_parser():
         required=True,
     )
     merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    config_rebase = subparsers.add_parser(
+        "rebase-workspace-config",
+        help="Carry exact terminal decisions onto one additive immutable config",
+    )
+    config_rebase.add_argument("source_workspace", type=Path)
+    config_rebase.add_argument("target_workspace", type=Path)
+    config_rebase.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     terminal_resolution = subparsers.add_parser(
@@ -1041,6 +1051,20 @@ def main(argv=None):
                         "created": result.created,
                     },
                     ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "rebase-workspace-config":
+            result = rebase_workspace_config(
+                arguments.source_workspace,
+                arguments.target_workspace,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {"directory": str(result.directory), "created": result.created},
                     indent=2,
                     sort_keys=True,
                 )

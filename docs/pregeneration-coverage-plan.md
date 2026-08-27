@@ -76,17 +76,18 @@ was not intelligible enough to approve as a cloning reference. A later
 exhaustive exact-bank scan found the stronger 3.172-second media `562400954`
 (decoded WAV SHA-256
 `82e3125fbc195951006817ccd13d507b40c4d2311c2f17ebc7a37f2505e7e22b`),
-which the user accepted as a legitimate Mrs. Owen voice on 2026-08-25. It must
-enter a new immutable candidate/evaluation; it does not retroactively change
-the earlier `needs_sample` decision.
+which the user accepted as a legitimate Mrs. Owen voice on 2026-08-25. Its
+separate generated-quality card was accepted on 2026-08-27. The original
+candidate decision remains immutable; the accepted exact-bank plan and quality
+review are separate checksum-bound authorities.
 
 The expanded checksum-bound review completed all seven selected cluster cards.
 Six were accepted: both Dobharchú groups, Poacher, Aderyn's Father, adult
 Aderyn/Rhiannon media `792349907`, and child Aderyn/Rhiannon portrait `533706`
-media `477089679`. The published review still records Mrs. Owen as
-`needs_sample` pending the new candidate's generated-quality evaluation, and
-Hotelier still has no single-clip minimum-duration technical pass. The
-resulting partial manifest binds 73 exact
+media `477089679`. The earlier review still records Mrs. Owen as `needs_sample`;
+it was not rewritten after the stronger exact-bank evidence passed. Hotelier
+still has no single-clip minimum-duration technical pass and its separate final
+decision is `needs_sample`. The resulting v4 partial manifest binds 73 exact
 queue IDs. A new immutable Centurion/MOSS workspace explicitly included the
 three base Rhiannon references and carried all 15 terminal Rhiannon decisions
 (ten approved, five rejected) without synthesis. Its preflight reduced the
@@ -96,8 +97,32 @@ candidates remain unreviewed evidence, not implicit voice authority.
 Hotelier's complete exact bank contains five short clips totaling 5.009
 seconds. Because the role appears only once in this mostly unvoiced Character
 Story, no alternate-version or public-recording search is planned. One
-checksum-ledgered same-bank composite may be evaluated; if it fails, retain a
-Hotelier-only Narrator fallback rather than inventing identity evidence.
+checksum-ledgered same-bank composite was evaluated and did not establish an
+acceptable cloning reference. The supported policy is an exact Hotelier-only
+Narrator fallback rather than inventing identity evidence.
+
+## Multi-plan binding successor, 2026-08-27
+
+The accepted Mrs. Owen plan was added through immutable multi-plan binding
+schema version 2. Successor manifest
+`character-story-20260827-v5-mrs-owen/voice-manifest.json` has SHA-256
+`65f1f939690229a27085d198894cc7e334cb51f808c24c16754b128c43674c8e`.
+It preserves all 73 v4 queue mappings exactly, adds 34 Mrs. Owen queue IDs, and
+contains seven selected variants, nine voices and 13 contained reference files.
+Its two source ledgers bind both plan and quality-review SHA-256 values. The v4
+manifest remains unchanged at SHA-256
+`0483ed213c4001e70b436a01dccec599f753aab35dd09326f1fa46cd9ab56a3e`.
+
+Config-addressed workspace
+`resume-395a5e5eec0327a3a793b66d-de274b0e064597e0` snapshots that successor plus
+the exact Hotelier-only Narrator fallback. Before generation it reports 118
+missing-reference lines, down from 164 in the prior reviewed workspace: 34 Mrs.
+Owen lines are source-bound and 12 Hotelier lines have the explicit fallback.
+It remains a seed/preflight workspace with zero new review decisions. The
+generic outcome-merge API correctly refused to copy the 406 reviewed outcomes
+because it accepts current failure-repair workspaces only. A dedicated
+provenance-safe config rebase is required; copying state or rewriting synthesis
+provenance without that ledger is forbidden.
 
 The first exact-ID generation pass attempted all 73 bound items with seed 0 and
 no automatic retry. It produced 44 technically valid WAVs. A bounded second

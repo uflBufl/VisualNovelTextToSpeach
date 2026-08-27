@@ -40,7 +40,7 @@ from vntts.authoring.bulk_generation import (
     _validate_state_document,
     load_generation_state,
     process_is_alive,
-    validate_terminal_conflict_publication_authority,
+    validate_authoring_publication_authority,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -237,7 +237,7 @@ def publish_final_game_pack(
 
                 generated_manifest = staging / "generated" / "manifest.json"
                 try:
-                    validate_terminal_conflict_publication_authority(
+                    validate_authoring_publication_authority(
                         state_path,
                         state,
                     )

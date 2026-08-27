@@ -86,25 +86,26 @@ two Narrator and both Dobharchu lines. No state or decision changed.
 
 The exhaustive local bank audit is recorded in
 [`missing-character-reference-audit-2026-08-25.md`](missing-character-reference-audit-2026-08-25.md).
-Mrs. Owen now has one new 3.172-second exact-bank technical candidate, media
-`562400954`, accepted by the user as a legitimate Mrs. Owen voice and awaiting
-a separate generated-quality evaluation. Hotelier's exact bank has
-only five short clips and no technical pass; its reused portrait cannot safely
-broaden the identity. Both remain fail-closed until those stated gates change.
+Mrs. Owen's 3.172-second exact-bank candidate, media `562400954`, and its
+generated fixed-corpus sample were accepted. They now bind 34 exact queue IDs
+through the immutable v5 multi-plan manifest documented in
+[`pregeneration-coverage-plan.md`](pregeneration-coverage-plan.md). Hotelier's
+exact bank has only five short clips and no technical pass; its terminal
+decision is `needs_sample`, and its 12 lines use only an explicit Hotelier-only
+Narrator fallback in the new preflight workspace. Its reused portrait does not
+broaden identity.
 
 ## Completion boundary
 
 The remaining Character Story authoring work is therefore not another broad
 generation pass. It is:
 
-1. finish 25 exact mandatory review samples across the three current bundles;
-2. review the one matched Narrator alternative-reference pair and retain the
-   six unmatched/limited outcomes as blocked evidence;
-3. publish and review the matched long-pause repair comparison;
-4. publish and evaluate the user-accepted Mrs. Owen exact-bank candidate, and
-   evaluate Hotelier's exact-bank composite once, then retain an explicit
-   supported fallback if it does not pass generated-quality review; and
-5. merge only terminal decisions, rebuild the approved-only manifest and run
+1. finish the one remaining 15-item Dobharchu cohort decision;
+2. publish and review the matched long-pause repair comparison after a suitable
+   raw long-line capture exists;
+3. rebase existing terminal review authority onto the v5 Mrs. Owen plus
+   Hotelier-fallback configuration without rewriting synthesis provenance; and
+4. merge only terminal decisions, rebuild the approved-only manifest and run
    the real routing/auto-advance acceptance.
 
 ## Machine-verified reconciliation

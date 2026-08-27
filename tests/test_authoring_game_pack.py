@@ -259,6 +259,28 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_forged_config_rebase_provenance_cannot_enter_final_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            queue_id = fixture["items"][0]["queue_id"]
+            review_generation_item(fixture["state"], queue_id, "approved")
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["items"][queue_id]["config_rebase"] = {
+                "source_item_sha256": "1" * 64,
+                "audio_sha256": state["items"][queue_id]["file_sha256"],
+            }
+            fixture["state"].write_text(
+                json.dumps(state, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                FinalGamePackError, "canonical workspace ledger"
+            ):
+                publish(fixture, root / "pack")
+
+            self.assertFalse((root / "pack").exists())
+
     def test_forged_terminal_provenance_cannot_enter_final_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

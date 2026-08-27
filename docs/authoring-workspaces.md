@@ -30,6 +30,36 @@ selected digest are retained, and the workspace never claims they are the same.
 Selected files are copied into application data, so resume does not depend on
 mutable extractor paths.
 
+## Rebasing terminal decisions onto an additive configuration
+
+Use `rebase-workspace-config` when a reviewed workspace contains terminal
+approved/rejected WAV decisions but a separate config-addressed workspace has
+new voice coverage or an explicit fallback policy. This is not a generic state
+copy and it does not claim that old audio was synthesized with the new config:
+
+```sh
+uv run vntts-pregenerate rebase-workspace-config REVIEWED_WORKSPACE \
+  NEW_CONFIG_WORKSPACE --workspaces-root AUTHORING_WORKSPACES
+```
+
+The command locks both source outputs, requires one byte-identical queue and
+import identity, and publishes a third no-replace workspace. Its base state and
+top-level synthesis controls come from the new config. Only exact terminal
+items come from the reviewed source. Each carried item binds the source
+workspace/state/item/WAV hashes, its original synthesis fields, effective
+character, source reference digests and the target route that still contains
+those exact reference bytes. A changed character, removed/changed reference,
+active attempt, partial WAV, path collision or concurrent source mutation
+aborts before publication.
+
+The successor snapshots both workspace/state authorities and the source input
+controls. Its approved-only manifest retains an additive `config_rebase`
+record. Workspace loading, manifest rebuilding and final game-pack publication
+all validate the same ledger, so copied state outside its canonical successor,
+tampered snapshots and orphaned provenance fail closed. Previously nonterminal
+items remain owned by the new target configuration and may be generated later;
+the rebase itself performs no synthesis and creates no human decision.
+
 Cohort review treats generation state as authority and the approved-only
 manifest as a derived projection. Terminal acceptance commits authority before
 publication, so a failed manifest replacement cannot publish an uncommitted

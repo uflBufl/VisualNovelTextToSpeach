@@ -3041,6 +3041,10 @@ def _load_workspace(workspace_directory):
     _validate_workspace_offline_fallback_state(directory, workspace)
     _validate_workspace_outcome_merge(directory, workspace)
     _validate_workspace_terminal_conflict_merge(directory, workspace)
+    config_rebase = workspace.get("config_rebase")
+    if config_rebase is not None:
+        module = importlib.import_module("vntts.authoring.config_rebase")
+        module.validate_config_rebase_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3051,6 +3055,7 @@ def _load_workspace(workspace_directory):
         workspace.get("outcome_merge"),
         workspace.get("failure_reference_binding"),
         workspace.get("terminal_conflict_merge"),
+        config_rebase,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -4258,6 +4263,7 @@ def _workspace_config_fingerprint(
     outcome_merge=None,
     failure_reference_binding=None,
     terminal_conflict_merge=None,
+    config_rebase=None,
 ):
     fingerprint = {
         "import_id": import_id,
@@ -4274,6 +4280,8 @@ def _workspace_config_fingerprint(
         fingerprint["terminal_conflict_merge"] = terminal_conflict_merge
     if failure_reference_binding is not None:
         fingerprint["failure_reference_binding"] = failure_reference_binding
+    if config_rebase is not None:
+        fingerprint["config_rebase"] = config_rebase
     payload = json.dumps(
         fingerprint,
         ensure_ascii=False,

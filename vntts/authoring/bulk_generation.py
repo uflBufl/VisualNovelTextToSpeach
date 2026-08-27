@@ -2258,7 +2258,7 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
         raise BulkGenerationError(
             "Generated-audio manifest must stay in the state directory"
         )
-    _validate_terminal_conflict_manifest_authority(state_path, state)
+    validate_authoring_publication_authority(state_path, state)
     _write_generated_manifest_from_state(state, output_directory, manifest_path)
     return manifest_path
 
@@ -2343,8 +2343,15 @@ def validate_terminal_conflict_publication_authority(state_path, state):
         raise BulkGenerationError(str(error)) from error
 
 
+def validate_authoring_publication_authority(state_path, state):
+    """Validate every reserved authoring provenance extension before projection."""
+    validate_terminal_conflict_publication_authority(state_path, state)
+    config_rebase = importlib.import_module("vntts.authoring.config_rebase")
+    config_rebase.validate_config_rebase_publication_authority(state_path, state)
+
+
 _validate_terminal_conflict_manifest_authority = (
-    validate_terminal_conflict_publication_authority
+    validate_authoring_publication_authority
 )
 
 
