@@ -343,6 +343,11 @@ The resulting audit decision retains all of those SHA-256 authorities; an exact
 repeat is idempotent. This imports only the next reference hypothesis. It does
 not approve the comparison render or any production WAV.
 
+Fresh audits dual-read older string-only failed state. They retain the exact
+legacy item hash but project its diagnostic through the same typed normalization
+used by the repair planner; they never require fabricated provider/control
+provenance merely to compare an existing manifest reference.
+
 Imported blind-selection authority uses failure-reference decision version 3
 and binding version 2. Readers continue to accept legacy decision/binding
 version 2/1 documents without inventing selection provenance; new publishers

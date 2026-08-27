@@ -193,6 +193,30 @@ class FailureReferenceAuditTest(unittest.TestCase):
 
         self.assertEqual(scoped.case_count, 1)
 
+    def test_explicit_audit_normalizes_legacy_string_only_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            item = state["items"][queue_id]
+            item.pop("failure")
+            item["last_error"] = "Legacy output failed speech quality: silence"
+            state_path.write_text(json.dumps(state, sort_keys=True))
+
+            publish_failure_reference_audit(
+                workspace,
+                root / "audit",
+                queue_ids=(queue_id,),
+            )
+            case = json.loads((root / "audit/audit.json").read_text())["groups"][0][
+                "cases"
+            ][0]
+
+            self.assertEqual(case["failure"]["kind"], "speech_silence")
+            self.assertEqual(case["failure"]["error_type"], "LegacyStringFailure")
+            self.assertTrue(case["failure"]["inferred_from_legacy_error"])
+
     def test_audio_tamper_fails_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

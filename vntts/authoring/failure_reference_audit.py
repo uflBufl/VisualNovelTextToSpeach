@@ -24,6 +24,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.bulk_generation import (
     _canonical_sha256,
     generation_failure_repair_plan,
+    normalized_failure_record,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.workbench import AuthoringWorkbenchError, _load_workspace
@@ -161,7 +162,7 @@ def publish_failure_reference_audit(
                 "text_sha256": item.text_sha256,
                 "speaker": item.speaker,
                 "failure_sha256": _canonical_sha256(result),
-                "failure": result["failure"],
+                "failure": normalized_failure_record(result, text=item.text),
             }
         )
 

@@ -71,7 +71,10 @@ Follow the evidence-backed order and invariants in
       as a provenance-preserving transaction:
       1. build a fresh failure-reference audit from the current successor and
          prove that its queue item, failed state and candidate reference bytes
-         still match the completed comparison/listening authorities;
+         still match the completed comparison/listening authorities; legacy
+         string-only failed items must be projected through the same normalized
+         failure record as the repair planner rather than crashing or inventing
+         structured provenance;
       2. import the blind preference through a public checksum-bound bridge,
          recording the comparison, listening report, opaque arm and selected
          reference SHA-256 instead of manually editing an audit or binding;
