@@ -179,6 +179,31 @@ new terminal-conflict case are still human authority gates. The report build
 rehash-validated every captured source and did not mutate a workspace, state,
 manifest, bundle, progress file or WAV.
 
+That report is retained as evidence of the selection-readiness correction, but
+its next-action projection was superseded after reconciliation learned to
+surface already reviewed secondary outcomes. Clean commit `b5d8173` published
+`authoring/reconciliations/current-character-story-20260827-3ad299f22074.json`:
+
+- report ID
+  `3ad299f2207451dff9e7293f2e28023133d5cf5fc99e0ba5b0b5092f27760ea5`;
+- file SHA-256
+  `6e77b8e55a4d2d14685f7de3ab38c1048f9c4065930ac88279987bb65b8e73c3`;
+- 47 `generation_ready_unselected`, nine `terminal_merge_required`, 15
+  `human_cohort_review`, five `new_hypothesis_required`, 118
+  `source_reference_or_explicit_fallback`, zero `workspace_blocked`, and the
+  same six terminal conflicts.
+
+The nine merge actions bind six approved and three rejected exact state items.
+Seven are the completed Pocket fallback outcomes; the other two prevent one
+already approved Dobharchú result and one already rejected Aderyn result from
+being generated again. Every recorded source state-item SHA-256 was recomputed
+from its named current workspace and matched. The resulting exact pending
+selection contains 34 Mrs. Owen, 12 Hotelier and one Dobharchú line. Its child
+preflight reported `selected=47`, `pending=47`, `ready=47`,
+`missing_voice=0`, no blockers and exactly 47 `--queue-id` arguments. No merge
+or generation ran: both remain downstream of the two outstanding human review
+authorities.
+
 ## Lease and terminal-publication invariants
 
 Generation, publication and terminal-review progress use a persistent

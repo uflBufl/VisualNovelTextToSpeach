@@ -75,26 +75,17 @@ Follow the evidence-backed order and invariants in
       still required for `reverse1999:314608:29:7be68e27f6d36933` and
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist.
-- [ ] Resolve the exact 15-failure tail without another broad retry. The current
-      read-only reconciliation report
-      `7afae2ccdab9863a2942d4a45d5a4f75c1b4560e42cfc528a4aeba34eae6b1e3`
-      classifies all 15 as `new_hypothesis_required`; all previously generated
-      Pocket, inline-pause, selected-reference and alternative-reference review
-      cohorts are terminal. Preserve the completed evidence described in
+- [ ] Resolve the exact five-failure tail without another broad retry. Current
+      selection-aware reconciliation report
+      `3ad299f2207451dff9e7293f2e28023133d5cf5fc99e0ba5b0b5092f27760ea5`
+      classifies only `314606:54`, `314608:58`, `314608:94`, `314606:43` and
+      `314606:6` as `new_hypothesis_required`. The nine already reviewed
+      secondary outcomes are separate checksum-bound `terminal_merge_required`
+      work, not new failures. Preserve the completed evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated
       WAV, checksum-bound review and terminal merge as separate transactions.
-- [ ] Make reconciliation prefer one exact current terminal outcome over a
-      stale failed primary record. Emit a checksum-bound
-      `terminal_merge_required` action naming the sole source workspace,
-      authority and state-item digest; keep multiple or conflicting terminal
-      sources out of this automatic projection. Add a parallel-workspace
-      regression, rebuild the real report, and verify that the seven already
-      reviewed Pocket outcomes become merge work while only the five genuinely
-      unresolved failures retain `new_hypothesis_required`. Do not apply the
-      merge until the remaining Dobharchú cohort and terminal-conflict decision
-      are complete.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in
