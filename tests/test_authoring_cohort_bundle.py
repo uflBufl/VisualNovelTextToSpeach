@@ -273,6 +273,48 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(assessments[0].cohort_id, selected["cohort_id"])
         self.assertEqual(assessments[0].queue_id, queue_id)
         self.assertEqual(assessments[0].assessment, "bad")
+        self.assertEqual(assessments[0].defect_reasons, ("unspecified",))
+
+    def test_version_one_observation_remains_readable_without_guessed_reason(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            cohort = bundle.document["cohorts"][0]
+            sample = cohort["samples"][0]
+            body = {
+                "schema": "vntts.authoring-cohort-review-observations",
+                "schema_version": 1,
+                "root_bundle_id": bundle.bundle_id,
+                "current_bundle_id": bundle.bundle_id,
+                "observations": [
+                    {
+                        "workspace_id": cohort["workspace_id"],
+                        "cohort_id": cohort["cohort_id"],
+                        "queue_id": sample["queue_id"],
+                        "audio_sha256": sample["audio_sha256"],
+                        "assessment": "bad",
+                    }
+                ],
+            }
+            document = {
+                **body,
+                "observations_id": cohort_bundle_module._canonical_sha256(body),
+            }
+            publication.with_name("bundle.observations.json").write_text(
+                json.dumps(document, sort_keys=True), encoding="utf-8"
+            )
+
+            assessments = cohort_bundle_module.load_cohort_review_observations(
+                publication,
+                bundle,
+                bundle,
+            )
+
+        self.assertEqual(assessments[0].assessment, "bad")
+        self.assertEqual(assessments[0].defect_reasons, ())
 
     def test_cli_publishes_the_exact_bundle(self):
         with TemporaryDirectory() as directory:

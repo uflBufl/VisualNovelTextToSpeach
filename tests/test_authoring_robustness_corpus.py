@@ -51,7 +51,7 @@ def _pending_workspace(root):
     return created.directory, state_path, queue_id
 
 
-def _decision(workspace, queue_id, assessment="acceptable"):
+def _decision(workspace, queue_id, assessment="acceptable", defect_reasons=None):
     plan = build_cohort_review_plan(workspace)
     cohort_id = plan.document["cohorts"][0]["cohort_id"]
     decision = build_cohort_review_decision(
@@ -59,7 +59,16 @@ def _decision(workspace, queue_id, assessment="acceptable"):
         cohort_id,
         "rejected" if assessment == "bad" else "accepted",
         reviewed_queue_ids=[queue_id],
-        sample_assessments={queue_id: assessment},
+        sample_assessments={
+            queue_id: (
+                assessment
+                if defect_reasons is None
+                else {
+                    "assessment": assessment,
+                    "defect_reasons": defect_reasons,
+                }
+            )
+        },
     )
     path = workspace / "cohort-reviews" / f"decision-{decision.decision_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,6 +94,29 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_version_three_preserves_exact_human_defect_reasons(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(
+                workspace,
+                queue_id,
+                assessment="bad",
+                defect_reasons=["timbre_or_audio_artifact", "pause_or_pacing"],
+            )
+
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            sample = load_speech_robustness_corpus(result.directory).document[
+                "samples"
+            ][0]
+
+        self.assertEqual(
+            sample["human_defect_reasons"],
+            ["pause_or_pacing", "timbre_or_audio_artifact"],
+        )
+
     def test_word_comparison_reports_insertions_deletions_and_substitutions(self):
         comparison = compare_speech_transcript(
             "The barrier begins to crack", "The barrier begins and cracks again"
@@ -134,8 +166,10 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), source_state)
             self.assertEqual(decision_path.read_bytes(), source_decision)
             sample = loaded.document["samples"][0]
+            self.assertEqual(loaded.document["schema_version"], 3)
             self.assertEqual(sample["queue_id"], queue_id)
             self.assertEqual(sample["human_label"], "acceptable")
+            self.assertEqual(sample["human_defect_reasons"], [])
             self.assertEqual(
                 sample["decision_ids"], [json.loads(source_decision)["decision_id"]]
             )
@@ -251,7 +285,7 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
             output = root / "asr-report.json"
             write_speech_robustness_asr_report(report, output)
 
-            self.assertEqual(report.document["corpus_schema_version"], 2)
+            self.assertEqual(report.document["corpus_schema_version"], 3)
             self.assertEqual(report.document["summary"]["sample_count"], 1)
             self.assertTrue(report.document["policy"]["diagnostic_only"])
             self.assertGreater(

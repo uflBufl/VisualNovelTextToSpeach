@@ -767,14 +767,23 @@ status text and can be retried in place; an integrity failure instead fails
 closed and exposes `Retry workspace load`.
 The progress label and action tooltips explain the heard count, selected state,
 disabled gate and exact number of cohort WAVs affected. After a complete
-playback, `Mark sample bad` records a reversible sample-level assessment; it
-does not reject the cohort. A bad marker blocks `Accept cohort` until cleared,
-while `Reject cohort` remains an explicit separate action. The confirmation
-reports the heard-sample count, bad-sample count and exact target-WAV count.
-New decisions bind the ordered per-sample `acceptable` or `bad` assessments to
-the reviewed queue IDs; historical version-1 decisions without that additive
-field remain readable. The workbench writes idempotent immutable plan/decision
-evidence under the workspace
+playback, one or more compact checkboxes record why a sample sounds bad: pause
+or pacing, repetition, truncation/missing words, pronunciation/wrong words,
+timbre/audio artifact, wrong speaker identity, or other/unclear. The quick bad
+button selects `other/unclear`; it never invents a more specific cause. Clearing
+every reason clears the reversible sample-level bad assessment. A bad marker
+does not reject the cohort, but blocks `Accept cohort` until cleared;
+`Reject cohort` remains an explicit separate action. The confirmation reports
+the heard-sample count, bad-sample count and exact target-WAV count.
+
+Decision schema version 2 binds the sorted independent defect reasons beside
+every ordered `acceptable` or `bad` sample assessment. Listening-observation
+schema version 2 checkpoints those reasons in the background so close/reopen
+does not lose them. Version-1 decisions and observations remain readable with
+no guessed reason; a new API caller that supplies only `bad` records the honest
+`unspecified` reason. Reasons are diagnostic evidence only and do not alter the
+terminal approve/reject projection. The workbench writes idempotent immutable
+plan/decision evidence under the workspace
 `cohort-reviews/` directory before a terminal projection, asks for confirmation,
 and reloads authority afterwards. The controls never auto-apply anything on
 workbench open. No command or UI decision was applied to the real Character
@@ -802,8 +811,8 @@ WAV preparation and decision commits stay off the Qt thread. The dialog keeps
 Previous/Replay/Stop/Next in one fixed row and leaves playback/navigation live
 while a source-local decision is saving. A sample counts as heard only after
 exact buffered bytes reach `EndOfMedia`; replay remains available afterwards.
-`Mark sample bad` is reversible, `Accept cohort` requires every current sample
-and no bad marker, `Reject cohort` requires heard evidence, and `Need another
+Bad reasons are reversible, `Accept cohort` requires every current sample and
+no bad marker, `Reject cohort` requires heard evidence, and `Need another
 sample` is enabled only when the exact cohort has an unsampled clean item.
 
 When the same exact voice controls were accepted in an earlier story, bind that

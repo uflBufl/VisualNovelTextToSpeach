@@ -203,9 +203,19 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(dialog.table.item(1, 0).text(), "Not heard")
 
     def test_bad_marker_blocks_accept_but_keeps_reject(self):
+        calls = []
+
+        def execute(*arguments):
+            calls.append(arguments)
+            return SimpleNamespace(next_bundle=arguments[0])
+
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
-            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog = CohortReviewBundleDialog(
+                bundle,
+                confirmer=lambda *_args: True,
+                decision_executor=execute,
+            )
             dialog.show()
             self.wait_for(lambda: dialog.table.rowCount() == 1)
             sample = dialog._selected_sample()
@@ -213,13 +223,28 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.heard[key].add(sample.item.queue_id)
             dialog._show_current_cohort()
 
-            dialog.toggle_bad()
+            dialog.defect_checks["pause_or_pacing"].setChecked(True)
+            dialog.defect_checks["repetition"].setChecked(True)
 
             self.assertFalse(dialog.accept.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
             self.assertFalse(dialog.need_another.isEnabled())
-            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("Pause or pacing", dialog.table.item(0, 1).text())
+            self.assertEqual(
+                dialog.bad_reasons[key][sample.item.queue_id],
+                {"pause_or_pacing", "repetition"},
+            )
             self.assertIn("marked bad", dialog.decision_help.text())
+            dialog.apply_decision("rejected")
+            self.wait_for(lambda: bool(calls) and not dialog._decision_active)
+
+        self.assertEqual(
+            calls[0][5][sample.item.queue_id],
+            {
+                "assessment": "bad",
+                "defect_reasons": ["pause_or_pacing", "repetition"],
+            },
+        )
 
     def test_space_and_bad_shortcuts_work_from_table_at_compact_size(self):
         with TemporaryDirectory() as directory:
@@ -238,7 +263,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.wait_for(lambda: dialog._playback_target is not None)
             dialog.stop_playback()
 
-            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("Other or unclear defect", dialog.table.item(0, 1).text())
             self.assertTrue(dialog.heading.isVisible())
             self.assertTrue(dialog.sample_text.isVisible())
             self.assertTrue(dialog.reject.isVisible())
@@ -405,7 +430,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn(sample.item.queue_id, reopened.heard[key])
             self.assertIn(sample.item.queue_id, reopened.bad[key])
             self.assertEqual(reopened.table.item(0, 0).text(), "Heard")
-            self.assertEqual(reopened.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("Other or unclear defect", reopened.table.item(0, 1).text())
             self.assertTrue((root / "bundle.observations.json").is_file())
 
     def test_observation_checkpoint_is_background_coalesced_and_close_safe(self):
@@ -453,7 +478,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             )
             self.wait_for(lambda: not dialog.isVisible())
 
-            final_bad = snapshots[-1][-1]
+            final_bad = snapshots[-1][-2]
             self.assertIn(sample.item.queue_id, final_bad[key])
 
     def test_published_expand_reopens_with_exact_prior_assessments(self):
@@ -479,7 +504,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.wait_for(lambda: dialog.table.rowCount() == 1)
 
             self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
-            self.assertEqual(dialog.table.item(0, 1).text(), "Sounds bad")
+            self.assertIn("Unspecified", dialog.table.item(0, 1).text())
             self.assertIn("1 heard", dialog.sample_position.text())
 
     def test_published_decision_preloads_next_cohort_without_second_reload(self):

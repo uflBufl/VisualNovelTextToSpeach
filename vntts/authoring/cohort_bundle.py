@@ -13,6 +13,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.bulk_generation import ReviewAuthority, _canonical_sha256
 from vntts.authoring.cohort_review import (
+    COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
     _load_document,
@@ -31,7 +32,8 @@ COHORT_REVIEW_BUNDLE_VERSION = 2
 COHORT_REVIEW_PROGRESS_SCHEMA = "vntts.authoring-cohort-review-progress"
 COHORT_REVIEW_PROGRESS_VERSION = 1
 COHORT_REVIEW_OBSERVATIONS_SCHEMA = "vntts.authoring-cohort-review-observations"
-COHORT_REVIEW_OBSERVATIONS_VERSION = 1
+COHORT_REVIEW_OBSERVATIONS_VERSION = 2
+SUPPORTED_COHORT_REVIEW_OBSERVATIONS_VERSIONS = frozenset({1, 2})
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class CohortReviewRecoveredAssessment:
     cohort_id: str
     queue_id: str
     assessment: str
+    defect_reasons: tuple[str, ...] = ()
 
 
 def build_cohort_review_bundle(
@@ -365,7 +368,8 @@ def load_cohort_review_observations(publication, original, current):
     body = {key: value for key, value in document.items() if key != "observations_id"}
     if (
         document.get("schema") != COHORT_REVIEW_OBSERVATIONS_SCHEMA
-        or document.get("schema_version") != COHORT_REVIEW_OBSERVATIONS_VERSION
+        or document.get("schema_version")
+        not in SUPPORTED_COHORT_REVIEW_OBSERVATIONS_VERSIONS
         or document.get("root_bundle_id") != root["bundle_id"]
         or document.get("observations_id") != _canonical_sha256(body)
     ):
@@ -384,6 +388,7 @@ def load_cohort_review_observations(publication, original, current):
         raise CohortReviewError("Cohort review observations list is invalid")
     recovered = []
     seen = set()
+    version = document["schema_version"]
     for entry in entries:
         if not isinstance(entry, dict):
             raise CohortReviewError("Cohort review observation must be an object")
@@ -403,9 +408,21 @@ def load_cohort_review_observations(publication, original, current):
                 "queue_id",
                 "audio_sha256",
                 "assessment",
+                *({"defect_reasons"} if version == 2 else set()),
             }
         ):
             raise CohortReviewError("Cohort review observation authority is invalid")
+        reasons = entry.get("defect_reasons", [])
+        if (
+            not isinstance(reasons, list)
+            or reasons != sorted(set(reasons))
+            or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+            or (entry["assessment"] == "bad" and version == 2 and not reasons)
+            or (entry["assessment"] != "bad" and reasons)
+        ):
+            raise CohortReviewError(
+                "Cohort review observation defect reasons are invalid"
+            )
         seen.add(key)
         recovered.append(
             CohortReviewRecoveredAssessment(
@@ -413,6 +430,7 @@ def load_cohort_review_observations(publication, original, current):
                 cohort_id=key[1],
                 queue_id=key[2],
                 assessment=entry["assessment"],
+                defect_reasons=tuple(reasons),
             )
         )
     return tuple(recovered)
@@ -424,6 +442,7 @@ def write_cohort_review_observations(
     current,
     heard,
     bad,
+    bad_reasons=None,
 ):
     """Atomically save exact listening progress, never terminal authority."""
     root = _validated_bundle_document(original)
@@ -445,8 +464,23 @@ def write_cohort_review_observations(
         for (workspace_id, cohort_id), queue_ids in bad.items()
         for queue_id in queue_ids
     }
+    normalized_reasons = {}
+    for (workspace_id, cohort_id), by_queue in (bad_reasons or {}).items():
+        if not isinstance(by_queue, dict):
+            raise CohortReviewError("Cohort defect reasons must be queue-ID mappings")
+        for queue_id, reasons in by_queue.items():
+            key = (workspace_id, cohort_id, queue_id)
+            if (
+                not isinstance(reasons, (set, frozenset, list, tuple))
+                or not reasons
+                or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+            ):
+                raise CohortReviewError("Cohort defect reasons are unsupported")
+            normalized_reasons[key] = sorted(set(reasons))
     if not bad_keys.issubset(heard_keys) or not heard_keys.issubset(allowed):
         raise CohortReviewError("Cohort review observations do not match the bundle")
+    if not set(normalized_reasons).issubset(bad_keys):
+        raise CohortReviewError("Cohort defect reasons do not match bad samples")
     observations = [
         {
             "workspace_id": key[0],
@@ -454,6 +488,9 @@ def write_cohort_review_observations(
             "queue_id": key[2],
             "audio_sha256": allowed[key],
             "assessment": "bad" if key in bad_keys else "heard",
+            "defect_reasons": (
+                normalized_reasons.get(key, ["unspecified"]) if key in bad_keys else []
+            ),
         }
         for key in sorted(heard_keys)
     ]
@@ -701,29 +738,34 @@ def _recovered_expansion_assessments(bundle):
             ]
             for decision in expansions:
                 assessed = {
-                    value["queue_id"]: value["assessment"]
+                    value["queue_id"]: (
+                        value["assessment"],
+                        tuple(value.get("defect_reasons", ())),
+                    )
                     for value in decision["sample_assessments"]
                 }
                 for sample in decision["reviewed_samples"]:
                     queue_id = sample["queue_id"]
-                    assessment = assessed.get(queue_id, "heard")
+                    assessment, reasons = assessed.get(queue_id, ("heard", ()))
                     is_bad = assessment == "bad"
                     key = (source["workspace_id"], cohort["cohort_id"], queue_id)
                     previous = recovered.get(key)
-                    if previous is not None and previous != is_bad:
+                    candidate = (is_bad, reasons)
+                    if previous is not None and previous != candidate:
                         raise CohortReviewError(
                             "Expanded cohort evidence has conflicting sample "
                             f"assessments: {queue_id}"
                         )
-                    recovered[key] = is_bad
+                    recovered[key] = candidate
     return tuple(
         CohortReviewRecoveredAssessment(
             workspace_id=workspace_id,
             cohort_id=cohort_id,
             queue_id=queue_id,
-            assessment="bad" if is_bad else "heard",
+            assessment="bad" if value[0] else "heard",
+            defect_reasons=value[1],
         )
-        for (workspace_id, cohort_id, queue_id), is_bad in sorted(recovered.items())
+        for (workspace_id, cohort_id, queue_id), value in sorted(recovered.items())
     )
 
 

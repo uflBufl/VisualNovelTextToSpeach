@@ -32,6 +32,7 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
 )
 from vntts.authoring.cohort_review import (
+    COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
     load_cohort_review_decision,
 )
@@ -47,7 +48,8 @@ from vntts.authoring.workbench import (
 )
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
-SPEECH_ROBUSTNESS_CORPUS_VERSION = 2
+SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
+SUPPORTED_SPEECH_ROBUSTNESS_CORPUS_VERSIONS = frozenset({1, 2, 3})
 SPEECH_ROBUSTNESS_ANALYSIS_VERSION = 1
 _HUMAN_LABELS = frozenset({"acceptable", "bad"})
 
@@ -517,7 +519,10 @@ def _build_sources(decision_inputs, failure_workspaces):
                 "Cohort decision sample assessments must be a list"
             )
         assessments = {
-            row["queue_id"]: row["assessment"]
+            row["queue_id"]: {
+                "human_label": row["assessment"],
+                "human_defect_reasons": list(row.get("defect_reasons", ())),
+            }
             for row in raw_assessments
             if row.get("assessment") in _HUMAN_LABELS
         }
@@ -535,7 +540,8 @@ def _build_sources(decision_inputs, failure_workspaces):
         ) = workspace_authority(workspace_path)
         workspace_id = _required_text(workspace.get("workspace_id"), "Workspace ID")
         reviewed = {row["queue_id"]: row for row in decision["reviewed_samples"]}
-        for queue_id, label in sorted(assessments.items()):
+        for queue_id, assessment in sorted(assessments.items()):
+            label = assessment["human_label"]
             evidence = reviewed.get(queue_id)
             item = state["items"].get(queue_id)
             queue_item = queue_items.get(queue_id)
@@ -595,6 +601,7 @@ def _build_sources(decision_inputs, failure_workspaces):
                     "audio_sha256": audio_sha256,
                     "audio": f"audio/{audio_sha256}.wav",
                     "human_label": label,
+                    "human_defect_reasons": assessment["human_defect_reasons"],
                     "technical_flags": sorted(set(evidence["technical_flags"])),
                     "state_item_sha256": canonical_document_sha256(item),
                     "synthesis": _sample_metadata(item),
@@ -701,6 +708,9 @@ def _counts(samples, failures):
         for row in samples
         for signal in row.get("text_timing", {}).get("signals", ())
     )
+    defect_reasons = Counter(
+        reason for row in samples for reason in row.get("human_defect_reasons", ())
+    )
     technical_flags = Counter(
         flag for row in samples for flag in row["technical_flags"]
     )
@@ -732,6 +742,8 @@ def _counts(samples, failures):
             f"{signal}:{label}": count
             for (signal, label), count in sorted(timing_signal_labels.items())
         }
+    if any("human_defect_reasons" in row for row in samples):
+        summary["human_defect_reasons"] = dict(sorted(defect_reasons.items()))
     return summary
 
 
@@ -784,10 +796,10 @@ def _validate_document(document):
     if not isinstance(document, dict) or set(document) != expected:
         raise SpeechRobustnessCorpusError("Robustness corpus document shape is invalid")
     version = document.get("schema_version")
-    if document.get("schema") != SPEECH_ROBUSTNESS_CORPUS_SCHEMA or version not in {
-        1,
-        SPEECH_ROBUSTNESS_CORPUS_VERSION,
-    }:
+    if (
+        document.get("schema") != SPEECH_ROBUSTNESS_CORPUS_SCHEMA
+        or version not in SUPPORTED_SPEECH_ROBUSTNESS_CORPUS_VERSIONS
+    ):
         raise SpeechRobustnessCorpusError("Robustness corpus schema is unsupported")
     policy = document.get("analysis_policy")
     if policy != {
@@ -840,7 +852,7 @@ def _validate_document(document):
         "analysis",
         "decision_ids",
     }
-    if version == 2:
+    if version >= 2:
         sample_keys |= {
             "queue_sha256",
             "text",
@@ -848,6 +860,8 @@ def _validate_document(document):
             "voice_character",
             "text_timing",
         }
+    if version >= 3:
+        sample_keys.add("human_defect_reasons")
     sample_identities = set()
     for sample in samples:
         if (
@@ -871,7 +885,7 @@ def _validate_document(document):
             ("state_item_sha256", "Sample state item SHA-256"),
         ):
             _require_sha256(sample[field], label)
-        if version == 2:
+        if version >= 2:
             _require_sha256(sample["queue_sha256"], "Sample queue SHA-256")
             text = _required_text(sample["text"], "Sample requested text")
             if text_sha256(text) != sample["text_sha256"]:
@@ -887,6 +901,17 @@ def _validate_document(document):
             }:
                 raise SpeechRobustnessCorpusError(
                     "Robustness sample text-timing policy is invalid"
+                )
+        if version >= 3:
+            reasons = sample["human_defect_reasons"]
+            if (
+                not isinstance(reasons, list)
+                or reasons != sorted(set(reasons))
+                or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+                or (sample["human_label"] == "acceptable" and reasons)
+            ):
+                raise SpeechRobustnessCorpusError(
+                    "Robustness sample human defect reasons are invalid"
                 )
         audio_path = _relative(sample["audio"], "Sample audio path").as_posix()
         if audio_path != f"audio/{sample['audio_sha256']}.wav":
@@ -934,7 +959,7 @@ def _validate_document(document):
         "failure",
         "synthesis",
     }
-    if version == 2:
+    if version >= 2:
         failure_keys |= {
             "queue_sha256",
             "text",
@@ -958,7 +983,7 @@ def _validate_document(document):
             ("state_item_sha256", "Failure state item SHA-256"),
         ):
             _require_sha256(failure[field], label)
-        if version == 2:
+        if version >= 2:
             _require_sha256(failure["queue_sha256"], "Failure queue SHA-256")
             text = _required_text(failure["text"], "Failure requested text")
             if text_sha256(text) != failure["text_sha256"]:
@@ -1042,7 +1067,7 @@ def load_speech_robustness_corpus(directory):
         if analyze_speech_robustness_bytes(payload) != sample["analysis"]:
             raise SpeechRobustnessCorpusError("Robustness sample analysis is invalid")
         if (
-            document["schema_version"] == 2
+            document["schema_version"] >= 2
             and analyze_text_timing_bytes(payload, sample["text"])
             != sample["text_timing"]
         ):

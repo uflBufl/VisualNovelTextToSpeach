@@ -34,7 +34,18 @@ COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = REVIEW_ATTENTION_POLICY_VERSION
 SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2})
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
-COHORT_REVIEW_DECISION_VERSION = 1
+COHORT_REVIEW_DECISION_VERSION = 2
+SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2})
+COHORT_REVIEW_DEFECT_REASONS = (
+    "pause_or_pacing",
+    "repetition",
+    "truncation_or_missing_words",
+    "pronunciation_or_wrong_words",
+    "timbre_or_audio_artifact",
+    "speaker_identity",
+    "other_or_unclear",
+    "unspecified",
+)
 COHORT_REVIEW_PROVENANCE_SCHEMA = "vntts.authoring-cohort-review-provenance"
 COHORT_REVIEW_PROVENANCE_VERSION = 1
 DEFAULT_CLEAN_SAMPLES_PER_BUCKET = 1
@@ -763,7 +774,10 @@ def _decision_item(item):
 def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
     reviewed = list(reviewed_queue_ids)
     if sample_assessments is None:
-        return [{"queue_id": queue_id, "assessment": "heard"} for queue_id in reviewed]
+        return [
+            {"queue_id": queue_id, "assessment": "heard", "defect_reasons": []}
+            for queue_id in reviewed
+        ]
     if not isinstance(sample_assessments, dict):
         raise CohortReviewError("Sample assessments must be a queue-ID mapping")
     if set(sample_assessments) != set(reviewed):
@@ -772,10 +786,38 @@ def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
         )
     normalized = []
     for queue_id in reviewed:
-        assessment = sample_assessments.get(queue_id)
+        value = sample_assessments.get(queue_id)
+        if isinstance(value, str):
+            assessment = value
+            reasons = ["unspecified"] if value == "bad" else []
+        elif isinstance(value, dict) and set(value) == {
+            "assessment",
+            "defect_reasons",
+        }:
+            assessment = value["assessment"]
+            reasons = value["defect_reasons"]
+        else:
+            raise CohortReviewError(
+                "Sample assessment must be text or an assessment/reasons object"
+            )
         if assessment not in {"acceptable", "bad"}:
             raise CohortReviewError("Sample assessment must be acceptable or bad")
-        normalized.append({"queue_id": queue_id, "assessment": assessment})
+        if not isinstance(reasons, (list, tuple, set, frozenset)) or any(
+            reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons
+        ):
+            raise CohortReviewError("Sample defect reasons are unsupported")
+        reasons = sorted(set(reasons))
+        if assessment == "bad" and not reasons:
+            raise CohortReviewError("A bad sample requires at least one defect reason")
+        if assessment != "bad" and reasons:
+            raise CohortReviewError("Only a bad sample may carry speech defect reasons")
+        normalized.append(
+            {
+                "queue_id": queue_id,
+                "assessment": assessment,
+                "defect_reasons": reasons,
+            }
+        )
     return normalized
 
 
@@ -784,7 +826,8 @@ def _validated_decision_document(document):
         raise CohortReviewError("Cohort review decision must be an object")
     if document.get("schema") != COHORT_REVIEW_DECISION_SCHEMA:
         raise CohortReviewError("Cohort review decision schema is unsupported")
-    if document.get("schema_version") != COHORT_REVIEW_DECISION_VERSION:
+    version = document.get("schema_version")
+    if version not in SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS:
         raise CohortReviewError("Cohort review decision version is unsupported")
     claimed = _required_sha256(document.get("decision_id"), "Decision ID")
     actual = _canonical_sha256(
@@ -844,7 +887,21 @@ def _validated_decision_document(document):
         )
         if value.get("assessment") not in {"heard", "acceptable", "bad"}:
             raise CohortReviewError("Cohort sample assessment is unsupported")
-        if set(value) != {"queue_id", "assessment"}:
+        expected_fields = {"queue_id", "assessment"}
+        if version == 2:
+            expected_fields.add("defect_reasons")
+            reasons = value.get("defect_reasons")
+            if (
+                not isinstance(reasons, list)
+                or reasons != sorted(set(reasons))
+                or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+                or (value.get("assessment") == "bad" and not reasons)
+                or (value.get("assessment") != "bad" and reasons)
+            ):
+                raise CohortReviewError(
+                    "Cohort sample assessment defect reasons are invalid"
+                )
+        if set(value) != expected_fields:
             raise CohortReviewError("Cohort sample assessment fields are invalid")
         assessment_ids.append(queue_id)
     if assessment_ids and assessment_ids != reviewed_ids:

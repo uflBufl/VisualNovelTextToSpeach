@@ -501,7 +501,8 @@ are calibrated against the human labels; see the
 [speech robustness corpus contract](docs/speech-robustness-corpus.md).
 Corpus v2 binds exact requested text, and `speech-robustness-asr` can produce a
 resumable offline Whisper comparison without granting ASR automatic rejection
-authority.
+authority. Future corpus v3 publications also preserve explicit human defect
+reasons from version-2 cohort decisions; older evidence is never relabelled.
 
 For a large history with parallel repair workspaces and retained old review
 documents, `vntts-authoring-reconcile` produces a no-overwrite, read-only

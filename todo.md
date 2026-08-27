@@ -262,10 +262,12 @@ while one-sentence controls remained below 0.25 seconds.
       automatically publishable default. Use the published checksum-bound
       human-labelled robustness corpus, but do not promote any current waveform,
       proportional-pause or Whisper signal into a reject gate: all three failed
-      calibration, including reversed/noisy MOSS WER separation. Extend future
-      review evidence with explicit independent defect reasons for pacing,
+      calibration, including reversed/noisy MOSS WER separation. Future cohort
+      decisions now retain explicit independent defect reasons for pacing,
       repetition, truncation, pronunciation, timbre/artifact and speaker
-      identity. Accumulate enough bad examples per provider/reason to reserve a
+      identity. Existing historical evidence has no such reasons and must remain
+      honestly unclassified. Accumulate enough newly reviewed bad examples per
+      provider/reason to reserve a
       held-out validation split, then compare a stronger local ASR or forced
       aligner before selecting thresholds. A production signal must demonstrate
       its false-positive and false-negative bounds on that untouched split.

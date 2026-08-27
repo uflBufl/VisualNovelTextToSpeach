@@ -10,7 +10,10 @@ allowed to affect publication.
 `vntts-pregenerate speech-robustness-corpus` consumes immutable cohort decision
 documents and optional stable failure workspaces. Corpus v2 also binds exact
 requested queue text, speaker, voice character and queue SHA-256 for
-content/timing evaluation. For every explicit
+content/timing evaluation. Corpus v3 additionally retains the sorted human
+defect reasons from version-2 cohort decisions. Version-1 and version-2 corpora
+remain fully readable; their older `bad` labels are not guessed into new
+categories. For every explicit
 `acceptable` or `bad` assessment it binds:
 
 - the exact workspace, queue item, state item, WAV SHA-256 and decision ID;
@@ -133,10 +136,12 @@ Those exact-transcript failures demonstrate that content ASR cannot detect
 every pacing, timbre or artifact defect even when transcription succeeds.
 Neither threshold is production authority.
 
-The next detector work needs explicit human defect reasons and a larger bad
-sample before evaluating a stronger ASR/forced aligner on a held-out split.
-Pacing, repetition, truncation, pronunciation, timbre/artifact and speaker
-identity must remain separate reasons. The safe routing sequence remains MOSS
-candidate -> eligible sentence repair -> one bounded provider-local retry ->
-typed per-line XTTS or Pocket fallback. Approved WAVs are immutable and
-excluded from regeneration.
+New cohort decisions and future corpus-v3 publications preserve explicit
+independent human defect reasons for
+pacing, repetition, truncation, pronunciation, timbre/artifact and speaker
+identity. Existing evidence predates that schema and therefore remains honestly
+unclassified. The next detector work needs a larger reason-labelled bad sample
+before evaluating a stronger ASR/forced aligner on a held-out split. The safe
+routing sequence remains MOSS candidate -> eligible sentence repair -> one
+bounded provider-local retry -> typed per-line XTTS or Pocket fallback.
+Approved WAVs are immutable and excluded from regeneration.

@@ -45,6 +45,7 @@ from vntts.authoring.cohort_bundle import (
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DECISION_SCHEMA,
     COHORT_REVIEW_DECISION_VERSION,
+    COHORT_REVIEW_DEFECT_REASONS,
     COHORT_REVIEW_PLAN_SCHEMA,
     COHORT_REVIEW_PLAN_VERSION,
     CohortReviewDecision,
@@ -435,6 +436,7 @@ __all__ = [
     "BulkGenerationResult",
     "COHORT_REVIEW_DECISION_SCHEMA",
     "COHORT_REVIEW_DECISION_VERSION",
+    "COHORT_REVIEW_DEFECT_REASONS",
     "COHORT_REVIEW_PLAN_SCHEMA",
     "COHORT_REVIEW_PLAN_VERSION",
     "BLOCK_MISSING_VOICE",

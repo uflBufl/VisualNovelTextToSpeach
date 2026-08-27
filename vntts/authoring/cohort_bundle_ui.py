@@ -56,7 +56,10 @@ from vntts.authoring.cohort_bundle import (
     write_cohort_review_observations,
     write_cohort_review_progress,
 )
-from vntts.authoring.cohort_review import CohortReviewError
+from vntts.authoring.cohort_review import (
+    COHORT_REVIEW_DEFECT_REASONS,
+    CohortReviewError,
+)
 from vntts.authoring.voice_quality_gate import (
     inspect_voice_quality_cohort,
     load_voice_quality_gate,
@@ -185,13 +188,27 @@ def _prepare_sample(sample):
     return sample, prepare_review_audio(sample.item)
 
 
-def _write_observation_task(bundle_path, original_bundle, bundle, heard, bad):
+_DEFECT_REASON_LABELS = {
+    "pause_or_pacing": "Pause or pacing",
+    "repetition": "Repeated words or phrases",
+    "truncation_or_missing_words": "Truncated or missing words",
+    "pronunciation_or_wrong_words": "Pronunciation or wrong words",
+    "timbre_or_audio_artifact": "Timbre or audio artifact",
+    "speaker_identity": "Wrong speaker or voice identity",
+    "other_or_unclear": "Other or unclear defect",
+}
+
+
+def _write_observation_task(
+    bundle_path, original_bundle, bundle, heard, bad, bad_reasons
+):
     return write_cohort_review_observations(
         bundle_path,
         original_bundle,
         bundle,
         heard,
         bad,
+        bad_reasons,
     )
 
 
@@ -330,6 +347,8 @@ class CohortReviewBundleDialog(QDialog):
         self.samples_by_cohort = {}
         self.heard = defaultdict(set)
         self.bad = defaultdict(set)
+        self.bad_reasons = defaultdict(dict)
+        self._updating_defect_controls = False
         self._load_active = False
         self._playback_prepare_active = False
         self._decision_active = False
@@ -469,6 +488,17 @@ class CohortReviewBundleDialog(QDialog):
             self.reject,
         ):
             decisions.addWidget(widget)
+        self.defect_checks = {}
+        defect_layout = QGridLayout()
+        for index, (reason, label) in enumerate(_DEFECT_REASON_LABELS.items()):
+            control = QCheckBox(label)
+            control.setAccessibleName(f"Bad sample reason: {label}")
+            control.toggled.connect(self._defect_reasons_changed)
+            self.defect_checks[reason] = control
+            defect_layout.addWidget(control, index // 2, index % 2)
+        defect_group = QGroupBox("Why the selected sample sounds bad")
+        defect_group.setAccessibleName("Selected sample speech defect reasons")
+        defect_group.setLayout(defect_layout)
         self.decision_help = QLabel()
         self.decision_help.setWordWrap(True)
         self.decision_help.setAccessibleName("Cohort decision requirements")
@@ -510,6 +540,7 @@ class CohortReviewBundleDialog(QDialog):
 
         decision_layout = QVBoxLayout()
         decision_layout.addWidget(self.decision_help)
+        decision_layout.addWidget(defect_group)
         decision_layout.addLayout(decisions)
         decision_layout.addWidget(self.shortcuts_help)
         decision_group = QGroupBox("Cohort decision")
@@ -643,6 +674,9 @@ class CohortReviewBundleDialog(QDialog):
                 self.heard[key].add(assessment.queue_id)
                 if assessment.assessment == "bad":
                     self.bad[key].add(assessment.queue_id)
+                    self.bad_reasons[key][assessment.queue_id] = set(
+                        assessment.defect_reasons or ("unspecified",)
+                    )
             self._resumable_load = False
         else:
             bundle, samples = result
@@ -671,6 +705,17 @@ class CohortReviewBundleDialog(QDialog):
             {
                 key: {value for value in values if (*key, value) in valid}
                 for key, values in self.bad.items()
+            },
+        )
+        self.bad_reasons = defaultdict(
+            dict,
+            {
+                key: {
+                    queue_id: set(reasons)
+                    for queue_id, reasons in values.items()
+                    if (*key, queue_id) in valid and queue_id in self.bad[key]
+                }
+                for key, values in self.bad_reasons.items()
             },
         )
         remaining = self.bundle.document["cohort_count"]
@@ -801,7 +846,15 @@ class CohortReviewBundleDialog(QDialog):
             item = sample.item
             values = (
                 "Heard" if item.queue_id in self.heard[key] else "Not heard",
-                "Sounds bad"
+                (
+                    "Bad: "
+                    + ", ".join(
+                        _DEFECT_REASON_LABELS.get(reason, "Unspecified")
+                        for reason in sorted(
+                            self.bad_reasons[key].get(item.queue_id, ())
+                        )
+                    )
+                )
                 if item.queue_id in self.bad[key]
                 else "Sounds acceptable"
                 if item.queue_id in self.heard[key]
@@ -831,6 +884,7 @@ class CohortReviewBundleDialog(QDialog):
         return value if isinstance(value, CohortBundleSample) else None
 
     def _selection_changed(self):
+        self._sync_defect_controls()
         self._update_selected_sample_details()
         self._update_actions()
 
@@ -964,9 +1018,63 @@ class CohortReviewBundleDialog(QDialog):
             return
         if sample.item.queue_id in self.bad[key]:
             self.bad[key].remove(sample.item.queue_id)
+            self.bad_reasons[key].pop(sample.item.queue_id, None)
         else:
             self.bad[key].add(sample.item.queue_id)
+            self.bad_reasons[key][sample.item.queue_id] = {"other_or_unclear"}
         queue_id = sample.item.queue_id
+        self._show_current_cohort()
+        self._select_queue_id(queue_id)
+        self._checkpoint_observations()
+
+    def _sync_defect_controls(self):
+        sample = self._selected_sample()
+        key = self._current_key()
+        reasons = (
+            self.bad_reasons[key].get(sample.item.queue_id, set())
+            if sample is not None and key is not None
+            else set()
+        )
+        enabled = (
+            sample is not None
+            and key is not None
+            and sample.item.queue_id in self.heard[key]
+            and not self._load_active
+            and not self._decision_active
+            and not self._playback_prepare_active
+        )
+        self._updating_defect_controls = True
+        try:
+            for reason, control in self.defect_checks.items():
+                control.setChecked(reason in reasons)
+                control.setEnabled(enabled)
+        finally:
+            self._updating_defect_controls = False
+
+    def _defect_reasons_changed(self, _checked=False):
+        if self._updating_defect_controls:
+            return
+        sample = self._selected_sample()
+        key = self._current_key()
+        if sample is None or key is None or sample.item.queue_id not in self.heard[key]:
+            self._sync_defect_controls()
+            return
+        reasons = {
+            reason
+            for reason, control in self.defect_checks.items()
+            if control.isChecked()
+        }
+        if not reasons.issubset(COHORT_REVIEW_DEFECT_REASONS):
+            self.status.setText("BLOCKED: unsupported speech defect reason")
+            self._sync_defect_controls()
+            return
+        queue_id = sample.item.queue_id
+        if reasons:
+            self.bad[key].add(queue_id)
+            self.bad_reasons[key][queue_id] = reasons
+        else:
+            self.bad[key].discard(queue_id)
+            self.bad_reasons[key].pop(queue_id, None)
         self._show_current_cohort()
         self._select_queue_id(queue_id)
         self._checkpoint_observations()
@@ -980,6 +1088,12 @@ class CohortReviewBundleDialog(QDialog):
             self.bundle,
             {key: frozenset(value) for key, value in self.heard.items()},
             {key: frozenset(value) for key, value in self.bad.items()},
+            {
+                key: {
+                    queue_id: frozenset(reasons) for queue_id, reasons in values.items()
+                }
+                for key, values in self.bad_reasons.items()
+            },
         )
         if self._observation_active:
             self._pending_observation = snapshot
@@ -1059,7 +1173,10 @@ class CohortReviewBundleDialog(QDialog):
         )
         current_clean = source["plan"]["policy"]["clean_samples_per_bucket"]
         assessments = {
-            queue_id: "bad" if queue_id in bad else "acceptable"
+            queue_id: {
+                "assessment": "bad" if queue_id in bad else "acceptable",
+                "defect_reasons": sorted(self.bad_reasons[key].get(queue_id, ())),
+            }
             for queue_id in reviewed
         }
         self._decision_active = True
@@ -1201,9 +1318,9 @@ class CohortReviewBundleDialog(QDialog):
             authority_ready and sample is not None and sample.item.queue_id in heard
         )
         self.mark_bad.setText(
-            "Clear sample bad mark"
+            "Clear selected defect reasons"
             if ready and sample.item.queue_id in bad
-            else "Sample sounds bad"
+            else "Mark bad: other or unclear"
         )
         all_heard = bool(samples) and len(heard) == len(samples)
         self.accept.setEnabled(authority_ready and all_heard and not bad)
@@ -1310,10 +1427,11 @@ class CohortReviewBundleDialog(QDialog):
             else "Playback is unavailable while checksum authority is refreshing."
         )
         self.mark_bad.setToolTip(
-            "Mark only this heard sample as bad evidence; this does not reject the cohort."
+            "Quickly mark this heard sample as other/unclear, or clear all selected reasons."
             if sample is not None and sample.item.queue_id in heard
             else "Listen to the selected sample completely before marking it bad."
         )
+        self._sync_defect_controls()
         self.accept.setToolTip(
             "Accept is available after every required sample is heard and none is marked bad."
         )

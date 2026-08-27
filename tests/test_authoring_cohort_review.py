@@ -16,6 +16,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
     build_cohort_review_plan,
     execute_cohort_review_decision,
+    load_cohort_review_decision,
     load_cohort_review_plan,
     write_cohort_review_decision,
     write_cohort_review_plan,
@@ -248,7 +249,13 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertEqual(decision.document["projection_review_status"], "approved")
         self.assertEqual(
             decision.document["sample_assessments"],
-            [{"queue_id": queue_id, "assessment": "heard"}],
+            [
+                {
+                    "queue_id": queue_id,
+                    "assessment": "heard",
+                    "defect_reasons": [],
+                }
+            ],
         )
         self.assertEqual(decision.document["reviewed_samples"][0]["queue_id"], queue_id)
         self.assertEqual(decision.document["target_items"][0]["queue_id"], queue_id)
@@ -328,8 +335,71 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
         self.assertEqual(
             decision.document["sample_assessments"],
-            [{"queue_id": queue_id, "assessment": "bad"}],
+            [
+                {
+                    "queue_id": queue_id,
+                    "assessment": "bad",
+                    "defect_reasons": ["unspecified"],
+                }
+            ],
         )
+
+    def test_bad_sample_preserves_multiple_explicit_defect_reasons(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state_path, queue_id = self.create_pending_workspace(
+                Path(directory)
+            )
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+
+            decision = build_cohort_review_decision(
+                plan,
+                cohort_id,
+                "rejected",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={
+                    queue_id: {
+                        "assessment": "bad",
+                        "defect_reasons": [
+                            "repetition",
+                            "pause_or_pacing",
+                        ],
+                    }
+                },
+            )
+
+        self.assertEqual(
+            decision.document["sample_assessments"][0]["defect_reasons"],
+            ["pause_or_pacing", "repetition"],
+        )
+
+    def test_version_one_decision_remains_readable_without_guessed_reasons(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            document = deepcopy(
+                build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    "rejected",
+                    reviewed_queue_ids=[queue_id],
+                    sample_assessments={queue_id: "bad"},
+                ).document
+            )
+            document["schema_version"] = 1
+            for assessment in document["sample_assessments"]:
+                assessment.pop("defect_reasons")
+            document["decision_id"] = _canonical_sha256(
+                {key: value for key, value in document.items() if key != "decision_id"}
+            )
+            path = root / "legacy-decision.json"
+            path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+
+            loaded = load_cohort_review_decision(path)
+
+        self.assertNotIn("defect_reasons", loaded.document["sample_assessments"][0])
 
     def test_expand_requires_complete_current_sample_and_larger_bound(self):
         with TemporaryDirectory() as directory:
