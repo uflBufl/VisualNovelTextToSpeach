@@ -14,6 +14,12 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
+from vntts.authoring.audio_event_composition import (
+    AudioEventCompositionError,
+    load_audio_event_composition,
+    publish_audio_event_composition,
+    record_audio_event_composition_decision,
+)
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
     load_audio_event_review,
@@ -629,6 +635,25 @@ def create_parser():
         help="Validate and inspect one audio-event review",
     )
     audio_event_status.add_argument("directory", type=Path)
+    audio_event_composition_publish = subparsers.add_parser(
+        "audio-event-composition-publish",
+        help="Publish one exact accepted event-only production composition",
+    )
+    audio_event_composition_publish.add_argument("review", type=Path)
+    audio_event_composition_publish.add_argument("--output", type=Path, required=True)
+    audio_event_composition_decide = subparsers.add_parser(
+        "audio-event-composition-decide",
+        help="Approve or reject one exact production event composition",
+    )
+    audio_event_composition_decide.add_argument("directory", type=Path)
+    audio_event_composition_decide.add_argument(
+        "decision", choices=("approved", "rejected")
+    )
+    audio_event_composition_status = subparsers.add_parser(
+        "audio-event-composition-status",
+        help="Validate and inspect one event-only production composition",
+    )
+    audio_event_composition_status.add_argument("directory", type=Path)
     render_hypothesis_publish = subparsers.add_parser(
         "render-hypothesis-review-publish",
         help="Publish one immutable unmatched render/reference review",
@@ -1576,6 +1601,20 @@ def main(argv=None):
             result = load_audio_event_review(arguments.directory)
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "audio-event-composition-publish":
+            result = publish_audio_event_composition(arguments.review, arguments.output)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "audio-event-composition-decide":
+            result = record_audio_event_composition_decision(
+                arguments.directory, arguments.decision
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "audio-event-composition-status":
+            result = load_audio_event_composition(arguments.directory)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "render-hypothesis-review-publish":
             result = publish_render_hypothesis_review(
                 arguments.comparison,
@@ -2181,6 +2220,7 @@ def main(argv=None):
             )
     except (
         AudioEventReviewError,
+        AudioEventCompositionError,
         AuthoringWorkbenchError,
         GenerationQueueBuildError,
         BulkGenerationError,

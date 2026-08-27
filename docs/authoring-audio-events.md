@@ -141,6 +141,24 @@ uv run --no-sync vntts-pregenerate audio-event-review-publish \
 This is review authority only. An accepted decision still needs the composition
 ledger below before it may become a final line WAV.
 
+For a pure accepted source event, publish a no-transform production composition:
+
+```bash
+uv run vntts-pregenerate audio-event-composition-publish REVIEW_DIRECTORY \
+  --output COMPOSITION_DIRECTORY
+uv run vntts-pregenerate audio-event-composition-status COMPOSITION_DIRECTORY
+uv run vntts-pregenerate audio-event-composition-decide \
+  COMPOSITION_DIRECTORY approved
+```
+
+The composition copies the accepted review, decision, queue and final WAV. Its
+identity binds the event plan, game event/bank/media/source-audio evidence and
+every checksum. The only supported transform is an exact byte copy at sample
+offset zero, gain 1.0 and zero fades. Its ledger records
+`speaker_identity_claim=false`, with no synthesis provider or synthesis voice.
+The final decision is separate from the source-event suitability decision and
+must be explicit before a workspace/state successor is created.
+
 The real Character Story review was published at
 `authoring/audio-event-reviews/current-character-story-tsk-game-v1` under the
 VNTTS application-data root. Its review ID is
