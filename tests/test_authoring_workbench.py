@@ -29,10 +29,12 @@ import vntts.authoring as authoring_package
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_selection import select_voice_reference
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.workbench import (
@@ -315,6 +317,110 @@ def write_carry_target_manifest(root, *, rhiannon_payloads=None):
     return manifest
 
 
+def write_terminal_merge_reconciliation(root, base, source, queue_id):
+    queue = VoiceGenerationQueue.load(base.directory / "queue.jsonl")
+    queue_item = next(item for item in queue.items if item.queue_id == queue_id)
+    base_state_path = base.directory / "generated-audio/generation-state.json"
+    source_state_path = source.directory / "generated-audio/generation-state.json"
+    base_state = json.loads(base_state_path.read_text(encoding="utf-8"))
+    source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+    source_item = source_state["items"][queue_id]
+
+    def workspace_record(created, *, terminal, actions):
+        document = json.loads(
+            (created.directory / "workspace.json").read_text(encoding="utf-8")
+        )
+        state_path = created.directory / "generated-audio/generation-state.json"
+        manifest_path = created.directory / "generated-audio/manifest.json"
+        return {
+            "workspace": str(created.directory),
+            "workspace_id": document["workspace_id"],
+            "config_fingerprint": document["config_fingerprint"],
+            "queue_sha256": sha256_file(created.directory / "queue.jsonl"),
+            "state_sha256": sha256_file(state_path),
+            "manifest_sha256": (
+                sha256_file(manifest_path) if manifest_path.is_file() else None
+            ),
+            "runtime_status": inspect_workspace(created.directory).runtime_status.value,
+            "active": False,
+            "report_scope": "complete_primary_workspace",
+            "reported_queue_item_count": 1,
+            "authoritative_counts": {
+                "eligible": 1,
+                "pending": 0,
+                "generated": 0,
+                "approved": 1 if terminal == "approved" else 0,
+                "rejected": 1 if terminal == "rejected" else 0,
+                "live_fallback": 0,
+                "failed": 0 if terminal else 1,
+                "missing_voice": 0,
+            },
+            "terminal_counts": ({terminal: 1} if terminal else {}),
+            "action_counts": actions,
+        }
+
+    source_authority = (
+        "approved"
+        if (source_item["status"], source_item["review_status"])
+        == ("approved", "approved")
+        else "rejected"
+    )
+    action = {
+        "action": "terminal_merge_required",
+        "workspace_id": base.directory.name,
+        "queue_id": queue_id,
+        "line_id": queue_item.line_id,
+        "text_sha256": queue_item.text_sha256,
+        "speaker": queue_item.speaker,
+        "voice_character": queue_item.voice_character,
+        "status": base_state["items"][queue_id]["status"],
+        "review_status": base_state["items"][queue_id].get("review_status"),
+        "reason": "exact terminal outcome is available in a secondary workspace",
+        "terminal_source": {
+            "workspace_id": source.directory.name,
+            "authority": source_authority,
+            "state_item_sha256": canonical_document_sha256(source_item),
+        },
+    }
+    body = {
+        "schema": "vntts.authoring-authority-reconciliation",
+        "schema_version": 1,
+        "policy": {
+            "authority_scope": "workspace-local",
+            "cross_workspace_merge": "explicit terminal evidence only",
+            "approval_inference": "forbidden",
+            "mutation": "read-only",
+        },
+        "authoring_root": str(root.resolve()),
+        "primary_workspace_id": base.directory.name,
+        "summary": {
+            "workspace_count": 2,
+            "bundle_count": 0,
+            "quality_review_count": 0,
+            "nonterminal_action_count": 1,
+            "action_counts": {"terminal_merge_required": 1},
+            "terminal_conflict_count": 0,
+        },
+        "workspaces": sorted(
+            (
+                workspace_record(
+                    base, terminal=None, actions={"terminal_merge_required": 1}
+                ),
+                workspace_record(source, terminal=source_authority, actions={}),
+            ),
+            key=lambda value: value["workspace_id"],
+        ),
+        "review_bundles": [],
+        "quality_reviews": [],
+        "actions": [action],
+        "terminal_conflicts": [],
+    }
+    document = {**body, "report_id": canonical_document_sha256(body)}
+    path = root / "reconciliation.json"
+    path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    return path, document
+
+
 class AuthoringWorkbenchTest(unittest.TestCase):
     def test_workspace_binds_selected_reference_extension_to_copied_wavs(self):
         with TemporaryDirectory() as directory:
@@ -370,6 +476,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIs(
             authoring_package.CollectionSelection,
             CollectionSelection,
+        )
+        self.assertIs(
+            authoring_package.merge_reconciled_terminal_outcomes,
+            merge_reconciled_terminal_outcomes,
         )
 
     def test_exact_unknown_label_uses_configured_narrator_reference(self):
@@ -1617,6 +1727,149 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             with self.assertRaisesRegex(AuthoringWorkbenchError, "authority is stale"):
                 merge_workspace_outcomes(
                     source.directory, (repaired.directory,), root / "different-root"
+                )
+
+    def test_reconciliation_merges_only_its_exact_terminal_source(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            base = create_resume_workspace(
+                imported,
+                root / "base-workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            )
+            failed = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            failed.name = "moss-tts"
+            failed.model_name = "model with spaces"
+            run_bulk_generation(
+                base.directory / "queue.jsonl",
+                base.directory / "generated-audio",
+                failed,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                regenerate_existing=True,
+            )
+            source_before = (
+                source.directory / "generated-audio/generation-state.json"
+            ).read_bytes()
+            base_before = (
+                base.directory / "generated-audio/generation-state.json"
+            ).read_bytes()
+            report_path, report = write_terminal_merge_reconciliation(
+                root, base, source, fixture["queue_id"]
+            )
+
+            live_lease = source.directory / "generated-audio/.generation-lease.json"
+            live_lease.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.authoring-generation-lease",
+                        "schema_version": 1,
+                        "queue_sha256": sha256_file(source.directory / "queue.jsonl"),
+                        "pid": os.getpid(),
+                        "hostname": None,
+                        "process_started_at": None,
+                        "lease_id": "test-live-owner",
+                        "started_at": "2026-08-27T00:00:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "generation lease"):
+                merge_reconciled_terminal_outcomes(
+                    base.directory, report_path, root / "blocked-merged"
+                )
+            live_lease.unlink()
+
+            original_rename = workbench_module._rename_directory_no_replace
+
+            def rename_while_source_is_locked(staging, destination):
+                with self.assertRaisesRegex(
+                    bulk_generation_module.BulkGenerationError,
+                    "Another generation process is active",
+                ):
+                    with bulk_generation_module._GenerationLease(
+                        source.directory / "generated-audio",
+                        sha256_file(source.directory / "queue.jsonl"),
+                        process_checker=bulk_generation_module.process_is_alive,
+                    ):
+                        pass
+                return original_rename(staging, destination)
+
+            with patch.object(
+                workbench_module,
+                "_rename_directory_no_replace",
+                side_effect=rename_while_source_is_locked,
+            ):
+                merged = merge_reconciled_terminal_outcomes(
+                    base.directory, report_path, root / "merged"
+                )
+            repeated = merge_reconciled_terminal_outcomes(
+                base.directory, report_path, root / "merged"
+            )
+            merged_state = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )
+            merged_workspace = json.loads(
+                (merged.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+
+            self.assertTrue(merged.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(
+                merged_state["items"][fixture["queue_id"]]["review_status"],
+                "approved",
+            )
+            self.assertEqual(merged_workspace["outcome_merge"]["schema_version"], 2)
+            self.assertEqual(
+                merged_workspace["outcome_merge"]["source_reconciliation_id"],
+                report["report_id"],
+            )
+            self.assertEqual(
+                source_before,
+                (
+                    source.directory / "generated-audio/generation-state.json"
+                ).read_bytes(),
+            )
+            self.assertEqual(
+                base_before,
+                (base.directory / "generated-audio/generation-state.json").read_bytes(),
+            )
+
+            tampered = json.loads(report_path.read_text(encoding="utf-8"))
+            tampered["actions"][0]["terminal_source"]["state_item_sha256"] = "f" * 64
+            body = {key: value for key, value in tampered.items() if key != "report_id"}
+            tampered["report_id"] = canonical_document_sha256(body)
+            tampered_path = root / "tampered-reconciliation.json"
+            tampered_path.write_text(
+                json.dumps(tampered, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "terminal source is stale"
+            ):
+                merge_reconciled_terminal_outcomes(
+                    base.directory, tampered_path, root / "tampered-merged"
                 )
 
     def test_carry_forward_copies_new_full_outcome_with_exact_controls(self):

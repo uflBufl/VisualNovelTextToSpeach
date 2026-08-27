@@ -204,6 +204,18 @@ preflight reported `selected=47`, `pending=47`, `ready=47`,
 or generation ran: both remain downstream of the two outstanding human review
 authorities.
 
+The reusable apply boundary is now
+`vntts-pregenerate merge-reconciled-outcomes PRIMARY_WORKSPACE REPORT`. It
+accepts only `terminal_merge_required` actions for the report's exact primary
+workspace and copies only their named approved/rejected state items. The
+successor's schema-v2 outcome ledger binds the reconciliation ID and every
+source state/item/WAV digest. Source workspaces can contain other terminal
+items without making them eligible. Primary or source config, queue, state,
+item, authority or WAV drift fails before atomic no-replace publication, and
+the same report is idempotent. The real report above has not been applied: its
+nine-item merge remains deliberately gated on the unfinished Dobharchú cohort
+and the sixth terminal-conflict decision.
+
 ## Lease and terminal-publication invariants
 
 Generation, publication and terminal-review progress use a persistent

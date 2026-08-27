@@ -45,6 +45,16 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
+- [ ] After both current human review gates are terminal, apply only the nine
+      checksum-bound `terminal_merge_required` outcomes named by reconciliation
+      report `3ad299f2207451dff9e7293f2e28023133d5cf5fc99e0ba5b0b5092f27760ea5`
+      to the primary workspace through `merge-reconciled-outcomes`, then
+      publish a fresh reconciliation from the successor. The exact-ID,
+      tamper-resistant, source-generation-lease-protected and idempotent apply
+      contract is documented in
+      [`authoring-workspaces.md`](docs/authoring-workspaces.md). Do not run the
+      real merge while the Dobharchu cohort and terminal-conflict v3 decision
+      are pending.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 

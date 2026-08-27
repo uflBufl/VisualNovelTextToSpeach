@@ -227,6 +227,7 @@ from vntts.authoring.reconciliation import (
     load_authoring_reconciliation,
     write_authoring_reconciliation,
 )
+from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
     COMPOSITE_VERSION,
@@ -624,6 +625,7 @@ __all__ = [
     "inspect_standalone_generation",
     "listening_progress",
     "list_workspace_collections",
+    "merge_reconciled_terminal_outcomes",
     "merge_workspace_outcomes",
     "merge_terminal_conflict_resolution",
     "load_listening_session",

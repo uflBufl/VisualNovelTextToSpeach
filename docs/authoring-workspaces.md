@@ -422,6 +422,42 @@ digest and every terminal source item/WAV digest. Each merged state item and
 the approved-only manifest retain that additive ledger. Repeating the exact
 merge is idempotent and none of the source workspaces is mutated.
 
+## Merging reconciled terminal outcomes
+
+An immutable authoring reconciliation can identify a single exact approved or
+rejected outcome in a secondary history for a nonterminal item in its primary
+workspace. Apply only those `terminal_merge_required` records with the
+report-driven command:
+
+```sh
+uv run vntts-pregenerate merge-reconciled-outcomes PRIMARY_WORKSPACE \
+  AUTHORING_RECONCILIATION.json
+```
+
+This is intentionally distinct from `merge-workspace-outcomes`. The repair
+command selects the exact IDs declared by each failure-repair workspace; the
+reconciliation command selects only the queue IDs and source workspaces named
+by the validated report. It never sweeps every terminal result from a
+historical workspace.
+
+Before staging, the reconciliation merge requires the report's primary path,
+workspace/config fingerprint, queue digest and state digest to match the
+requested base. Every source must still have the report's exact path,
+workspace/config fingerprint, byte-identical queue and state digest. Each
+selected item must match its line/text identity, terminal authority and
+state-item SHA-256; its WAV is reopened and matched to the recorded digest.
+Any changed, missing, ambiguous, already-terminal or explicit-fallback item
+fails closed. Explicit fallbacks remain a separate typed workflow because they
+have no generated WAV to copy.
+
+The config-addressed successor preserves every unrelated base item, copies only
+the selected exact outcomes, writes an approved-only manifest and records a
+schema-v2 outcome ledger containing the source reconciliation ID plus every
+source state/item/WAV digest. Source workspaces are never mutated, destination
+publication is atomic no-replace, and repeating the same report is idempotent.
+Human review decisions must already be terminal before rebuilding a new report;
+the merge command never infers approval from observations or a prior TODO.
+
 When source/reference discovery and the bounded offline fallback are both
 exhausted, authoring can record an explicit terminal Pocket live-fallback
 decision for one exact queue identity. This does not create or approve a WAV:

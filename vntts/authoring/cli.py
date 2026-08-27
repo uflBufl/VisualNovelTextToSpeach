@@ -111,6 +111,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     create_reference_render_listening,
@@ -447,6 +448,15 @@ def create_parser():
         required=True,
     )
     merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    reconciled_merge = subparsers.add_parser(
+        "merge-reconciled-outcomes",
+        help="Create a successor from exact terminal outcomes in a reconciliation",
+    )
+    reconciled_merge.add_argument("base_workspace", type=Path)
+    reconciled_merge.add_argument("reconciliation", type=Path)
+    reconciled_merge.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1069,6 +1079,24 @@ def main(argv=None):
             result = merge_workspace_outcomes(
                 arguments.base_workspace,
                 arguments.source_workspaces,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "merge-reconciled-outcomes":
+            result = merge_reconciled_terminal_outcomes(
+                arguments.base_workspace,
+                arguments.reconciliation,
                 arguments.workspaces_root,
             )
             print(

@@ -81,6 +81,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     validate_reference_selection_provenance,
@@ -819,6 +820,22 @@ def merge_workspace_outcomes(
     workspaces_root=None,
 ):
     """Create a config-addressed successor from exact reviewed repair outcomes."""
+    return _merge_workspace_outcomes(
+        base_workspace,
+        outcome_workspaces,
+        workspaces_root,
+        reconciliation_selection=None,
+    )
+
+
+def _merge_workspace_outcomes(
+    base_workspace,
+    outcome_workspaces,
+    workspaces_root,
+    *,
+    reconciliation_selection,
+):
+    """Assemble one exact terminal-outcome successor."""
     base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
         base_workspace, "base"
     )
@@ -838,7 +855,19 @@ def merge_workspace_outcomes(
         _stable_workspace_state(base_directory, base_document, "base")
     )
     base_queue_sha256 = sha256_file(base_directory / "queue.jsonl")
+    if reconciliation_selection is not None:
+        base_report = reconciliation_selection["base"]
+        if (
+            base_report["workspace_id"] != base_document["workspace_id"]
+            or base_report["config_fingerprint"] != base_document["config_fingerprint"]
+            or base_report["queue_sha256"] != base_queue_sha256
+            or base_report["state_sha256"] != base_state_sha256
+        ):
+            raise AuthoringWorkbenchError(
+                "Reconciliation primary workspace authority changed"
+            )
     base_items = base_state["items"]
+    base_queue_by_id = {item.queue_id: item for item in base_queue.items}
     merged_items = {}
     source_records = []
     source_snapshots = []
@@ -865,16 +894,37 @@ def merge_workspace_outcomes(
             raise AuthoringWorkbenchError(
                 "Outcome merge source queue differs from its base"
             )
-        carry = source_document.get("carry_forward")
-        if not isinstance(carry, dict) or carry.get("schema_version") != 3:
-            raise AuthoringWorkbenchError(
-                "Outcome merge source must be a current failure-repair workspace"
-            )
-        selected_ids = carry.get("failed_queue_ids")
-        if not isinstance(selected_ids, list) or not selected_ids:
-            raise AuthoringWorkbenchError(
-                "Outcome merge source has no exact repair selection"
-            )
+        selected_records = None
+        if reconciliation_selection is None:
+            carry = source_document.get("carry_forward")
+            if not isinstance(carry, dict) or carry.get("schema_version") != 3:
+                raise AuthoringWorkbenchError(
+                    "Outcome merge source must be a current failure-repair workspace"
+                )
+            selected_ids = carry.get("failed_queue_ids")
+            if not isinstance(selected_ids, list) or not selected_ids:
+                raise AuthoringWorkbenchError(
+                    "Outcome merge source has no exact repair selection"
+                )
+        else:
+            selected_records = reconciliation_selection["sources"].get(source_directory)
+            if not isinstance(selected_records, dict) or not selected_records:
+                raise AuthoringWorkbenchError(
+                    "Reconciliation source has no exact terminal selection"
+                )
+            source_report = next(iter(selected_records.values()))["workspace"]
+            if (
+                source_report["workspace_id"] != source_document["workspace_id"]
+                or Path(source_report["workspace"]).resolve() != source_directory
+                or source_report["config_fingerprint"]
+                != source_document["config_fingerprint"]
+                or source_report["queue_sha256"] != base_queue_sha256
+                or source_report["state_sha256"] != source_state_sha256
+            ):
+                raise AuthoringWorkbenchError(
+                    "Reconciliation terminal source authority changed"
+                )
+            selected_ids = sorted(selected_records)
         source_record = {
             "workspace_id": source_document["workspace_id"],
             "config_fingerprint": _require_sha256(
@@ -892,31 +942,55 @@ def merge_workspace_outcomes(
                 raise AuthoringWorkbenchError(
                     f"Outcome merge has conflicting sources for {queue_id!r}"
                 )
-            repair = result.get("failure_repair")
-            if not isinstance(repair, dict) or repair.get("strategy") not in {
-                SENTENCE_BOUNDARY_SEGMENTATION,
-                INLINE_PAUSE_MARKER,
-                OFFLINE_FALLBACK_BACKEND,
-            }:
-                raise AuthoringWorkbenchError(
-                    f"Outcome merge item {queue_id!r} lacks a supported repair outcome"
-                )
-            source_failure = result.get("carry_forward")
-            if source_failure is None:
-                source_failure = repair.get("source_failure")
-            root_source_failure = _root_carry_forward_authority(source_failure)
             base_result = base_items.get(queue_id)
-            if (
-                not isinstance(root_source_failure, dict)
-                or root_source_failure.get("source_workspace_id")
-                != base_document["workspace_id"]
-                or not isinstance(base_result, dict)
-                or root_source_failure.get("source_item_sha256")
-                != _canonical_sha256(base_result)
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Outcome merge source authority is stale for {queue_id!r}"
+            if reconciliation_selection is None:
+                repair = result.get("failure_repair")
+                if not isinstance(repair, dict) or repair.get("strategy") not in {
+                    SENTENCE_BOUNDARY_SEGMENTATION,
+                    INLINE_PAUSE_MARKER,
+                    OFFLINE_FALLBACK_BACKEND,
+                }:
+                    raise AuthoringWorkbenchError(
+                        f"Outcome merge item {queue_id!r} lacks a supported repair outcome"
+                    )
+                source_failure = result.get("carry_forward")
+                if source_failure is None:
+                    source_failure = repair.get("source_failure")
+                root_source_failure = _root_carry_forward_authority(source_failure)
+                if (
+                    not isinstance(root_source_failure, dict)
+                    or root_source_failure.get("source_workspace_id")
+                    != base_document["workspace_id"]
+                    or not isinstance(base_result, dict)
+                    or root_source_failure.get("source_item_sha256")
+                    != _canonical_sha256(base_result)
+                ):
+                    raise AuthoringWorkbenchError(
+                        f"Outcome merge source authority is stale for {queue_id!r}"
+                    )
+            else:
+                expected = selected_records[queue_id]
+                action = expected["action"]
+                source = expected["source"]
+                queue_item = base_queue_by_id.get(queue_id)
+                authority = (
+                    "approved"
+                    if (result.get("status"), result.get("review_status"))
+                    == ("approved", "approved")
+                    else "rejected"
                 )
+                if (
+                    queue_item is None
+                    or action["line_id"] != queue_item.line_id
+                    or action["text_sha256"] != queue_item.text_sha256
+                    or source["workspace_id"] != source_document["workspace_id"]
+                    or source["authority"] != authority
+                    or source["state_item_sha256"] != _canonical_sha256(result)
+                    or _terminal_review_outcome(base_result)
+                ):
+                    raise AuthoringWorkbenchError(
+                        f"Reconciliation terminal source is stale for {queue_id!r}"
+                    )
             if _terminal_review_outcome(base_result):
                 raise AuthoringWorkbenchError(
                     f"Outcome merge conflicts with existing review authority for {queue_id!r}"
@@ -977,12 +1051,16 @@ def merge_workspace_outcomes(
     ledger_items = [merged_items[key][1] for key in sorted(merged_items)]
     outcome_merge = {
         "schema": "vntts.authoring-workspace-outcome-merge",
-        "schema_version": 1,
+        "schema_version": 2 if reconciliation_selection is not None else 1,
         "base_workspace_id": base_document["workspace_id"],
         "base_state_sha256": base_state_sha256,
         "sources": source_records,
         "items": ledger_items,
     }
+    if reconciliation_selection is not None:
+        outcome_merge["source_reconciliation_id"] = reconciliation_selection[
+            "report_id"
+        ]
     config_fingerprint = _workspace_config_fingerprint(
         base_document["source"]["import_id"],
         base_document.get("story_index"),
@@ -1102,29 +1180,55 @@ def merge_workspace_outcomes(
         _validate_workspace_input_config(staging, workspace, import_snapshot)
         _validate_workspace_offline_fallback_state(staging, workspace)
         _validate_workspace_outcome_merge(staging, workspace)
-        for path, digest in (*base_snapshots, *source_snapshots):
-            if not path.is_file() or sha256_file(path) != digest:
-                raise AuthoringWorkbenchError(
-                    "Outcome merge source changed before workspace publication"
-                )
-        if destination.exists():
-            _directory, existing = _load_workspace(destination)
-            if existing.get("outcome_merge") != outcome_merge:
-                raise AuthoringWorkbenchError(
-                    "Outcome merge destination conflicts with another source set"
-                )
-            return WorkspaceCreationResult(destination, False)
         try:
-            _rename_directory_no_replace(staging, destination)
-        except (OSError, FinalGamePackError) as error:
-            if destination.exists():
-                _directory, existing = _load_workspace(destination)
-                if existing.get("outcome_merge") == outcome_merge:
+            source_directories = (base_directory, *source_values)
+            with generation_publication_leases(
+                (
+                    (directory / "generated-audio", base_queue_sha256)
+                    for directory in source_directories
+                ),
+                process_checker=process_is_alive,
+            ) as held_leases:
+                if any(
+                    any((directory / "generated-audio").rglob("*.partial.wav"))
+                    for directory in source_directories
+                ):
+                    raise AuthoringWorkbenchError(
+                        "Outcome merge source became active before publication"
+                    )
+                for path, digest in (*base_snapshots, *source_snapshots):
+                    if not path.is_file() or sha256_file(path) != digest:
+                        raise AuthoringWorkbenchError(
+                            "Outcome merge source changed before workspace publication"
+                        )
+                for lease in held_leases:
+                    lease.assert_owned()
+                if destination.exists():
+                    _directory, existing = _load_workspace(destination)
+                    if existing.get("outcome_merge") != outcome_merge:
+                        raise AuthoringWorkbenchError(
+                            "Outcome merge destination conflicts with another source set"
+                        )
                     return WorkspaceCreationResult(destination, False)
+                try:
+                    _rename_directory_no_replace(staging, destination)
+                except (OSError, FinalGamePackError) as error:
+                    if destination.exists():
+                        _directory, existing = _load_workspace(destination)
+                        if existing.get("outcome_merge") == outcome_merge:
+                            for lease in held_leases:
+                                lease.mark_committed()
+                            return WorkspaceCreationResult(destination, False)
+                    raise AuthoringWorkbenchError(
+                        f"Unable to publish outcome merge workspace: {error}"
+                    ) from error
+                for lease in held_leases:
+                    lease.mark_committed()
+                staging = None
+        except BulkGenerationError as error:
             raise AuthoringWorkbenchError(
-                f"Unable to publish outcome merge workspace: {error}"
+                f"Outcome merge source became active before publication: {error}"
             ) from error
-        staging = None
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging)
@@ -2606,7 +2710,10 @@ def _carry_forward_review_outcomes(
 
 
 def _terminal_review_outcome(result):
-    return (result.get("status"), result.get("review_status")) in {
+    return isinstance(result, dict) and (
+        result.get("status"),
+        result.get("review_status"),
+    ) in {
         ("approved", "approved"),
         ("generated", "rejected"),
     }
@@ -3902,6 +4009,7 @@ def _validate_workspace_outcome_merge(directory, workspace):
     merge = workspace.get("outcome_merge")
     if merge is None:
         return
+    version = merge.get("schema_version") if isinstance(merge, dict) else None
     fields = {
         "schema",
         "schema_version",
@@ -3910,11 +4018,13 @@ def _validate_workspace_outcome_merge(directory, workspace):
         "sources",
         "items",
     }
+    if version == 2:
+        fields.add("source_reconciliation_id")
     if (
         not isinstance(merge, dict)
         or set(merge) != fields
         or merge.get("schema") != "vntts.authoring-workspace-outcome-merge"
-        or merge.get("schema_version") != 1
+        or version not in {1, 2}
         or not re.fullmatch(
             r"resume-[0-9a-f]{24}-[0-9a-f]{16}",
             str(merge.get("base_workspace_id", "")),
@@ -3922,6 +4032,11 @@ def _validate_workspace_outcome_merge(directory, workspace):
     ):
         raise AuthoringWorkbenchError("Workspace outcome merge provenance is malformed")
     _require_sha256(merge.get("base_state_sha256"), "Outcome merge base state SHA-256")
+    if version == 2:
+        _require_sha256(
+            merge.get("source_reconciliation_id"),
+            "Outcome merge reconciliation ID",
+        )
     sources = merge.get("sources")
     if not isinstance(sources, list) or not sources:
         raise AuthoringWorkbenchError("Workspace outcome merge source ledger is empty")
