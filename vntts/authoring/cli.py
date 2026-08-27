@@ -14,6 +14,12 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
+from vntts.authoring.audio_event_review import (
+    AudioEventReviewError,
+    load_audio_event_review,
+    publish_source_audio_event_review,
+    record_audio_event_review_decision,
+)
 from vntts.authoring.bulk_generation import (
     LIVE_FALLBACK_REASONS,
     BulkGenerationError,
@@ -590,6 +596,32 @@ def create_parser():
     status = subparsers.add_parser("status", help="Inspect resumable generation state")
     status.add_argument("--state", type=Path, required=True)
     status.add_argument("--queue", type=Path)
+    audio_event_publish = subparsers.add_parser(
+        "audio-event-review-publish",
+        help="Publish one immutable source-backed non-verbal event review",
+    )
+    audio_event_publish.add_argument("queue", type=Path)
+    audio_event_publish.add_argument("queue_id")
+    audio_event_publish.add_argument("source_story_index", type=Path)
+    audio_event_publish.add_argument("audio", type=Path)
+    audio_event_publish.add_argument("--output", type=Path, required=True)
+    audio_event_publish.add_argument("--source-line-id", required=True)
+    audio_event_publish.add_argument("--source-speaker", required=True)
+    audio_event_publish.add_argument("--source-event", required=True)
+    audio_event_publish.add_argument("--source-bank", required=True)
+    audio_event_publish.add_argument("--source-media-id", type=int, required=True)
+    audio_event_publish.add_argument("--source-audio-id", required=True)
+    audio_event_decide = subparsers.add_parser(
+        "audio-event-review-decide",
+        help="Record one terminal accept/reject audio-event decision",
+    )
+    audio_event_decide.add_argument("directory", type=Path)
+    audio_event_decide.add_argument("decision", choices=("accept", "reject"))
+    audio_event_status = subparsers.add_parser(
+        "audio-event-review-status",
+        help="Validate and inspect one audio-event review",
+    )
+    audio_event_status.add_argument("directory", type=Path)
     failures = subparsers.add_parser(
         "failure-report",
         help="Group failed generation outcomes into stable typed cohorts",
@@ -1482,6 +1514,32 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "audio-event-review-publish":
+            result = publish_source_audio_event_review(
+                arguments.queue,
+                arguments.queue_id,
+                arguments.source_story_index,
+                arguments.audio,
+                arguments.output,
+                source_line_id=arguments.source_line_id,
+                source_speaker=arguments.source_speaker,
+                source_event=arguments.source_event,
+                source_bank=arguments.source_bank,
+                source_media_id=arguments.source_media_id,
+                source_audio_id=arguments.source_audio_id,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "audio-event-review-decide":
+            result = record_audio_event_review_decision(
+                arguments.directory, arguments.decision
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "audio-event-review-status":
+            result = load_audio_event_review(arguments.directory)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "speech-robustness-corpus":
             result = publish_speech_robustness_corpus(
                 arguments.decision_root,
@@ -2058,6 +2116,7 @@ def main(argv=None):
                 arguments.destination_root,
             )
     except (
+        AudioEventReviewError,
         AuthoringWorkbenchError,
         GenerationQueueBuildError,
         BulkGenerationError,

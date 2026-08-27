@@ -82,6 +82,65 @@ a human decision. `Tsk!` additionally permits a bounded TTS pronunciation/IPA
 candidate because it is a character vocalization; it still requires blind
 comparison and must never fall back to reading the letters as a word.
 
+The bounded local pronunciation experiment is now complete. The official
+MOSS-TTS v1.5 syntax accepts pure IPA inside slashes, and the installed Local
+4B tokenizer round-trips both dental click `/ǀ/` and alveolar click `/ǃ/`
+without an unknown token. That tokenizer fact did not translate into usable
+audio: fixed-seed stable BYPASS renders with the exact Centurion conditioning
+each reached the complete short-input ceiling of 3.0 seconds (144,000 samples
+at 48 kHz, 300 tokens, 13 chunks) and ended typed `LIMITED`. No candidate WAV
+was published and the cap was not extended.
+
+The installed game data contains one stronger line-specific source candidate:
+`reverse1999:200308:6`, Kanjira, exact text `Tsk!`, event
+`play_activityvoc_hero3071_660`, bank
+`activityvoc_hero3071molu1_3_part02.bnk`, media `410389900`. Read-once bank
+extraction produced PCM16 mono 24 kHz audio lasting 0.751 seconds with WAV
+SHA-256
+`492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
+It may be reviewed only as a generic tongue-click effect; it is not Poacher I
+voice provenance. A second apparent exact-text candidate through
+`common_npc05.bnk` is excluded because its source/media identity is reused by
+many incompatible texts and therefore does not prove a line-specific clip.
+
+## Source-event review artifact
+
+`vntts-pregenerate audio-event-review-publish` creates a self-contained review
+directory before any human decision. It captures the exact generation queue,
+requires one canonical `Tsk!` tongue-click plan, verifies the named source line
+against a read-once extractor story index, copies a non-silent PCM16 mono WAV,
+and binds the source line, event, bank, media, audio ID and source-index/WAV
+hashes. The document fixes `speaker_identity_claim=false` and
+`synthesis_voice_character=null`; accepting the effect cannot silently turn it
+into Poacher I voice evidence.
+
+The review does not touch generation state or a generated manifest. A later
+`audio-event-review-decide DIRECTORY accept|reject` writes one separate atomic
+no-replace terminal decision. Repeating the same decision is idempotent;
+changing it or deciding against mutated queue, review or WAV authority fails.
+Inspect either a pending or terminal review with
+`audio-event-review-status DIRECTORY`.
+
+Example publication shape:
+
+```sh
+uv run --no-sync vntts-pregenerate audio-event-review-publish \
+  /absolute/workspace/queue.jsonl \
+  reverse1999:314606:39:27d02801f93c9036 \
+  /absolute/story-index-3.7.jsonl \
+  /absolute/410389900.wav \
+  --output /absolute/new/audio-event-review \
+  --source-line-id reverse1999:200308:6 \
+  --source-speaker Kanjira \
+  --source-event play_activityvoc_hero3071_660 \
+  --source-bank activityvoc_hero3071molu1_3_part02.bnk \
+  --source-media-id 410389900 \
+  --source-audio-id 610008734
+```
+
+This is review authority only. An accepted decision still needs the composition
+ledger below before it may become a final line WAV.
+
 ## Required composition ledger
 
 A future accepted mixed WAV must bind all of the following:
