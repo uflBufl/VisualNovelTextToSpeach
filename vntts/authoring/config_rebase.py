@@ -819,13 +819,12 @@ def _route_reference_identity(
 
 
 def _failure_reference_route(binding, queue_item, result):
-    if binding is None or not isinstance(result, dict):
+    if not isinstance(result, dict):
         return None
     queue_id = queue_item.queue_id
-    synthetic_character = binding.queue_voice_overrides.get(queue_id)
-    if synthetic_character is None:
-        return None
     source_binding = result.get("source_reference_binding")
+    if not isinstance(source_binding, dict):
+        return None
     required = {
         "schema_version",
         "queue_id",
@@ -833,15 +832,28 @@ def _failure_reference_route(binding, queue_item, result):
         "synthesis_voice_character",
         "queue_voice_overrides_sha256",
     }
+    synthetic_character = source_binding.get("synthesis_voice_character")
+    runtime_character = (
+        None if binding is None else binding.queue_voice_overrides.get(queue_id)
+    )
+    historical_references = _historical_failure_reference_digests(
+        result, synthetic_character
+    )
+    if runtime_character is None and historical_references is None:
+        return None
     if (
-        not isinstance(source_binding, dict)
-        or set(source_binding) != required
+        set(source_binding) != required
         or source_binding.get("schema_version") != 1
         or source_binding.get("queue_id") != queue_id
-        or source_binding.get("synthesis_voice_character") != synthetic_character
+        or not isinstance(synthetic_character, str)
+        or not synthetic_character.strip()
+        or (runtime_character is not None and synthetic_character != runtime_character)
         or result.get("voice_character") != synthetic_character
-        or source_binding.get("queue_voice_overrides_sha256")
-        != queue_voice_overrides_sha256(binding.queue_voice_overrides)
+        or (
+            runtime_character is not None
+            and source_binding.get("queue_voice_overrides_sha256")
+            != queue_voice_overrides_sha256(binding.queue_voice_overrides)
+        )
     ):
         raise AuthoringWorkbenchError(
             f"Config rebase failure-reference binding changed for {queue_id!r}"
@@ -851,17 +863,50 @@ def _failure_reference_route(binding, queue_item, result):
         raise AuthoringWorkbenchError(
             f"Config rebase failure-reference source voice is invalid for {queue_id!r}"
         )
-    voices = [
-        voice for voice in binding.voices if voice.character == synthetic_character
-    ]
-    if len(voices) != 1 or not voices[0].references:
-        raise AuthoringWorkbenchError(
-            f"Config rebase failure-reference controls changed for {queue_id!r}"
+    if runtime_character is not None:
+        voices = [
+            voice for voice in binding.voices if voice.character == synthetic_character
+        ]
+        if len(voices) != 1 or not voices[0].references:
+            raise AuthoringWorkbenchError(
+                f"Config rebase failure-reference controls changed for {queue_id!r}"
+            )
+        digests = tuple(
+            sorted(sha256_file(reference) for reference in voices[0].references)
         )
-    digests = tuple(
-        sorted(sha256_file(reference) for reference in voices[0].references)
-    )
+        if historical_references is not None and digests != historical_references:
+            raise AuthoringWorkbenchError(
+                f"Config rebase failure-reference history changed for {queue_id!r}"
+            )
+    else:
+        digests = historical_references
     return (synthetic_character, digests), requested.strip()
+
+
+def _historical_failure_reference_digests(result, synthetic_character):
+    repair = result.get("failure_repair")
+    if (
+        not isinstance(repair, dict)
+        or repair.get("strategy") != "offline_fallback_backend"
+    ):
+        return None
+    source = repair.get("source_failure")
+    voice = source.get("source_voice_reference") if isinstance(source, dict) else None
+    if (
+        not isinstance(voice, dict)
+        or voice.get("character") != synthetic_character
+        or not isinstance(voice.get("references"), list)
+        or not voice["references"]
+    ):
+        return None
+    return tuple(
+        sorted(
+            _require_sha256(
+                digest, "Config rebase historical failure reference SHA-256"
+            )
+            for digest in voice["references"]
+        )
+    )
 
 
 def _prior_config_rebase_target_route(result):

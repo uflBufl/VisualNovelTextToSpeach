@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -22,6 +23,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import (
+    _failure_reference_route,
     _prior_config_rebase_target_route,
     _target_route_status,
     rebase_workspace_config,
@@ -70,6 +72,43 @@ def _prepare(root, *, target_reference_payloads=None, source_queue_override=None
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_historical_failure_reference_uses_checksum_bound_repair_route(self):
+        queue_id = "line:historical-reference"
+        result = {
+            "voice_character": "Selected failure reference exact",
+            "source_reference_binding": {
+                "schema_version": 1,
+                "queue_id": queue_id,
+                "source_voice_character": "Narrator",
+                "synthesis_voice_character": "Selected failure reference exact",
+                "queue_voice_overrides_sha256": "1" * 64,
+            },
+            "failure_repair": {
+                "schema_version": 1,
+                "strategy": "offline_fallback_backend",
+                "source_failure": {
+                    "source_voice_reference": {
+                        "character": "Selected failure reference exact",
+                        "speaker": "failure-reference:exact",
+                        "aliases": [],
+                        "references": ["3" * 64, "2" * 64],
+                    }
+                },
+            },
+        }
+
+        self.assertEqual(
+            _failure_reference_route(
+                None,
+                SimpleNamespace(queue_id=queue_id),
+                result,
+            ),
+            (
+                ("Selected failure reference exact", ("2" * 64, "3" * 64)),
+                "Narrator",
+            ),
+        )
+
     def test_chained_rebase_uses_the_immediate_predecessor_target_route(self):
         result = {
             "voice_character": "Historical voice absent from current manifest",
