@@ -44,6 +44,17 @@ from vntts.synthesis import (
 )
 
 
+def _canonical_sha256(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 class _CollectedResult:
     def __init__(self, result_factory):
         self.result_factory = result_factory
@@ -566,6 +577,26 @@ class FailureReferenceAuditTest(unittest.TestCase):
             fresh_audit = publish_failure_reference_audit(
                 workspace, fresh_audit_root, seed=19, queue_ids=(queue_id,)
             )
+            fresh_document = json.loads((fresh_audit_root / "audit.json").read_text())
+            fresh_key_path = fresh_audit_root / ".blind-key.json"
+            fresh_key = json.loads(fresh_key_path.read_text())
+            selected_private = next(
+                candidate
+                for candidate in fresh_key["groups"][0]["candidates"]
+                if candidate["source_sha256"] == selected_reference_sha256
+            )
+            selected_private["source_reference"] = "references/snapshotted-voice/03.ogg"
+            fresh_document["blind_key_groups_sha256"] = _canonical_sha256(
+                fresh_key["groups"]
+            )
+            fresh_document.pop("audit_id")
+            expected_fresh_audit_id = _canonical_sha256(fresh_document)
+            fresh_document["audit_id"] = expected_fresh_audit_id
+            fresh_key["audit_id"] = expected_fresh_audit_id
+            (fresh_audit_root / "audit.json").write_text(
+                json.dumps(fresh_document, sort_keys=True)
+            )
+            fresh_key_path.write_text(json.dumps(fresh_key, sort_keys=True))
 
             imported = import_reference_render_preference(
                 fresh_audit_root,
@@ -598,7 +629,8 @@ class FailureReferenceAuditTest(unittest.TestCase):
 
             self.assertTrue(imported.created)
             self.assertFalse(repeated.created)
-            self.assertEqual(imported.audit_id, fresh_audit.audit_id)
+            self.assertNotEqual(fresh_audit.audit_id, expected_fresh_audit_id)
+            self.assertEqual(imported.audit_id, expected_fresh_audit_id)
             self.assertEqual(imported.decision_set_id, repeated.decision_set_id)
             self.assertEqual(
                 imported.selected_reference_sha256,

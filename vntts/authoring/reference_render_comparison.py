@@ -615,8 +615,6 @@ def import_reference_render_preference(
         or fresh_private_group.get("speaker") != source_private_group.get("speaker")
         or fresh_private_candidate is None
         or fresh_private_candidate.get("source_sha256") != selected_reference_sha256
-        or fresh_private_candidate.get("source_reference")
-        != source_private_candidate.get("source_reference")
     ):
         raise ReferenceRenderComparisonError(
             "Selected reference identity changed in the fresh audit"
