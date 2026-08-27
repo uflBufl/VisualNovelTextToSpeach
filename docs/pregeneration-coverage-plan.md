@@ -198,6 +198,19 @@ bundle `current-character-story-poacher-glyndwr-narrator-fallback-v1.json`
 binds exactly those eight pending WAVs in one cohort with seven required
 samples. No terminal review decision has been projected.
 
+The exact post-run failure report is bound to state SHA-256
+`2cd6f7c0efcc28e6029b2669c97e0ac7b180f4edb72dfd5cd2fc7956d48d7e81`.
+It contains 19 failures: the four previously retained legacy Narrator failures
+plus 15 new fallback attempts. The new failures split into 13 typed
+missed-EOS/audio-limit cases and two speech-silence cases. The deterministic
+repair classifier proposes ten bounded seed retries, three safe
+sentence-boundary segmentation candidates, one reference comparison and one
+inline-pause-marker comparison for the new cohort; the four legacy records
+still require provenance recovery or controlled regeneration. This is planning
+evidence only. Because accepting or rejecting the pending fallback cohort will
+change the state authority, publish a fresh repair plan after that review rather
+than treating this transient classification as executable authority.
+
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four
 lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those
