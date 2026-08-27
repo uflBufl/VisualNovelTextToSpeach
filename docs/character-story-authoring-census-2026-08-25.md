@@ -103,10 +103,15 @@ generation pass. It is:
 1. finish the one remaining 15-item Dobharchu cohort decision;
 2. publish and review the matched long-pause repair comparison after a suitable
    raw long-line capture exists;
-3. rebase existing terminal review authority onto the v5 Mrs. Owen plus
-   Hotelier-fallback configuration without rewriting synthesis provenance; and
-4. merge only terminal decisions, rebuild the approved-only manifest and run
+3. merge only terminal decisions, rebuild the approved-only manifest and run
    the real routing/auto-advance acceptance.
+
+The intervening config rebase is complete: successor
+`resume-395a5e5eec0327a3a793b66d-7593a7c03fe36bc3` retains 324 approvals and 82
+rejections while moving the remaining nonterminal work under the v5 Mrs. Owen
+plus Hotelier-fallback configuration. Exact hashes and the no-generation gate
+are recorded in
+[`pregeneration-coverage-plan.md`](pregeneration-coverage-plan.md).
 
 ## Machine-verified reconciliation
 

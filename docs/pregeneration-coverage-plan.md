@@ -121,8 +121,33 @@ Owen lines are source-bound and 12 Hotelier lines have the explicit fallback.
 It remains a seed/preflight workspace with zero new review decisions. The
 generic outcome-merge API correctly refused to copy the 406 reviewed outcomes
 because it accepts current failure-repair workspaces only. A dedicated
-provenance-safe config rebase is required; copying state or rewriting synthesis
-provenance without that ledger is forbidden.
+provenance-safe config rebase was therefore used; copying state or rewriting
+synthesis provenance without that ledger remains forbidden.
+
+The no-replace config-rebase successor is
+`resume-395a5e5eec0327a3a793b66d-7593a7c03fe36bc3`. It carries exactly 406
+terminal decisions: 324 approved and 82 rejected. Each item binds the exact
+source workspace/state/item/WAV and the target route's contained reference
+bytes. Nineteen records use different internal source/target variant labels,
+but every source reference digest is an exact subset of its target route; the
+first strict run rejected those labels before the byte-identity rule was added
+and published nothing. The completed successor has workspace SHA-256
+`0e7e97957875850548105cb24d4123a1cf6711d0a86eb96bc3821eb91ee33557`,
+state SHA-256
+`8cb8fcfc43feb5821e1eef27efa1496ce9f388c308d0cf477c89f35c86217100`,
+418 state items, 12 retained target-owned failures, 49 pending queue lines and a
+324-entry approved-only manifest. It remains globally `needs_attention` because
+118 lines still lack a safe voice, while 61 exact pending/failed lines are
+currently generation-ready.
+
+No synthesis or review ran during the rebase. The source and target artifact
+trees remained byte-identical at 431 files / SHA-256
+`02e5039c196adb8e77a68300703395314dc37e000c720f8153d6d1e7ec2a0c2c`
+and 218 files / SHA-256
+`95c742ebde368b91598d59d1619463986f97f7f7a22c738913d5b49a92197383`.
+All target state records outside the 406 exact terminal IDs remain byte-for-byte
+equal to the target state. The successor has no active attempt, lease or partial
+WAV, and an exact repeat returned `created=false`.
 
 The first exact-ID generation pass attempted all 73 bound items with seed 0 and
 no automatic retry. It produced 44 technically valid WAVs. A bounded second

@@ -51,25 +51,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Rebase the 406 existing terminal review outcomes onto the immutable
-      Mrs. Owen plus Hotelier-fallback configuration without forging synthesis
-      provenance. The source is workspace
-      `resume-395a5e5eec0327a3a793b66d-63324a22121bb35e`; the config-addressed
-      target is `resume-395a5e5eec0327a3a793b66d-de274b0e064597e0` and must
-      remain untouched. Publish a third no-replace successor that preserves the
-      exact queue/story, source item/WAV/state hashes and terminal decisions,
-      records both source and target authorities, and re-attests an item only
-      when its effective queue override/fallback route retains every exact
-      source reference byte. Different internal variant labels are allowed only
-      when this byte identity proves they route to the same source voice. Added
-      Mrs. Owen mappings and the Hotelier-only
-      Narrator fallback may affect only previously nonterminal items. Reject any
-      changed existing reference, alias collision, incompatible effective route,
-      missing source authority, active lease or concurrent mutation. Centralize
-      the validation so approved-manifest and final-pack publication both reject
-      orphaned or tampered rebase ledgers. Prove idempotency and fail-closed race
-      behavior in tests, then inspect the real successor without generation.
-
 - [ ] Replace or explicitly retire the accepted child Aderyn source variant.
       Real-story synthesis sounded bad even though its source clip passed the
       fixed evaluation. Preserve Aderyn as source identity, keep adult and child
