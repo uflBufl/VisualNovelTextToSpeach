@@ -169,9 +169,13 @@ uv run vntts-pregenerate audio-event-composition-workspace \
 
 The command holds the base generation-publication lease, copies the complete
 approved composition authority into immutable workspace inputs, and binds the
-base workspace, state item, replaced WAV, composition, decision, queue and
-exact final WAV hashes into the new configuration fingerprint. It replaces
-only the rejected rendition with the unchanged event WAV as
+exact base workspace document, generation state and replaced WAV into a second
+immutable input snapshot. Their workspace/state/item/WAV hashes, plus the
+composition, decision, queue and exact final WAV hashes, enter the new
+configuration fingerprint. The inherited outcome-merge ledger remains
+historical for only the overridden queue ID, and its original terminal item is
+still verified from the copied base state. The command replaces only the
+rejected rendition with the unchanged event WAV as
 `generated/pending_review`; the base workspace remains byte-identical. The
 ordinary individual review is still required. On approval, the same additive
 ledger is projected into the approved-only manifest and is revalidated before
@@ -203,6 +207,27 @@ composition was explicitly approved on 2026-08-27. That decision authorizes the
 exact-copy successor workflow above; it does not by itself approve a generation
 state item, project a manifest entry or identify the sound as Poacher I's
 voice.
+
+The real reviewable successor is
+`resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`. Its workspace SHA-256 is
+`9fa9e59f09dabadc878695d8ac418e19b439fca619c210730a115c1cb17f1146`;
+its generation-state
+SHA-256 is
+`c53f6278d7607aaf6e2fedb4ba6d3dc33fa98aefada278e40193d42850ec03d6`.
+The item is `generated/pending_review`, uses review identity `Audio Event`, has
+no speech-only technical warnings, and retains exact final WAV SHA-256
+`492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
+The approved-only manifest has 400 entries, including the separately approved
+Narrator line 94, and deliberately excludes this pending item. Its manifest
+SHA-256 is
+`a5c57182d06694282e666b67eb1af59c88db0d2da7c185ff86374dbe1bc56323`.
+Its copied base state SHA-256 is
+`f906935a13fd124ae10d95004c56145dd4f5a95a8cc29b8aa88504ab75392ba9`;
+the replaced rejected WAV remains
+`a7fcc6dd2c6b9f626f3301bfe63be16fc541094681a4b1a7ee9fecd8db0c6fcd`.
+Repeated creation returns the same workspace with `created=false`, and both
+source and successor have no active attempt, lease or partial WAV. One ordinary
+individual verdict remains before merge.
 
 ## Required composition ledger
 

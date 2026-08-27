@@ -826,6 +826,22 @@ workspace `resume-395a5e5eec0327a3a793b66d-8f248017c2917708`. The approved WAV
 SHA-256 is
 `59c6f5eb48c4204adc653d3da06f245a98926e6aace304514ba055b6ff9f68a8`;
 the approved-only manifest contains exactly one matching entry, with no active
-attempt or generation lease. This is valid isolated outcome authority and still
-needs normal reconciliation into the composed primary; it is not evidence to
-retry `314608:58` or either exhausted segmentation case.
+attempt or generation lease. Current composed successor
+`resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483` includes that exact approval;
+it is not evidence to retry `314608:58` or either exhausted segmentation case.
+
+The exact accepted `Tsk!` source event and its separately approved exact-copy
+composition are now projected into reviewable successor
+`resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`. Its workspace, state and
+manifest SHA-256 values are respectively
+`9fa9e59f09dabadc878695d8ac418e19b439fca619c210730a115c1cb17f1146`,
+`c53f6278d7607aaf6e2fedb4ba6d3dc33fa98aefada278e40193d42850ec03d6`
+and `a5c57182d06694282e666b67eb1af59c88db0d2da7c185ff86374dbe1bc56323`.
+The line remains `generated/pending_review`; the 400-entry approved-only
+manifest excludes it. The successor preserves exact snapshots of base state
+`f906935a13fd124ae10d95004c56145dd4f5a95a8cc29b8aa88504ab75392ba9`
+and rejected WAV
+`a7fcc6dd2c6b9f626f3301bfe63be16fc541094681a4b1a7ee9fecd8db0c6fcd`,
+while its event WAV remains exact SHA-256
+`492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
+It needs one ordinary individual verdict before any merge.
