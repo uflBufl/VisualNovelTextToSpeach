@@ -53,31 +53,19 @@ Follow the evidence-backed order and invariants in
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist;
       do not extend the portrait alias to unbound portrait `534705`.
-- [ ] Resolve the exact 13-failure tail without another broad retry. Current
-      post-cohort reconciliation report
-      `da65deb750c0f9bf5e1b074a368938a00b88b15872e57a37b6af3198fd8a7d5a`
-      has zero conflicts/merges and classifies only the five older Narrator
-      lines `314606:54`, `314608:58`, `314608:94`, `314606:43`, `314606:6`
-      plus newly exhausted `314601:28`, `314601:47`, `314601:83`,
+- [ ] Resolve the exact 12-failure tail without another broad retry. Current
+      post-reference reconciliation report
+      `efa05a3fe7706a2983e170ce54c3b837bd451b8e597054ad59a700b02da084b4`
+      has zero conflicts/merges and classifies only the four older Narrator
+      lines `314608:58`, `314608:94`, `314606:43`, `314606:6` plus newly
+      exhausted `314601:28`, `314601:47`, `314601:83`,
       `314601:96`, `314603:13`, `314603:14`, `314605:4` and `314608:86`
       as `new_hypothesis_required`. Preserve the completed evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated
-      WAV, checksum-bound review and terminal merge as separate transactions.
-      The matched blind trial for
-      `reverse1999:314606:54:0450c81c4d1b3cc4` is complete at `1/1` and selected
-      `centurion-reference-03` over reference 02. Its fresh audit, imported
-      decision, binding, config-addressed successor and single bounded render
-      are complete and recorded in
-      [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md).
-      Hear the one checksum-bound WAV in review plan
-      `157a0f3698be46ed308ac66064fdb0a1807cc6639175d1ef9b705633a2449897`.
-      Publish an explicit accepted or rejected decision, then merge only that
-      terminal result into the current composed workspace and rerun
-      reconciliation. Do not infer approval from its clean silence metrics or
-      spend another attempt. The other 12 lines still require a different
-      matched hypothesis or typed supported fallback.
+      WAV, checksum-bound review and reconciled composed successor as separate
+      transactions.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

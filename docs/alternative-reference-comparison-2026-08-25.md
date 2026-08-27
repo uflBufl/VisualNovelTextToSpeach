@@ -107,7 +107,24 @@ it contains one cohort and one mandatory sample, flagged only for fast pace.
 The other 591 state records retained canonical SHA-256
 `c8406d8116b26b906bf5977fb8d69dd8553b5ad8289adc2fc52402a644046d01`;
 no lease or partial WAV remained. This is still not an approval: the exact WAV
-must be heard before an accepted or rejected decision is published and merged.
+must be heard before an accepted or rejected decision is published.
+
+The operator heard and approved that exact WAV on 2026-08-27. Immutable
+decision ID
+`6ccdbe0df4f41174b3b627c33df7d44d142c2a617b33714ac6e71a5e240336b0`
+projects only the one queue ID and binds the WAV SHA-256 above. The resulting
+successor is the new composed primary: it contains 384 approved, 71 rejected,
+12 failed and 71 pending outcomes, while its approved-only manifest contains
+exactly 384 entries. No second outcome merge is necessary because the
+failure-reference workspace was already created as a config-addressed child of
+the previous composed primary and preserved its full state. The final workspace,
+state and manifest SHA-256 values are respectively
+`379fd047188645af60013b3b1f4e4c3324e08110b3b6780ead778bc3a885d2d3`,
+`b7d8218bce6d0e3e0c5b11befd6b33837801bdd4fb186c0cb20a5fb9667fdee8`
+and `2a5cbe77ac57036b9b10bc13e0dc9c837719d1b6a96a039cf18305306e46c3ab`.
+Fresh reconciliation report
+`efa05a3fe7706a2983e170ce54c3b837bd451b8e597054ad59a700b02da084b4`
+has zero terminal conflicts and reduces the failure tail from 13 to 12.
 
 ## Dobharchu results
 
@@ -129,11 +146,9 @@ spend another seed or silently merge the portrait controls.
 
 ## Remaining decision boundary
 
-The one complete Narrator A/B trial selected reference 03, and the resulting
-single production-shaped WAV now awaits an explicit human accept/reject
-decision. The two unmatched complete Narrator comparison WAVs remain
-diagnostics and cannot establish comparative superiority. The other current
-failure-tail items need a different bounded hypothesis or an explicit
-supported fallback; none may inherit this reference decision by speaker or
-text similarity. The merged source state used for the transaction remained
-unchanged until its config-addressed successor was created.
+The one complete Narrator A/B trial selected reference 03, and its resulting
+production-shaped WAV is now explicitly approved. The two unmatched complete
+Narrator comparison WAVs remain diagnostics and cannot establish comparative
+superiority. The other 12 current failure-tail items need a different bounded
+hypothesis or an explicit supported fallback; none may inherit this reference
+decision by speaker or text similarity.

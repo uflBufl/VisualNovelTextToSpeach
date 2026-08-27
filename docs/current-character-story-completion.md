@@ -688,7 +688,22 @@ has zero terminal conflicts, zero terminal merges, 13
 `new_hypothesis_required` actions and 118
 `source_reference_or_explicit_fallback` actions.
 
-1. Resolve the remaining 13 failures only through separately checksum-bound,
+The subsequent exact reference-03 transaction resolved Narrator line
+`reverse1999:314606:54:0450c81c4d1b3cc4`. Blind comparison selected Centurion
+reference 03; one production-shaped render completed at attempt 4/seed 3 and
+was explicitly approved under decision ID
+`6ccdbe0df4f41174b3b627c33df7d44d142c2a617b33714ac6e71a5e240336b0`.
+Its config-addressed successor
+`resume-395a5e5eec0327a3a793b66d-5d48e1fefe53cf26` is now the composed primary,
+with 384 approved, 71 rejected, 12 failed and 71 pending state outcomes and an
+approved-only manifest of 384 entries. Fresh reconciliation report
+`efa05a3fe7706a2983e170ce54c3b837bd451b8e597054ad59a700b02da084b4`
+(file SHA-256
+`601ff8118c1c42a3be4952c2f64a232a28d11b3dc678a9e52cbddcdf00e432a1`)
+has zero terminal conflicts, 12 `new_hypothesis_required` actions and 118
+`source_reference_or_explicit_fallback` actions.
+
+1. Resolve the remaining 12 failures only through separately checksum-bound,
    evidence-backed hypotheses. Do not repeat an exhausted seed, repair or
    provider path.
 2. Resolve the 118 missing-voice items through an exact reference or an explicit
