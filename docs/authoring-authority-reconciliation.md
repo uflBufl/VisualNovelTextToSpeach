@@ -148,6 +148,33 @@ final merge claim. Any report is planning evidence only: it does not authorize
 the final manifest until terminal decisions and supported fallbacks cover the
 selected game pack.
 
+### Selection-aware v6 report
+
+After retiring the unsafe child-Aderyn reference and carrying the five
+unchanged terminal decisions, clean commit `a8da063` published the current
+report as
+`authoring/reconciliations/current-character-story-20260827-d29530a87b6b.json`:
+
+- report ID
+  `d29530a87b6b11d9a2a29815c18604fffedda0933405b9ecc9a1fd4c1612420d`;
+- file SHA-256
+  `8dc6b4769cc124e08336dbaab569a35eafecd11f96889d8d53904fbc76b5c51f`;
+- 29 workspaces, eight cohort bundles and the exact Mrs. Owen and Hotelier
+  quality reviews;
+- 49 `generation_ready_unselected`, 15 `human_cohort_review`, 12
+  `new_hypothesis_required`, 118
+  `source_reference_or_explicit_fallback`, zero `workspace_blocked`, and six
+  terminal conflicts.
+
+The 49 exact ready IDs comprise 34 Mrs. Owen, 12 Hotelier, two Dobharchú and
+one Aderyn line. A child-command preflight over precisely that tuple reported
+`selected=49`, `pending=49`, `ready=49`, `missing_voice=0` and no blockers;
+the derived argv contained exactly 49 `--queue-id` arguments with `retries=0`
+and `seed=0`. No child was launched because the remaining Dobharchú cohort and
+new terminal-conflict case are still human authority gates. The report build
+rehash-validated every captured source and did not mutate a workspace, state,
+manifest, bundle, progress file or WAV.
+
 ## Lease and terminal-publication invariants
 
 Generation, publication and terminal-review progress use a persistent
