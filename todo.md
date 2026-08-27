@@ -25,6 +25,57 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ## Offline authoring and application responsibility split
 
+### P0 - Make mixed-quality cohort review expressible and understandable
+
+- [ ] Replace the current all-or-nothing cohort decision trap with an explicit
+      checksum-bound mixed-quality flow. A marked bad sample must offer
+      `Send marked WAVs to repair and continue`, which records only the exact
+      heard bad queue/WAV identities as rejected or repair-required, leaves
+      every unreviewed target pending, and rebuilds the remaining cohort instead
+      of approving or rejecting unrelated WAVs. Keep `Reject entire cohort` as
+      a separate deliberate action only for a shared reference, speaker,
+      provider, profile or repair-strategy defect. Never infer a cohort-wide
+      rejection from one stochastic pause, repetition, truncation or
+      mispronunciation.
+- [ ] Make every decision's scope visible before the click and in its
+      confirmation: exact counts for individually marked WAVs, individually
+      heard acceptable WAVs, unreviewed WAVs that remain pending, and all WAVs
+      affected by a cohort-wide decision. Do not label a representative sample
+      as though it were already an individual approval for unsampled cohort
+      members. Preserve the explicit multi-reason defect evidence and explain
+      that marking a sample bad changes no authority until a terminal action is
+      confirmed.
+- [ ] Keep `Need more evidence` permanently visible, rename it consistently in
+      UI/docs, and show an inline disabled reason. Enable it only after all
+      current samples are heard and an unsampled technically clean candidate
+      actually exists; otherwise state whether the blocker is unheard samples,
+      the five-sample bound, or no remaining clean evidence. Provide a truthful
+      `Leave undecided`/close path with resumable observations rather than
+      forcing Accept or Reject.
+- [ ] Keep the action layout stable while preparing, playing and saving audio.
+      Replay, Stop, Previous and Next must remain responsive; terminal actions
+      must not move or silently disappear. During a mixed decision, show a
+      persistent operation message with elapsed time and the exact affected
+      counts, serialize authority writes in the background, defer close safely,
+      and recover in place after transient failure without losing heard or
+      defect-reason observations.
+- [ ] Add a versioned split-decision contract and fail-closed projection. Bind
+      the displayed queue, state, item, WAV, cohort plan and generation lease;
+      revalidate them immediately before every canonical write; preserve old
+      decision/observation documents; derive the approved-only manifest only
+      from exact terminal approvals. Add adversarial regressions for stale UI
+      clicks, queue/state/WAV/lease changes, mixed sampled/unreviewed cohorts,
+      idempotent retry, crash recovery, successor rebuilding and the guarantee
+      that one bad WAV never rejects or approves a sibling implicitly.
+- [ ] Validate the redesigned dialog on the real remaining bundles: the
+      one-sample Rhiannon Pocket fallback, the three exhausted-primary Pocket
+      cohorts and the two Dobharchú cohorts. Acceptance requires that a single
+      line-specific defect can be routed to repair without a cohort-wide
+      decision, while a repeated pacing/reference defect can still reject the
+      exact whole cohort with an explicit confirmation. Record the durable
+      interaction and authority contract in `docs/authoring-workspaces.md` and
+      `docs/ui-ux-audit.md`, then remove this section from TODO.
+
 ### P0 - Complete the current Character Story in fail-closed order
 
 Follow the checkpoint, dependencies and acceptance boundaries in
