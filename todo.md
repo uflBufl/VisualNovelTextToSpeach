@@ -34,33 +34,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Complete the risk-based cohort review for the ten WAVs produced
-      by the exact 46-item run in workspace
-      `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`. The bounded run used
-      `selected=ready=46`, `retries=0` and `seed=0`; it produced ten
-      `generated` and 36 typed `failed` outcomes while all 421 unrelated state
-      items remained byte-identical. Review the published exact bundle
-      `current-character-story-ready-fallbacks-v1.json` (two cohorts, six
-      samples, zero blocked items); require an explicit human decision and
-      never infer approval from a technical pass.
-- [ ] Review the completed bounded repair branches for the 36 new typed
-      failures. The
-      checksum-bound classifier found 29 missed-EOS and seven speech-silence
-      failures. All bounded automatic branches are complete: six sentence-
-      repair WAVs, five direct bounded-seed WAVs and 17 explicit unseeded Pocket
-      fallback WAVs were published in isolated successors without approving
-      anything. Review them through the exact bundles
-      `current-character-story-sentence-repair-v2.json` (two cohorts, four
-      samples), `current-character-story-bounded-seed-repair-v1.json` (two
-      cohorts, three samples), and
-      `current-character-story-pocket-fallback-v1.json` (four cohorts, 13
-      samples). Four nominally exhausted items changed to speech-silence under
-      their latest waveform and were deliberately excluded: three require new
-      sentence-boundary evidence and one requires reference comparison. Keep
-      those four plus the earlier three inline-pause/reference comparisons
-      separate; they require matched evidence before any production retry.
-      Never extend the audio limit or change provider implicitly, and preserve
-      every successful/terminal outcome in isolated successors.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
@@ -80,27 +53,39 @@ Follow the evidence-backed order and invariants in
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
       until a new bounded, evidence-backed hypothesis and review gate exist;
       do not extend the portrait alias to unbound portrait `534705`.
-- [ ] Resolve the exact five-failure tail without another broad retry. Current
-      selection-aware reconciliation report
-      `d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
-      classifies only `314606:54`, `314608:58`, `314608:94`, `314606:43` and
-      `314606:6` as `new_hypothesis_required`; terminal conflicts and secondary
-      outcome merges are already closed. Preserve the completed evidence described in
+- [ ] Resolve the exact 13-failure tail without another broad retry. Current
+      post-cohort reconciliation report
+      `da65deb750c0f9bf5e1b074a368938a00b88b15872e57a37b6af3198fd8a7d5a`
+      has zero conflicts/merges and classifies only the five older Narrator
+      lines `314606:54`, `314608:58`, `314608:94`, `314606:43`, `314606:6`
+      plus newly exhausted `314601:28`, `314601:47`, `314601:83`,
+      `314601:96`, `314603:13`, `314603:14`, `314605:4` and `314608:86`
+      as `new_hypothesis_required`. Preserve the completed evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated
       WAV, checksum-bound review and terminal merge as separate transactions.
-      First finish the one existing matched blind trial for
-      `reverse1999:314606:54:0450c81c4d1b3cc4` with
-      `uv run vntts-listen ui --session
-      "$HOME/Library/Application Support/VisualNovelTextToSpeech/authoring/model-listening/current-character-story-narrator-alternative-reference-v2/session.json"`.
-      Current durable progress is `0/1`. Choose the better candidate only if it
-      is acceptable, otherwise choose neither. This selects Centurion reference
-      2 versus reference 3 as the next bounded hypothesis; it does not approve
-      a production WAV. After the choice, create one exact reference-bound
-      successor, render only that queue ID, review the resulting WAV, and merge
-      it only if explicitly approved. The four unmatched/fully-limited lines
-      still require a different matched hypothesis or typed supported fallback.
+      The matched blind trial for
+      `reverse1999:314606:54:0450c81c4d1b3cc4` is complete at `1/1` and selected
+      `centurion-reference-03` over reference 02. Complete this exact hypothesis
+      as a provenance-preserving transaction:
+      1. build a fresh failure-reference audit from the current successor and
+         prove that its queue item, failed state and candidate reference bytes
+         still match the completed comparison/listening authorities;
+      2. import the blind preference through a public checksum-bound bridge,
+         recording the comparison, listening report, opaque arm and selected
+         reference SHA-256 instead of manually editing an audit or binding;
+      3. publish one immutable reference binding and one config-addressed
+         successor, then preflight and render only that queue ID once with no
+         broad retry or approval side effect;
+      4. if the render validates, publish a checksum-bound review artifact and
+         stop for an explicit human approval; merge only that reviewed terminal
+         result. A typed failure remains evidence and must not spend another
+         attempt without a new hypothesis.
+      The bridge is complete only when mismatch/tamper/idempotency regressions,
+      CLI help, focused/full tests, lint, formatting, lock and diff checks pass.
+      The other 12 lines still require a different matched hypothesis or typed
+      supported fallback.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

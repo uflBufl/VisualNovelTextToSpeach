@@ -115,6 +115,7 @@ from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outco
 from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     create_reference_render_listening,
+    import_reference_render_preference,
     load_reference_render_plan,
     publish_reference_render_comparison,
 )
@@ -661,6 +662,14 @@ def create_parser():
     reference_render_listen.add_argument("comparison", type=Path)
     reference_render_listen.add_argument("--output", type=Path, required=True)
     reference_render_listen.add_argument("--seed", type=int, default=0)
+    reference_render_import = subparsers.add_parser(
+        "failure-reference-import-listening",
+        help="Bind one completed blind reference preference to a fresh audit",
+    )
+    reference_render_import.add_argument("audit", type=Path)
+    reference_render_import.add_argument("comparison", type=Path)
+    reference_render_import.add_argument("session", type=Path)
+    reference_render_import.add_argument("queue_id")
     reference_binding = subparsers.add_parser(
         "failure-reference-binding",
         help="Publish terminal selected references as an immutable exact-ID overlay",
@@ -1577,6 +1586,15 @@ def main(argv=None):
                     sort_keys=True,
                 )
             )
+            return 0
+        if arguments.command == "failure-reference-import-listening":
+            result = import_reference_render_preference(
+                arguments.audit,
+                arguments.comparison,
+                arguments.session,
+                arguments.queue_id,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
         if arguments.command == "failure-reference-binding":
             result = publish_failure_reference_binding(

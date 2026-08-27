@@ -16,7 +16,9 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
     load_failure_reference_audit,
+    load_failure_reference_decisions,
     prepare_failure_reference_audio,
+    record_failure_reference_decision,
 )
 from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
@@ -27,7 +29,9 @@ from vntts.authoring.failure_reference_preview import (
 from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.listening import (
     ModelListeningError,
+    aggregate_listening_report,
     create_listening_session_from_reports,
+    load_listening_session,
 )
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
@@ -57,6 +61,32 @@ class ReferenceRenderComparison:
     arm_count: int
     sample_count: int
     complete_pair_count: int
+
+
+@dataclass(frozen=True)
+class ReferenceRenderSelection:
+    audit_directory: Path
+    audit_id: str
+    group_id: str
+    candidate_id: str
+    queue_id: str
+    selected_arm_id: str
+    selected_reference_sha256: str
+    decision_set_id: str
+    created: bool
+
+    def to_dict(self):
+        return {
+            "audit_directory": str(self.audit_directory),
+            "audit_id": self.audit_id,
+            "group_id": self.group_id,
+            "candidate_id": self.candidate_id,
+            "queue_id": self.queue_id,
+            "selected_arm_id": self.selected_arm_id,
+            "selected_reference_sha256": self.selected_reference_sha256,
+            "decision_set_id": self.decision_set_id,
+            "created": self.created,
+        }
 
 
 def load_reference_render_plan(path):
@@ -419,6 +449,270 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError(str(error)) from error
 
 
+def import_reference_render_preference(
+    audit_directory,
+    comparison_directory,
+    listening_session,
+    queue_id,
+):
+    """Bind one completed blind preference to one fresh exact failure audit."""
+    queue_id = _required_text(queue_id, "queue ID")
+    audit_argument = Path(audit_directory).expanduser()
+    comparison_argument = Path(comparison_directory).expanduser()
+    session_argument = Path(listening_session).expanduser()
+    if (
+        audit_argument.is_symlink()
+        or comparison_argument.is_symlink()
+        or session_argument.is_symlink()
+    ):
+        raise ReferenceRenderComparisonError(
+            "Reference selection inputs must not be symlinks"
+        )
+    audit_root = audit_argument.resolve()
+    comparison_root = comparison_argument.resolve()
+    session_path = session_argument.resolve()
+    try:
+        fresh_audit = load_failure_reference_audit(audit_root)
+        comparison = _load_comparison_document(comparison_root)
+        session = load_listening_session(session_path)
+    except (FailureReferenceAuditError, ModelListeningError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+
+    source_audit_root = _planned_directory(comparison_root, comparison.get("audit"))
+    try:
+        source_audit = load_failure_reference_audit(source_audit_root)
+    except FailureReferenceAuditError as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    source_audit_path = source_audit_root / "audit.json"
+    if source_audit.audit_id != comparison.get("audit_id") or sha256_file(
+        source_audit_path
+    ) != _required_sha256(comparison.get("audit_sha256"), "source audit hash"):
+        raise ReferenceRenderComparisonError(
+            "Reference render source audit authority changed"
+        )
+
+    fresh_document, fresh_key = _load_audit_documents(audit_root)
+    source_document, source_key = _load_audit_documents(source_audit_root)
+    fresh_group = _one_group_for_queue(fresh_document, queue_id, "fresh audit")
+    source_groups = {value["group_id"]: value for value in source_document["groups"]}
+    source_private_groups = {value["group_id"]: value for value in source_key["groups"]}
+    fresh_private_groups = {value["group_id"]: value for value in fresh_key["groups"]}
+
+    trial, assignment, selected_side, selected_arm_id = _selected_listening_trial(
+        comparison_root,
+        comparison,
+        session_path,
+        session,
+        queue_id,
+    )
+    selected_arm = next(
+        (value for value in comparison["arms"] if value["arm_id"] == selected_arm_id),
+        None,
+    )
+    if selected_arm is None:
+        raise ReferenceRenderComparisonError(
+            "Blind preference selected an unknown reference-render arm"
+        )
+    selected_render = next(
+        (
+            value
+            for value in selected_arm["renders"]
+            if value.get("id") == queue_id and value.get("outcome") == "complete"
+        ),
+        None,
+    )
+    if selected_render is None:
+        raise ReferenceRenderComparisonError(
+            "Blind preference selected no complete exact render"
+        )
+    render_sha256 = _required_sha256(
+        selected_render.get("audio_sha256"), "selected render hash"
+    )
+    if (
+        trial["audio_sha256"][selected_side] != render_sha256
+        or assignment[selected_side].get("audio_sha256") != render_sha256
+    ):
+        raise ReferenceRenderComparisonError(
+            "Blind preference audio no longer matches the selected render"
+        )
+    selected_audio = _contained_file(
+        comparison_root / "arms" / selected_arm_id,
+        selected_render.get("audio"),
+    )
+    assignment_source = Path(
+        _required_text(assignment[selected_side].get("source"), "assignment source")
+    ).expanduser()
+    if assignment_source.is_symlink() or assignment_source.resolve() != selected_audio:
+        raise ReferenceRenderComparisonError(
+            "Blind preference source no longer matches the selected render"
+        )
+
+    source_group_id = _required_sha256(
+        selected_render.get("candidate_group_id"), "candidate group ID"
+    )
+    source_candidate_id = _required_text(
+        selected_render.get("candidate_id"), "candidate ID"
+    )
+    source_group = source_groups.get(source_group_id)
+    source_private_group = source_private_groups.get(source_group_id)
+    if source_group is None or source_private_group is None:
+        raise ReferenceRenderComparisonError(
+            "Selected reference is absent from its source audit"
+        )
+    source_candidate = next(
+        (
+            value
+            for value in source_group["candidates"]
+            if value["candidate_id"] == source_candidate_id
+        ),
+        None,
+    )
+    source_private_candidate = next(
+        (
+            value
+            for value in source_private_group["candidates"]
+            if value["candidate_id"] == source_candidate_id
+        ),
+        None,
+    )
+    selected_reference_sha256 = _required_sha256(
+        selected_render.get("reference_sha256"), "selected reference hash"
+    )
+    if (
+        source_candidate is None
+        or source_private_candidate is None
+        or source_candidate.get("sha256") != selected_reference_sha256
+        or source_private_candidate.get("source_sha256") != selected_reference_sha256
+    ):
+        raise ReferenceRenderComparisonError(
+            "Selected reference no longer matches its source audit"
+        )
+
+    fresh_private_group = fresh_private_groups[fresh_group["group_id"]]
+    fresh_candidates = [
+        value
+        for value in fresh_group["candidates"]
+        if value.get("sha256") == selected_reference_sha256
+    ]
+    if len(fresh_candidates) != 1:
+        raise ReferenceRenderComparisonError(
+            "Selected reference is absent or ambiguous in the fresh audit"
+        )
+    fresh_candidate = fresh_candidates[0]
+    fresh_private_candidate = next(
+        (
+            value
+            for value in fresh_private_group["candidates"]
+            if value["candidate_id"] == fresh_candidate["candidate_id"]
+        ),
+        None,
+    )
+    if (
+        fresh_group.get("synthesis_voice_character")
+        != source_group.get("synthesis_voice_character")
+        or fresh_private_group.get("control_character")
+        != source_private_group.get("control_character")
+        or fresh_private_group.get("speaker") != source_private_group.get("speaker")
+        or fresh_private_candidate is None
+        or fresh_private_candidate.get("source_sha256") != selected_reference_sha256
+        or fresh_private_candidate.get("source_reference")
+        != source_private_candidate.get("source_reference")
+    ):
+        raise ReferenceRenderComparisonError(
+            "Selected reference identity changed in the fresh audit"
+        )
+    fresh_case = next(
+        value for value in fresh_group["cases"] if value["queue_id"] == queue_id
+    )
+    if (
+        fresh_case.get("line_id") != selected_render.get("line_id")
+        or fresh_case.get("text") != selected_render.get("text")
+        or fresh_case.get("text_sha256") != selected_render.get("text_sha256")
+        or trial.get("line_id") != selected_render.get("line_id")
+        or trial.get("text") != selected_render.get("text")
+        or trial.get("text_sha256") != selected_render.get("text_sha256")
+    ):
+        raise ReferenceRenderComparisonError("Selected reference text identity changed")
+
+    report_path = session_path.with_name("report.json")
+    snapshots = _reference_selection_snapshots(
+        comparison_root,
+        session_path,
+        report_path,
+        source_audit_path,
+    )
+    selection_authority = {
+        "schema": "vntts.authoring-reference-render-selection",
+        "schema_version": 1,
+        "comparison_id": comparison["comparison_id"],
+        "comparison_sha256": snapshots[comparison_root / "comparison.json"],
+        "source_audit_id": source_audit.audit_id,
+        "source_audit_sha256": snapshots[source_audit_path],
+        "listening_session_sha256": snapshots[session_path],
+        "listening_key_sha256": snapshots[session_path.with_name(".blind-key.json")],
+        "listening_report_sha256": snapshots[report_path],
+        "trial_id": trial["trial_id"],
+        "selected_side": selected_side,
+        "selected_arm_id": selected_arm_id,
+        "selected_render_sha256": render_sha256,
+        "source_candidate_group_id": source_group_id,
+        "source_candidate_id": source_candidate_id,
+        "source_reference": source_private_candidate["source_reference"],
+        "selected_reference_sha256": selected_reference_sha256,
+        "queue_id": queue_id,
+        "text_sha256": selected_render["text_sha256"],
+    }
+    current = load_failure_reference_decisions(audit_root)
+    existing = next(
+        (
+            value
+            for value in current["decisions"]
+            if value["group_id"] == fresh_group["group_id"]
+        ),
+        None,
+    )
+    if existing is not None:
+        if (
+            existing.get("decision") != fresh_candidate["candidate_id"]
+            or existing.get("selection_authority") != selection_authority
+        ):
+            raise ReferenceRenderComparisonError(
+                "Fresh reference audit already has a different decision"
+            )
+        return ReferenceRenderSelection(
+            audit_root,
+            fresh_audit.audit_id,
+            fresh_group["group_id"],
+            fresh_candidate["candidate_id"],
+            queue_id,
+            selected_arm_id,
+            selected_reference_sha256,
+            current["decision_set_id"],
+            False,
+        )
+    _assert_reference_selection_snapshots(snapshots)
+    try:
+        decisions = record_failure_reference_decision(
+            audit_root,
+            fresh_group["group_id"],
+            fresh_candidate["candidate_id"],
+            selection_authority=selection_authority,
+        )
+    except FailureReferenceAuditError as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    return ReferenceRenderSelection(
+        audit_root,
+        fresh_audit.audit_id,
+        fresh_group["group_id"],
+        fresh_candidate["candidate_id"],
+        queue_id,
+        selected_arm_id,
+        selected_reference_sha256,
+        decisions["decision_set_id"],
+        True,
+    )
+
+
 def _load_comparison_document(root):
     path = _contained_file(root, "comparison.json")
     try:
@@ -508,6 +802,158 @@ def _load_comparison_document(root):
             "Reference render comparison report inventory changed"
         )
     return document
+
+
+def _selected_listening_trial(
+    comparison_root,
+    comparison,
+    session_path,
+    session,
+    queue_id,
+):
+    if session.get("completed_count") != session.get("trial_count"):
+        raise ReferenceRenderComparisonError(
+            "Reference render listening session is incomplete"
+        )
+    matching_trials = [
+        trial
+        for trial in session["trials"]
+        if trial.get("queue_id")
+        == f"corpus:{queue_id}:{trial.get('text_sha256', '')[:16]}"
+    ]
+    if len(matching_trials) != 1:
+        raise ReferenceRenderComparisonError(
+            "Reference render listening trial is absent or ambiguous"
+        )
+    trial = matching_trials[0]
+    rating = trial.get("rating")
+    if (
+        not isinstance(rating, dict)
+        or rating.get("preference") not in {"a", "b"}
+        or rating.get("acceptability") == "neither"
+    ):
+        raise ReferenceRenderComparisonError(
+            "Reference render listening did not select one acceptable arm"
+        )
+    key_path = session_path.with_name(".blind-key.json")
+    report_path = session_path.with_name("report.json")
+    try:
+        key = json.loads(key_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    assignments = [
+        value
+        for value in key.get("assignments", [])
+        if isinstance(value, dict) and value.get("trial_id") == trial["trial_id"]
+    ]
+    if len(assignments) != 1:
+        raise ReferenceRenderComparisonError(
+            "Reference render listening assignment is absent or ambiguous"
+        )
+    expected_reports = {
+        str(_contained_file(comparison_root, relative)): sha256_file(
+            _contained_file(comparison_root, relative)
+        )
+        for relative in comparison["reports"]
+    }
+    actual_reports = {}
+    for source in key.get("sources", []):
+        if not isinstance(source, dict):
+            raise ReferenceRenderComparisonError(
+                "Reference render listening source inventory is malformed"
+            )
+        path = Path(_required_text(source.get("path"), "listening source")).expanduser()
+        if path.is_symlink():
+            raise ReferenceRenderComparisonError(
+                "Reference render listening source is a symlink"
+            )
+        actual_reports[str(path.resolve())] = _required_sha256(
+            source.get("sha256"), "listening source hash"
+        )
+    if actual_reports != expected_reports:
+        raise ReferenceRenderComparisonError(
+            "Reference render listening sources changed"
+        )
+    expected_models = {value["arm_id"] for value in comparison["arms"]}
+    actual_models = {
+        value.get("model_id")
+        for value in key.get("models", [])
+        if isinstance(value, dict)
+    }
+    if actual_models != expected_models:
+        raise ReferenceRenderComparisonError("Reference render listening arms changed")
+    try:
+        expected_report = aggregate_listening_report(session_path)
+    except ModelListeningError as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    comparable_fields = set(expected_report) - {"generated_at"}
+    if any(report.get(field) != expected_report[field] for field in comparable_fields):
+        raise ReferenceRenderComparisonError(
+            "Reference render listening report is stale or changed"
+        )
+    selected_side = rating["preference"]
+    assignment = assignments[0]
+    selected = assignment.get(selected_side)
+    if not isinstance(selected, dict):
+        raise ReferenceRenderComparisonError(
+            "Reference render listening selection is malformed"
+        )
+    selected_arm_id = _safe_id(selected.get("model_id"), "selected arm ID")
+    return trial, assignment, selected_side, selected_arm_id
+
+
+def _load_audit_documents(directory):
+    try:
+        document = json.loads((directory / "audit.json").read_text(encoding="utf-8"))
+        key = json.loads((directory / ".blind-key.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    return document, key
+
+
+def _one_group_for_queue(document, queue_id, label):
+    groups = [
+        group
+        for group in document["groups"]
+        if queue_id in {case["queue_id"] for case in group["cases"]}
+    ]
+    if len(groups) != 1 or groups[0].get("case_count") != 1:
+        raise ReferenceRenderComparisonError(
+            f"Reference render {label} must contain exactly one selected case"
+        )
+    return groups[0]
+
+
+def _reference_selection_snapshots(
+    comparison_root,
+    session_path,
+    report_path,
+    source_audit_path,
+):
+    paths = (
+        comparison_root / "comparison.json",
+        session_path,
+        session_path.with_name(".blind-key.json"),
+        report_path,
+        source_audit_path,
+    )
+    snapshots = {}
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise ReferenceRenderComparisonError(
+                "Reference selection authority is missing or unsafe"
+            )
+        snapshots[path] = sha256_file(path)
+    return snapshots
+
+
+def _assert_reference_selection_snapshots(snapshots):
+    for path, digest in snapshots.items():
+        if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
+            raise ReferenceRenderComparisonError(
+                "Reference selection authority changed before decision save"
+            )
 
 
 def _assert_plan_and_audit_unchanged(plan):
@@ -633,7 +1079,9 @@ __all__ = [
     "ReferenceRenderComparison",
     "ReferenceRenderComparisonError",
     "ReferenceRenderPlan",
+    "ReferenceRenderSelection",
     "create_reference_render_listening",
+    "import_reference_render_preference",
     "load_reference_render_plan",
     "publish_reference_render_comparison",
 ]

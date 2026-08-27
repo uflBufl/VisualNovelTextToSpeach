@@ -320,6 +320,10 @@ A terminal version-2 failure-reference audit is evidence, not generation
 authority. Publish its selected candidates as a separate immutable overlay:
 
 ```sh
+uv run vntts-pregenerate failure-reference-import-listening \
+  FRESH_AUDIT_DIRECTORY COMPARISON_DIRECTORY LISTENING_DIRECTORY/session.json \
+  EXACT_FAILED_QUEUE_ID
+
 uv run vntts-pregenerate failure-reference-binding AUDIT_DIRECTORY \
   --output REFERENCE_BINDING_DIRECTORY
 
@@ -328,7 +332,23 @@ uv run vntts-pregenerate create-failure-reference-workspace BASE_WORKSPACE \
   --workspaces-root AUTHORING_WORKSPACES_ROOT
 ```
 
-The first command requires every audit group to have a terminal candidate
+The import command is required when the reference was chosen through a blind
+render comparison. It accepts exactly one current failed queue item and proves
+that the fresh audit still contains the same speaker/control identity and exact
+reference bytes. It also verifies the immutable comparison, its source audit,
+the completed listening session, blind key, current report, opaque selected
+arm, rendered WAV and text identity. A tie, neither-acceptable result, stale
+report, changed reference or ambiguous fresh candidate fails before writing.
+The resulting audit decision retains all of those SHA-256 authorities; an exact
+repeat is idempotent. This imports only the next reference hypothesis. It does
+not approve the comparison render or any production WAV.
+
+Imported blind-selection authority uses failure-reference decision version 3
+and binding version 2. Readers continue to accept legacy decision/binding
+version 2/1 documents without inventing selection provenance; new publishers
+always write the current versions.
+
+The binding command requires every audit group to have a terminal candidate
 decision and rejects `Neither candidate is acceptable`. It revalidates the
 public audit, its mode-0600 private key, the complete decision set and every
 selected candidate hash. The published no-replace directory contains copied

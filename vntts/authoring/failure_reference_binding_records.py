@@ -14,7 +14,8 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
-FAILURE_REFERENCE_BINDING_VERSION = 1
+FAILURE_REFERENCE_BINDING_VERSION = 2
+_LEGACY_FAILURE_REFERENCE_BINDING_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -65,10 +66,13 @@ def load_failure_reference_binding(directory):
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceBindingError(str(error)) from error
-    if (
-        document.get("schema") != FAILURE_REFERENCE_BINDING_SCHEMA
-        or document.get("schema_version") != FAILURE_REFERENCE_BINDING_VERSION
-    ):
+    schema_version = document.get("schema_version")
+    if document.get(
+        "schema"
+    ) != FAILURE_REFERENCE_BINDING_SCHEMA or schema_version not in {
+        _LEGACY_FAILURE_REFERENCE_BINDING_VERSION,
+        FAILURE_REFERENCE_BINDING_VERSION,
+    }:
         raise FailureReferenceBindingError("Unsupported reference binding schema")
     identity = {
         key: value
@@ -116,7 +120,7 @@ def load_failure_reference_binding(directory):
     expected_overrides = {}
     voices = set()
     for group in groups:
-        if not isinstance(group, dict) or set(group) != {
+        required_group_fields = {
             "group_id",
             "synthesis_voice_character",
             "control_character",
@@ -127,7 +131,13 @@ def load_failure_reference_binding(directory):
             "reference_sha256",
             "source_reference",
             "cases",
-        }:
+        }
+        accepted_group_shapes = {frozenset(required_group_fields)}
+        if schema_version == FAILURE_REFERENCE_BINDING_VERSION:
+            accepted_group_shapes.add(
+                frozenset({*required_group_fields, "selection_authority"})
+            )
+        if not isinstance(group, dict) or frozenset(group) not in accepted_group_shapes:
             raise FailureReferenceBindingError("Reference binding group is malformed")
         group_id = _sha256(group["group_id"], "Reference binding group ID")
         if group_id in seen_groups:
@@ -147,6 +157,11 @@ def load_failure_reference_binding(directory):
         digest = _sha256(group["reference_sha256"], "Selected reference SHA-256")
         if sha256_file(reference) != digest:
             raise FailureReferenceBindingError("Selected reference changed")
+        if "selection_authority" in group:
+            _validate_selection_authority(
+                group["selection_authority"],
+                selected_reference_sha256=digest,
+            )
         cases = group["cases"]
         if not isinstance(cases, list) or not cases:
             raise FailureReferenceBindingError("Reference binding cases are malformed")
@@ -185,6 +200,58 @@ def load_failure_reference_binding(directory):
         len(seen_queue_ids),
         False,
     )
+
+
+def _validate_selection_authority(value, *, selected_reference_sha256):
+    required = {
+        "schema",
+        "schema_version",
+        "comparison_id",
+        "comparison_sha256",
+        "source_audit_id",
+        "source_audit_sha256",
+        "listening_session_sha256",
+        "listening_key_sha256",
+        "listening_report_sha256",
+        "trial_id",
+        "selected_side",
+        "selected_arm_id",
+        "selected_render_sha256",
+        "source_candidate_group_id",
+        "source_candidate_id",
+        "source_reference",
+        "selected_reference_sha256",
+        "queue_id",
+        "text_sha256",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("schema") != "vntts.authoring-reference-render-selection"
+        or value.get("schema_version") != 1
+        or value.get("selected_side") not in {"a", "b"}
+        or value.get("selected_reference_sha256") != selected_reference_sha256
+    ):
+        raise FailureReferenceBindingError(
+            "Reference binding selection authority is malformed"
+        )
+    hash_fields = {
+        "comparison_id",
+        "comparison_sha256",
+        "source_audit_id",
+        "source_audit_sha256",
+        "listening_session_sha256",
+        "listening_key_sha256",
+        "listening_report_sha256",
+        "selected_render_sha256",
+        "source_candidate_group_id",
+        "selected_reference_sha256",
+        "text_sha256",
+    }
+    for field in hash_fields:
+        _sha256(value[field], f"Reference selection {field}")
+    for field in required - hash_fields - {"schema_version", "selected_side"}:
+        _text(value[field], f"Reference selection {field}")
 
 
 def load_failure_reference_binding_document(directory):

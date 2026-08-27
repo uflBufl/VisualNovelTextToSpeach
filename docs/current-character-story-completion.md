@@ -659,20 +659,44 @@ has zero terminal conflicts and reports 38 `human_cohort_review`, 41
 the ten direct results, six sentence repairs, five bounded-seed results and 17
 Pocket fallbacks. They require 26 samples across ten cohorts, not listen-all.
 
-1. Complete the two-cohort, six-sample human review and retain each failed
-   attempt as typed evidence. Human listening remains the authority for
-   approval, pronunciation and contamination.
-2. Turn only the classifier-safe failure groups into separately checksum-bound
-   exact-ID repair plans. Do not run a seed, segmentation, marker, reference or
-   provider change until that plan preserves every terminal/successful outcome
-   and names its review gate.
-3. Resolve the five older Narrator failures through bounded matched hypotheses.
-   Resolve the 118 missing-voice items through an exact reference or an explicit
+The operator completed all four exact publications: ten of ten cohorts and 26
+required samples decided all 38 WAVs. Every cohort was explicitly accepted. The
+two direct decisions applied ten approvals to composed workspace
+`resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`; the eight repair/fallback
+decisions applied 28 approvals across five isolated successors.
+
+Fresh reconciliation report
+`901fe7a5f255b3433c4262e2763cece2247dbe87dbd590f2ca1d2c078f7fb359`
+(file SHA-256
+`c8ed6d8a8de6cbd6d68d1d50ffd52a9b096444b793dba3fdf7dccf6ec2443054`)
+selected exactly those 28 secondary approvals, with zero terminal conflicts.
+`merge-reconciled-outcomes` published successor
+`resume-395a5e5eec0327a3a793b66d-9e3e40597ffc2a62`; an exact repeat returned
+`created=false`, and all six source queue/state hashes remained unchanged. The
+successor has 383 approved, 71 explicitly rejected and 13 failed state items;
+its approved-only manifest has exactly 383 entries. Its workspace, state and
+manifest SHA-256 values are respectively
+`7701f38880be35925f1aa040209d23e6cd2be00e12e23f6f0fe5c25a042f66e2`,
+`5fff2ebb50a5bf1bb9dc46c0a4194d3fb42b38dbe1e947802f7cb88efc6a93aa`
+and `575532a9d58e54d59b4ae47e22d48108eb9622be9e943eb75f66202d0772cd49`.
+
+Post-merge reconciliation report
+`da65deb750c0f9bf5e1b074a368938a00b88b15872e57a37b6af3198fd8a7d5a`
+(file SHA-256
+`da78f797f92f1fc556ed6568243ee5c737bb0736520d9272be9a16afdda47fb8`)
+has zero terminal conflicts, zero terminal merges, 13
+`new_hypothesis_required` actions and 118
+`source_reference_or_explicit_fallback` actions.
+
+1. Resolve the remaining 13 failures only through separately checksum-bound,
+   evidence-backed hypotheses. Do not repeat an exhausted seed, repair or
+   provider path.
+2. Resolve the 118 missing-voice items through an exact reference or an explicit
    supported fallback; do not infer identity from a name alone.
-4. Rebuild the approved-only manifest only from authoritative terminal state.
+3. Rebuild the approved-only manifest only from authoritative terminal state.
    Final game-pack publication remains blocked until every queue item has a
    terminal decision or an explicit supported fallback.
-5. Run the real Character Story acceptance with the approved manifest: verify
+4. Run the real Character Story acceptance with the approved manifest: verify
    generated routing, original-audio precedence, Centurion narration, missing
    or failed live fallback and no stale/duplicate speech or early advance.
 

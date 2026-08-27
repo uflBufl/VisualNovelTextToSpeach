@@ -32,6 +32,9 @@ uv run vntts-pregenerate failure-reference-render-comparison PLAN.json \
   --output COMPARISON_DIRECTORY
 uv run vntts-pregenerate failure-reference-render-session \
   COMPARISON_DIRECTORY --output LISTENING_DIRECTORY --seed SEED
+uv run vntts-pregenerate failure-reference-import-listening \
+  FRESH_AUDIT_DIRECTORY COMPARISON_DIRECTORY LISTENING_DIRECTORY/session.json \
+  EXACT_FAILED_QUEUE_ID
 ```
 
 The operator-authored plan uses schema
@@ -39,6 +42,15 @@ The operator-authored plan uses schema
 ordered `queue_id`, `case_group_id`, `candidate_group_id` and `candidate_id`
 records; the loader rejects duplicate controls, changed audit identity and
 cross-character candidate groups before model startup.
+
+The final import step never trusts an opaque side label by itself. It resolves
+the completed preference through the mode-0600 blind key, matches the selected
+arm to one complete rendered WAV, then maps its exact reference SHA-256 into a
+fresh one-case audit of the current failed state. The decision and subsequent
+binding retain comparison, source-audit, listening-session, blind-key, report,
+trial, render and reference hashes. This closes the provenance gap between an
+old immutable comparison and a newer config-addressed failure workspace without
+rewriting either source.
 
 ## Narrator results
 
@@ -63,21 +75,14 @@ publication for `reverse1999:314606:43:09977e2b04515b66` has comparison ID
 `84a920b70271c64a30372c889f0305905e068c8f20e300abb6ebb24302ce01f0`;
 both alternative references ended typed limited, so it has no blind trial.
 
-As of the exact 2026-08-27 authority check, the matched blind session remains
-at `0/1`; later completion claims for other cohort and terminal-conflict UIs do
-not imply a choice here. Open it explicitly with:
-
-```sh
-uv run vntts-listen ui --session \
-  "$HOME/Library/Application Support/VisualNovelTextToSpeech/authoring/model-listening/current-character-story-narrator-alternative-reference-v2/session.json"
-```
-
-A preference selects only the next exact reference hypothesis for queue item
-`314606:54`. It is not a production approval. The selected reference must be
-bound into a new exact-ID workspace, rendered once, validated and reviewed
-before its terminal outcome can be merged. `No preference` and `Neither` remain
-valid results; in particular, neither must not be converted into a reference
-binding or another blind seed.
+The matched blind session completed at `1/1` on 2026-08-27. The operator chose
+candidate A, which the checksum-bound key resolves to
+`centurion-reference-03`; its comparison WAV SHA-256 is
+`eae1ee930f182b6262be5272519dd2c3170c2efc59a6c27fc1772dcb06b09ce3`.
+Reference 02 lost the exact pair. This preference selects only the next exact
+reference hypothesis for queue item `314606:54`; it is not a production
+approval. Reference 03 must be bound into a new exact-ID workspace, rendered
+once, validated and reviewed before its terminal outcome can be merged.
 
 ## Dobharchu results
 
@@ -99,10 +104,10 @@ spend another seed or silently merge the portrait controls.
 
 ## Remaining decision boundary
 
-Only the one complete Narrator A/B trial can produce a reference preference.
-The two unmatched complete Narrator WAVs may be heard as diagnostics but cannot
-establish comparative superiority. The other four exact failures still need a
-different bounded hypothesis or an explicit supported fallback. The merged
-source state remained SHA-256
+The one complete Narrator A/B trial selected reference 03 as the next bounded
+hypothesis. The two unmatched complete Narrator WAVs may be heard as diagnostics
+but cannot establish comparative superiority. The other four exact failures
+still need a different bounded hypothesis or an explicit supported fallback.
+The merged source state remained SHA-256
 `c673b8631045c0d2a6206c6458f93b38b4b39e9b30b8efd3acd5ebbd893c2cf6`
 after all publications.

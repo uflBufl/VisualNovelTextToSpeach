@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -8,6 +9,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
     load_failure_reference_audit,
@@ -15,15 +17,21 @@ from vntts.authoring.failure_reference_audit import (
     publish_failure_reference_audit,
     record_failure_reference_decision,
 )
+from vntts.authoring.failure_reference_binding import (
+    load_failure_reference_binding_document,
+    publish_failure_reference_binding,
+)
 from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
+from vntts.authoring.listening import record_trial_preference
 from vntts.authoring.reference_render_comparison import (
     REFERENCE_RENDER_INPUT_SCHEMA,
     REFERENCE_RENDER_INPUT_VERSION,
     ReferenceRenderComparisonError,
     create_reference_render_listening,
+    import_reference_render_preference,
     load_reference_render_plan,
     publish_reference_render_comparison,
 )
@@ -231,6 +239,22 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 candidate["sha256"],
             )
             self.assertEqual(first["decisions"][0]["case_queue_ids"], [queue_id])
+            self.assertEqual(first["schema_version"], 3)
+
+            legacy = {**first, "schema_version": 2}
+            legacy.pop("decision_set_id")
+            legacy["decision_set_id"] = hashlib.sha256(
+                json.dumps(
+                    legacy,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            (output / "decisions.json").write_text(json.dumps(legacy))
+            self.assertEqual(
+                load_failure_reference_decisions(output)["schema_version"], 2
+            )
 
             second = record_failure_reference_decision(
                 output, group["group_id"], "neither_acceptable"
@@ -446,6 +470,204 @@ class FailureReferenceAuditTest(unittest.TestCase):
             ):
                 create_reference_render_listening(
                     comparison.directory, root / "tampered-listening", seed=7
+                )
+
+    def test_imports_exact_blind_preference_into_fresh_audit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            source_audit_root = root / "source-audit"
+            source_audit = publish_failure_reference_audit(
+                workspace, source_audit_root, seed=0, queue_ids=(queue_id,)
+            )
+            source_document = json.loads((source_audit_root / "audit.json").read_text())
+            source_group = source_document["groups"][0]
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                        "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                        "audit": str(source_audit_root),
+                        "audit_id": source_audit.audit_id,
+                        "arms": [
+                            {
+                                "arm_id": f"reference-{index}",
+                                "samples": [
+                                    {
+                                        "queue_id": queue_id,
+                                        "case_group_id": source_group["group_id"],
+                                        "candidate_group_id": source_group["group_id"],
+                                        "candidate_id": candidate["candidate_id"],
+                                    }
+                                ],
+                            }
+                            for index, candidate in enumerate(
+                                source_group["candidates"], start=1
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            comparison = publish_reference_render_comparison(
+                load_reference_render_plan(plan_path),
+                root / "comparison",
+                backend_factory=_PreviewBackendFactory(),
+            )
+            session = create_reference_render_listening(
+                comparison.directory, root / "listening", seed=7
+            )
+            trial_id = json.loads(session.read_text())["trials"][0]["trial_id"]
+            record_trial_preference(
+                session,
+                trial_id,
+                "a",
+                report_path=session.with_name("report.json"),
+            )
+            selected_assignment = json.loads(
+                session.with_name(".blind-key.json").read_text()
+            )["assignments"][0]["a"]
+            selected_arm = selected_assignment["model_id"]
+            selected_reference_sha256 = next(
+                value["reference_sha256"]
+                for arm in json.loads(
+                    (comparison.directory / "comparison.json").read_text()
+                )["arms"]
+                if arm["arm_id"] == selected_arm
+                for value in arm["renders"]
+                if value["id"] == queue_id
+            )
+            fresh_audit_root = root / "fresh-audit"
+            fresh_audit = publish_failure_reference_audit(
+                workspace, fresh_audit_root, seed=19, queue_ids=(queue_id,)
+            )
+
+            imported = import_reference_render_preference(
+                fresh_audit_root,
+                comparison.directory,
+                session,
+                queue_id,
+            )
+            repeated = import_reference_render_preference(
+                fresh_audit_root,
+                comparison.directory,
+                session,
+                queue_id,
+            )
+            decisions = load_failure_reference_decisions(fresh_audit_root)
+            binding_root = root / "binding"
+            publish_failure_reference_binding(fresh_audit_root, binding_root)
+            binding = load_failure_reference_binding_document(binding_root)
+            self.assertEqual(
+                authoring_main(
+                    [
+                        "failure-reference-import-listening",
+                        str(fresh_audit_root),
+                        str(comparison.directory),
+                        str(session),
+                        queue_id,
+                    ]
+                ),
+                0,
+            )
+
+            self.assertTrue(imported.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(imported.audit_id, fresh_audit.audit_id)
+            self.assertEqual(imported.decision_set_id, repeated.decision_set_id)
+            self.assertEqual(
+                imported.selected_reference_sha256,
+                selected_reference_sha256,
+            )
+            authority = decisions["decisions"][0]["selection_authority"]
+            self.assertEqual(authority["selected_arm_id"], selected_arm)
+            self.assertEqual(authority["queue_id"], queue_id)
+            self.assertEqual(
+                authority["selected_render_sha256"],
+                selected_assignment["audio_sha256"],
+            )
+            self.assertEqual(binding["groups"][0]["selection_authority"], authority)
+
+    def test_import_rejects_tie_and_stale_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            audit_root = root / "audit"
+            audit = publish_failure_reference_audit(
+                workspace, audit_root, seed=0, queue_ids=(queue_id,)
+            )
+            document = json.loads((audit_root / "audit.json").read_text())
+            group = document["groups"][0]
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                        "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                        "audit": str(audit_root),
+                        "audit_id": audit.audit_id,
+                        "arms": [
+                            {
+                                "arm_id": f"reference-{index}",
+                                "samples": [
+                                    {
+                                        "queue_id": queue_id,
+                                        "case_group_id": group["group_id"],
+                                        "candidate_group_id": group["group_id"],
+                                        "candidate_id": candidate["candidate_id"],
+                                    }
+                                ],
+                            }
+                            for index, candidate in enumerate(
+                                group["candidates"], start=1
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            comparison = publish_reference_render_comparison(
+                load_reference_render_plan(plan_path),
+                root / "comparison",
+                backend_factory=_PreviewBackendFactory(),
+            )
+            session = create_reference_render_listening(
+                comparison.directory, root / "listening", seed=7
+            )
+            trial_id = json.loads(session.read_text())["trials"][0]["trial_id"]
+            record_trial_preference(
+                session,
+                trial_id,
+                "tie",
+                report_path=session.with_name("report.json"),
+            )
+            fresh_audit = root / "fresh-audit"
+            publish_failure_reference_audit(
+                workspace, fresh_audit, seed=19, queue_ids=(queue_id,)
+            )
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "did not select"
+            ):
+                import_reference_render_preference(
+                    fresh_audit, comparison.directory, session, queue_id
+                )
+
+            record_trial_preference(
+                session,
+                trial_id,
+                "a",
+                overwrite=True,
+                report_path=session.with_name("report.json"),
+            )
+            report = json.loads(session.with_name("report.json").read_text())
+            report["completed_trials"] = 0
+            session.with_name("report.json").write_text(json.dumps(report))
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "report is stale"
+            ):
+                import_reference_render_preference(
+                    fresh_audit, comparison.directory, session, queue_id
                 )
 
     def test_render_plan_rejects_duplicate_or_cross_character_controls(self):

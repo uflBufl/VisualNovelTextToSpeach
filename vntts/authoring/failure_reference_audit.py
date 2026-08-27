@@ -33,6 +33,8 @@ FAILURE_REFERENCE_AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 FAILURE_REFERENCE_AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
 FAILURE_REFERENCE_AUDIT_VERSION = 2
 FAILURE_REFERENCE_DECISIONS_SCHEMA = "vntts.authoring-failure-reference-decisions"
+FAILURE_REFERENCE_DECISIONS_VERSION = 3
+_LEGACY_FAILURE_REFERENCE_DECISIONS_VERSION = 2
 
 
 class FailureReferenceAuditError(RuntimeError):
@@ -468,7 +470,7 @@ def load_failure_reference_decisions(directory):
     if not path.is_file():
         return {
             "schema": FAILURE_REFERENCE_DECISIONS_SCHEMA,
-            "schema_version": FAILURE_REFERENCE_AUDIT_VERSION,
+            "schema_version": FAILURE_REFERENCE_DECISIONS_VERSION,
             "audit_id": audit.audit_id,
             "decisions": [],
             "decision_set_id": None,
@@ -480,7 +482,11 @@ def load_failure_reference_decisions(directory):
         raise FailureReferenceAuditError(str(error)) from error
     if (
         document.get("schema") != FAILURE_REFERENCE_DECISIONS_SCHEMA
-        or document.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
+        or document.get("schema_version")
+        not in {
+            _LEGACY_FAILURE_REFERENCE_DECISIONS_VERSION,
+            FAILURE_REFERENCE_DECISIONS_VERSION,
+        }
         or document.get("audit_id") != audit.audit_id
         or not isinstance(document.get("decisions"), list)
         or not isinstance(document.get("updated_at"), str)
@@ -502,11 +508,21 @@ def load_failure_reference_decisions(directory):
     )
     if claimed != actual:
         raise FailureReferenceAuditError("Reference audit decision identity changed")
-    _validate_decision_inventory(audit.directory, document["decisions"])
+    _validate_decision_inventory(
+        audit.directory,
+        document["decisions"],
+        schema_version=document["schema_version"],
+    )
     return document
 
 
-def record_failure_reference_decision(directory, group_id, decision):
+def record_failure_reference_decision(
+    directory,
+    group_id,
+    decision,
+    *,
+    selection_authority=None,
+):
     """Atomically record one exact candidate or neither-acceptable decision."""
     audit = load_failure_reference_audit(directory)
     audit_document = json.loads((audit.directory / "audit.json").read_text())
@@ -526,7 +542,7 @@ def record_failure_reference_decision(directory, group_id, decision):
     )
     current = load_failure_reference_decisions(audit.directory)
     decisions = {value["group_id"]: value for value in current["decisions"]}
-    decisions[group_id] = {
+    recorded = {
         "group_id": group_id,
         "decision": decision,
         "selected_reference_sha256": (
@@ -534,16 +550,27 @@ def record_failure_reference_decision(directory, group_id, decision):
         ),
         "case_queue_ids": [value["queue_id"] for value in group["cases"]],
     }
+    if selection_authority is not None:
+        recorded["selection_authority"] = _validate_selection_authority(
+            selection_authority,
+            queue_ids=recorded["case_queue_ids"],
+            selected_reference_sha256=recorded["selected_reference_sha256"],
+        )
+    decisions[group_id] = recorded
     updated_at = datetime.now(timezone.utc).isoformat()
     body = {
         "schema": FAILURE_REFERENCE_DECISIONS_SCHEMA,
-        "schema_version": FAILURE_REFERENCE_AUDIT_VERSION,
+        "schema_version": FAILURE_REFERENCE_DECISIONS_VERSION,
         "audit_id": audit.audit_id,
         "decisions": [decisions[key] for key in sorted(decisions)],
         "updated_at": updated_at,
     }
     document = {**body, "decision_set_id": _canonical_sha256(body)}
-    _validate_decision_inventory(audit.directory, document["decisions"])
+    _validate_decision_inventory(
+        audit.directory,
+        document["decisions"],
+        schema_version=FAILURE_REFERENCE_DECISIONS_VERSION,
+    )
     final_audit = load_failure_reference_audit(audit.directory)
     if final_audit.audit_id != audit.audit_id:
         raise FailureReferenceAuditError("Reference audit changed before decision save")
@@ -583,17 +610,21 @@ def prepare_failure_reference_audio(directory, group_id, candidate_id):
     return FailureReferenceAudio(group_id, candidate_id, path, digest, payload)
 
 
-def _validate_decision_inventory(directory, decisions):
+def _validate_decision_inventory(directory, decisions, *, schema_version):
     audit = json.loads((Path(directory) / "audit.json").read_text())
     groups = {value["group_id"]: value for value in audit["groups"]}
     seen = set()
     for value in decisions:
-        if not isinstance(value, dict) or set(value) != {
+        required = {
             "group_id",
             "decision",
             "selected_reference_sha256",
             "case_queue_ids",
-        }:
+        }
+        accepted_shapes = {frozenset(required)}
+        if schema_version == FAILURE_REFERENCE_DECISIONS_VERSION:
+            accepted_shapes.add(frozenset({*required, "selection_authority"}))
+        if not isinstance(value, dict) or frozenset(value) not in accepted_shapes:
             raise FailureReferenceAuditError("Reference audit decision is malformed")
         group_id = value["group_id"]
         group = groups.get(group_id)
@@ -616,6 +647,94 @@ def _validate_decision_inventory(directory, decisions):
             raise FailureReferenceAuditError(
                 "Reference audit decision authority changed"
             )
+        if "selection_authority" in value:
+            _validate_selection_authority(
+                value["selection_authority"],
+                queue_ids=value["case_queue_ids"],
+                selected_reference_sha256=value["selected_reference_sha256"],
+            )
+
+
+def _validate_selection_authority(
+    value,
+    *,
+    queue_ids,
+    selected_reference_sha256,
+):
+    required = {
+        "schema",
+        "schema_version",
+        "comparison_id",
+        "comparison_sha256",
+        "source_audit_id",
+        "source_audit_sha256",
+        "listening_session_sha256",
+        "listening_key_sha256",
+        "listening_report_sha256",
+        "trial_id",
+        "selected_side",
+        "selected_arm_id",
+        "selected_render_sha256",
+        "source_candidate_group_id",
+        "source_candidate_id",
+        "source_reference",
+        "selected_reference_sha256",
+        "queue_id",
+        "text_sha256",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("schema") != "vntts.authoring-reference-render-selection"
+        or value.get("schema_version") != 1
+    ):
+        raise FailureReferenceAuditError(
+            "Reference audit selection authority is malformed"
+        )
+    for field in (
+        "comparison_id",
+        "comparison_sha256",
+        "source_audit_id",
+        "source_audit_sha256",
+        "listening_session_sha256",
+        "listening_key_sha256",
+        "listening_report_sha256",
+        "selected_render_sha256",
+        "source_candidate_group_id",
+        "selected_reference_sha256",
+        "text_sha256",
+    ):
+        digest = value[field]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise FailureReferenceAuditError(
+                "Reference audit selection authority hash is malformed"
+            )
+    for field in (
+        "trial_id",
+        "selected_arm_id",
+        "source_candidate_id",
+        "source_reference",
+        "queue_id",
+    ):
+        text = value[field]
+        if not isinstance(text, str) or not text or text != text.strip():
+            raise FailureReferenceAuditError(
+                "Reference audit selection authority text is malformed"
+            )
+    if value["selected_side"] not in {"a", "b"}:
+        raise FailureReferenceAuditError(
+            "Reference audit selection authority side is malformed"
+        )
+    if (
+        queue_ids != [value["queue_id"]]
+        or value["selected_reference_sha256"] != selected_reference_sha256
+    ):
+        raise FailureReferenceAuditError("Reference audit selection authority changed")
+    return dict(value)
 
 
 def _resolve_voice(voices, character):

@@ -33,6 +33,7 @@ _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 _AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
 _DECISIONS_SCHEMA = "vntts.authoring-failure-reference-decisions"
 _AUDIT_VERSION = 2
+_DECISIONS_VERSION = 3
 
 
 def publish_failure_reference_binding(audit_directory, output_directory):
@@ -132,28 +133,29 @@ def publish_failure_reference_binding(audit_directory, output_directory):
             raise FailureReferenceBindingError(
                 f"Reference binding case authority changed: {group_id}"
             )
-        stable_groups.append(
-            {
-                "group_id": group_id,
-                "synthesis_voice_character": _text(
-                    group.get("synthesis_voice_character"),
-                    "Audited synthesis voice",
-                ),
-                "control_character": _text(
-                    private.get("control_character"), "Audited control character"
-                ),
-                "speaker": _text(private.get("speaker"), "Audited speaker"),
-                "candidate_id": candidate_id,
-                "voice_character": synthetic_voice,
-                "reference": relative.as_posix(),
-                "reference_sha256": digest,
-                "source_reference": _safe_relative(
-                    private_candidate.get("source_reference"),
-                    "Audited source reference",
-                ).as_posix(),
-                "cases": cases,
-            }
-        )
+        stable_group = {
+            "group_id": group_id,
+            "synthesis_voice_character": _text(
+                group.get("synthesis_voice_character"),
+                "Audited synthesis voice",
+            ),
+            "control_character": _text(
+                private.get("control_character"), "Audited control character"
+            ),
+            "speaker": _text(private.get("speaker"), "Audited speaker"),
+            "candidate_id": candidate_id,
+            "voice_character": synthetic_voice,
+            "reference": relative.as_posix(),
+            "reference_sha256": digest,
+            "source_reference": _safe_relative(
+                private_candidate.get("source_reference"),
+                "Audited source reference",
+            ).as_posix(),
+            "cases": cases,
+        }
+        if "selection_authority" in decision:
+            stable_group["selection_authority"] = decision["selection_authority"]
+        stable_groups.append(stable_group)
         sources.append((source, digest, relative, payload))
 
     identity = {
@@ -287,7 +289,7 @@ def _load_audit_snapshots(directory):
         or key.get("schema") != _AUDIT_KEY_SCHEMA
         or key.get("schema_version") != _AUDIT_VERSION
         or decisions.get("schema") != _DECISIONS_SCHEMA
-        or decisions.get("schema_version") != _AUDIT_VERSION
+        or decisions.get("schema_version") not in {_AUDIT_VERSION, _DECISIONS_VERSION}
     ):
         raise FailureReferenceBindingError("Unsupported reference audit schema")
     audit_id = _sha256(audit.get("audit_id"), "Reference audit ID")
