@@ -507,6 +507,150 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     comparison.directory, root / "tampered-listening", seed=7
                 )
 
+    def test_listening_selects_two_complete_arms_without_rerendering(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            audit_root = root / "audit"
+            audit = publish_failure_reference_audit(workspace, audit_root, seed=0)
+            audit_document = json.loads((audit_root / "audit.json").read_text())
+            group = audit_document["groups"][0]
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                        "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                        "audit": str(audit_root),
+                        "audit_id": audit.audit_id,
+                        "arms": [
+                            {
+                                "arm_id": f"complete-{index}",
+                                "samples": [
+                                    {
+                                        "queue_id": queue_id,
+                                        "case_group_id": group["group_id"],
+                                        "candidate_group_id": group["group_id"],
+                                        "candidate_id": candidate["candidate_id"],
+                                    }
+                                ],
+                            }
+                            for index, candidate in enumerate(
+                                group["candidates"], start=1
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            comparison = publish_reference_render_comparison(
+                load_reference_render_plan(plan_path),
+                root / "comparison",
+                backend_factory=_PreviewBackendFactory(),
+            )
+            comparison_path = comparison.directory / "comparison.json"
+            comparison_document = json.loads(comparison_path.read_text())
+            incomplete_root = comparison.directory / "arms/incomplete"
+            incomplete_root.mkdir()
+            incomplete_report = incomplete_root / "report.json"
+            incomplete_report.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.voice-model-report",
+                        "schema_version": 1,
+                        "model_id": "incomplete",
+                        "provider": "reference-render-comparison",
+                        "backend": "reference-render-comparison",
+                        "model": "one exact alternative reference per sample",
+                        "samples": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            comparison_document["arms"].append(
+                {
+                    "arm_id": "incomplete",
+                    "report": "arms/incomplete/report.json",
+                    "report_sha256": hashlib.sha256(
+                        incomplete_report.read_bytes()
+                    ).hexdigest(),
+                    "complete_count": 0,
+                    "failure_count": 1,
+                    "renders": [
+                        {
+                            "id": queue_id,
+                            "line_id": group["cases"][0]["line_id"],
+                            "text": group["cases"][0]["text"],
+                            "text_sha256": group["cases"][0]["text_sha256"],
+                            "case_group_id": group["group_id"],
+                            "candidate_group_id": group["group_id"],
+                            "candidate_id": group["candidates"][0]["candidate_id"],
+                            "reference_sha256": group["candidates"][0]["sha256"],
+                            "outcome": "error",
+                            "error": "typed limited",
+                        }
+                    ],
+                }
+            )
+            comparison_document["reports"].append("arms/incomplete/report.json")
+            comparison_document["complete_pair_queue_ids"] = []
+            comparison_document.pop("comparison_id")
+            comparison_document["comparison_id"] = _canonical_sha256(
+                comparison_document
+            )
+            comparison_path.write_text(
+                json.dumps(comparison_document, sort_keys=True), encoding="utf-8"
+            )
+
+            self.assertEqual(
+                authoring_main(
+                    [
+                        "failure-reference-render-session",
+                        str(comparison.directory),
+                        "--output",
+                        str(root / "listening"),
+                        "--seed",
+                        "7",
+                        "--arm-id",
+                        "complete-1",
+                        "--arm-id",
+                        "complete-2",
+                    ]
+                ),
+                0,
+            )
+            session = root / "listening/session.json"
+            session_document = json.loads(session.read_text())
+            key_document = json.loads(session.with_name(".blind-key.json").read_text())
+            record_trial_preference(
+                session,
+                session_document["trials"][0]["trial_id"],
+                "a",
+                report_path=session.with_name("report.json"),
+            )
+            fresh_audit = root / "fresh-audit"
+            publish_failure_reference_audit(
+                workspace, fresh_audit, seed=19, queue_ids=(queue_id,)
+            )
+            imported = import_reference_render_preference(
+                fresh_audit, comparison.directory, session, queue_id
+            )
+
+            self.assertEqual(session_document["trial_count"], 1)
+            self.assertEqual(
+                {value["model_id"] for value in key_document["models"]},
+                {"complete-1", "complete-2"},
+            )
+            self.assertIn(imported.selected_arm_id, {"complete-1", "complete-2"})
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "no complete matched samples"
+            ):
+                create_reference_render_listening(
+                    comparison.directory,
+                    root / "invalid-listening",
+                    arm_ids=("complete-1", "incomplete"),
+                )
+
     def test_imports_exact_blind_preference_into_fresh_audit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

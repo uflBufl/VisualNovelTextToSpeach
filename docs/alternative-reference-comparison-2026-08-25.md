@@ -31,7 +31,8 @@ uv run vntts-pregenerate failure-reference-audit WORKSPACE \
 uv run vntts-pregenerate failure-reference-render-comparison PLAN.json \
   --output COMPARISON_DIRECTORY
 uv run vntts-pregenerate failure-reference-render-session \
-  COMPARISON_DIRECTORY --output LISTENING_DIRECTORY --seed SEED
+  COMPARISON_DIRECTORY --output LISTENING_DIRECTORY --seed SEED \
+  --arm-id COMPLETE_ARM_A --arm-id COMPLETE_ARM_B
 uv run vntts-pregenerate failure-reference-import-listening \
   FRESH_AUDIT_DIRECTORY COMPARISON_DIRECTORY LISTENING_DIRECTORY/session.json \
   EXACT_FAILED_QUEUE_ID
@@ -42,6 +43,14 @@ The operator-authored plan uses schema
 ordered `queue_id`, `case_group_id`, `candidate_group_id` and `candidate_id`
 records; the loader rejects duplicate controls, changed audit identity and
 cross-character candidate groups before model startup.
+
+A comparison may retain more than two arms even when one arm ends typed limited
+or cancelled. Blind listening always compares exactly two explicitly selected
+complete arms. `--arm-id` selects their already published reports and WAVs from
+the same immutable comparison; it neither rerenders them nor drops the failed
+arm from comparison provenance. Omitting `--arm-id` is valid only when the
+comparison itself has exactly two arms. The selected pair must share at least
+one complete exact queue ID, otherwise session publication fails before write.
 
 The final import step never trusts an opaque side label by itself. It resolves
 the completed preference through the mode-0600 blind key, matches the selected

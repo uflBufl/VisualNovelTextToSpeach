@@ -662,6 +662,11 @@ def create_parser():
     reference_render_listen.add_argument("comparison", type=Path)
     reference_render_listen.add_argument("--output", type=Path, required=True)
     reference_render_listen.add_argument("--seed", type=int, default=0)
+    reference_render_listen.add_argument(
+        "--arm-id",
+        action="append",
+        help="Select exactly two complete comparison arms without rerendering",
+    )
     reference_render_import = subparsers.add_parser(
         "failure-reference-import-listening",
         help="Bind one completed blind reference preference to a fresh audit",
@@ -1575,6 +1580,7 @@ def main(argv=None):
                 arguments.comparison,
                 arguments.output,
                 seed=arguments.seed,
+                arm_ids=arguments.arm_id,
             )
             print(
                 json.dumps(

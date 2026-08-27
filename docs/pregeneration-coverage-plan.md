@@ -245,6 +245,42 @@ speech-silence result. Its narrow immutable audit
 one case and three blinded Centurion candidates. Selecting a reference is a
 separate listening authority, not approval of generated speech.
 
+The final v3 repair review became terminal on 2026-08-27. Its six cohorts
+resolved all 14 exact WAVs as seven approved and seven rejected outcomes. Fresh
+reconciliation report
+`bd028bc5a93bc8873a41cfcf0d90a8d6e57ded04d9d6a1bb6dd73a6b7b5954d6`
+classified exactly those 14 items as `terminal_merge_required`. Applying only
+that action set to the 392-approved composed workspace published successor
+`resume-395a5e5eec0327a3a793b66d-9ec4454f35d082e4`: 399 approved, 78 explicit
+rejections, five failures, zero pending review, `active=null`, no lease or
+partial WAV, and an approved-only manifest with 399 entries. The version-2
+merge ledger contains exactly seven approved and seven rejected records and
+binds every source state, item and WAV. Repeating the merge returned the same
+successor with `created=false`.
+
+The complete source-tree digests were identical before and after publication:
+
+| Workspace suffix | Tree SHA-256 |
+| --- | --- |
+| `9c7597652d106523` | `a937996fc4d8a734579eb03febbc22ef116bb57f17239c2cbb80c422d6f5c3e2` |
+| `11598e1d7ffb71a5` | `8351c17ef4148c0234345bea0adf2ec16db34d5153b176bcb71f5cab02c66dce` |
+| `1995707eaa53659c` | `bd996438818abc3d9ebdfdc72f415d15129f41b94d17019c4c91053374766938` |
+| `4e1f06570ea40971` | `7cd36be07158aeccc4cfbf566b77b819f1efa47b3024ffa9f9e40e26b15de1da` |
+| `7f945589ba5889a0` | `45ebfc38b89e1f8baa49fca6e7b9038726d327fdf17b146466697f878f42665c` |
+| `e752e038ff63a8fc` | `7b0fa01ef27ad1139ed1ca9f0b54c9ba8f4329b8a1fc6c2021cde19d16261ee9` |
+
+The separate Poacher II three-reference render comparison is
+`current-character-story-poacher-ii-reference-render-v1`, comparison ID
+`5e94b3c8d7da83aa415fb41b95ee73ed226596012e221eed510853b6cffd7ba2`.
+Candidate 01 completed with WAV SHA-256
+`3ffbf8656e7d2f234b5f260669f6ed491bb99618a3ef20d75163dfaff0d4648c`;
+candidate 02 completed with
+`cd14aeb8ac53f2775d709dd32ab16cbb29dde6038f80faa203af835eff103204`;
+candidate 03 ended typed limited and published no WAV. A blind session may
+therefore compare only arms 01 and 02 from this same immutable artifact. The
+failed third arm remains evidence and must not receive another seed merely to
+make a three-way listening task.
+
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four
 lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those

@@ -320,6 +320,10 @@ A terminal version-2 failure-reference audit is evidence, not generation
 authority. Publish its selected candidates as a separate immutable overlay:
 
 ```sh
+uv run vntts-pregenerate failure-reference-render-session \
+  COMPARISON_DIRECTORY --output LISTENING_DIRECTORY --seed SEED \
+  --arm-id COMPLETE_ARM_A --arm-id COMPLETE_ARM_B
+
 uv run vntts-pregenerate failure-reference-import-listening \
   FRESH_AUDIT_DIRECTORY COMPARISON_DIRECTORY LISTENING_DIRECTORY/session.json \
   EXACT_FAILED_QUEUE_ID
@@ -342,6 +346,12 @@ report, changed reference or ambiguous fresh candidate fails before writing.
 The resulting audit decision retains all of those SHA-256 authorities; an exact
 repeat is idempotent. This imports only the next reference hypothesis. It does
 not approve the comparison render or any production WAV.
+
+The listening command accepts exactly two complete arms. This is explicit when
+the immutable comparison contains more than two candidates: an arm that ended
+typed limited remains preserved in `comparison.json`, while two completed arms
+can be compared without spending another model attempt or copying authority
+into a weaker derived comparison.
 
 Fresh audits dual-read older string-only failed state. They retain the exact
 legacy item hash but project its diagnostic through the same typed normalization

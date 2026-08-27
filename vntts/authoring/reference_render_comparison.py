@@ -427,23 +427,47 @@ def publish_reference_render_comparison(
 
 
 def create_reference_render_listening(
-    comparison_directory, output_directory, *, seed=0
+    comparison_directory, output_directory, *, seed=0, arm_ids=None
 ):
-    """Create a blind session for the complete matched subset of a comparison."""
+    """Create a blind session for one exact complete pair of comparison arms."""
     supplied = Path(comparison_directory).expanduser()
     if supplied.is_symlink():
         raise ReferenceRenderComparisonError("Reference render comparison is a symlink")
     root = supplied.resolve()
     document = _load_comparison_document(root)
-    sample_ids = document["complete_pair_queue_ids"]
+    arms_by_id = {value["arm_id"]: value for value in document["arms"]}
+    selected_arm_ids = (
+        tuple(arms_by_id)
+        if arm_ids is None
+        else tuple(_safe_id(value, "listening arm ID") for value in arm_ids)
+    )
+    if len(selected_arm_ids) != 2 or len(set(selected_arm_ids)) != 2:
+        raise ReferenceRenderComparisonError(
+            "Reference render listening requires exactly two distinct arms"
+        )
+    unknown = [value for value in selected_arm_ids if value not in arms_by_id]
+    if unknown:
+        raise ReferenceRenderComparisonError(
+            "Reference render listening arm is absent: " + ", ".join(unknown)
+        )
+    sample_ids = set(document["queue_ids"])
+    for arm_id in selected_arm_ids:
+        sample_ids &= {
+            value["id"]
+            for value in arms_by_id[arm_id]["renders"]
+            if value.get("outcome") == "complete"
+        }
     if not sample_ids:
         raise ReferenceRenderComparisonError(
-            "Reference render comparison has no complete matched samples"
+            "Selected reference render arms have no complete matched samples"
         )
-    reports = [_contained_file(root, value) for value in document["reports"]]
+    reports = [
+        _contained_file(root, arms_by_id[arm_id]["report"])
+        for arm_id in selected_arm_ids
+    ]
     try:
         return create_listening_session_from_reports(
-            reports, output_directory, seed=seed, sample_ids=sample_ids
+            reports, output_directory, seed=seed, sample_ids=sorted(sample_ids)
         )
     except ModelListeningError as error:
         raise ReferenceRenderComparisonError(str(error)) from error
@@ -732,6 +756,7 @@ def _load_comparison_document(root):
     controls = document.get("controls")
     arms = document.get("arms")
     reports = document.get("reports")
+    queue_ids = document.get("queue_ids")
     complete_pair_queue_ids = document.get("complete_pair_queue_ids")
     if (
         not isinstance(controls, list)
@@ -739,11 +764,15 @@ def _load_comparison_document(root):
         or len(arms) < 2
         or not isinstance(reports, list)
         or len(reports) != len(arms)
+        or not isinstance(queue_ids, list)
+        or not queue_ids
+        or any(not isinstance(value, str) or not value for value in queue_ids)
+        or len(queue_ids) != len(set(queue_ids))
         or not isinstance(complete_pair_queue_ids, list)
-        or len(complete_pair_queue_ids) != len(set(complete_pair_queue_ids))
         or any(
             not isinstance(value, str) or not value for value in complete_pair_queue_ids
         )
+        or len(complete_pair_queue_ids) != len(set(complete_pair_queue_ids))
     ):
         raise ReferenceRenderComparisonError(
             "Reference render comparison inventory is invalid"
@@ -759,12 +788,18 @@ def _load_comparison_document(root):
                 "Reference render comparison control changed"
             )
     arm_reports = []
+    arm_ids = set()
     for arm in arms:
         if not isinstance(arm, dict):
             raise ReferenceRenderComparisonError(
                 "Reference render comparison arm is invalid"
             )
         arm_id = _safe_id(arm.get("arm_id"), "arm ID")
+        if arm_id in arm_ids:
+            raise ReferenceRenderComparisonError(
+                "Reference render comparison arm IDs repeat"
+            )
+        arm_ids.add(arm_id)
         report_relative = _required_text(arm.get("report"), "report path")
         report = _contained_file(root, report_relative)
         if sha256_file(report) != _required_sha256(
@@ -849,11 +884,24 @@ def _selected_listening_trial(
         raise ReferenceRenderComparisonError(
             "Reference render listening assignment is absent or ambiguous"
         )
-    expected_reports = {
-        str(_contained_file(comparison_root, relative)): sha256_file(
-            _contained_file(comparison_root, relative)
+    arms_by_id = {value["arm_id"]: value for value in comparison["arms"]}
+    model_records = [
+        value for value in key.get("models", []) if isinstance(value, dict)
+    ]
+    selected_arm_ids = [value.get("model_id") for value in model_records]
+    if (
+        len(selected_arm_ids) != 2
+        or len(set(selected_arm_ids)) != 2
+        or any(value not in arms_by_id for value in selected_arm_ids)
+    ):
+        raise ReferenceRenderComparisonError(
+            "Reference render listening must bind exactly two known arms"
         )
-        for relative in comparison["reports"]
+    expected_reports = {
+        str(
+            _contained_file(comparison_root, arms_by_id[arm_id]["report"])
+        ): _required_sha256(arms_by_id[arm_id].get("report_sha256"), "report hash")
+        for arm_id in selected_arm_ids
     }
     actual_reports = {}
     for source in key.get("sources", []):
@@ -869,17 +917,21 @@ def _selected_listening_trial(
         actual_reports[str(path.resolve())] = _required_sha256(
             source.get("sha256"), "listening source hash"
         )
-    if actual_reports != expected_reports:
+    if (
+        len(actual_reports) != len(key.get("sources", []))
+        or actual_reports != expected_reports
+    ):
         raise ReferenceRenderComparisonError(
             "Reference render listening sources changed"
         )
-    expected_models = {value["arm_id"] for value in comparison["arms"]}
-    actual_models = {
-        value.get("model_id")
-        for value in key.get("models", [])
-        if isinstance(value, dict)
-    }
-    if actual_models != expected_models:
+    actual_models = set(selected_arm_ids)
+    if any(
+        not any(
+            render.get("id") == queue_id and render.get("outcome") == "complete"
+            for render in arms_by_id[arm_id]["renders"]
+        )
+        for arm_id in actual_models
+    ):
         raise ReferenceRenderComparisonError("Reference render listening arms changed")
     try:
         expected_report = aggregate_listening_report(session_path)

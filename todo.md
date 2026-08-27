@@ -40,15 +40,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Review the final Poacher I, Poacher II and Glyndŵr repair bundle
-      `current-character-story-poacher-glyndwr-repairs-v3.json`: six required
-      cohorts contain 14 checksum-bound WAVs (four MOSS repairs and ten Pocket
-      fallbacks). Every sample is required; keep individual bad-WAV marking
-      separate from whole-cohort rejection. After the task is terminal, merge
-      only its exact approved/rejected outcomes into a new config-addressed
-      successor of the 392-approved composed workspace and verify the complete
-      source-state/WAV/lease/manifest ledger. Do not reuse intermediate v1/v2
-      bundles, repeat an exhausted strategy or regenerate a reviewed WAV.
 - [ ] Treat inline non-verbal stage directions as typed audio events instead of
       pronounceable text. The exact Poacher I line `reverse1999:314607:84`
       (`N-No! *gurgle*`) was correctly rejected after MOSS pronounced the
@@ -68,8 +59,15 @@ Follow the evidence-backed order and invariants in
       audit `current-character-story-poacher-ii-reference-audit-v1`. Compare
       its three blinded Centurion references on generated output before
       selecting an exact next reference hypothesis; raw-reference quality alone
-      is insufficient. A selected hypothesis still needs one bounded render,
-      technical validation, individual human review and exact outcome merge.
+      is insufficient. The exact three-arm render-only comparison
+      `current-character-story-poacher-ii-reference-render-v1` is now immutable:
+      candidates 01 and 02 completed, while candidate 03 ended typed limited and
+      published no WAV. The checksum-bound listening command now accepts an
+      explicit complete two-arm subset of the same comparison, retains the
+      omitted-arm failure evidence and does not rerender either completed
+      candidate. Publish that two-complete-arm session for the operator. A
+      selected hypothesis still needs one bounded production render, technical
+      validation, individual human review and exact outcome merge.
       `Neither` leaves the line failed for explicit live fallback; it does not
       authorize another MOSS seed or automatic Pocket transition.
 - [ ] Resolve the five source-local Dobharchú failures before reusing this voice
