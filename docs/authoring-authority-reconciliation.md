@@ -238,6 +238,37 @@ items. Its workspace-document SHA-256 is
 Applying an older report again or using its superseded primary workspace is no
 longer part of the completion path.
 
+### Post-render authority
+
+The exact 46-item selection was rendered once from the composed primary with
+`retries=0` and `seed=0`. It produced ten pending-review WAVs and 36 typed
+failures while preserving all 421 unrelated state items. The resulting
+checksum-bound review bundle is
+`current-character-story-ready-fallbacks-v1.json`:
+
+- bundle ID
+  `17d43bab998a4012e239a18b328637c388f1aace5ef3d91bf8ba1f3c015f5244`;
+- file SHA-256
+  `9c192b7b9fc37ff7a8acb1c5fda94d603feec884c096da062c0e4bda84f7f002`;
+- two cohorts, ten pending items, six mandatory samples and zero blocked items.
+
+Reconciliation was then republished as
+`authoring/reconciliations/current-character-story-20260827-184436748407.json`:
+
+- report ID
+  `184436748407f58fc644fe69de41934f8f5df29efe2baa59f0f6a353cc0b4317`;
+- file SHA-256
+  `c9cbdcad902b5dd3ad4b83389e3025a84c073409e08bc0f1acec04d93810f09a`;
+- zero terminal conflicts;
+- ten `human_cohort_review`, 41 `new_hypothesis_required` and 118
+  `source_reference_or_explicit_fallback` actions.
+
+The 41 hypothesis items are the five pre-existing Narrator failures plus the 36
+newly bound failures. The latter classify as 29 missed-EOS limits and seven
+speech-silence failures; their deterministic next-action partition is 18
+sentence-boundary segmentation, two inline-pause comparison, 15 bounded seed
+and one reference comparison. Classification does not authorize execution.
+
 ## Lease and terminal-publication invariants
 
 Generation, publication and terminal-review progress use a persistent

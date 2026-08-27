@@ -582,21 +582,45 @@ inspection output and does not launch generation.
 
 The specialist, primary-risk, reference-quality, Dobharchú and terminal-conflict
 reviews are complete. Their exact outcomes are composed in workspace
-`resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`: 345 approved, 71 rejected,
-five failed and 46 pending items. Reconciliation report
-`d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
-has no terminal conflicts or pending terminal merges.
+`resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`. The report-selected 46-line
+bounded run completed from clean pushed commit `f8694a2` with selection-aware
+readiness `selected=ready=46`, `retries=0` and `seed=0`. It produced ten
+pending-review WAVs and 36 typed failures. All 421 non-selected state items
+remained byte-identical, the lease and active attempt cleared, and no terminal
+item was regenerated.
 
-1. Render exactly the report's 46 `generation_ready_unselected` items with
-   selection-aware readiness, `retries=0` and `seed=0`. Do not regenerate a
-   terminal item.
-2. Publish a risk-based cohort review for successful WAVs and retain each
-   failed attempt as typed evidence. Human listening remains the authority for
+The ten WAVs are bound by bundle
+`current-character-story-ready-fallbacks-v1.json`, bundle ID
+`17d43bab998a4012e239a18b328637c388f1aace5ef3d91bf8ba1f3c015f5244`
+and file SHA-256
+`9c192b7b9fc37ff7a8acb1c5fda94d603feec884c096da062c0e4bda84f7f002`.
+It has two exact control/reference cohorts and only six mandatory samples for
+the three Hotelier-to-Centurion and seven Mrs. Owen results. It does not infer
+approval from a technical pass.
+
+The 36 failures split into 29 typed missed-EOS limits and seven typed
+speech-silence failures. The deterministic repair classifier proposes 18 safe
+sentence-boundary segmentation candidates, two inline-pause comparisons, 15
+bounded seed candidates and one reference comparison. These are hypotheses,
+not retry authorization. The current state SHA-256 is
+`b00c516b92c82e546cd4c37304a03cb316d94d246596b2867ba667f794d29f14`.
+
+Fresh reconciliation report
+`184436748407f58fc644fe69de41934f8f5df29efe2baa59f0f6a353cc0b4317`
+has zero terminal conflicts and reports ten `human_cohort_review`, 41
+`new_hypothesis_required` and 118
+`source_reference_or_explicit_fallback` actions.
+
+1. Complete the two-cohort, six-sample human review and retain each failed
+   attempt as typed evidence. Human listening remains the authority for
    approval, pronunciation and contamination.
-3. Resolve the five `new_hypothesis_required` Narrator failures through bounded
-   matched hypotheses. Resolve the 118 missing-voice items through an exact
-   reference or an explicit supported fallback; do not infer identity from a
-   name alone.
+2. Turn only the classifier-safe failure groups into separately checksum-bound
+   exact-ID repair plans. Do not run a seed, segmentation, marker, reference or
+   provider change until that plan preserves every terminal/successful outcome
+   and names its review gate.
+3. Resolve the five older Narrator failures through bounded matched hypotheses.
+   Resolve the 118 missing-voice items through an exact reference or an explicit
+   supported fallback; do not infer identity from a name alone.
 4. Rebuild the approved-only manifest only from authoritative terminal state.
    Final game-pack publication remains blocked until every queue item has a
    terminal decision or an explicit supported fallback.

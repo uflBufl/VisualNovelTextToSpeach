@@ -34,15 +34,20 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Render only the 46 `generation_ready_unselected` queue IDs named by final
-      reconciliation report
-      `d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
-      in workspace `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`.
-      Require selection-aware preflight `selected=ready=46`, no missing voice,
-      exact repeated `--queue-id`, `retries=0` and `seed=0`; do not regenerate
-      any terminal item. After the run, verify unrelated state/WAV hashes and
-      publish a risk-based cohort review for generated results instead of
-      inferring approval.
+- [ ] Publish and complete a risk-based cohort review for the ten WAVs produced
+      by the exact 46-item run in workspace
+      `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`. The bounded run used
+      `selected=ready=46`, `retries=0` and `seed=0`; it produced ten
+      `generated` and 36 typed `failed` outcomes while all 421 unrelated state
+      items remained byte-identical. Build cohorts only from those ten new WAVs,
+      bind every sample to the current state/queue/WAV hashes, require explicit
+      human review, and never infer approval from a technical pass.
+- [ ] Classify the 36 new typed failures by exact reason and repair eligibility
+      before any retry. Produce a checksum-bound repair plan that separates
+      safe sentence-boundary/edge-silence repairs from missed-EOS, reference,
+      and exhausted/unsupported failures. Do not spend another seed, extend the
+      audio limit, or change provider until a bounded hypothesis names the exact
+      queue IDs and preserves all successful and terminal outcomes.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
