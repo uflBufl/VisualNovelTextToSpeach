@@ -846,7 +846,7 @@ def create_audio_event_composition_workspace(
         raise AuthoringWorkbenchError(
             "Audio-event successor already contains a composition"
         )
-    queue, state, _state_payload, state_sha256 = _stable_workspace_state(
+    queue, state, state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "audio-event base"
     )
     try:
@@ -906,6 +906,12 @@ def create_audio_event_composition_workspace(
         raise AuthoringWorkbenchError(
             "Rejected audio-event rendition changed before successor publication"
         )
+    base_workspace_payload = _read_file_bytes(
+        base_directory / "workspace.json", "audio-event base workspace"
+    )
+    previous_audio_payload = _read_file_bytes(
+        previous_audio, "rejected audio-event rendition"
+    )
 
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -934,6 +940,11 @@ def create_audio_event_composition_workspace(
             copied_composition,
             composition_snapshots,
         )
+        copied_base = staging / "inputs" / "audio-event-base"
+        copied_base.mkdir(parents=True)
+        (copied_base / "workspace.json").write_bytes(base_workspace_payload)
+        (copied_base / "generation-state.json").write_bytes(state_payload)
+        (copied_base / "rejected.wav").write_bytes(previous_audio_payload)
         composition_config = {
             "schema": AUDIO_EVENT_WORKSPACE_SCHEMA,
             "schema_version": AUDIO_EVENT_WORKSPACE_VERSION,
@@ -947,9 +958,12 @@ def create_audio_event_composition_workspace(
             "final_audio_sha256": composition.audio_sha256,
             "queue_id": composition.queue_id,
             "base_workspace_id": base_document["workspace_id"],
+            "base_workspace_path": "inputs/audio-event-base/workspace.json",
             "base_workspace_sha256": base_workspace_sha256,
+            "base_state_path": "inputs/audio-event-base/generation-state.json",
             "base_state_sha256": state_sha256,
             "base_item_sha256": _canonical_sha256(previous),
+            "base_audio_path": "inputs/audio-event-base/rejected.wav",
             "base_audio_sha256": previous_audio_sha256,
         }
         config_fingerprint = _workspace_config_fingerprint(
@@ -4430,6 +4444,12 @@ def _validate_workspace_outcome_merge(directory, workspace):
         if isinstance(terminal_items, list)
         else set()
     )
+    audio_event_config = workspace.get("audio_event_composition")
+    audio_event_queue_id = (
+        audio_event_config.get("queue_id")
+        if isinstance(audio_event_config, dict)
+        else None
+    )
     queue_ids = []
     counts = Counter()
     try:
@@ -4467,6 +4487,10 @@ def _validate_workspace_outcome_merge(directory, workspace):
         audio_sha256 = _require_sha256(
             item.get("audio_sha256"), "Outcome merge WAV SHA-256"
         )
+        if queue_id == audio_event_queue_id:
+            queue_ids.append(queue_id)
+            counts[item["source_workspace_id"]] += 1
+            continue
         result = state["items"].get(queue_id)
         if not isinstance(result, dict) or not _terminal_review_outcome(result):
             raise AuthoringWorkbenchError(

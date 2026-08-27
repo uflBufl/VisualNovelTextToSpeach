@@ -22,6 +22,7 @@ from vntts.authoring.audio_event_review import (
     publish_source_audio_event_review,
     record_audio_event_review_decision,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -38,7 +39,7 @@ from vntts.authoring.workbench import (
 
 
 class AudioEventWorkspaceTest(unittest.TestCase):
-    def _base_and_composition(self, root, *, approve=True):
+    def _base_and_composition(self, root, *, approve=True, outcome_merge=False):
         _fixture, _imported, created = create_test_workspace(root, text="Tsk!")
         base = created.directory
         queue_path = base / "queue.jsonl"
@@ -56,6 +57,67 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         )
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         publish_generated_manifest(state_path)
+        if outcome_merge:
+            workspace_path = base / "workspace.json"
+            workspace = json.loads(workspace_path.read_text())
+            source_workspace_id = "resume-" + "a" * 24 + "-" + "b" * 16
+            source_state_sha256 = "d" * 64
+            source_item_sha256 = canonical_document_sha256(result)
+            outcome_item = {
+                "queue_id": queue_item.queue_id,
+                "source_workspace_id": source_workspace_id,
+                "source_state_sha256": source_state_sha256,
+                "source_item_sha256": source_item_sha256,
+                "audio_sha256": result["file_sha256"],
+                "status": "generated",
+                "review_status": "rejected",
+            }
+            outcome = {
+                "schema": "vntts.authoring-workspace-outcome-merge",
+                "schema_version": 1,
+                "base_workspace_id": workspace["workspace_id"],
+                "base_state_sha256": "e" * 64,
+                "sources": [
+                    {
+                        "workspace_id": source_workspace_id,
+                        "config_fingerprint": "c" * 64,
+                        "state_sha256": source_state_sha256,
+                        "terminal_item_count": 1,
+                    }
+                ],
+                "items": [outcome_item],
+            }
+            result["outcome_merge"] = {
+                key: value for key, value in outcome_item.items() if key != "queue_id"
+            }
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            publish_generated_manifest(state_path)
+            fingerprint = workbench_module._workspace_config_fingerprint(
+                workspace["source"]["import_id"],
+                workspace.get("story_index"),
+                workspace.get("voice_manifest"),
+                workspace["narrator_character"],
+                workspace["run_config"],
+                workspace.get("carry_forward"),
+                outcome,
+                workspace.get("failure_reference_binding"),
+                workspace.get("terminal_conflict_merge"),
+                workspace.get("config_rebase"),
+                workspace.get("audio_event_composition"),
+            )
+            workspace["outcome_merge"] = outcome
+            workspace["config_fingerprint"] = fingerprint
+            workspace["workspace_id"] = (
+                "resume-"
+                + workspace["source"]["import_id"].removeprefix("legacy-")
+                + "-"
+                + fingerprint[:16]
+            )
+            workspace_path.write_text(json.dumps(workspace, sort_keys=True))
+            renamed = base.with_name(workspace["workspace_id"])
+            base.rename(renamed)
+            base = renamed
+            queue_path = base / "queue.jsonl"
 
         source_audio = root / "source-event.wav"
         samples = np.zeros(18_024, dtype=np.float32)
@@ -83,6 +145,27 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 composition.directory, "approved"
             )
         return base, queue_item, composition
+
+    def test_preserves_overridden_outcome_merge_as_base_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(
+                root, outcome_merge=True
+            )
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            summary = inspect_workspace(created.directory)
+            workspace = json.loads((created.directory / "workspace.json").read_text())
+            base_state = json.loads(
+                (
+                    created.directory / "inputs/audio-event-base/generation-state.json"
+                ).read_text()
+            )
+
+            self.assertEqual(summary.generated, 1)
+            self.assertEqual(workspace["audio_event_composition"]["schema_version"], 2)
+            self.assertIn("outcome_merge", base_state["items"][queue_item.queue_id])
 
     def test_creates_exact_reviewable_successor_and_is_idempotent(self):
         with TemporaryDirectory() as directory:

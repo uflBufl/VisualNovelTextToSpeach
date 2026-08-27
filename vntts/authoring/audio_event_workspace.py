@@ -11,11 +11,12 @@ from vntts.authoring.audio_event_composition import (
 )
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    canonical_document_sha256,
     capture_authority_file,
 )
 
 AUDIO_EVENT_WORKSPACE_SCHEMA = "vntts.authoring-audio-event-workspace"
-AUDIO_EVENT_WORKSPACE_VERSION = 1
+AUDIO_EVENT_WORKSPACE_VERSION = 2
 AUDIO_EVENT_ITEM_SCHEMA = "vntts.authoring-audio-event-composition-item"
 AUDIO_EVENT_ITEM_VERSION = 1
 AUDIO_EVENT_PROVIDER = "original-game-audio-event"
@@ -66,9 +67,12 @@ def validate_audio_event_composition_workspace(directory, workspace):
         "final_audio_sha256",
         "queue_id",
         "base_workspace_id",
+        "base_workspace_path",
         "base_workspace_sha256",
+        "base_state_path",
         "base_state_sha256",
         "base_item_sha256",
+        "base_audio_path",
         "base_audio_sha256",
     }
     if (
@@ -79,6 +83,10 @@ def validate_audio_event_composition_workspace(directory, workspace):
         or config.get("path") != "inputs/audio-event-composition/composition.json"
         or config.get("decision_path")
         != "inputs/audio-event-composition/composition-decision.json"
+        or config.get("base_workspace_path") != "inputs/audio-event-base/workspace.json"
+        or config.get("base_state_path")
+        != "inputs/audio-event-base/generation-state.json"
+        or config.get("base_audio_path") != "inputs/audio-event-base/rejected.wav"
         or not isinstance(config.get("queue_id"), str)
         or not config["queue_id"]
         or not _WORKSPACE_ID.fullmatch(str(config.get("base_workspace_id") or ""))
@@ -100,12 +108,35 @@ def validate_audio_event_composition_workspace(directory, workspace):
             raise AudioEventWorkspaceError(f"Workspace audio-event {field} is invalid")
     composition_path = _contained_file(root, config["path"], "composition")
     decision_path = _contained_file(root, config["decision_path"], "decision")
+    base_workspace_path = _contained_file(
+        root, config["base_workspace_path"], "base workspace"
+    )
+    base_state_path = _contained_file(root, config["base_state_path"], "base state")
+    base_audio_path = _contained_file(root, config["base_audio_path"], "base audio")
     try:
         composition_snapshot = capture_authority_file(
             composition_path, "workspace audio-event composition", root=root
         )
         decision_snapshot = capture_authority_file(
             decision_path, "workspace audio-event decision", root=root
+        )
+        base_workspace_snapshot = capture_authority_file(
+            base_workspace_path, "workspace audio-event base workspace", root=root
+        )
+        base_state_snapshot = capture_authority_file(
+            base_state_path, "workspace audio-event base state", root=root
+        )
+        base_audio_snapshot = capture_authority_file(
+            base_audio_path, "workspace audio-event base audio", root=root
+        )
+        base_workspace = base_workspace_snapshot.json_document(
+            "workspace audio-event base workspace"
+        )
+        base_state = base_state_snapshot.json_document(
+            "workspace audio-event base state"
+        )
+        composition_document = composition_snapshot.json_document(
+            "workspace audio-event composition"
         )
         loaded = load_audio_event_composition(composition_path.parent)
     except (AuthoringAuthorityError, AudioEventCompositionError) as error:
@@ -117,10 +148,45 @@ def validate_audio_event_composition_workspace(directory, workspace):
         or loaded.audio_sha256 != config["final_audio_sha256"]
         or composition_snapshot.sha256 != config["composition_sha256"]
         or decision_snapshot.sha256 != config["decision_sha256"]
+        or base_workspace_snapshot.sha256 != config["base_workspace_sha256"]
+        or base_state_snapshot.sha256 != config["base_state_sha256"]
+        or base_audio_snapshot.sha256 != config["base_audio_sha256"]
     ):
         raise AudioEventWorkspaceError(
             "Workspace audio-event composition authority changed"
         )
+    base_item = base_state.get("items", {}).get(config["queue_id"])
+    if (
+        base_workspace.get("schema") != "vntts.authoring-workspace"
+        or base_workspace.get("schema_version") != 1
+        or base_workspace.get("workspace_id") != config["base_workspace_id"]
+        or base_state.get("active") is not None
+        or base_state.get("queue_sha256") != composition_document.get("queue_sha256")
+        or not isinstance(base_item, dict)
+        or canonical_document_sha256(base_item) != config["base_item_sha256"]
+        or (base_item.get("status"), base_item.get("review_status"))
+        != ("generated", "rejected")
+        or base_item.get("file_sha256") != config["base_audio_sha256"]
+    ):
+        raise AudioEventWorkspaceError("Workspace audio-event base authority changed")
+    outcome_merge = workspace.get("outcome_merge")
+    if isinstance(outcome_merge, dict):
+        source_item = next(
+            (
+                item
+                for item in outcome_merge.get("items", [])
+                if isinstance(item, dict) and item.get("queue_id") == config["queue_id"]
+            ),
+            None,
+        )
+        if source_item is not None:
+            expected = {
+                key: value for key, value in source_item.items() if key != "queue_id"
+            }
+            if base_item.get("outcome_merge") != expected:
+                raise AudioEventWorkspaceError(
+                    "Workspace audio-event base outcome authority changed"
+                )
     return config
 
 

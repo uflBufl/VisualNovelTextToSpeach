@@ -60,8 +60,12 @@ Follow the evidence-backed order and invariants in
       composition is now approved. Create one config-addressed successor from
       the current composed primary with a typed CLI/API: hold its generation
       publication lease; snapshot the approved composition and decision under
-      immutable inputs; bind the base workspace/state/item/WAV plus composition,
-      decision, queue and final-audio hashes into the workspace fingerprint;
+      immutable inputs; also preserve exact base workspace/state/rejected-WAV
+      bytes under immutable inputs, bind their workspace/state/item/WAV hashes
+      plus the composition, decision, queue and final-audio hashes into the
+      workspace fingerprint, and let the inherited outcome-merge ledger remain
+      historical for exactly this overridden queue ID only after the preserved
+      base item still proves that original terminal merge authority;
       replace only this rejected spoken rendition with the unchanged event WAV
       as `generated/pending_review`; retain the ledger in generated-manifest
       extensions; and make workspace/state/review/final-pack validation reject
