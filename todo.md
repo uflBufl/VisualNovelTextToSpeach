@@ -119,18 +119,28 @@ Follow the evidence-backed order and invariants in
       `314606:43` still produced a 3.44-second internal pause and now requires a
       checksum-bound reference comparison or explicit live fallback. The
       `314606:6` attempt used an invalid `Mrs. Owen` split; the parser is fixed
-      and fully tested, so create one new config-addressed workspace for only
-      its corrected two-segment plan and run that distinct hypothesis once.
-      Any completed WAV remains pending individual human review. The
+      and fully tested. Its separate corrected two-segment workspace also
+      finished typed limited with no WAV, so sentence segmentation is exhausted
+      for both multi-sentence lines. Do not spend another MOSS seed or repeat
+      either segmentation plan. The
       single-sentence internal-silence failures `314608:58` and `314608:94`
-      likewise require new checksum-bound reference comparisons; do not spend
-      another seed or apply sentence splitting to them. Preserve the completed
-      older 12-failure
+      already have one unmatched complete alternative-reference WAV each in the
+      immutable comparison: reference 02 for `314608:58` and reference 03 for
+      `314608:94`. Their checksum-bound, self-contained single-candidate reviews
+      are published with exact reference/result bytes and no generation-state
+      mutation. Obtain one human `accept_hypothesis` or `need_different` verdict
+      for each before any production-shaped successor render. Do not rerender
+      the completed arms, spend another seed or apply sentence splitting to
+      these lines.
+      For `314606:43` and `314606:6`, design an explicit cross-provider/live
+      fallback authority that consumes the exhausted current-control,
+      alternative-reference and segmentation evidence; it must not infer
+      provider exhaustion from disconnected workspace attempt counters or
+      silently promote Pocket output. Preserve the completed older 12-failure
       evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
-      and do not repeat an exhausted seed/provider/repair. Keep both failed
-      repair attempt records as evidence; the corrected `314606:6` run is
-      authorized by its changed exact segment plan, not merely by a new seed.
+      and do not repeat an exhausted seed/provider/repair. Keep all failed
+      repair attempt records as immutable evidence.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

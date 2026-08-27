@@ -802,3 +802,22 @@ workspace state SHA-256 is
 `dcb4b8c0c3a92487dfe2a56e272c93c54df36ef010ca115d00139e38313d3c5c`;
 it ended with no active attempt, lease, partial WAV, approval or review
 decision.
+
+The corrected `314606:6` hypothesis then ran once in isolated workspace
+`resume-395a5e5eec0327a3a793b66d-4b31c8c7ae86f526`. Its exact plan contained only
+`As a daughter, she ought to defend her mother.` and
+`But she knows Mrs. Owen is right.`; the honorific was no longer split. MOSS
+still ended typed limited with 408,000 samples, 36 chunks, the unchanged
+20-second audio ceiling and 850-token ceiling. It published no WAV, partial,
+review or approval and cleared its active attempt and lease. The final isolated
+state SHA-256 is
+`8ab718d3a1dc7c3e2b5b766e897732916f67305c72561f774ebbb33d6b05596a`.
+Sentence segmentation is therefore exhausted for both `314606:6` and
+`314606:43`; another seed or the old malformed plan is not a distinct
+hypothesis.
+
+The already completed unmatched alternative-reference WAVs for `314608:58`
+and `314608:94` were copied into the self-contained reviews documented in
+[`render-hypothesis-review.md`](render-hypothesis-review.md). This reused exact
+evidence and did not rerender MOSS or mutate generation state. Each review still
+needs one human `accept_hypothesis` or `need_different` verdict.

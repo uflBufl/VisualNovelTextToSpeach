@@ -473,6 +473,14 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError(str(error)) from error
 
 
+def load_reference_render_comparison_document(directory):
+    """Load and validate every immutable artifact in one render comparison."""
+    supplied = Path(directory).expanduser()
+    if supplied.is_symlink():
+        raise ReferenceRenderComparisonError("Reference render comparison is a symlink")
+    return _load_comparison_document(supplied.resolve())
+
+
 def import_reference_render_preference(
     audit_directory,
     comparison_directory,
@@ -1133,5 +1141,6 @@ __all__ = [
     "create_reference_render_listening",
     "import_reference_render_preference",
     "load_reference_render_plan",
+    "load_reference_render_comparison_document",
     "publish_reference_render_comparison",
 ]

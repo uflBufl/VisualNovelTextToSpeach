@@ -130,6 +130,12 @@ from vntts.authoring.reference_selection import (
     inspect_voice_reference_candidates,
     select_voice_reference,
 )
+from vntts.authoring.render_hypothesis_review import (
+    RenderHypothesisReviewError,
+    load_render_hypothesis_review,
+    publish_render_hypothesis_review,
+    record_render_hypothesis_decision,
+)
 from vntts.authoring.robustness_asr import (
     SpeechRobustnessAsrError,
     build_speech_robustness_asr_report,
@@ -622,6 +628,27 @@ def create_parser():
         help="Validate and inspect one audio-event review",
     )
     audio_event_status.add_argument("directory", type=Path)
+    render_hypothesis_publish = subparsers.add_parser(
+        "render-hypothesis-review-publish",
+        help="Publish one immutable unmatched render/reference review",
+    )
+    render_hypothesis_publish.add_argument("comparison", type=Path)
+    render_hypothesis_publish.add_argument("queue_id")
+    render_hypothesis_publish.add_argument("arm_id")
+    render_hypothesis_publish.add_argument("--output", type=Path, required=True)
+    render_hypothesis_decide = subparsers.add_parser(
+        "render-hypothesis-review-decide",
+        help="Accept one exact render hypothesis or require a different one",
+    )
+    render_hypothesis_decide.add_argument("directory", type=Path)
+    render_hypothesis_decide.add_argument(
+        "decision", choices=("accept_hypothesis", "need_different")
+    )
+    render_hypothesis_status = subparsers.add_parser(
+        "render-hypothesis-review-status",
+        help="Validate and inspect one unmatched render/reference review",
+    )
+    render_hypothesis_status.add_argument("directory", type=Path)
     failures = subparsers.add_parser(
         "failure-report",
         help="Group failed generation outcomes into stable typed cohorts",
@@ -1540,6 +1567,25 @@ def main(argv=None):
             result = load_audio_event_review(arguments.directory)
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "render-hypothesis-review-publish":
+            result = publish_render_hypothesis_review(
+                arguments.comparison,
+                arguments.queue_id,
+                arguments.arm_id,
+                arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "render-hypothesis-review-decide":
+            result = record_render_hypothesis_decision(
+                arguments.directory, arguments.decision
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "render-hypothesis-review-status":
+            result = load_render_hypothesis_review(arguments.directory)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "speech-robustness-corpus":
             result = publish_speech_robustness_corpus(
                 arguments.decision_root,
@@ -2131,6 +2177,7 @@ def main(argv=None):
         PortraitAliasError,
         ReferenceSelectionError,
         ReferenceRenderComparisonError,
+        RenderHypothesisReviewError,
         SilenceComparisonError,
         SpeechRobustnessCorpusError,
         SpeechRobustnessAsrError,

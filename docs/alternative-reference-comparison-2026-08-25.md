@@ -157,7 +157,11 @@ spend another seed or silently merge the portrait controls.
 
 The one complete Narrator A/B trial selected reference 03, and its resulting
 production-shaped WAV is now explicitly approved. The two unmatched complete
-Narrator comparison WAVs remain diagnostics and cannot establish comparative
-superiority. The other 12 current failure-tail items need a different bounded
-hypothesis or an explicit supported fallback; none may inherit this reference
-decision by speaker or text similarity.
+Narrator comparison WAVs cannot establish comparative superiority. They are now
+copied, without rerendering, into the single-candidate checksum-bound reviews
+described in [`render-hypothesis-review.md`](render-hypothesis-review.md). An
+explicit `accept_hypothesis` permits only one subsequent production-shaped
+hypothesis; it is not a line approval or speaker-wide preference. The other
+current failure-tail items need a different bounded hypothesis or an explicit
+supported fallback; none may inherit this reference decision by speaker or text
+similarity.
