@@ -28,7 +28,7 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.authoring.audio_events import (
     AUDIO_EVENT_PLAN_FIELD,
-    audio_event_plan_document,
+    audio_event_plan_for_record,
 )
 from vntts.authoring.delivery import (
     DELIVERY_ANNOTATION_VERSION,
@@ -192,7 +192,12 @@ def plan_generation_queue(
         requested_character = synthesis_character_for_line(
             record.speaker, record.voice_character
         )
-        audio_event_plan = audio_event_plan_document(record.text)
+        try:
+            audio_event_plan = audio_event_plan_for_record(record)
+        except ValueError as error:
+            raise GenerationQueueBuildError(
+                f"Invalid story audio provenance for line {record.line_id!r}: {error}"
+            ) from error
         entry = voice_index.get(normalize_character_name(requested_character))
         voice_character = entry.character if entry is not None else requested_character
         if action == "generate":

@@ -15,6 +15,15 @@ preserving the exact canonical text and text SHA-256. The plan records:
 - ordered event source spans, labels, typed kinds and synthesis policies;
 - a canonical plan SHA-256 and an explicit `requires_composition` flag.
 
+New extractor story indexes also carry ordered producer-owned
+`story_audio_cues`. Queue planning validates every cue's positional source
+fields, normalized availability, event/bank route and media lists, preserves the
+complete cue records outside the VNTTS-owned plan, and binds their canonical
+SHA-256 plus count into that plan. Legacy queues without the producer field keep
+their exact version-1 plan shape. The binding proves which source evidence was
+considered; it deliberately does not claim that an adjacent scene cue implements
+the translated vocal marker.
+
 Current recognized kinds are `human-gasp`, `human-gurgle` and `tongue-click`.
 Unknown `*stage directions*` become `unsupported-stage-direction`; they are not
 silently discarded or pronounced. Collection queue publication stores the plan
@@ -34,6 +43,20 @@ seven pure effects (`whimper`, `yelp`, `pop`, three `bang` lines and `buzzzzz`),
 event-only `Tsk!`, mixed `N-No! *gurgle*`, and mixed
 `Wh-What! *gasp*`. All ten now return false from the ordinary speech filter.
 The scan changed no queue, state, WAV or review authority.
+
+The regenerated patch 3.7 source index now exposes the underlying evidence.
+Some `pop`, `bang`, `buzzzzz` and `gasp` lines have adjacent configured story
+cues, but none of those media is installed in the current game data. The two
+`gasp`-line cues are stream and water-flow events, not a proven human gasp.
+`Tsk!`, `gurgle`, and the relevant `whimper`/`yelp` lines have no source cue.
+Therefore the current ten-line production boundary remains fail-closed.
+
+A read-only queue plan over the regenerated `The You That's Meant To Be`
+collection produced 11 event items: the ten historical workspace items plus a
+separate `*shriek*` line. All 11 retain `story_audio_cues` and bind their exact
+cue count and SHA-256 into the typed plan; zero-cue records bind the canonical
+empty-list digest. This dry run published no queue and does not rewrite the
+existing 592-item workspace.
 
 ## Model boundary
 

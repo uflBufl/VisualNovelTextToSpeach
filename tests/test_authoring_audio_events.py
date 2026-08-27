@@ -3,10 +3,37 @@ import unittest
 
 from vntts.authoring.audio_events import (
     AUDIO_EVENT_PLAN_FIELD,
+    STORY_AUDIO_CUES_FIELD,
     audio_event_plan_document,
+    audio_event_plan_for_record,
     plan_inline_audio_events,
     requires_audio_event_composition,
 )
+
+
+def story_audio_cue(*, event="play_stream", status="configured_unavailable"):
+    normalized = {
+        "configured_unavailable": "unavailable",
+        "installed": "available",
+    }[status]
+    media = [12] if status == "installed" else []
+    return {
+        "cue_index": 1,
+        "source_audio_id": "25500117",
+        "parameter_code_1": 0,
+        "localized_parameter_2": 0.0,
+        "parameter_code_3": 1,
+        "scalar_parameter_4": 1.0,
+        "localized_parameter_5": 0.0,
+        "parameter_code_6": 1,
+        "audio_status": status,
+        "audio_reason": "resolved_local_media" if media else "bank_not_installed",
+        "source_audio_status": normalized,
+        "source_event": event,
+        "source_bank": "story-sfx.bnk",
+        "source_media_ids": media,
+        "available_media_ids": media,
+    }
 
 
 class AuthoringAudioEventTest(unittest.TestCase):
@@ -61,6 +88,42 @@ class AuthoringAudioEventTest(unittest.TestCase):
         document["text"] = "Changed"
         with self.assertRaisesRegex(ValueError, "does not match"):
             requires_audio_event_composition(document)
+
+    def test_story_audio_cues_are_validated_and_bound_without_semantic_assignment(self):
+        cue = story_audio_cue()
+        record = {
+            "text": "Wh-What! *gasp*",
+            STORY_AUDIO_CUES_FIELD: [cue],
+        }
+
+        plan = audio_event_plan_for_record(record)
+
+        self.assertEqual(plan["story_audio_cue_count"], 1)
+        self.assertEqual(len(plan["story_audio_cues_sha256"]), 64)
+        self.assertNotIn("source_audio_id", plan["events"][0])
+        record[AUDIO_EVENT_PLAN_FIELD] = plan
+        self.assertTrue(requires_audio_event_composition(record))
+
+        record[STORY_AUDIO_CUES_FIELD][0]["source_event"] = "changed"
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            requires_audio_event_composition(record)
+
+    def test_invalid_story_audio_cues_fail_even_when_text_has_no_event(self):
+        record = {
+            "text": "Ordinary dialogue.",
+            STORY_AUDIO_CUES_FIELD: [{"cue_index": 1}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "source_audio_id is invalid"):
+            audio_event_plan_for_record(record)
+
+    def test_legacy_plan_without_story_audio_field_remains_byte_compatible(self):
+        text = "N-No! *gurgle*"
+
+        self.assertEqual(
+            audio_event_plan_for_record({"text": text}),
+            audio_event_plan_document(text),
+        )
 
 
 if __name__ == "__main__":

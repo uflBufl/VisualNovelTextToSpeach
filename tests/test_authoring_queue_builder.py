@@ -17,7 +17,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD
+from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
@@ -77,6 +77,26 @@ def story_record(line_id, status, *, collection="main", **overrides):
     return record
 
 
+def story_audio_cue():
+    return {
+        "cue_index": 1,
+        "source_audio_id": "25500117",
+        "parameter_code_1": 0,
+        "localized_parameter_2": 0.0,
+        "parameter_code_3": 1,
+        "scalar_parameter_4": 1.0,
+        "localized_parameter_5": 0.0,
+        "parameter_code_6": 1,
+        "audio_status": "configured_unavailable",
+        "audio_reason": "bank_not_installed",
+        "source_audio_status": "unavailable",
+        "source_event": "play_activitystorysfx_stream",
+        "source_bank": "activity-story-sfx.bnk",
+        "source_media_ids": [],
+        "available_media_ids": [],
+    }
+
+
 def write_inputs(root, records):
     story_path = root / "story-index.jsonl"
     write_story_index_document(story_path, story_metadata(), records)
@@ -124,6 +144,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                         "absent",
                         text=text,
                         text_sha256=text_sha256(text),
+                        **{STORY_AUDIO_CUES_FIELD: [story_audio_cue()]},
                     )
                 ],
             )
@@ -137,8 +158,33 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         self.assertEqual(
             item[AUDIO_EVENT_PLAN_FIELD]["events"][0]["kind"], "human-gurgle"
         )
+        self.assertEqual(item[AUDIO_EVENT_PLAN_FIELD]["story_audio_cue_count"], 1)
+        self.assertEqual(
+            len(item[AUDIO_EVENT_PLAN_FIELD]["story_audio_cues_sha256"]), 64
+        )
+        self.assertEqual(item[STORY_AUDIO_CUES_FIELD], [story_audio_cue()])
         self.assertEqual(plan.summary.audio_event_composition, 1)
         self.assertEqual(plan.summary.ready, 0)
+
+    def test_invalid_story_audio_cue_provenance_fails_before_queue_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root,
+                [
+                    story_record(
+                        "line-1",
+                        "absent",
+                        **{STORY_AUDIO_CUES_FIELD: [{"cue_index": 1}]},
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                GenerationQueueBuildError,
+                "Invalid story audio provenance.*source_audio_id is invalid",
+            ):
+                inspect_generation_queue(story_path, manifest_path)
 
     def test_source_cannot_spoof_reserved_audio_event_plan(self):
         with TemporaryDirectory() as directory:

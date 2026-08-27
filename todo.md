@@ -54,6 +54,17 @@ Follow the evidence-backed order and invariants in
       claim that a generated effect inherited cloned speaker identity. Failed
       or unsupported effects stay unresolved or use an explicitly reviewed
       omission, never a silent production drop.
+      The extractor's distinct ordered `story_audio_cues` are now strictly
+      validated, preserved as producer-owned queue evidence and checksum-bound
+      into the typed audio-event plan; legacy queues without that field retain
+      their exact plan shape. Next, prefer an installed original event only
+      after its semantic identity matches the requested effect;
+      configured-unavailable event/bank IDs remain evidence, and a story SFX ID
+      is never a voice reference. The regenerated patch 3.7 source index found
+      adjacent cues for some `*pop*`, `*bang*`, `*buzzzzz*` and `*gasp*` lines,
+      but every one is unavailable in the current install and the `gasp` cues
+      are stream/water events rather than a proven human gasp. `Tsk!`,
+      `*whimper*`, `*yelp*` and `*gurgle*` remain unbound.
 - [ ] Resolve Poacher II failure
       `reverse1999:314606:62:e3f44f0529c8ced0` through the narrow immutable
       audit `current-character-story-poacher-ii-reference-audit-v1`. Compare
