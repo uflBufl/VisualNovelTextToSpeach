@@ -24,10 +24,18 @@ manifest or establishes a speaker-wide reference preference. A later
 production-shaped render remains a new checksum-bound artifact requiring its
 normal individual review.
 
+An accepted hypothesis can be imported into a newly published one-case failure
+audit. The import binds the exact review and decision bytes, comparison and arm
+report, source audit/candidate, reference/result hashes, and queue/text identity.
+It records only the exact reference selection; the normal binding and successor
+workspace steps still precede generation:
+
 ```bash
 uv run vntts-pregenerate render-hypothesis-review-status REVIEW_DIRECTORY
 uv run vntts-pregenerate render-hypothesis-review-decide \
   REVIEW_DIRECTORY accept_hypothesis
+uv run vntts-pregenerate render-hypothesis-review-import \
+  FRESH_AUDIT COMPARISON_DIRECTORY REVIEW_DIRECTORY QUEUE_ID
 ```
 
 Use `need_different` instead of `accept_hypothesis` when the result has wrong
@@ -49,4 +57,11 @@ run or generation-state write:
   binds Centurion reference 03 SHA-256 `f14f99ac31eb...` and result SHA-256
   `e6af9b24e2cc...`.
 
-Both decisions remain unset. They require one explicit human verdict each.
+The human decisions were recorded on 2026-08-27:
+
+- `314608:58` is `need_different` because the generated phrase has an
+  unacceptable long pause. Its completed comparison arm must not be rerendered;
+  the next attempt needs a materially different provider or reference.
+- `314608:94` is `accept_hypothesis`. It authorizes importing reference 03 into
+  a fresh one-case failure audit and exactly one production-shaped successor
+  render. That new WAV, if complete, remains pending normal human review.

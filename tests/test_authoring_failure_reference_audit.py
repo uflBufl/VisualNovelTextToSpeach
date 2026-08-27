@@ -274,7 +274,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 candidate["sha256"],
             )
             self.assertEqual(first["decisions"][0]["case_queue_ids"], [queue_id])
-            self.assertEqual(first["schema_version"], 3)
+            self.assertEqual(first["schema_version"], 4)
 
             legacy = {**first, "schema_version": 2}
             legacy.pop("decision_set_id")
@@ -788,6 +788,25 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 selected_assignment["audio_sha256"],
             )
             self.assertEqual(binding["groups"][0]["selection_authority"], authority)
+            legacy_v3 = json.loads((fresh_audit_root / "decisions.json").read_text())
+            legacy_v3["schema_version"] = 3
+            legacy_v3.pop("decision_set_id")
+            legacy_v3["decision_set_id"] = _canonical_sha256(legacy_v3)
+            (fresh_audit_root / "decisions.json").write_text(
+                json.dumps(legacy_v3, sort_keys=True)
+            )
+            self.assertEqual(
+                load_failure_reference_decisions(fresh_audit_root)["schema_version"],
+                3,
+            )
+            legacy_binding_root = root / "legacy-v3-binding"
+            publish_failure_reference_binding(fresh_audit_root, legacy_binding_root)
+            self.assertEqual(
+                load_failure_reference_binding_document(legacy_binding_root)["groups"][
+                    0
+                ]["selection_authority"],
+                authority,
+            )
 
     def test_import_rejects_tie_and_stale_report(self):
         with TemporaryDirectory() as directory:

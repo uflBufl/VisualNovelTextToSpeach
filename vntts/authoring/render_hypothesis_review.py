@@ -18,6 +18,12 @@ from vntts.authoring.authority import (
     capture_authority_file,
     write_json_document_no_replace,
 )
+from vntts.authoring.failure_reference_audit import (
+    FailureReferenceAuditError,
+    load_failure_reference_audit,
+    load_failure_reference_decisions,
+    record_failure_reference_decision,
+)
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -61,6 +67,32 @@ class RenderHypothesisReview:
             "result": str(self.result),
             "result_sha256": self.result_sha256,
             "decision": self.decision,
+        }
+
+
+@dataclass(frozen=True)
+class RenderHypothesisSelection:
+    audit_directory: Path
+    audit_id: str
+    group_id: str
+    candidate_id: str
+    queue_id: str
+    review_id: str
+    selected_reference_sha256: str
+    decision_set_id: str
+    created: bool
+
+    def to_dict(self):
+        return {
+            "audit_directory": str(self.audit_directory),
+            "audit_id": self.audit_id,
+            "group_id": self.group_id,
+            "candidate_id": self.candidate_id,
+            "queue_id": self.queue_id,
+            "review_id": self.review_id,
+            "selected_reference_sha256": self.selected_reference_sha256,
+            "decision_set_id": self.decision_set_id,
+            "created": self.created,
         }
 
 
@@ -389,6 +421,328 @@ def record_render_hypothesis_decision(directory, decision):
     return load_render_hypothesis_review(review.directory)
 
 
+def import_accepted_render_hypothesis(
+    audit_directory,
+    comparison_directory,
+    review_directory,
+    queue_id,
+):
+    """Bind one accepted single-render hypothesis to one fresh exact audit."""
+    queue_id = _required_text(queue_id, "queue ID")
+    audit_directory = _safe_directory(audit_directory, "fresh failure audit")
+    comparison_directory = _safe_directory(
+        comparison_directory, "reference render comparison"
+    )
+    review_directory = _safe_directory(review_directory, "render hypothesis review")
+    try:
+        fresh = load_failure_reference_audit(audit_directory)
+        review = load_render_hypothesis_review(review_directory)
+        comparison = load_reference_render_comparison_document(comparison_directory)
+    except (FailureReferenceAuditError, ReferenceRenderComparisonError) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    if review.decision != "accept_hypothesis" or review.queue_id != queue_id:
+        raise RenderHypothesisReviewError(
+            "Render hypothesis must be accepted for the exact queue item"
+        )
+    try:
+        snapshots = {
+            "fresh_audit": capture_authority_file(
+                audit_directory / "audit.json",
+                "fresh failure audit",
+                root=audit_directory,
+            ),
+            "fresh_key": capture_authority_file(
+                audit_directory / ".blind-key.json",
+                "fresh failure audit key",
+                root=audit_directory,
+            ),
+            "comparison": capture_authority_file(
+                comparison_directory / "comparison.json",
+                "reference render comparison",
+                root=comparison_directory,
+            ),
+            "review": capture_authority_file(
+                review_directory / "review.json",
+                "render hypothesis review",
+                root=review_directory,
+            ),
+            "decision": capture_authority_file(
+                review_directory / "decision.json",
+                "render hypothesis decision",
+                root=review_directory,
+            ),
+        }
+        fresh_document = snapshots["fresh_audit"].json_document("fresh failure audit")
+        fresh_key = snapshots["fresh_key"].json_document("fresh failure audit key")
+        review_document = snapshots["review"].json_document("render hypothesis review")
+        decision_document = snapshots["decision"].json_document(
+            "render hypothesis decision"
+        )
+        snapshots["review_comparison"] = capture_authority_file(
+            _contained_file(
+                review_directory,
+                review_document.get("comparison"),
+                "copied reference render comparison",
+            ),
+            "copied reference render comparison",
+            root=review_directory,
+        )
+        snapshots["review_arm_report"] = capture_authority_file(
+            _contained_file(
+                review_directory,
+                review_document.get("arm_report"),
+                "copied reference render report",
+            ),
+            "copied reference render report",
+            root=review_directory,
+        )
+        snapshots["review_reference"] = capture_authority_file(
+            _contained_file(
+                review_directory,
+                review_document.get("reference"),
+                "copied reference audio",
+            ),
+            "copied reference audio",
+            root=review_directory,
+        )
+        snapshots["review_result"] = capture_authority_file(
+            _contained_file(
+                review_directory,
+                review_document.get("result"),
+                "copied render result",
+            ),
+            "copied render result",
+            root=review_directory,
+        )
+        _validate_review_document(
+            review_document,
+            snapshots["review_comparison"],
+            snapshots["review_arm_report"],
+            snapshots["review_reference"],
+            snapshots["review_result"],
+        )
+        _validate_decision_document(
+            decision_document,
+            review_document,
+            snapshots["review"].sha256,
+        )
+        exact_fresh = load_failure_reference_audit(audit_directory)
+        exact_review = load_render_hypothesis_review(review_directory)
+        exact_comparison = load_reference_render_comparison_document(
+            comparison_directory
+        )
+    except (
+        AuthoringAuthorityError,
+        FailureReferenceAuditError,
+        ReferenceRenderComparisonError,
+    ) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    if (
+        fresh.audit_id != exact_fresh.audit_id
+        or fresh.audit_id != fresh_document.get("audit_id")
+        or review.review_id != exact_review.review_id
+        or review.review_id != review_document.get("review_id")
+        or decision_document.get("decision") != "accept_hypothesis"
+        or decision_document.get("review_id") != review.review_id
+        or comparison != exact_comparison
+        or comparison
+        != snapshots["comparison"].json_document("reference render comparison")
+        or comparison.get("comparison_id") != review_document.get("comparison_id")
+        or snapshots["comparison"].sha256 != review_document.get("comparison_sha256")
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render hypothesis authority changed"
+        )
+    arm = next(
+        (value for value in comparison["arms"] if value.get("arm_id") == review.arm_id),
+        None,
+    )
+    selected_render = next(
+        (
+            value
+            for value in (arm or {}).get("renders", [])
+            if value.get("id") == queue_id and value.get("outcome") == "complete"
+        ),
+        None,
+    )
+    if (
+        selected_render is None
+        or selected_render.get("audio_sha256") != review.result_sha256
+        or selected_render.get("reference_sha256") != review.reference_sha256
+        or selected_render.get("text_sha256") != review_document.get("text_sha256")
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render no longer matches its comparison"
+        )
+    source_audit_directory = _source_audit_directory(
+        comparison_directory, comparison.get("audit")
+    )
+    try:
+        source = load_failure_reference_audit(source_audit_directory)
+        snapshots["source_audit"] = capture_authority_file(
+            source_audit_directory / "audit.json",
+            "source failure audit",
+            root=source_audit_directory,
+        )
+        snapshots["source_key"] = capture_authority_file(
+            source_audit_directory / ".blind-key.json",
+            "source failure audit key",
+            root=source_audit_directory,
+        )
+        source_document = snapshots["source_audit"].json_document(
+            "source failure audit"
+        )
+        source_key = snapshots["source_key"].json_document("source failure audit key")
+        exact_source = load_failure_reference_audit(source_audit_directory)
+    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    if (
+        source.audit_id != exact_source.audit_id
+        or source.audit_id != comparison.get("audit_id")
+        or source.audit_id != source_document.get("audit_id")
+        or snapshots["source_audit"].sha256 != comparison.get("audit_sha256")
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render source audit authority changed"
+        )
+    source_group_id = selected_render.get("candidate_group_id")
+    source_candidate_id = selected_render.get("candidate_id")
+    source_group = _group_by_id(source_document, source_group_id, "source audit")
+    source_private_group = _group_by_id(source_key, source_group_id, "source audit key")
+    source_candidate = _candidate_by_id(
+        source_group, source_candidate_id, "source audit"
+    )
+    source_private_candidate = _candidate_by_id(
+        source_private_group, source_candidate_id, "source audit key"
+    )
+    if (
+        source_candidate.get("sha256") != review.reference_sha256
+        or source_private_candidate.get("source_sha256") != review.reference_sha256
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render reference changed in its source audit"
+        )
+    fresh_group = _one_group_for_queue(fresh_document, queue_id, "fresh audit")
+    fresh_private_group = _group_by_id(
+        fresh_key, fresh_group["group_id"], "fresh audit key"
+    )
+    fresh_candidates = [
+        value
+        for value in fresh_group["candidates"]
+        if value.get("sha256") == review.reference_sha256
+    ]
+    if len(fresh_candidates) != 1:
+        raise RenderHypothesisReviewError(
+            "Accepted render reference is absent or ambiguous in the fresh audit"
+        )
+    fresh_candidate = fresh_candidates[0]
+    fresh_private_candidate = _candidate_by_id(
+        fresh_private_group, fresh_candidate["candidate_id"], "fresh audit key"
+    )
+    if (
+        fresh_group.get("synthesis_voice_character")
+        != source_group.get("synthesis_voice_character")
+        or fresh_private_group.get("control_character")
+        != source_private_group.get("control_character")
+        or fresh_private_group.get("speaker") != source_private_group.get("speaker")
+        or fresh_private_candidate.get("source_sha256") != review.reference_sha256
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render voice identity changed in the fresh audit"
+        )
+    fresh_cases = [
+        value for value in fresh_group["cases"] if value["queue_id"] == queue_id
+    ]
+    if len(fresh_cases) != 1:
+        raise RenderHypothesisReviewError(
+            "Accepted render case is absent or ambiguous in the fresh audit"
+        )
+    fresh_case = fresh_cases[0]
+    if (
+        fresh_case.get("line_id") != selected_render.get("line_id")
+        or fresh_case.get("text") != selected_render.get("text")
+        or fresh_case.get("text_sha256") != selected_render.get("text_sha256")
+    ):
+        raise RenderHypothesisReviewError(
+            "Accepted render text identity changed in the fresh audit"
+        )
+    selection_authority = {
+        "schema": "vntts.authoring-render-hypothesis-selection",
+        "schema_version": 1,
+        "review_id": review.review_id,
+        "review_sha256": snapshots["review"].sha256,
+        "decision_sha256": snapshots["decision"].sha256,
+        "comparison_id": comparison["comparison_id"],
+        "comparison_sha256": snapshots["comparison"].sha256,
+        "source_audit_id": source.audit_id,
+        "source_audit_sha256": snapshots["source_audit"].sha256,
+        "selected_arm_id": review.arm_id,
+        "selected_arm_report_sha256": review_document["arm_report_sha256"],
+        "selected_render_sha256": review.result_sha256,
+        "source_candidate_group_id": source_group_id,
+        "source_candidate_id": source_candidate_id,
+        "source_reference": source_private_candidate["source_reference"],
+        "selected_reference_sha256": review.reference_sha256,
+        "queue_id": queue_id,
+        "text_sha256": selected_render["text_sha256"],
+    }
+    try:
+        for name, snapshot in snapshots.items():
+            assert_authority_snapshot(snapshot, name.replace("_", " "))
+        current = load_failure_reference_decisions(audit_directory)
+    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    existing = next(
+        (
+            value
+            for value in current["decisions"]
+            if value["group_id"] == fresh_group["group_id"]
+        ),
+        None,
+    )
+    if existing is not None:
+        if (
+            existing.get("decision") != fresh_candidate["candidate_id"]
+            or existing.get("selection_authority") != selection_authority
+        ):
+            raise RenderHypothesisReviewError(
+                "Fresh reference audit already has a different decision"
+            )
+        return RenderHypothesisSelection(
+            audit_directory,
+            fresh.audit_id,
+            fresh_group["group_id"],
+            fresh_candidate["candidate_id"],
+            queue_id,
+            review.review_id,
+            review.reference_sha256,
+            current["decision_set_id"],
+            False,
+        )
+    try:
+        for name, snapshot in snapshots.items():
+            assert_authority_snapshot(snapshot, name.replace("_", " "))
+        decisions = record_failure_reference_decision(
+            audit_directory,
+            fresh_group["group_id"],
+            fresh_candidate["candidate_id"],
+            selection_authority=selection_authority,
+        )
+    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    return RenderHypothesisSelection(
+        audit_directory,
+        fresh.audit_id,
+        fresh_group["group_id"],
+        fresh_candidate["candidate_id"],
+        queue_id,
+        review.review_id,
+        review.reference_sha256,
+        decisions["decision_set_id"],
+        True,
+    )
+
+
 def _validate_review_document(
     review,
     comparison_snapshot,
@@ -566,6 +920,63 @@ def _contained_file(root, value, label):
     return resolved
 
 
+def _safe_directory(value, label):
+    supplied = Path(value).expanduser()
+    if supplied.is_symlink():
+        raise RenderHypothesisReviewError(f"{label.capitalize()} is a symlink")
+    resolved = supplied.resolve()
+    if not resolved.is_dir():
+        raise RenderHypothesisReviewError(f"{label.capitalize()} is missing")
+    return resolved
+
+
+def _source_audit_directory(comparison_root, value):
+    text = _required_text(value, "source audit path")
+    supplied = Path(text).expanduser()
+    if not supplied.is_absolute():
+        supplied = Path(comparison_root) / supplied
+    return _safe_directory(supplied, "source failure audit")
+
+
+def _group_by_id(document, group_id, label):
+    groups = [
+        value
+        for value in document.get("groups", [])
+        if value.get("group_id") == group_id
+    ]
+    if len(groups) != 1:
+        raise RenderHypothesisReviewError(
+            f"Accepted render group is absent or ambiguous in the {label}"
+        )
+    return groups[0]
+
+
+def _candidate_by_id(group, candidate_id, label):
+    candidates = [
+        value
+        for value in group.get("candidates", [])
+        if value.get("candidate_id") == candidate_id
+    ]
+    if len(candidates) != 1:
+        raise RenderHypothesisReviewError(
+            f"Accepted render candidate is absent or ambiguous in the {label}"
+        )
+    return candidates[0]
+
+
+def _one_group_for_queue(document, queue_id, label):
+    groups = [
+        group
+        for group in document.get("groups", [])
+        if queue_id in {case.get("queue_id") for case in group.get("cases", [])}
+    ]
+    if len(groups) != 1 or groups[0].get("case_count") != 1:
+        raise RenderHypothesisReviewError(
+            f"{label.capitalize()} must contain exactly one selected case"
+        )
+    return groups[0]
+
+
 def _required_text(value, label):
     if not isinstance(value, str) or not value or value != value.strip():
         raise RenderHypothesisReviewError(f"{label.capitalize()} is invalid")
@@ -580,6 +991,8 @@ __all__ = [
     "RENDER_HYPOTHESIS_REVIEW_VERSION",
     "RenderHypothesisReview",
     "RenderHypothesisReviewError",
+    "RenderHypothesisSelection",
+    "import_accepted_render_hypothesis",
     "load_render_hypothesis_review",
     "publish_render_hypothesis_review",
     "record_render_hypothesis_decision",

@@ -33,7 +33,8 @@ _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 _AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
 _DECISIONS_SCHEMA = "vntts.authoring-failure-reference-decisions"
 _AUDIT_VERSION = 2
-_DECISIONS_VERSION = 3
+_DECISIONS_VERSION = 4
+_LEGACY_DECISIONS_VERSIONS = frozenset({2, 3})
 
 
 def publish_failure_reference_binding(audit_directory, output_directory):
@@ -289,7 +290,8 @@ def _load_audit_snapshots(directory):
         or key.get("schema") != _AUDIT_KEY_SCHEMA
         or key.get("schema_version") != _AUDIT_VERSION
         or decisions.get("schema") != _DECISIONS_SCHEMA
-        or decisions.get("schema_version") not in {_AUDIT_VERSION, _DECISIONS_VERSION}
+        or decisions.get("schema_version")
+        not in {*_LEGACY_DECISIONS_VERSIONS, _DECISIONS_VERSION}
     ):
         raise FailureReferenceBindingError("Unsupported reference audit schema")
     audit_id = _sha256(audit.get("audit_id"), "Reference audit ID")

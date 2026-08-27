@@ -64,11 +64,12 @@ Follow the evidence-backed order and invariants in
       checksum-bound pending review
       `current-character-story-tsk-game-v1`, review ID
       `938ff6f824a1fe7ebb5e98b350d77dc16f7097f19604d94f17d59a1639364ac8`.
-      Obtain one explicit accept/reject decision on it as a speaker-neutral
-      tongue-click. Acceptance must then preserve the exact game
-      event/bank/media/WAV hashes, explicitly disclaim Poacher I voice identity,
-      and pass the final composition-ledger review documented below; rejection
-      leaves the line unresolved rather than reading `Tsk` aloud.
+      The human accepted its exact WAV as a speaker-neutral tongue-click. Build
+      the production composition successor while preserving the exact game
+      event/bank/media/WAV hashes, explicitly disclaiming Poacher I voice
+      identity, and requiring the final composition-ledger review documented
+      below. Do not treat the accepted effect as character voice evidence or
+      read `Tsk` aloud.
       The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical
       losses (`LIMITED` at the unchanged 3.0-second cap), and the ambiguous
       `common_npc05` media is excluded. When CUDA is available,
@@ -142,10 +143,15 @@ Follow the evidence-backed order and invariants in
       immutable comparison: reference 02 for `314608:58` and reference 03 for
       `314608:94`. Their checksum-bound, self-contained single-candidate reviews
       are published with exact reference/result bytes and no generation-state
-      mutation. Obtain one human `accept_hypothesis` or `need_different` verdict
-      for each before any production-shaped successor render. Do not rerender
-      the completed arms, spend another seed or apply sentence splitting to
-      these lines.
+      mutation. The human rejected `314608:58` as `need_different` because of a
+      long pause; preserve that terminal hypothesis decision and do not rerender
+      its completed arm. The human accepted the exact reference-03 hypothesis
+      for `314608:94`. Add a provenance-preserving import from that accepted
+      single-candidate review into a fresh current failure audit, publish its
+      exact reference overlay, create one config-addressed successor, and run
+      exactly one production-shaped attempt. Any completed WAV remains pending
+      individual human review. Do not spend another unbound seed or apply
+      sentence splitting to either single-sentence line.
       For `314606:43` and `314606:6`, design an explicit cross-provider/live
       fallback authority that consumes the exhausted current-control,
       alternative-reference and segmentation evidence; it must not infer

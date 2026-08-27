@@ -34,8 +34,9 @@ FAILURE_REFERENCE_AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 FAILURE_REFERENCE_AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
 FAILURE_REFERENCE_AUDIT_VERSION = 2
 FAILURE_REFERENCE_DECISIONS_SCHEMA = "vntts.authoring-failure-reference-decisions"
-FAILURE_REFERENCE_DECISIONS_VERSION = 3
-_LEGACY_FAILURE_REFERENCE_DECISIONS_VERSION = 2
+FAILURE_REFERENCE_DECISIONS_VERSION = 4
+_LEGACY_FAILURE_REFERENCE_DECISIONS_VERSIONS = frozenset({2, 3})
+_SELECTION_AUTHORITY_DECISION_VERSIONS = frozenset({3, 4})
 
 
 class FailureReferenceAuditError(RuntimeError):
@@ -485,7 +486,7 @@ def load_failure_reference_decisions(directory):
         document.get("schema") != FAILURE_REFERENCE_DECISIONS_SCHEMA
         or document.get("schema_version")
         not in {
-            _LEGACY_FAILURE_REFERENCE_DECISIONS_VERSION,
+            *_LEGACY_FAILURE_REFERENCE_DECISIONS_VERSIONS,
             FAILURE_REFERENCE_DECISIONS_VERSION,
         }
         or document.get("audit_id") != audit.audit_id
@@ -623,7 +624,7 @@ def _validate_decision_inventory(directory, decisions, *, schema_version):
             "case_queue_ids",
         }
         accepted_shapes = {frozenset(required)}
-        if schema_version == FAILURE_REFERENCE_DECISIONS_VERSION:
+        if schema_version in _SELECTION_AUTHORITY_DECISION_VERSIONS:
             accepted_shapes.add(frozenset({*required, "selection_authority"}))
         if not isinstance(value, dict) or frozenset(value) not in accepted_shapes:
             raise FailureReferenceAuditError("Reference audit decision is malformed")
@@ -662,7 +663,7 @@ def _validate_selection_authority(
     queue_ids,
     selected_reference_sha256,
 ):
-    required = {
+    blind_required = {
         "schema",
         "schema_version",
         "comparison_id",
@@ -683,28 +684,86 @@ def _validate_selection_authority(
         "queue_id",
         "text_sha256",
     }
-    if (
-        not isinstance(value, dict)
-        or set(value) != required
-        or value.get("schema") != "vntts.authoring-reference-render-selection"
-        or value.get("schema_version") != 1
-    ):
-        raise FailureReferenceAuditError(
-            "Reference audit selection authority is malformed"
-        )
-    for field in (
+    hypothesis_required = {
+        "schema",
+        "schema_version",
+        "review_id",
+        "review_sha256",
+        "decision_sha256",
         "comparison_id",
         "comparison_sha256",
         "source_audit_id",
         "source_audit_sha256",
-        "listening_session_sha256",
-        "listening_key_sha256",
-        "listening_report_sha256",
+        "selected_arm_id",
+        "selected_arm_report_sha256",
         "selected_render_sha256",
         "source_candidate_group_id",
+        "source_candidate_id",
+        "source_reference",
         "selected_reference_sha256",
+        "queue_id",
         "text_sha256",
-    ):
+    }
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise FailureReferenceAuditError(
+            "Reference audit selection authority is malformed"
+        )
+    schema = value.get("schema")
+    if schema == "vntts.authoring-reference-render-selection":
+        if set(value) != blind_required or value.get("selected_side") not in {"a", "b"}:
+            raise FailureReferenceAuditError(
+                "Reference audit selection authority is malformed"
+            )
+        hash_fields = {
+            "comparison_id",
+            "comparison_sha256",
+            "source_audit_id",
+            "source_audit_sha256",
+            "listening_session_sha256",
+            "listening_key_sha256",
+            "listening_report_sha256",
+            "selected_render_sha256",
+            "source_candidate_group_id",
+            "selected_reference_sha256",
+            "text_sha256",
+        }
+        text_fields = {
+            "trial_id",
+            "selected_arm_id",
+            "source_candidate_id",
+            "source_reference",
+            "queue_id",
+        }
+    elif schema == "vntts.authoring-render-hypothesis-selection":
+        if set(value) != hypothesis_required:
+            raise FailureReferenceAuditError(
+                "Reference audit selection authority is malformed"
+            )
+        hash_fields = {
+            "review_id",
+            "review_sha256",
+            "decision_sha256",
+            "comparison_id",
+            "comparison_sha256",
+            "source_audit_id",
+            "source_audit_sha256",
+            "selected_arm_report_sha256",
+            "selected_render_sha256",
+            "source_candidate_group_id",
+            "selected_reference_sha256",
+            "text_sha256",
+        }
+        text_fields = {
+            "selected_arm_id",
+            "source_candidate_id",
+            "source_reference",
+            "queue_id",
+        }
+    else:
+        raise FailureReferenceAuditError(
+            "Reference audit selection authority is malformed"
+        )
+    for field in hash_fields:
         digest = value[field]
         if (
             not isinstance(digest, str)
@@ -714,22 +773,12 @@ def _validate_selection_authority(
             raise FailureReferenceAuditError(
                 "Reference audit selection authority hash is malformed"
             )
-    for field in (
-        "trial_id",
-        "selected_arm_id",
-        "source_candidate_id",
-        "source_reference",
-        "queue_id",
-    ):
+    for field in text_fields:
         text = value[field]
         if not isinstance(text, str) or not text or text != text.strip():
             raise FailureReferenceAuditError(
                 "Reference audit selection authority text is malformed"
             )
-    if value["selected_side"] not in {"a", "b"}:
-        raise FailureReferenceAuditError(
-            "Reference audit selection authority side is malformed"
-        )
     if (
         queue_ids != [value["queue_id"]]
         or value["selected_reference_sha256"] != selected_reference_sha256

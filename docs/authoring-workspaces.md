@@ -347,6 +347,15 @@ The resulting audit decision retains all of those SHA-256 authorities; an exact
 repeat is idempotent. This imports only the next reference hypothesis. It does
 not approve the comparison render or any production WAV.
 
+When only one comparison arm completed, a separate checksum-bound
+render-hypothesis review can accept that exact reference/result pair. Import it
+into a fresh one-case audit with
+`render-hypothesis-review-import FRESH_AUDIT COMPARISON REVIEW QUEUE_ID`.
+This alternate authority binds the exact review decision, arm report, result,
+source candidate, reference and text hashes. It selects only the next reference
+hypothesis and still does not approve either the comparison WAV or a production
+WAV.
+
 The listening command accepts exactly two complete arms. This is explicit when
 the immutable comparison contains more than two candidates: an arm that ended
 typed limited remains preserved in `comparison.json`, while two completed arms
@@ -358,10 +367,11 @@ legacy item hash but project its diagnostic through the same typed normalization
 used by the repair planner; they never require fabricated provider/control
 provenance merely to compare an existing manifest reference.
 
-Imported blind-selection authority uses failure-reference decision version 3
-and binding version 2. Readers continue to accept legacy decision/binding
-version 2/1 documents without inventing selection provenance; new publishers
-always write the current versions.
+Imported selection authority uses failure-reference decision version 4 and
+binding version 2. Version 4 distinguishes a blind A/B preference from an
+accepted single-render hypothesis. Readers continue to accept decision versions
+2 and 3 and binding version 1 without inventing selection provenance; new
+publishers always write the current versions.
 
 The binding command requires every audit group to have a terminal candidate
 decision and rejects `Neither candidate is acceptable`. It revalidates the

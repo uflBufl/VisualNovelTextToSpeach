@@ -132,6 +132,7 @@ from vntts.authoring.reference_selection import (
 )
 from vntts.authoring.render_hypothesis_review import (
     RenderHypothesisReviewError,
+    import_accepted_render_hypothesis,
     load_render_hypothesis_review,
     publish_render_hypothesis_review,
     record_render_hypothesis_decision,
@@ -649,6 +650,14 @@ def create_parser():
         help="Validate and inspect one unmatched render/reference review",
     )
     render_hypothesis_status.add_argument("directory", type=Path)
+    render_hypothesis_import = subparsers.add_parser(
+        "render-hypothesis-review-import",
+        help="Bind one accepted render hypothesis to one fresh exact audit",
+    )
+    render_hypothesis_import.add_argument("audit", type=Path)
+    render_hypothesis_import.add_argument("comparison", type=Path)
+    render_hypothesis_import.add_argument("review", type=Path)
+    render_hypothesis_import.add_argument("queue_id")
     failures = subparsers.add_parser(
         "failure-report",
         help="Group failed generation outcomes into stable typed cohorts",
@@ -1584,6 +1593,15 @@ def main(argv=None):
             return 0
         if arguments.command == "render-hypothesis-review-status":
             result = load_render_hypothesis_review(arguments.directory)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "render-hypothesis-review-import":
+            result = import_accepted_render_hypothesis(
+                arguments.audit,
+                arguments.comparison,
+                arguments.review,
+                arguments.queue_id,
+            )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
         if arguments.command == "speech-robustness-corpus":

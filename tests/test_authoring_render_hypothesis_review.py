@@ -11,9 +11,28 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.test_authoring_failure_reference_audit import (
+    FailureReferenceAuditTest,
+    _PreviewBackendFactory,
+)
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.failure_reference_audit import (
+    load_failure_reference_decisions,
+    publish_failure_reference_audit,
+)
+from vntts.authoring.failure_reference_binding import (
+    load_failure_reference_binding_document,
+    publish_failure_reference_binding,
+)
+from vntts.authoring.reference_render_comparison import (
+    REFERENCE_RENDER_INPUT_SCHEMA,
+    REFERENCE_RENDER_INPUT_VERSION,
+    load_reference_render_plan,
+    publish_reference_render_comparison,
+)
 from vntts.authoring.render_hypothesis_review import (
     RenderHypothesisReviewError,
+    import_accepted_render_hypothesis,
     load_render_hypothesis_review,
     publish_render_hypothesis_review,
     record_render_hypothesis_decision,
@@ -124,6 +143,118 @@ def write_comparison(root, *, reference_format="wav"):
 
 
 class RenderHypothesisReviewTest(unittest.TestCase):
+    def test_accepted_hypothesis_imports_into_fresh_audit_and_binding(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = FailureReferenceAuditTest().create_failed_workspace(
+                root
+            )
+            source_audit = root / "source-audit"
+            source = publish_failure_reference_audit(
+                workspace, source_audit, seed=0, queue_ids=(queue_id,)
+            )
+            source_document = json.loads((source_audit / "audit.json").read_text())
+            source_group = source_document["groups"][0]
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                        "schema_version": REFERENCE_RENDER_INPUT_VERSION,
+                        "audit": str(source_audit),
+                        "audit_id": source.audit_id,
+                        "arms": [
+                            {
+                                "arm_id": f"reference-{index}",
+                                "samples": [
+                                    {
+                                        "queue_id": queue_id,
+                                        "case_group_id": source_group["group_id"],
+                                        "candidate_group_id": source_group["group_id"],
+                                        "candidate_id": candidate["candidate_id"],
+                                    }
+                                ],
+                            }
+                            for index, candidate in enumerate(
+                                source_group["candidates"], start=1
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            comparison = publish_reference_render_comparison(
+                load_reference_render_plan(plan_path),
+                root / "comparison",
+                backend_factory=_PreviewBackendFactory(),
+            )
+            comparison_document = json.loads(
+                (comparison.directory / "comparison.json").read_text()
+            )
+            arm = comparison_document["arms"][0]
+            review_root = root / "review"
+            publish_render_hypothesis_review(
+                comparison.directory, queue_id, arm["arm_id"], review_root
+            )
+            record_render_hypothesis_decision(review_root, "accept_hypothesis")
+            fresh_audit = root / "fresh-audit"
+            publish_failure_reference_audit(
+                workspace, fresh_audit, seed=19, queue_ids=(queue_id,)
+            )
+            rejected_review = root / "rejected-review"
+            publish_render_hypothesis_review(
+                comparison.directory,
+                queue_id,
+                arm["arm_id"],
+                rejected_review,
+            )
+            record_render_hypothesis_decision(rejected_review, "need_different")
+            with self.assertRaisesRegex(
+                RenderHypothesisReviewError, "must be accepted"
+            ):
+                import_accepted_render_hypothesis(
+                    fresh_audit,
+                    comparison.directory,
+                    rejected_review,
+                    queue_id,
+                )
+
+            imported = import_accepted_render_hypothesis(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
+            repeated = import_accepted_render_hypothesis(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
+            binding_root = root / "binding"
+            publish_failure_reference_binding(fresh_audit, binding_root)
+            binding = load_failure_reference_binding_document(binding_root)
+            decision = load_failure_reference_decisions(fresh_audit)["decisions"][0]
+
+            self.assertTrue(imported.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(imported.decision_set_id, repeated.decision_set_id)
+            self.assertEqual(
+                decision["selection_authority"]["schema"],
+                "vntts.authoring-render-hypothesis-selection",
+            )
+            self.assertEqual(
+                binding["groups"][0]["selection_authority"],
+                decision["selection_authority"],
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = authoring_main(
+                    [
+                        "render-hypothesis-review-import",
+                        str(fresh_audit),
+                        str(comparison.directory),
+                        str(review_root),
+                        queue_id,
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertFalse(json.loads(stdout.getvalue())["created"])
+
     def test_publish_load_and_decide_are_self_contained(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

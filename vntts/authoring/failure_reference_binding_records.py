@@ -203,7 +203,7 @@ def load_failure_reference_binding(directory):
 
 
 def _validate_selection_authority(value, *, selected_reference_sha256):
-    required = {
+    blind_required = {
         "schema",
         "schema_version",
         "comparison_id",
@@ -224,33 +224,86 @@ def _validate_selection_authority(value, *, selected_reference_sha256):
         "queue_id",
         "text_sha256",
     }
+    hypothesis_required = {
+        "schema",
+        "schema_version",
+        "review_id",
+        "review_sha256",
+        "decision_sha256",
+        "comparison_id",
+        "comparison_sha256",
+        "source_audit_id",
+        "source_audit_sha256",
+        "selected_arm_id",
+        "selected_arm_report_sha256",
+        "selected_render_sha256",
+        "source_candidate_group_id",
+        "source_candidate_id",
+        "source_reference",
+        "selected_reference_sha256",
+        "queue_id",
+        "text_sha256",
+    }
     if (
         not isinstance(value, dict)
-        or set(value) != required
-        or value.get("schema") != "vntts.authoring-reference-render-selection"
         or value.get("schema_version") != 1
-        or value.get("selected_side") not in {"a", "b"}
         or value.get("selected_reference_sha256") != selected_reference_sha256
     ):
         raise FailureReferenceBindingError(
             "Reference binding selection authority is malformed"
         )
-    hash_fields = {
-        "comparison_id",
-        "comparison_sha256",
-        "source_audit_id",
-        "source_audit_sha256",
-        "listening_session_sha256",
-        "listening_key_sha256",
-        "listening_report_sha256",
-        "selected_render_sha256",
-        "source_candidate_group_id",
-        "selected_reference_sha256",
-        "text_sha256",
-    }
+    schema = value.get("schema")
+    if schema == "vntts.authoring-reference-render-selection":
+        if set(value) != blind_required or value.get("selected_side") not in {"a", "b"}:
+            raise FailureReferenceBindingError(
+                "Reference binding selection authority is malformed"
+            )
+        hash_fields = {
+            "comparison_id",
+            "comparison_sha256",
+            "source_audit_id",
+            "source_audit_sha256",
+            "listening_session_sha256",
+            "listening_key_sha256",
+            "listening_report_sha256",
+            "selected_render_sha256",
+            "source_candidate_group_id",
+            "selected_reference_sha256",
+            "text_sha256",
+        }
+        excluded_text_fields = {"schema_version", "selected_side"}
+    elif schema == "vntts.authoring-render-hypothesis-selection":
+        if set(value) != hypothesis_required:
+            raise FailureReferenceBindingError(
+                "Reference binding selection authority is malformed"
+            )
+        hash_fields = {
+            "review_id",
+            "review_sha256",
+            "decision_sha256",
+            "comparison_id",
+            "comparison_sha256",
+            "source_audit_id",
+            "source_audit_sha256",
+            "selected_arm_report_sha256",
+            "selected_render_sha256",
+            "source_candidate_group_id",
+            "selected_reference_sha256",
+            "text_sha256",
+        }
+        excluded_text_fields = {"schema_version"}
+    else:
+        raise FailureReferenceBindingError(
+            "Reference binding selection authority is malformed"
+        )
     for field in hash_fields:
         _sha256(value[field], f"Reference selection {field}")
-    for field in required - hash_fields - {"schema_version", "selected_side"}:
+    required = (
+        blind_required
+        if schema.endswith("reference-render-selection")
+        else hypothesis_required
+    )
+    for field in required - hash_fields - excluded_text_fields:
         _text(value[field], f"Reference selection {field}")
 
 
