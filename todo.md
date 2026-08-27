@@ -67,28 +67,18 @@ Follow the evidence-backed order and invariants in
       WAV, checksum-bound review and terminal merge as separate transactions.
       The matched blind trial for
       `reverse1999:314606:54:0450c81c4d1b3cc4` is complete at `1/1` and selected
-      `centurion-reference-03` over reference 02. Complete this exact hypothesis
-      as a provenance-preserving transaction:
-      1. build a fresh failure-reference audit from the current successor and
-         prove that its queue item, failed state and candidate reference bytes
-         still match the completed comparison/listening authorities; legacy
-         string-only failed items must be projected through the same normalized
-         failure record as the repair planner rather than crashing or inventing
-         structured provenance;
-      2. import the blind preference through a public checksum-bound bridge,
-         recording the comparison, listening report, opaque arm and selected
-         reference SHA-256 instead of manually editing an audit or binding;
-      3. publish one immutable reference binding and one config-addressed
-         successor, then preflight and render only that queue ID once with no
-         broad retry or approval side effect;
-      4. if the render validates, publish a checksum-bound review artifact and
-         stop for an explicit human approval; merge only that reviewed terminal
-         result. A typed failure remains evidence and must not spend another
-         attempt without a new hypothesis.
-      The bridge is complete only when mismatch/tamper/idempotency regressions,
-      CLI help, focused/full tests, lint, formatting, lock and diff checks pass.
-      The other 12 lines still require a different matched hypothesis or typed
-      supported fallback.
+      `centurion-reference-03` over reference 02. Its fresh audit, imported
+      decision, binding, config-addressed successor and single bounded render
+      are complete and recorded in
+      [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md).
+      Hear the one checksum-bound WAV in review plan
+      `157a0f3698be46ed308ac66064fdb0a1807cc6639175d1ef9b705633a2449897`.
+      Publish an explicit accepted or rejected decision, then merge only that
+      terminal result into the current composed workspace and rerun
+      reconciliation. Do not infer approval from its clean silence metrics or
+      spend another attempt. The other 12 lines still require a different
+      matched hypothesis or typed supported fallback.
+
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

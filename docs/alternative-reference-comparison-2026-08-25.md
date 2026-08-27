@@ -81,8 +81,33 @@ candidate A, which the checksum-bound key resolves to
 `eae1ee930f182b6262be5272519dd2c3170c2efc59a6c27fc1772dcb06b09ce3`.
 Reference 02 lost the exact pair. This preference selects only the next exact
 reference hypothesis for queue item `314606:54`; it is not a production
-approval. Reference 03 must be bound into a new exact-ID workspace, rendered
-once, validated and reviewed before its terminal outcome can be merged.
+approval. The following transaction binds, renders and validates that
+hypothesis; its result still requires a terminal human review.
+
+That exact hypothesis was executed once on 2026-08-27. The fresh audit ID is
+`655609916a99543ed0807d90fd5896268b272ea39c2ac14edf403bbdb869f4f5`;
+the imported blind decision-set ID is
+`87e574ab7359d85a04ca08f490d3d4d845f64189f32f07fd404ec13ab1283fba`;
+and the immutable reference-binding ID is
+`0777de073e4d4ce7362d908c4b0327f6d58cc8623a98ef381852aebbf105b688`.
+The config-addressed successor is
+`resume-395a5e5eec0327a3a793b66d-5d48e1fefe53cf26`. A preceding successor
+created by the old fingerprint implementation was never rendered, had the
+same state SHA as its base, and was moved intact under
+`interrupted-workspaces/` before retrying from fixed committed code.
+
+Only `reverse1999:314606:54:0450c81c4d1b3cc4` was eligible and rendered. It
+advanced from attempt 3/seed 2 to attempt 4/seed 3 and produced a pending-review
+PCM16 mono 48 kHz WAV with 372,480 frames (7.76 seconds), SHA-256
+`cf0b114bbcaee8a8629c888d9fd8336c173b0a5819d06c27800265934ce934f2`.
+Measured leading/trailing silence is zero, longest internal silence is 0.08
+seconds and silence ratio is 0.0206. The exact review plan ID is
+`157a0f3698be46ed308ac66064fdb0a1807cc6639175d1ef9b705633a2449897`;
+it contains one cohort and one mandatory sample, flagged only for fast pace.
+The other 591 state records retained canonical SHA-256
+`c8406d8116b26b906bf5977fb8d69dd8553b5ad8289adc2fc52402a644046d01`;
+no lease or partial WAV remained. This is still not an approval: the exact WAV
+must be heard before an accepted or rejected decision is published and merged.
 
 ## Dobharchu results
 
@@ -104,10 +129,11 @@ spend another seed or silently merge the portrait controls.
 
 ## Remaining decision boundary
 
-The one complete Narrator A/B trial selected reference 03 as the next bounded
-hypothesis. The two unmatched complete Narrator WAVs may be heard as diagnostics
-but cannot establish comparative superiority. The other four exact failures
-still need a different bounded hypothesis or an explicit supported fallback.
-The merged source state remained SHA-256
-`c673b8631045c0d2a6206c6458f93b38b4b39e9b30b8efd3acd5ebbd893c2cf6`
-after all publications.
+The one complete Narrator A/B trial selected reference 03, and the resulting
+single production-shaped WAV now awaits an explicit human accept/reject
+decision. The two unmatched complete Narrator comparison WAVs remain
+diagnostics and cannot establish comparative superiority. The other current
+failure-tail items need a different bounded hypothesis or an explicit
+supported fallback; none may inherit this reference decision by speaker or
+text similarity. The merged source state used for the transaction remained
+unchanged until its config-addressed successor was created.
