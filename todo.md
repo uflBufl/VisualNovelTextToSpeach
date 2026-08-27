@@ -34,15 +34,17 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Publish and complete a risk-based cohort review for the ten WAVs produced
+- [ ] Complete the risk-based cohort review for the ten WAVs produced
       by the exact 46-item run in workspace
       `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`. The bounded run used
       `selected=ready=46`, `retries=0` and `seed=0`; it produced ten
       `generated` and 36 typed `failed` outcomes while all 421 unrelated state
-      items remained byte-identical. Build cohorts only from those ten new WAVs,
-      bind every sample to the current state/queue/WAV hashes, require explicit
-      human review, and never infer approval from a technical pass.
-- [ ] Finish the bounded repair branches for the 36 new typed failures. The
+      items remained byte-identical. Review the published exact bundle
+      `current-character-story-ready-fallbacks-v1.json` (two cohorts, six
+      samples, zero blocked items); require an explicit human decision and
+      never infer approval from a technical pass.
+- [ ] Review the completed bounded repair branches for the 36 new typed
+      failures. The
       checksum-bound classifier found 29 missed-EOS and seven speech-silence
       failures. All bounded automatic branches are complete: six sentence-
       repair WAVs, five direct bounded-seed WAVs and 17 explicit unseeded Pocket
