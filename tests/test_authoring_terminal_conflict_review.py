@@ -29,6 +29,7 @@ from vntts.authoring.terminal_conflict_review import (
     PROGRESS_LEASE_VERSION,
     TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION,
     TerminalConflictReviewError,
+    carry_approved_cohort_terminal_conflict_decisions,
     carry_terminal_conflict_decisions,
     load_terminal_conflict_review,
     load_terminal_conflict_review_progress,
@@ -157,6 +158,78 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 TerminalConflictReviewError, "already has progress"
             ):
                 carry_terminal_conflict_decisions(source, target)
+
+    def test_carry_survives_refreshed_source_state_for_same_candidate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, queue_id, report_path = self.create_fixture(root)
+            source = root / "source-review"
+            target = root / "target-review"
+            source_result = publish_terminal_conflict_review(report_path, source)
+            review = json.loads(source_result.review.read_text(encoding="utf-8"))
+            case = review["cases"][0]
+            chosen = case["candidates"][0]["candidate_id"]
+            source_progress = record_terminal_conflict_decision(
+                source, case["case_id"], chosen
+            )
+
+            state_path = secondary / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id]["updated_at"] = "2026-08-27T12:00:00+00:00"
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            refreshed_report = build_authoring_reconciliation(
+                primary, root / "review-bundles"
+            )
+            refreshed_report_path = root / "refreshed-reconciliation.json"
+            write_authoring_reconciliation(refreshed_report, refreshed_report_path)
+            publish_terminal_conflict_review(refreshed_report_path, target)
+
+            carried = carry_terminal_conflict_decisions(source, target)
+
+            self.assertEqual(carried["decisions"], source_progress["decisions"])
+            self.assertEqual(load_terminal_conflict_review(target).completed_count, 1)
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "authority changed"
+            ):
+                record_terminal_conflict_decision(
+                    source,
+                    case["case_id"],
+                    case["candidates"][1]["candidate_id"],
+                    overwrite=True,
+                )
+
+    def test_carries_only_exact_approved_cohort_candidate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report_path, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            case = review["cases"][0]
+            approved = next(
+                candidate
+                for candidate in case["candidates"]
+                if candidate["authority"] == "approved"
+            )
+
+            progress = carry_approved_cohort_terminal_conflict_decisions(output)
+
+            self.assertEqual(
+                progress["decisions"],
+                [
+                    {
+                        "case_id": case["case_id"],
+                        "decision": approved["candidate_id"],
+                        "reviewed_at": progress["decisions"][0]["reviewed_at"],
+                    }
+                ],
+            )
+            self.assertEqual(load_terminal_conflict_review(output).completed_count, 1)
+
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "No exact approved cohort"
+            ):
+                carry_approved_cohort_terminal_conflict_decisions(output)
 
     def test_carried_progress_rejects_changed_predecessor(self):
         with TemporaryDirectory() as directory:

@@ -739,7 +739,14 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
 
 
 def carry_terminal_conflict_decisions(source_directory, target_directory):
-    """Carry only content-identical completed cases into a refreshed review."""
+    """Carry content-identical decisions into a current-authority review.
+
+    A completed decision belongs to the immutable candidate copies in the
+    source review, not to the continued immutability of every unrelated item in
+    its source workspace.  The target review independently binds the current
+    workspace authorities; the carry ledger binds the exact predecessor review,
+    progress and candidate identities that the operator actually heard.
+    """
     source_directory = _review_directory(source_directory)
     target_directory = _review_directory(target_directory)
     if source_directory == target_directory:
@@ -829,7 +836,6 @@ def carry_terminal_conflict_decisions(source_directory, target_directory):
         assert_authority_snapshot(
             target_review_snapshot, "target terminal conflict review"
         )
-        _assert_source_authorities(source_review)
         _assert_source_authorities(target_review)
         if target_progress.exists() or target_progress.is_symlink():
             raise TerminalConflictReviewError(
@@ -837,6 +843,122 @@ def carry_terminal_conflict_decisions(source_directory, target_directory):
             )
         atomic_write_json(target_progress, progress, sort_keys=True)
         return load_terminal_conflict_review_progress(target_directory)
+
+
+def carry_approved_cohort_terminal_conflict_decisions(directory):
+    """Reuse exact human cohort approvals for matching current candidates.
+
+    Rejections are intentionally not promoted: rejecting one cohort WAV does
+    not establish that another historical candidate is acceptable.  Every
+    selected candidate must be approved in the current state, carry the exact
+    cohort sample assessment, and match the review's queue ID and WAV digest.
+    Decisions are saved through the normal progress transaction, so a crash can
+    leave only a valid prefix and a concurrent authority change still fails
+    closed.
+    """
+    directory = _review_directory(directory)
+    review = load_terminal_conflict_review_document(directory)
+    _assert_source_authorities(review)
+    if (directory / "progress.json").exists():
+        progress = load_terminal_conflict_review_progress(directory)
+    else:
+        progress = {"decisions": []}
+    completed = {decision["case_id"] for decision in progress["decisions"]}
+    carried = []
+    for case in review["cases"]:
+        if case["case_id"] in completed:
+            continue
+        approved = [
+            candidate
+            for candidate in case["candidates"]
+            if candidate["authority"] == "approved"
+            and _candidate_has_exact_cohort_approval(case, candidate)
+        ]
+        if len(approved) > 1:
+            raise TerminalConflictReviewError(
+                f"Multiple cohort-approved candidates exist: {case['queue_id']}"
+            )
+        if not approved:
+            continue
+        progress = record_terminal_conflict_decision(
+            directory,
+            case["case_id"],
+            approved[0]["candidate_id"],
+        )
+        completed.add(case["case_id"])
+        carried.append(case["case_id"])
+    if not carried:
+        raise TerminalConflictReviewError(
+            "No exact approved cohort decisions can be carried"
+        )
+    return progress
+
+
+def _candidate_has_exact_cohort_approval(case, candidate):
+    for source in candidate["source_authorities"]:
+        try:
+            snapshot = capture_authority_file(
+                source["state"], "cohort-approved terminal conflict state"
+            )
+            authority = source["review_authority"]
+            if snapshot.sha256 != authority["state_sha256"]:
+                continue
+            state = snapshot.json_document("cohort-approved terminal conflict state")
+            item = state.get("items", {}).get(case["queue_id"])
+            if (
+                not isinstance(item, dict)
+                or canonical_document_sha256(item) != authority["item_sha256"]
+                or item.get("status") != "approved"
+                or item.get("review_status") != "approved"
+                or item.get("file_sha256") != candidate["audio_sha256"]
+            ):
+                continue
+            cohort = item.get("cohort_review")
+            if not isinstance(cohort, dict) or cohort.get("decision") not in {
+                "accepted",
+                "split",
+            }:
+                continue
+            samples = cohort.get("reviewed_samples")
+            assessments = cohort.get("sample_assessments")
+            if (
+                not isinstance(samples, list)
+                or not any(
+                    sample.get("queue_id") == case["queue_id"]
+                    and sample.get("audio_sha256") == candidate["audio_sha256"]
+                    for sample in samples
+                    if isinstance(sample, dict)
+                )
+                or not isinstance(assessments, list)
+                or not any(
+                    assessment.get("queue_id") == case["queue_id"]
+                    and assessment.get("assessment")
+                    in (
+                        {"heard", "acceptable"}
+                        if cohort["decision"] == "accepted"
+                        else {"acceptable"}
+                    )
+                    for assessment in assessments
+                    if isinstance(assessment, dict)
+                )
+            ):
+                continue
+            if cohort["decision"] == "split":
+                statuses = cohort.get("item_review_statuses")
+                if not isinstance(statuses, list) or not any(
+                    status.get("queue_id") == case["queue_id"]
+                    and status.get("review_status") == "approved"
+                    for status in statuses
+                    if isinstance(status, dict)
+                ):
+                    continue
+            assert_authority_snapshot(
+                snapshot, "cohort-approved terminal conflict state"
+            )
+            return True
+        except AuthoringAuthorityError as error:
+            raise TerminalConflictReviewError(str(error)) from error
+    return False
 
 
 def validate_terminal_conflict_review_progress_document(progress, review):
@@ -1054,7 +1176,6 @@ def _assert_progress_carry_forward(progress, review, seen=None):
                 "Carried terminal conflict decision identity changed"
             )
     _assert_progress_carry_forward(source_progress, source_review, observed)
-    _assert_source_authorities(source_review)
     assert_authority_snapshot(review_snapshot, "carried terminal conflict review")
     assert_authority_snapshot(progress_snapshot, "carried terminal conflict progress")
 
@@ -1238,6 +1359,7 @@ __all__ = [
     "TerminalConflictReviewError",
     "assert_terminal_conflict_review_source_authorities",
     "assert_terminal_conflict_progress_carry_forward",
+    "carry_approved_cohort_terminal_conflict_decisions",
     "carry_terminal_conflict_decisions",
     "load_terminal_conflict_review",
     "load_terminal_conflict_candidate_audio",

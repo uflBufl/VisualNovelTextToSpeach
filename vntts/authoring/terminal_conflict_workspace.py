@@ -392,6 +392,7 @@ def merge_terminal_conflict_resolution(
         base_document.get("outcome_merge"),
         base_document.get("failure_reference_binding"),
         merge,
+        base_document.get("config_rebase"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

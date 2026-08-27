@@ -164,6 +164,7 @@ from vntts.authoring.terminal_conflict_resolution import (
 )
 from vntts.authoring.terminal_conflict_review import (
     TerminalConflictReviewError,
+    carry_approved_cohort_terminal_conflict_decisions,
     carry_terminal_conflict_decisions,
 )
 from vntts.authoring.terminal_conflict_successor import (
@@ -480,6 +481,11 @@ def create_parser():
     )
     terminal_carry.add_argument("source_review_directory", type=Path)
     terminal_carry.add_argument("target_review_directory", type=Path)
+    terminal_cohort_carry = subparsers.add_parser(
+        "terminal-conflict-cohort-carry",
+        help="Carry exact approved cohort decisions into a current conflict review",
+    )
+    terminal_cohort_carry.add_argument("review_directory", type=Path)
     terminal_successor = subparsers.add_parser(
         "terminal-conflict-successor",
         help="Publish a resolution-aware reconciliation successor",
@@ -1135,6 +1141,12 @@ def main(argv=None):
             progress = carry_terminal_conflict_decisions(
                 arguments.source_review_directory,
                 arguments.target_review_directory,
+            )
+            print(json.dumps(progress, indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "terminal-conflict-cohort-carry":
+            progress = carry_approved_cohort_terminal_conflict_decisions(
+                arguments.review_directory
             )
             print(json.dumps(progress, indent=2, sort_keys=True))
             return 0

@@ -580,21 +580,23 @@ inspection output and does not launch generation.
 
 ## Execution order
 
-1. Review the 99 original and 45 follow-up specialist WAVs through their two
-   checksum-bound multi-workspace bundles plus the one newly generated primary
-   WAV. Preserve
-   source-local review authority and merge only exact terminal outcomes into a
-   successor history. Keep all six terminal complete silence failures for
-   reference/live fallback. Handle the 29 reference
-   comparisons as a separate blinded decision task. Do not raise the
-   20-second ceiling or run another broad seed sweep.
-2. Acquire and validate replacement references for Mrs. Owen and Hotelier, and
-   build a successor Dobharchú comparison that addresses slow pacing and
-   inter-phrase pauses. Human listening remains the authority for identity,
-   pronunciation and contamination.
-3. Generate the ten currently ready lines and newly unblocked missing-reference
-   lines only after their controls are immutable. Apply checksum-bound cohort
-   review to every new control combination.
+The specialist, primary-risk, reference-quality, Dobharchú and terminal-conflict
+reviews are complete. Their exact outcomes are composed in workspace
+`resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`: 345 approved, 71 rejected,
+five failed and 46 pending items. Reconciliation report
+`d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
+has no terminal conflicts or pending terminal merges.
+
+1. Render exactly the report's 46 `generation_ready_unselected` items with
+   selection-aware readiness, `retries=0` and `seed=0`. Do not regenerate a
+   terminal item.
+2. Publish a risk-based cohort review for successful WAVs and retain each
+   failed attempt as typed evidence. Human listening remains the authority for
+   approval, pronunciation and contamination.
+3. Resolve the five `new_hypothesis_required` Narrator failures through bounded
+   matched hypotheses. Resolve the 118 missing-voice items through an exact
+   reference or an explicit supported fallback; do not infer identity from a
+   name alone.
 4. Rebuild the approved-only manifest only from authoritative terminal state.
    Final game-pack publication remains blocked until every queue item has a
    terminal decision or an explicit supported fallback.

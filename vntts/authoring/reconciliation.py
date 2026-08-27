@@ -248,6 +248,7 @@ def build_authoring_reconciliation(
     workspace_reports = []
     actions = []
     occurrence_index = {}
+    resolved_terminal_conflicts = set()
     for workspace_path in sorted(workspace_paths, key=str):
         _require_contained_directory(
             workspaces_root, workspace_path, "Review source workspace"
@@ -259,6 +260,14 @@ def build_authoring_reconciliation(
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_path
         )
+        if directory == primary:
+            terminal_merge = workspace.get("terminal_conflict_merge")
+            if isinstance(terminal_merge, dict):
+                resolved_terminal_conflicts = {
+                    item["queue_id"]
+                    for item in terminal_merge.get("items", [])
+                    if isinstance(item, dict) and isinstance(item.get("queue_id"), str)
+                }
         summary = inspect_workspace(directory)
         queue_payload = _read_bytes(summary.queue, "workspace queue")
         queue = _load_queue_snapshot(queue_payload)
@@ -548,7 +557,9 @@ def build_authoring_reconciliation(
                 ).items()
             )
         )
-    conflicts = _terminal_conflicts(occurrence_index)
+    conflicts = _terminal_conflicts(
+        occurrence_index, resolved_queue_ids=resolved_terminal_conflicts
+    )
 
     _assert_snapshots_unchanged(snapshots)
     if _json_inventory(bundle_root) != bundle_inventory:
@@ -597,7 +608,7 @@ def build_authoring_reconciliation(
     return AuthoringReconciliation(report_id, {**body, "report_id": report_id})
 
 
-def _terminal_conflicts(occurrence_index):
+def _terminal_conflicts(occurrence_index, *, resolved_queue_ids=frozenset()):
     conflicts = []
     for queue_id, occurrences in sorted(occurrence_index.items()):
         terminal = {
@@ -611,7 +622,7 @@ def _terminal_conflicts(occurrence_index):
         reasons = []
         if len(queue_records) > 1:
             reasons.append("parallel workspaces contain different queue records")
-        if len(terminal) > 1:
+        if len(terminal) > 1 and queue_id not in resolved_queue_ids:
             reasons.append("parallel workspaces contain conflicting terminal decisions")
         if reasons:
             conflicts.append(

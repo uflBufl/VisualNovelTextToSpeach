@@ -25,6 +25,7 @@ from vntts.authoring.config_rebase import (
     _prior_config_rebase_target_route,
     _target_route_status,
     rebase_workspace_config,
+    validate_config_rebase_workspace,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -233,6 +234,53 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             )
             manifest_document = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(manifest_document["entry_count"], 1)
+
+    def test_validation_allows_only_ledger_bound_later_terminal_overlay(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, target = _prepare(root)
+            result = rebase_workspace_config(source, target, root / "workspaces")
+            workspace = json.loads(
+                (result.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            state = load_generation_state(
+                result.directory / "generated-audio/generation-state.json",
+                result.directory / "queue.jsonl",
+            )
+            queue_id = fixture["queue_id"]
+            extension = {
+                "source_workspace_id": result.directory.name,
+                "source_state_sha256": "1" * 64,
+                "source_item_sha256": "2" * 64,
+                "audio_sha256": state["items"][queue_id]["file_sha256"],
+                "status": "approved",
+                "review_status": "approved",
+                "selected_candidate_id": "3" * 64,
+                "next_action": "apply_selected_approved_outcome",
+            }
+            state["items"][queue_id]["terminal_conflict_resolution"] = extension
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "item projection changed"
+            ):
+                validate_config_rebase_workspace(result.directory, workspace, state)
+
+            workspace["terminal_conflict_merge"] = {
+                "items": [{"queue_id": queue_id, **extension}]
+            }
+            validate_config_rebase_workspace(result.directory, workspace, state)
+            state["items"][queue_id].pop("config_rebase")
+            validate_config_rebase_workspace(result.directory, workspace, state)
+            state["items"][queue_id].pop("terminal_conflict_resolution")
+            workspace.pop("terminal_conflict_merge")
+            state["items"][queue_id]["outcome_merge"] = extension
+            workspace["outcome_merge"] = {
+                "items": [{"queue_id": queue_id, **extension}]
+            }
+            validate_config_rebase_workspace(result.directory, workspace, state)
+            state["items"][queue_id]["config_rebase"] = {"changed": True}
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "state item changed"):
+                validate_config_rebase_workspace(result.directory, workspace, state)
 
     def test_rejects_changed_reference_bytes_before_publication(self):
         with TemporaryDirectory() as directory:

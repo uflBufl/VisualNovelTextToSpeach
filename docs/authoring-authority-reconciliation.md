@@ -213,8 +213,30 @@ source state/item/WAV digest. Source workspaces can contain other terminal
 items without making them eligible. Primary or source config, queue, state,
 item, authority or WAV drift fails before atomic no-replace publication, and
 the same report is idempotent. The real report above has not been applied: its
-nine-item merge remains deliberately gated on the unfinished Dobharchú cohort
-and the sixth terminal-conflict decision.
+nine-item merge was deliberately gated on the unfinished Dobharchú cohort and
+the sixth terminal-conflict decision and is now historical evidence only.
+
+### Final post-review Character Story authority
+
+The Dobharchú cohort and terminal conflicts are now terminal. A fresh
+reconciliation over composed workspace
+`resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad` is published as
+`authoring/reconciliations/current-character-story-20260827-d3da2f94cc94.json`:
+
+- report ID
+  `d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`;
+- file SHA-256
+  `11cbdd8e305e4e7049664582a4b14b21b9e5f4efa85f95c2b906a6e0307bbb3b`;
+- zero terminal conflicts and zero `terminal_merge_required` actions;
+- 46 exact `generation_ready_unselected`, five
+  `new_hypothesis_required`, and 118
+  `source_reference_or_explicit_fallback` actions.
+
+The primary state has 345 approved, 71 rejected, five failed and 46 pending
+items. Its workspace-document SHA-256 is
+`7f4fd53ad7e2051ac7c0af21264a04376c89ddfe72892417319aead3677329b2`.
+Applying an older report again or using its superseded primary workspace is no
+longer part of the completion path.
 
 ## Lease and terminal-publication invariants
 

@@ -45,6 +45,7 @@ from vntts.authoring.bulk_generation import (
     _inline_pause_matches_failure,
     _sentence_repair_matches_failure,
     _snapshot_control_files,
+    _write_generated_manifest_from_state,
     is_spoken_queue_item,
     load_generation_state,
     load_review_audio_bytes,
@@ -1071,6 +1072,7 @@ def _merge_workspace_outcomes(
         outcome_merge,
         base_document.get("failure_reference_binding"),
         base_document.get("terminal_conflict_merge"),
+        base_document.get("config_rebase"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1170,7 +1172,11 @@ def _merge_workspace_outcomes(
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
         try:
-            publish_generated_manifest(output / "generation-state.json")
+            _write_generated_manifest_from_state(
+                target_state,
+                output,
+                output / "manifest.json",
+            )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
         import_snapshot = _load_json(
@@ -1180,6 +1186,10 @@ def _merge_workspace_outcomes(
         _validate_workspace_input_config(staging, workspace, import_snapshot)
         _validate_workspace_offline_fallback_state(staging, workspace)
         _validate_workspace_outcome_merge(staging, workspace)
+        _validate_workspace_terminal_conflict_merge(staging, workspace)
+        if workspace.get("config_rebase") is not None:
+            module = importlib.import_module("vntts.authoring.config_rebase")
+            module.validate_config_rebase_workspace(staging, workspace, target_state)
         try:
             source_directories = (base_directory, *source_values)
             with generation_publication_leases(

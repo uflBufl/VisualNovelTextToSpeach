@@ -25,17 +25,6 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ## Offline authoring and application responsibility split
 
-### P0 - Make mixed-quality cohort review expressible and understandable
-
-- [ ] Complete the one remaining real Dobharchú cohort through the redesigned
-      dialog. The checksum-bound session already restores all 15 heard samples,
-      exactly one `pause_or_pacing` bad marker, and an exact 15/15 sample/target
-      match. Confirm `Repair 1 marked; accept 14 heard`; then require the source
-      state to contain exactly one rejected and 14 approved outcomes, the
-      approved-only manifest to contain only those 14, and the reconciled bundle
-      to report zero remaining cohorts. Do not infer or invoke this terminal
-      human authority from the observation sidecar alone.
-
 ### P0 - Complete the current Character Story in fail-closed order
 
 Follow the checkpoint, dependencies and acceptance boundaries in
@@ -45,53 +34,40 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] After both current human review gates are terminal, apply only the nine
-      checksum-bound `terminal_merge_required` outcomes named by reconciliation
-      report `3ad299f2207451dff9e7293f2e28023133d5cf5fc99e0ba5b0b5092f27760ea5`
-      to the primary workspace through `merge-reconciled-outcomes`, then
-      publish a fresh reconciliation from the successor. The exact-ID,
-      tamper-resistant, source-generation-lease-protected and idempotent apply
-      contract is documented in
-      [`authoring-workspaces.md`](docs/authoring-workspaces.md). Do not run the
-      real merge while the Dobharchu cohort and terminal-conflict v3 decision
-      are pending.
+- [ ] Render only the 46 `generation_ready_unselected` queue IDs named by final
+      reconciliation report
+      `d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
+      in workspace `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`.
+      Require selection-aware preflight `selected=ready=46`, no missing voice,
+      exact repeated `--queue-id`, `retries=0` and `seed=0`; do not regenerate
+      any terminal item. After the run, verify unrelated state/WAV hashes and
+      publish a risk-based cohort review for generated results instead of
+      inferring approval.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
-      Follow the immutable census and candidate contract in
-      [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).
-      Treat the evaluated composite only as a speaker-consistency candidate,
-      never as a pause repair. Compare it with the 2.38-second reference only
-      after both use the selected corrected-pause strategy documented below.
-      Review the published bundle
-      `current-character-story-dobharchu-natural-expansion-v1.json`. Three of
-      four cohorts are terminal. The remaining cohort has 15/15 restored heard
-      samples and one explicit `pause_or_pacing` bad marker, but no terminal
-      decision. Apply only an explicit
-      source-local cohort decision, then merge terminal reviewed
-      repair outcomes into successor
-      `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a`; preserve its four
-      existing approvals, the 15 primary approvals, the two accepted portrait
-      variants and all unrelated state. Do not extend the portrait alias to
-      unbound portrait `534705` or weaken the global silence gate. Five failures
-      remain outside this review: sentence repair still failed for
+- [ ] Resolve the five source-local Dobharchú failures before reusing this voice
+      in another story. The four real cohorts are terminal: workspace
+      `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20 approvals and
+      one rejection, and its exact accepted outcomes are already represented in
+      the composed current workspace. Preserve that authority. Sentence repair
+      still failed for
       `reverse1999:314605:102:1ab22c5fa4f30490`,
       `reverse1999:314605:95:ebc446c3c6e843bb` and
       `reverse1999:314608:8:7c5e047cb7785953`; exact reference comparison is
       still required for `reverse1999:314608:29:7be68e27f6d36933` and
       `reverse1999:314608:38:4988416dc161621c`. Do not retry any of those five
-      until a new bounded, evidence-backed hypothesis and review gate exist.
+      until a new bounded, evidence-backed hypothesis and review gate exist;
+      do not extend the portrait alias to unbound portrait `534705`.
 - [ ] Resolve the exact five-failure tail without another broad retry. Current
       selection-aware reconciliation report
-      `3ad299f2207451dff9e7293f2e28023133d5cf5fc99e0ba5b0b5092f27760ea5`
+      `d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`
       classifies only `314606:54`, `314608:58`, `314608:94`, `314606:43` and
-      `314606:6` as `new_hypothesis_required`. The nine already reviewed
-      secondary outcomes are separate checksum-bound `terminal_merge_required`
-      work, not new failures. Preserve the completed evidence described in
+      `314606:6` as `new_hypothesis_required`; terminal conflicts and secondary
+      outcome merges are already closed. Preserve the completed evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated

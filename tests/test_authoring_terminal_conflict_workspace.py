@@ -22,6 +22,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import _load_bound_review_workspace
+from vntts.authoring.reconciliation import build_authoring_reconciliation
 from vntts.authoring.terminal_conflict_resolution import (
     publish_terminal_conflict_resolution,
 )
@@ -139,6 +140,10 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                     inspect_workspace(created.directory).approved,
                     int(authority == "approved"),
                 )
+                refreshed = build_authoring_reconciliation(
+                    created.directory, case_root / "review-bundles"
+                )
+                self.assertEqual(refreshed.document["terminal_conflicts"], [])
 
     def test_neither_choice_cannot_create_a_publishable_workspace(self):
         with TemporaryDirectory() as directory:

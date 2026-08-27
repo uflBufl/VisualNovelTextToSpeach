@@ -513,6 +513,23 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
     records = rebase.get("items")
     if not isinstance(records, list) or not records:
         raise AuthoringWorkbenchError("Config rebase item ledger is empty")
+    later_extensions = {}
+    outcome_merge = workspace.get("outcome_merge")
+    if isinstance(outcome_merge, dict) and isinstance(outcome_merge.get("items"), list):
+        for item in outcome_merge["items"]:
+            if isinstance(item, dict) and isinstance(item.get("queue_id"), str):
+                later_extensions.setdefault(item["queue_id"], {})["outcome_merge"] = {
+                    key: value for key, value in item.items() if key != "queue_id"
+                }
+    terminal_merge = workspace.get("terminal_conflict_merge")
+    if isinstance(terminal_merge, dict) and isinstance(
+        terminal_merge.get("items"), list
+    ):
+        for item in terminal_merge["items"]:
+            if isinstance(item, dict) and isinstance(item.get("queue_id"), str):
+                later_extensions.setdefault(item["queue_id"], {})[
+                    "terminal_conflict_resolution"
+                ] = {key: value for key, value in item.items() if key != "queue_id"}
     observed_ids = []
     for record in records:
         record_fields = {
@@ -595,10 +612,24 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         expected_extension = {
             key: value for key, value in record.items() if key != "queue_id"
         }
-        if (
-            not isinstance(current, dict)
-            or current.get("config_rebase") != expected_extension
+        if not isinstance(current, dict):
+            raise AuthoringWorkbenchError(
+                f"Config rebase state item changed for {queue_id!r}"
+            )
+        overlays = later_extensions.get(queue_id, {})
+        if overlays and all(
+            current.get(key) == value for key, value in overlays.items()
         ):
+            observed_extension = current.get("config_rebase")
+            if (
+                observed_extension is not None
+                and observed_extension != expected_extension
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Config rebase state item changed for {queue_id!r}"
+                )
+            continue
+        if current.get("config_rebase") != expected_extension:
             raise AuthoringWorkbenchError(
                 f"Config rebase state item changed for {queue_id!r}"
             )
@@ -634,7 +665,13 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         for queue_id, item in state["items"].items()
         if isinstance(item, dict) and "config_rebase" in item
     )
-    if marked_ids != observed_ids:
+    expected_marked_ids = sorted(
+        queue_id
+        for queue_id in observed_ids
+        if isinstance(state["items"].get(queue_id), dict)
+        and "config_rebase" in state["items"][queue_id]
+    )
+    if marked_ids != expected_marked_ids:
         raise AuthoringWorkbenchError("Config rebase state ledger is incomplete")
 
 

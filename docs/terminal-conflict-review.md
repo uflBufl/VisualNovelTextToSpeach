@@ -222,12 +222,67 @@ review SHA-256
 `ab83bdf0169e7ebba88006dafbf72be3057263df732c2c22c5056df045e73d04`
 and progress SHA-256
 `bd11f575e061675549a88042936e8a1cb36c0c8111fa92f015592ee30c52342a`.
-Loading, editing and resolution publication revalidate both predecessor files
-and their historical source workspaces; a changed predecessor or an attempt to
-overwrite a carried decision fails before writing.
+Loading, editing and resolution publication revalidate both predecessor files,
+their immutable copied candidate WAVs and the current target review sources.
+Historical source workspaces may legitimately gain unrelated or provenance-only
+state changes after the operator heard the copied bytes. Such drift does not
+invalidate a carried content-identical decision; a changed predecessor review,
+progress, candidate identity or copied WAV still fails before writing.
 
 No decision was inferred for the new Dobharchú case. Review v3 now reports
 exactly 5/6 complete, with only case
 `b64c207cee54471fb1fc56a60ac6cbfad8da493c310dc3c1f40653c37c46a396`
 pending human listening. This separates reuse of an identical prior human
 decision from authorization of newly conflicting audio.
+
+## Completed Dobharchú authority refresh and v4 application
+
+Completing the four Dobharchú cohorts changed workspace
+`resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` to 20 approvals and one
+rejection. Review v3 then correctly refused its final save with `Terminal
+conflict authority changed`: its candidate WAV was unchanged, but its captured
+whole-state SHA was stale. The fresh reconciliation report
+`current-character-story-20260827-f3b68e88680e.json`, report ID
+`f3b68e88680e258a1781b270a00fb1024e97a457fec80b570571dc09449f9118`,
+surfaced 19 conflicts: the six v3 cases plus 13 newly terminal Dobharchú
+approvals opposing historical rejections.
+
+Review v4 has review ID
+`0aba09ec4c2091ba09f2e3b5296a7380913fd704aaddde7d917923a9e7992ad0`,
+19 cases and 38 copied candidates. Five content-identical v3 decisions were
+carried with their original timestamps. The remaining 14 selected approved
+candidates were not inferred from chronology: each current state item contains
+an exact cohort-review approval for the same queue ID and WAV SHA, including
+the previously pending `314608:70` candidate SHA
+`66a31f0fb44e1f6bcc1197ff12db44276696993e01440b2a120e5a1a41462e85`.
+`terminal-conflict-cohort-carry` accepts only that exact positive authority;
+cohort rejection never promotes another historical candidate. Review and
+progress SHA-256 values are respectively
+`f04507a710322232fb78f81e0476ddcacb67a4df57e02af8e89fb795241c4342` and
+`624d7812dddbd448f077f0c65b94655ea33a322565295a550750d99ffcdd6b56`.
+
+The completed review published resolution ID
+`e72d23e65e38e77e9eb54e9a281e35f93ade0e833df0fc7f07264f0f84fe80a9`
+and successor ID
+`f813e6e7587ff77778b8eb02db1417c68247fbc473f3c96da2b2e7e2a9f83ffb`.
+The corrected terminal workspace is
+`resume-395a5e5eec0327a3a793b66d-55476d9713c49bec`; it contains 17 selected
+approvals and two retained rejections. A subsequent exact reconciliation named
+ten unrelated terminal outcomes. Applying those outcomes produced final
+composed workspace `resume-395a5e5eec0327a3a793b66d-0f0300f2c7b702ad`
+with 19 terminal-conflict and ten outcome-merge ledger items, 345 approvals, 71
+rejections, five failures and 46 pending items. Final report
+`current-character-story-20260827-d3da2f94cc94.json`, report ID
+`d3da2f94cc945da2a1af5a3a7ae643744ef3377fcf837f032589972a804ea700`,
+contains zero terminal conflicts and no remaining terminal-merge actions.
+
+This application exposed and fixed three stacked-workflow validation defects:
+config-rebase projection now permits only ledger-bound later terminal/outcome
+overlays, both merge fingerprints retain the config-rebase identity, and
+reconciliation suppresses an authority disagreement only when the validated
+primary terminal ledger resolves that exact queue ID. A different queue-record
+identity remains a conflict.
+The pre-fix workspace `resume-395a5e5eec0327a3a793b66d-7208cd65ffb74b95`
+was never a reconciliation primary and was moved intact to
+`authoring/interrupted-workspaces/invalid-config-fingerprint-...-7208cd65ffb74b95`
+for diagnostic retention.
