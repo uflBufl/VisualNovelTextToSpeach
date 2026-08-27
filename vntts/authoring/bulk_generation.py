@@ -4229,19 +4229,19 @@ def _validate_success_item(
             raise BulkGenerationError(
                 f"Generated WAV speech quality mismatch for {queue_id!r}"
             )
-        if (
-            result.get("provider") == "original-game-audio-event"
-            or "audio_event_composition" in result
-        ):
-            module = importlib.import_module("vntts.authoring.audio_event_workspace")
-            try:
-                module.validate_audio_event_composition_state_item(
-                    output_directory.parent,
-                    queue_id,
-                    result,
-                )
-            except module.AudioEventWorkspaceError as error:
-                raise BulkGenerationError(str(error)) from error
+    if (
+        result.get("provider") == "original-game-audio-event"
+        or "audio_event_composition" in result
+    ):
+        module = importlib.import_module("vntts.authoring.audio_event_workspace")
+        try:
+            module.validate_audio_event_composition_state_item(
+                output_directory.parent,
+                queue_id,
+                result,
+            )
+        except module.AudioEventWorkspaceError as error:
+            raise BulkGenerationError(str(error)) from error
 
 
 def _validate_success_file(queue_id, result, audio):

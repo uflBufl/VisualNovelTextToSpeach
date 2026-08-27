@@ -53,7 +53,6 @@ from vntts.authoring.bulk_generation import (
     LEASE_VERSION,
     NO_PROMPT_SHA256,
     SPEECH_QUALITY_ANALYSIS_VERSION,
-    STATE_SCHEMA,
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
@@ -851,10 +850,6 @@ def create_audio_event_composition_workspace(
     queue, state, _state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "audio-event base"
     )
-    if state.get("schema") != STATE_SCHEMA:
-        raise AuthoringWorkbenchError(
-            "Audio-event successor requires current VNTTS generation state"
-        )
     try:
         composition = load_audio_event_composition(composition_directory)
     except AudioEventCompositionError as error:

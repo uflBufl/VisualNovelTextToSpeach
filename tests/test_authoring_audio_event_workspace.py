@@ -2,7 +2,6 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
-from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -23,13 +22,8 @@ from vntts.authoring.audio_event_review import (
     publish_source_audio_event_review,
     record_audio_event_review_decision,
 )
-from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
-    NO_PROMPT_SHA256,
-    STATE_SCHEMA,
-    STATE_VERSION,
     BulkGenerationError,
-    inspect_generated_speech,
     load_generation_state,
     publish_generated_manifest,
     review_generation_item,
@@ -52,30 +46,12 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         state_path = base / "generated-audio/generation-state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         result = state["items"][queue_item.queue_id]
-        audio = base / "generated-audio" / result["path"]
-        state.update(
-            {
-                "schema": STATE_SCHEMA,
-                "schema_version": STATE_VERSION,
-                "active": None,
-                "synthesis_controls": {},
-            }
-        )
+        state["active"] = None
         result.update(
             {
                 "status": "generated",
                 "review_status": "rejected",
                 "attempts_by_provider": {"moss-tts": result["attempts"]},
-                "generation_profile": "stable",
-                "speaker": queue_item.speaker,
-                "requested_voice_character": queue_item.voice_character,
-                "voice_character": queue_item.voice_character,
-                "prompt_sha256": NO_PROMPT_SHA256,
-                "prompt_applied": False,
-                "queue_annotations_sha256": canonical_document_sha256({}),
-                "synthesis_text_sha256": queue_item.text_sha256,
-                "synthesis_provenance_sha256": "b" * 64,
-                "speech_quality": asdict(inspect_generated_speech(audio)),
             }
         )
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
@@ -142,6 +118,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             self.assertEqual(base_audio.read_bytes(), base_audio_before)
             self.assertEqual(result["status"], "generated")
             self.assertEqual(result["review_status"], "pending_review")
+            self.assertEqual(state["schema"], "r1999.bulk-generation-state")
             self.assertEqual(result["provider"], "original-game-audio-event")
             self.assertFalse(
                 result["audio_event_composition"]["speaker_identity_claim"]
