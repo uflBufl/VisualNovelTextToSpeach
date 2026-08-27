@@ -155,14 +155,17 @@ while one-sentence controls remained below 0.25 seconds.
       on speaker change (for example `Poacher I.`) and then the unchanged
       canonical line. Preserve the original speaker/requested role and keep the
       cue outside the pregenerated WAV, text and checksum authority. Exact
-      `???` remains Narrator by policy. Revalidate route and generation at cue
-      playback, cancel stale cues, do not announce game-source audio, and cover
-      consecutive fallback lines, fallback-to-Narrator transitions, disabled
-      mode, interruption and auto-advance in controller/replay tests. Expose
-      this as a distinct `Narrator fallback roles only` setting instead of
-      silently changing the existing all-speaker accessibility mode; complete
-      only after a real Character Story listening pass confirms the cue is
-      informative without becoming repetitive.
+      `???` retains Narrator synthesis but must use the audible cue `Unknown`,
+      never `Narrator`; this distinguishes an unattributed character from true
+      narration without inventing identity. Revalidate route and generation at
+      cue playback, cancel stale cues, do not announce game-source audio, and
+      cover consecutive fallback lines, unknown-to-Narrator and named
+      fallback-to-Narrator transitions, disabled mode, interruption and
+      auto-advance in controller/replay tests. Expose this as a distinct
+      `Narrator fallback roles only` setting instead of silently changing the
+      existing all-speaker accessibility mode; complete only after a real
+      Character Story listening pass confirms the cue is informative without
+      becoming repetitive.
 
 ### P0 - Repair failures observed in the latest Character Story run
 
