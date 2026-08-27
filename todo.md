@@ -40,26 +40,13 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Close the 23-line evidence boundary for `Poacher I`, `Poacher II` and
-      `Glyndŵr` with the already approved explicit Narrator fallback. Create a
-      config-addressed target retaining the existing Hotelier fallback and
-      adding only those three exact roles, then rebase the current 384 approved
-      and 71 rejected decisions without rewriting synthesis provenance.
-      Acceptance requires the same import/queue/story/voice controls, zero
-      changed terminal item or WAV hashes, no active lease/partial output and
-      a focused preflight reduction from 118 to 95 missing-reference lines.
-      Config rebase must resolve an approved failure-reference overlay through
-      its checksum-bound `source_reference_binding.source_voice_character`
-      instead of treating the internal `Selected failure reference ...` label
-      as a manifest character; require the target Narrator route to contain the
-      exact selected reference SHA before carrying that outcome.
-      A chained `retired_rejected` route must likewise carry its preserved
-      source reference identity rather than treating the intentionally empty
-      inactive target route as malformed or active.
-      Generate only the 23 newly covered queue IDs once at seed 0 with no broad
-      retry or approval side effect. Preserve typed failures; if valid WAVs are
-      produced, publish one checksum-bound fallback cohort review and stop for
-      human listening before projecting any terminal decisions.
+- [ ] Listen to the one exact Poacher/Glyndŵr Narrator-fallback cohort in
+      `current-character-story-poacher-glyndwr-narrator-fallback-v1.json`.
+      It contains seven required samples covering eight checksum-bound pending
+      WAVs. Accept only if Centurion remains a suitable explicit fallback for
+      all three source roles; otherwise mark the exact bad samples or reject the
+      cohort. Do not project a terminal decision or retry the 15 typed failures
+      until this human gate is complete.
 - [ ] Resolve the five source-local Dobharchú failures before reusing this voice
       in another story. The four real cohorts are terminal: workspace
       `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20 approvals and

@@ -159,6 +159,45 @@ silence failures requiring reference comparison. No result was approved by
 generation, and the ten carried approved Rhiannon entries remain the complete
 approved manifest.
 
+## Explicit Poacher/Glyndŵr Narrator fallback, 2026-08-27
+
+The remaining evidence boundary for `Poacher I`, `Poacher II` and `Glyndŵr`
+was closed with the already selected Centurion Narrator rather than an inferred
+character voice. Config-addressed seed workspace
+`resume-395a5e5eec0327a3a793b66d-5d2ea3b8ef7216e8` retains the exact story,
+voice-manifest, backend, model and profile controls and adds only those three
+roles to the existing Hotelier fallback. Config-rebase successor
+`resume-395a5e5eec0327a3a793b66d-9c7597652d106523` carries all 455 terminal
+outcomes from the composed source: 384 approvals and 71 rejections. All 455
+status/review pairs, WAV digests and bytes match, its approved-only manifest
+has exactly 384 entries, and global missing-reference coverage falls from 118
+to 95 lines: 93 Aderyn and two Dobharchú lines remain unresolved.
+
+The rebase required two compatibility rules that remain fail-closed. A current
+failure-reference overlay resolves its exact runtime control bytes and maps its
+`source_reference_binding.source_voice_character` onto the target route; a
+historical offline-fallback result may use only the validated reference digests
+stored in `failure_repair.source_failure.source_voice_reference`. The selected
+reference digest must be present in the target route. A chained
+`retired_rejected` record revalidates its preserved source route against the
+retirement ledger rather than treating its intentionally empty target route as
+active. Focused regressions, idempotent synthetic publication and the full
+1416-test suite cover these cases.
+
+One exact generation pass then attempted only the 23 newly covered queue IDs at
+seed 0 with no retries. Eight WAVs passed technical validation and remain
+`generated/pending_review`; 15 attempts failed without publishing a WAV: 13
+typed missed-EOS/audio-limit failures and two speech-silence failures. The
+other 459 state records are byte-identical under canonical SHA-256
+`03258cd54f7cd2ef3f7a78cf3efdf2a9424c875a25040f0cb8b06dab88324916`.
+The workspace has 463 WAVs total, no active attempt, lease or partial output,
+and generation did not change the 384-entry approved manifest. Immutable review
+bundle `current-character-story-poacher-glyndwr-narrator-fallback-v1.json`
+(bundle ID
+`a484f39149abc5f4a1415791541dd70c4aea159c69b082fcaae2f2bd1b69aa07`)
+binds exactly those eight pending WAVs in one cohort with seven required
+samples. No terminal review decision has been projected.
+
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four
 lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those
