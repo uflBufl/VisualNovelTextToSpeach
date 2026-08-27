@@ -100,59 +100,20 @@ Follow the evidence-backed order and invariants in
       publish a genuinely new reference hypothesis and checksum-bound output
       comparison. Do not repeat an exhausted seed/repair, treat a rejection as
       a failure, or extend the portrait alias to unbound portrait `534705`.
-- [ ] Resolve the exact current four-failure tail without another broad retry.
-      Poacher II is handled by its separate blind reference task above. The
-      remaining three exact Narrator lines are `314608:58`, `314606:43` and
-      `314606:6`. Their exact current-control regeneration batch
-      is complete: all four retained typed failures at MOSS seed 0, while every
-      unrelated state record and WAV stayed byte-identical. The isolated
-      two-line sentence repair also completed fail-closed with no WAV.
-      `314606:43` still produced a 3.44-second internal pause and now requires a
-      checksum-bound reference comparison or explicit live fallback. The
-      `314606:6` attempt used an invalid `Mrs. Owen` split; the parser is fixed
-      and fully tested. Its separate corrected two-segment workspace also
-      finished typed limited with no WAV, so sentence segmentation is exhausted
-      for both multi-sentence lines. Do not spend another MOSS seed or repeat
-      either segmentation plan. The
-      single-sentence internal-silence failures `314608:58` and `314608:94`
-      already have one unmatched complete alternative-reference WAV each in the
-      immutable comparison: reference 02 for `314608:58` and reference 03 for
-      `314608:94`. Their checksum-bound, self-contained single-candidate reviews
-      are published with exact reference/result bytes and no generation-state
-      mutation. The human rejected `314608:58` as `need_different` because of a
-      long pause; preserve that terminal hypothesis decision and do not rerender
-      its completed arm. The human accepted the exact reference-03 hypothesis
-      for `314608:94`. Its checksum-bound import, reference overlay and
-      config-addressed successor are complete, and the one permitted production
-      attempt completed as a 7.76-second PCM16 mono WAV with 0.40-second longest
-      internal silence. The human approved exact WAV SHA-256
-      `59c6f5eb48c4...`; current composed successor
-      `resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483` already includes that
-      approval. Do not spend another unbound seed or apply sentence splitting
-      to either single-sentence line.
-      For `314606:43` and `314606:6`, design an explicit cross-provider/live
-      fallback authority that consumes the exhausted current-control,
-      alternative-reference and segmentation evidence; it must not infer
-      provider exhaustion from disconnected workspace attempt counters or
-      silently promote Pocket output. Implement it as a versioned decision that:
-      (1) binds the exact current queue/state/item authority before mutation;
-      (2) accepts only stable, inactive evidence workspaces with the identical
-      queue record and immutable import; (3) embeds canonical failed-result
-      snapshots and hashes rather than only external paths; (4) requires each
-      repair result to carry forward the exact current item hash and requires a
-      completed `sentence_boundary_segmentation` hypothesis; (5) rechecks every
-      source hash under the generation lease before atomic commit; and (6)
-      remains readable by both final-pack publication and live routing while
-      preserving existing schema-v1 decisions. Add negative tests for stale
-      items, active or changed sources, mismatched queues, missing repair
-      evidence and unsupported providers, plus an end-to-end publication/load
-      test. Then apply the authority only to the exact two lines in a new
-      config-addressed or otherwise immutable successor; do not mutate a
-      superseded source workspace merely to make the test pass. Preserve the completed older 12-failure
-      evidence described in
-      [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
-      and do not repeat an exhausted seed/provider/repair. Keep all failed
-      repair attempt records as immutable evidence.
+- [ ] Resolve the remaining Narrator failure
+      `reverse1999:314608:58:c3e23840e6ecc840` without another render. Its exact
+      current-control MOSS failure and one complete alternative-reference WAV
+      already exist; the human rejected that alternative as `need_different`
+      because of a long pause. Extend the evidence-bound live-fallback authority
+      to consume the immutable render-hypothesis review and exact terminal
+      decision, bind its queue/text/reference/result hashes to the current
+      failed item, and reject undecided, accepted, stale or externally changed
+      review evidence. Publish/load regression coverage must remain compatible
+      with schema-v1 decisions and the completed segmentation-evidence schema.
+      Apply the exact fallback only after a read-only real preflight. Do not
+      rerender the completed arm, spend another unbound seed, apply sentence
+      splitting to this single-sentence line, or infer a review decision from
+      the WAV alone.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

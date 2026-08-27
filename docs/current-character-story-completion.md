@@ -846,3 +846,21 @@ and rejected WAV
 while its event WAV remains exact SHA-256
 `492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
 No further `Tsk!` review or merge is required.
+
+The evidence-bound live-fallback authority then terminalized the two exhausted
+Narrator segmentation chains without synthesizing or approving Pocket WAVs.
+Queue `314606:43` binds current failed item `47d859ac...` to exact repair result
+`c95e02b8...` from workspace `...-a26944e66772019a`; queue `314606:6` binds
+current failed item `abe8fa8f...` to corrected repair result `041de717...` from
+workspace `...-4b31c8c7ae86f526`. Their schema-v2 decision SHA-256 values are
+`f98c8b33bf2fcc4b2c3066628f25ef5941e8b3fc0d7cba28746afbdd91c42238`
+and
+`a4614e5172a745a151252d86d9f1751e33d26755ca77d0e942c46f00a713e1ee`.
+The current state and approved-only manifest SHA-256 values are now
+`fb1e27b9f30e07ae91f5d42e5acb2d50939283b9d3ff84645f6e9d7522a38dcb`
+and
+`20d86724b1d04f660761cdda8542219d5e229540be09b09431e9010355390c4e`.
+Public status is 401 approved, 77 rejected generated WAVs, two explicit live
+fallbacks and two remaining failures, with no active attempt. The only failures
+are Poacher II `314606:62` and Narrator `314608:58`; both require their separate
+reference-decision paths rather than another broad retry.
