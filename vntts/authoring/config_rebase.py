@@ -28,7 +28,6 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
-    queue_voice_overrides_sha256,
     retired_source_reference_variants_from_manifest,
 )
 from vntts.authoring.workbench import (
@@ -849,11 +848,6 @@ def _failure_reference_route(binding, queue_item, result):
         or not synthetic_character.strip()
         or (runtime_character is not None and synthetic_character != runtime_character)
         or result.get("voice_character") != synthetic_character
-        or (
-            runtime_character is not None
-            and source_binding.get("queue_voice_overrides_sha256")
-            != queue_voice_overrides_sha256(binding.queue_voice_overrides)
-        )
     ):
         raise AuthoringWorkbenchError(
             f"Config rebase failure-reference binding changed for {queue_id!r}"
