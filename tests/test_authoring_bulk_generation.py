@@ -2277,6 +2277,68 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(plan["records"][0]["action"], "reference_comparison")
 
+    def test_nested_repair_history_prevents_sentence_segmentation_cycle(self):
+        result = {
+            "failure_repair": {
+                "schema_version": 1,
+                "strategy": "bounded_seed_retry",
+            },
+            "carry_forward": {
+                "source_repair_strategy": "sentence_boundary_segmentation",
+                "source_parent_carry_forward": {
+                    "source_repair_strategy": "bounded_seed_retry"
+                },
+            },
+        }
+        history = bulk_module._failure_repair_history(result)
+        report = {
+            "state": "/tmp/state.json",
+            "state_sha256": "a" * 64,
+            "queue": "/tmp/queue.jsonl",
+            "queue_sha256": "b" * 64,
+            "failure_count": 1,
+            "records": [
+                {
+                    "queue_id": "game:1:hash",
+                    "line_id": "game:1",
+                    "speaker": "Narrator",
+                    "text": "The first warning is clear. The second is clear.",
+                    "requested_voice_character": "Narrator",
+                    "synthesis_voice_character": "Narrator",
+                    "provider": "moss-tts",
+                    "model": "moss-local",
+                    "generation_profile": "stable",
+                    "synthesis_control_digest": "c" * 64,
+                    "attempts": 3,
+                    "attempts_by_provider": {"moss-tts": 3},
+                    "seed": 2,
+                    "last_error": "speech silence",
+                    "failure": {
+                        "kind": "speech_silence",
+                        "speech_quality": {
+                            "leading_silence_seconds": 0.0,
+                            "trailing_silence_seconds": 0.0,
+                            "longest_internal_silence_seconds": 3.0,
+                        },
+                        "text_features": {"sentence_boundary_count": 2},
+                    },
+                    "failure_repair": result["failure_repair"],
+                    "failure_repair_history": history,
+                }
+            ],
+        }
+        with patch.object(
+            bulk_module, "generation_failure_report", return_value=report
+        ):
+            plan = generation_failure_repair_plan("state.json", "queue.jsonl")
+
+        self.assertEqual(
+            history,
+            ["bounded_seed_retry", "sentence_boundary_segmentation"],
+        )
+        self.assertEqual(plan["records"][0]["action"], "reference_comparison")
+        self.assertIn("earlier sentence-boundary repair", plan["records"][0]["reason"])
+
     def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

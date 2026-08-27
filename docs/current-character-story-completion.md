@@ -611,6 +611,54 @@ has zero terminal conflicts and reports ten `human_cohort_review`, 41
 `new_hypothesis_required` and 118
 `source_reference_or_explicit_fallback` actions.
 
+The automatic bounded repair sweep then completed without changing the composed
+primary or making review decisions:
+
+- exact sentence repair for 18 failures produced five WAVs at attempt 2/seed 1;
+- a separately carried final seed produced one more WAV at attempt 3/seed 2,
+  leaving 12 MOSS failures in that branch;
+- direct bounded seeds for 15 failures produced five WAVs at attempt 2/seed 1;
+  the valid nine-item final seed produced none;
+- the planner excluded four items whose latest outcome changed from missed EOS
+  to speech silence rather than forcing the old repair class;
+- one unseeded Pocket attempt for the remaining 17 planner-authorized,
+  MOSS-exhausted missed-EOS items produced 17 WAVs.
+
+All runs used exact queue-ID selections, `retries=0`, isolated config-addressed
+successors and post-run equality checks for every unrelated state item. No WAV
+was approved. Their review publications are:
+
+- `current-character-story-sentence-repair-v2.json`, bundle ID
+  `6fc099e2485893688d75deef11c08ee81ee6ef29b4ef9c7e95e84be5e51e268d`,
+  file SHA-256
+  `37e219c0d609b77db7946703ed0a8c75afa667768b0a12d7a863747f65d5c719`,
+  two cohorts, six items, four samples;
+- `current-character-story-bounded-seed-repair-v1.json`, bundle ID
+  `193e184b3761b78f4b56644a8fdd3afb03cbbcaa9eac9b7026310c05b32724fd`,
+  file SHA-256
+  `9f66105a738e949e61c7aace82b61208e275726957fbd679ef61fdd62119fae0`,
+  two cohorts, five items, three samples;
+- `current-character-story-pocket-fallback-v1.json`, bundle ID
+  `5049f5f3e36d504abda64166cc4ad85ab709a005f51c33550153a1b5e56d2961`,
+  file SHA-256
+  `11992e1c78a09bfb9c9d659e3a407201fedf71e1582017834e75bec0607b6541`,
+  four cohorts, 17 items, 13 samples.
+
+The first unfiltered sentence bundle exposed 197 unrelated legacy pending WAVs
+as blocked occurrences. It had no observations or decisions and was moved
+intact to `interrupted-review-bundles/overscoped-current-character-story-
+sentence-repair-v1.json`; v2 is the authoritative exact-selection replacement.
+
+Post-repair reconciliation report
+`7a142c50fa9f621e76b16360f4832997c5a2f8680a5ded0ff772f652c95013a4`
+(file SHA-256
+`9e180d0f9270afcafeaf275ef5fac9b7e59b0a23e6ebc9e7214157c5618b8ad8`)
+has zero terminal conflicts and reports 38 `human_cohort_review`, 41
+`new_hypothesis_required` and 118
+`source_reference_or_explicit_fallback` actions. The 38 review items are exactly
+the ten direct results, six sentence repairs, five bounded-seed results and 17
+Pocket fallbacks. They require 26 samples across ten cohorts, not listen-all.
+
 1. Complete the two-cohort, six-sample human review and retain each failed
    attempt as typed evidence. Human listening remains the authority for
    approval, pronunciation and contamination.

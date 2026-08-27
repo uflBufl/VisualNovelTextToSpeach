@@ -42,12 +42,23 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       items remained byte-identical. Build cohorts only from those ten new WAVs,
       bind every sample to the current state/queue/WAV hashes, require explicit
       human review, and never infer approval from a technical pass.
-- [ ] Classify the 36 new typed failures by exact reason and repair eligibility
-      before any retry. Produce a checksum-bound repair plan that separates
-      safe sentence-boundary/edge-silence repairs from missed-EOS, reference,
-      and exhausted/unsupported failures. Do not spend another seed, extend the
-      audio limit, or change provider until a bounded hypothesis names the exact
-      queue IDs and preserves all successful and terminal outcomes.
+- [ ] Finish the bounded repair branches for the 36 new typed failures. The
+      checksum-bound classifier found 29 missed-EOS and seven speech-silence
+      failures. All bounded automatic branches are complete: six sentence-
+      repair WAVs, five direct bounded-seed WAVs and 17 explicit unseeded Pocket
+      fallback WAVs were published in isolated successors without approving
+      anything. Review them through the exact bundles
+      `current-character-story-sentence-repair-v2.json` (two cohorts, four
+      samples), `current-character-story-bounded-seed-repair-v1.json` (two
+      cohorts, three samples), and
+      `current-character-story-pocket-fallback-v1.json` (four cohorts, 13
+      samples). Four nominally exhausted items changed to speech-silence under
+      their latest waveform and were deliberately excluded: three require new
+      sentence-boundary evidence and one requires reference comparison. Keep
+      those four plus the earlier three inline-pause/reference comparisons
+      separate; they require matched evidence before any production retry.
+      Never extend the audio limit or change provider implicitly, and preserve
+      every successful/terminal outcome in isolated successors.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 

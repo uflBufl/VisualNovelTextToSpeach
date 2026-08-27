@@ -112,6 +112,15 @@ every selected item is still a current typed failure in the matching cohort
 before rendering, so a stale repair workspace cannot regenerate unrelated or
 already-reviewed work.
 
+Failed-outcome carry-forward also records the source repair strategy and keeps
+the nested predecessor chain. `generation_failure_report()` projects this as a
+newest-first `failure_repair_history`. The repair planner uses that history to
+avoid cyclic plans: if speech silence remains after a proven sentence-boundary
+repair and a later bounded seed, it requires reference/listening evidence
+instead of proposing sentence segmentation again. Older workspace records that
+predate the additive strategy field remain readable; their missing history is
+not guessed.
+
 ## Carrying reviewed character outcomes into a new narrator workspace
 
 `create_resume_workspace()` accepts the explicit pair

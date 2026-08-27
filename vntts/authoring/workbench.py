@@ -2668,10 +2668,10 @@ def _carry_forward_review_outcomes(
                 reference_character,
             ),
         }
+        if source_repair_strategy is not None:
+            carry_record["source_repair_strategy"] = source_repair_strategy
         if strategy == OFFLINE_FALLBACK_BACKEND:
             carry_record["source_provider_attempts"] = source_provider_attempts
-            if source_repair_strategy is not None:
-                carry_record["source_repair_strategy"] = source_repair_strategy
         if strategy == BOUNDED_SEED_RETRY:
             carry_record["source_provider_attempts"] = provider_attempts
         parent_carry = result.get("carry_forward")

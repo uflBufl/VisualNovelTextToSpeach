@@ -1572,6 +1572,104 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture["queue_id"],
         )
 
+    def test_bounded_successor_preserves_prior_sentence_repair_strategy(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            publish_generated_manifest,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root,
+                text="The gate is already open. We should leave before dawn.",
+            )
+            queue_path = source.directory / "queue.jsonl"
+            state_path = source.directory / "generated-audio/generation-state.json"
+            state = load_generation_state(state_path, queue_path)
+            old = state["items"].pop(fixture["queue_id"])
+            (source.directory / "generated-audio" / old["path"]).unlink()
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            publish_generated_manifest(state_path)
+            initial = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            initial.name = "moss-tts"
+            initial.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                source.directory / "generated-audio",
+                initial,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+            )
+            sentence_policy = FailureRepairPolicy((fixture["queue_id"],))
+            sentence = create_resume_workspace(
+                imported,
+                root / "sentence",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=sentence_policy,
+                carry_forward_from=source.directory,
+            )
+            limited = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            limited.name = "moss-tts"
+            limited.model_name = "model with spaces"
+            run_bulk_generation(
+                sentence.directory / "queue.jsonl",
+                sentence.directory / "generated-audio",
+                limited,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=sentence_policy,
+            )
+            bounded_policy = FailureRepairPolicy(
+                bounded_seed_retry_queue_ids=(fixture["queue_id"],)
+            )
+            bounded = create_resume_workspace(
+                imported,
+                root / "bounded",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=bounded_policy,
+                carry_forward_from=sentence.directory,
+            )
+            carried = load_generation_state(
+                bounded.directory / "generated-audio/generation-state.json",
+                bounded.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
+            inspect_workspace(bounded.directory)
+
+        self.assertEqual(
+            carried["carry_forward"]["source_repair_strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(
+            bulk_generation_module._failure_repair_history(carried),
+            ["sentence_boundary_segmentation"],
+        )
+
     def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

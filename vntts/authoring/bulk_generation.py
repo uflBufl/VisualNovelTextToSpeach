@@ -1052,6 +1052,7 @@ def generation_failure_report(state_path, queue_path):
                 "last_error": result.get("last_error"),
                 "failure": failure,
                 "failure_repair": copy.deepcopy(result.get("failure_repair")),
+                "failure_repair_history": _failure_repair_history(result),
             }
         )
     records.sort(key=lambda value: value["queue_id"])
@@ -1128,6 +1129,7 @@ def generation_failure_repair_plan(state_path, queue_path):
             if isinstance(previous_repair, dict)
             else None
         )
+        repair_history = record.get("failure_repair_history", [])
         if not _failure_has_bound_synthesis_controls(record):
             action = "provenance_recovery_or_regeneration"
             reason = (
@@ -1202,7 +1204,16 @@ def generation_failure_repair_plan(state_path, queue_path):
                 and quality.get("longest_internal_silence_seconds", 0)
                 <= MAX_INTERNAL_SILENCE_SECONDS
             )
-            if _sentence_repair_matches_failure(failure, record["text"]):
+            if (
+                SENTENCE_BOUNDARY_SEGMENTATION in repair_history
+                and _sentence_repair_matches_failure(failure, record["text"])
+            ):
+                action = "reference_comparison"
+                reason = (
+                    "speech-silence remained after an earlier sentence-boundary "
+                    "repair and requires listening or reference audit"
+                )
+            elif _sentence_repair_matches_failure(failure, record["text"]):
                 action = "sentence_boundary_segmentation"
                 reason = "internal silence between multiple complete sentences"
             elif _inline_pause_matches_failure(failure, record["text"]):
@@ -1264,6 +1275,29 @@ def generation_failure_repair_plan(state_path, queue_path):
         "action_counts": dict(sorted(action_counts.items())),
         "records": planned,
     }
+
+
+def _failure_repair_history(result):
+    """Return newest-first repair strategies proven by one outcome chain."""
+    observed = []
+
+    def remember(value):
+        if isinstance(value, str) and value and value not in observed:
+            observed.append(value)
+
+    repair = result.get("failure_repair")
+    if isinstance(repair, dict):
+        remember(repair.get("strategy"))
+    carry = result.get("carry_forward")
+    visited = set()
+    while isinstance(carry, dict):
+        digest = _canonical_sha256(carry)
+        if digest in visited:
+            break
+        visited.add(digest)
+        remember(carry.get("source_repair_strategy"))
+        carry = carry.get("source_parent_carry_forward")
+    return observed
 
 
 def _failure_has_bound_synthesis_controls(record):
