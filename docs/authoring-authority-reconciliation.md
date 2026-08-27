@@ -78,6 +78,10 @@ The item-level next actions are deliberately conservative:
   limit is not authorized;
 - `source_reference_or_explicit_fallback`: the selected workspace has no usable
   voice for that line;
+- `terminal_merge_required`: the primary item is nonterminal, but exactly one
+  current secondary workspace already owns a checksum-bound approved, rejected
+  or explicit-fallback outcome; merge that named state item instead of
+  synthesizing again;
 - `generation_ready_unselected`: immutable controls are ready, but no exact
   generation selection was authorized;
 - `workspace_blocked`: workspace controls fail the readiness gate for the exact

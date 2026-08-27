@@ -85,6 +85,16 @@ Follow the evidence-backed order and invariants in
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated
       WAV, checksum-bound review and terminal merge as separate transactions.
+- [ ] Make reconciliation prefer one exact current terminal outcome over a
+      stale failed primary record. Emit a checksum-bound
+      `terminal_merge_required` action naming the sole source workspace,
+      authority and state-item digest; keep multiple or conflicting terminal
+      sources out of this automatic projection. Add a parallel-workspace
+      regression, rebuild the real report, and verify that the seven already
+      reviewed Pocket outcomes become merge work while only the five genuinely
+      unresolved failures retain `new_hypothesis_required`. Do not apply the
+      merge until the remaining Dobharchú cohort and terminal-conflict decision
+      are complete.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

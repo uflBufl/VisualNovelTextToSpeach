@@ -20,6 +20,7 @@ RECONCILIATION_ACTIONS = {
     "new_hypothesis_required",
     "review_plan_required",
     "source_reference_or_explicit_fallback",
+    "terminal_merge_required",
     "workspace_blocked",
 }
 TERMINAL_AUTHORITIES = {"approved", "rejected", "explicit_fallback"}
@@ -436,6 +437,30 @@ def _validated_report_actions(value, workspace_ids):
             _required_text(action.get("reason"), "Action reason")
             if kind in {"human_cohort_review", "review_plan_required"}:
                 _required_sha256(action.get("audio_sha256"), "Action audio SHA-256")
+            if kind == "terminal_merge_required":
+                source = _required_object(
+                    action.get("terminal_source"), "Terminal merge source"
+                )
+                _require_fields(
+                    source,
+                    {"workspace_id", "authority", "state_item_sha256"},
+                    "Terminal merge source",
+                )
+                source_workspace_id = _required_text(
+                    source.get("workspace_id"), "Terminal source workspace ID"
+                )
+                if source_workspace_id not in workspace_ids:
+                    raise AuthoringReconciliationSchemaError(
+                        "Terminal merge source references an unknown workspace"
+                    )
+                if source.get("authority") not in TERMINAL_AUTHORITIES:
+                    raise AuthoringReconciliationSchemaError(
+                        "Terminal merge source authority is invalid"
+                    )
+                _required_sha256(
+                    source.get("state_item_sha256"),
+                    "Terminal source state-item SHA-256",
+                )
             if kind == "human_cohort_review":
                 cohort = _required_object(action.get("cohort"), "Action cohort")
                 _require_fields(

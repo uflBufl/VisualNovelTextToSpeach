@@ -397,16 +397,32 @@ def build_authoring_reconciliation(
                 if isinstance(result.get("live_fallback"), dict):
                     terminal_counts["explicit_fallback"] += 1
                     _remember_occurrence(
-                        occurrence_index, workspace, item, "explicit_fallback"
+                        occurrence_index,
+                        workspace,
+                        item,
+                        "explicit_fallback",
+                        state_item=result,
                     )
                     continue
                 if status == "approved" and review_status == "approved":
                     terminal_counts["approved"] += 1
-                    _remember_occurrence(occurrence_index, workspace, item, "approved")
+                    _remember_occurrence(
+                        occurrence_index,
+                        workspace,
+                        item,
+                        "approved",
+                        state_item=result,
+                    )
                     continue
                 if status == "generated" and review_status == "rejected":
                     terminal_counts["rejected"] += 1
-                    _remember_occurrence(occurrence_index, workspace, item, "rejected")
+                    _remember_occurrence(
+                        occurrence_index,
+                        workspace,
+                        item,
+                        "rejected",
+                        state_item=result,
+                    )
                     continue
                 if status == "generated" and review_status == "pending_review":
                     action = "review_plan_required"
@@ -521,6 +537,17 @@ def build_authoring_reconciliation(
             }
         )
 
+    actions = _project_terminal_merge_actions(actions, occurrence_index)
+    for workspace_report in workspace_reports:
+        workspace_report["action_counts"] = dict(
+            sorted(
+                Counter(
+                    action["action"]
+                    for action in actions
+                    if action.get("workspace_id") == workspace_report["workspace_id"]
+                ).items()
+            )
+        )
     conflicts = _terminal_conflicts(occurrence_index)
 
     _assert_snapshots_unchanged(snapshots)
@@ -592,7 +619,19 @@ def _terminal_conflicts(occurrence_index):
                     "queue_id": queue_id,
                     "reason": "; ".join(reasons),
                     "occurrences": sorted(
-                        occurrences,
+                        (
+                            {
+                                key: occurrence[key]
+                                for key in (
+                                    "workspace_id",
+                                    "authority",
+                                    "line_id",
+                                    "text_sha256",
+                                    "queue_record_sha256",
+                                )
+                            }
+                            for occurrence in occurrences
+                        ),
                         key=lambda value: (
                             value["workspace_id"],
                             value["authority"],
@@ -648,16 +687,62 @@ def _action_record(workspace, item, action, *, status, review_status, reason):
     }
 
 
-def _remember_occurrence(index, workspace, item, authority):
-    index.setdefault(item.queue_id, []).append(
-        {
-            "workspace_id": workspace["workspace_id"],
-            "authority": authority,
-            "line_id": item.line_id,
-            "text_sha256": item.text_sha256,
-            "queue_record_sha256": canonical_document_sha256(item.to_record()),
-        }
-    )
+def _remember_occurrence(index, workspace, item, authority, *, state_item=None):
+    occurrence = {
+        "workspace_id": workspace["workspace_id"],
+        "authority": authority,
+        "line_id": item.line_id,
+        "text_sha256": item.text_sha256,
+        "queue_record_sha256": canonical_document_sha256(item.to_record()),
+    }
+    if state_item is not None:
+        occurrence["state_item_sha256"] = canonical_document_sha256(state_item)
+    index.setdefault(item.queue_id, []).append(occurrence)
+
+
+def _project_terminal_merge_actions(actions, occurrence_index):
+    projected = []
+    for action in actions:
+        if action["action"] not in {
+            "generation_ready_unselected",
+            "new_hypothesis_required",
+            "source_reference_or_explicit_fallback",
+            "workspace_blocked",
+        }:
+            projected.append(action)
+            continue
+        terminal = [
+            occurrence
+            for occurrence in occurrence_index.get(action["queue_id"], ())
+            if occurrence["authority"] in {"approved", "rejected", "explicit_fallback"}
+        ]
+        if len(terminal) != 1:
+            projected.append(action)
+            continue
+        source = terminal[0]
+        state_item_sha256 = source.get("state_item_sha256")
+        if not isinstance(state_item_sha256, str) or not _SHA256.fullmatch(
+            state_item_sha256
+        ):
+            raise AuthoringReconciliationError(
+                f"Terminal merge source lacks state authority: {action['queue_id']}"
+            )
+        projected.append(
+            {
+                **action,
+                "action": "terminal_merge_required",
+                "reason": (
+                    f"exact {source['authority']} terminal outcome is available in "
+                    f"{source['workspace_id']}"
+                ),
+                "terminal_source": {
+                    "workspace_id": source["workspace_id"],
+                    "authority": source["authority"],
+                    "state_item_sha256": state_item_sha256,
+                },
+            }
+        )
+    return projected
 
 
 def _snapshot_workspace_voice_controls(directory, workspace, snapshots):

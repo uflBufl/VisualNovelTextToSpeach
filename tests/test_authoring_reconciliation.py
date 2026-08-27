@@ -369,6 +369,98 @@ class AuthoringReconciliationTest(unittest.TestCase):
             1,
         )
 
+    def test_single_secondary_terminal_outcome_replaces_primary_failure_action(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, primary = create_test_workspace(root)
+            secondary = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=primary.directory / "inputs/story-index.jsonl",
+                voice_manifest=primary.directory / "inputs/voice/manifest.json",
+                narrator_character="Rhiannon",
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="terminal-source",
+            ).directory
+            primary_state_path = (
+                primary.directory / "generated-audio/generation-state.json"
+            )
+            primary_state = json.loads(primary_state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(primary_state["items"]))
+            primary_state["active"] = None
+            primary_state["items"][queue_id] = {
+                "status": "failed",
+                "attempts": 1,
+                "seed": 0,
+                "last_error": "bounded primary failure",
+                "updated_at": "2026-08-27T00:00:00+00:00",
+            }
+            primary_state_path.write_text(
+                json.dumps(primary_state, sort_keys=True), encoding="utf-8"
+            )
+            secondary_state_path = secondary / "generated-audio/generation-state.json"
+            secondary_state = json.loads(
+                secondary_state_path.read_text(encoding="utf-8")
+            )
+            secondary_state["active"] = None
+            secondary_state["items"][queue_id].update(
+                {
+                    "status": "generated",
+                    "review_status": "pending_review",
+                    "generation_profile": "terminal-source",
+                    "voice_character": "Rhiannon",
+                    "prompt_applied": False,
+                    "synthesis_provenance_sha256": "b" * 64,
+                }
+            )
+            secondary_state_path.write_text(
+                json.dumps(secondary_state, sort_keys=True), encoding="utf-8"
+            )
+            bundles = root / "review-bundles"
+            bundles.mkdir()
+            publication = bundles / "secondary.json"
+            write_cohort_review_bundle(
+                build_cohort_review_bundle((secondary,)), publication
+            )
+            self.decide_parallel_bundle(publication, ((secondary.name, "accepted"),))
+
+            report = build_authoring_reconciliation(primary.directory, bundles)
+
+        action = next(
+            value
+            for value in report.document["actions"]
+            if value["queue_id"] == queue_id
+        )
+        self.assertEqual(action["action"], "terminal_merge_required")
+        self.assertEqual(action["terminal_source"]["workspace_id"], secondary.name)
+        self.assertEqual(action["terminal_source"]["authority"], "approved")
+        self.assertRegex(
+            action["terminal_source"]["state_item_sha256"], r"^[0-9a-f]{64}$"
+        )
+        self.assertEqual(
+            report.document["summary"]["action_counts"],
+            {"terminal_merge_required": 1},
+        )
+        primary_report = next(
+            value
+            for value in report.document["workspaces"]
+            if value["workspace_id"] == primary.directory.name
+        )
+        self.assertEqual(
+            primary_report["action_counts"], {"terminal_merge_required": 1}
+        )
+        self.assertEqual(report.document["summary"]["terminal_conflict_count"], 0)
+        tampered = deepcopy(report.document)
+        tampered["actions"][0]["terminal_source"].pop("state_item_sha256")
+        tampered["report_id"] = reconciliation_module.canonical_document_sha256(
+            {key: value for key, value in tampered.items() if key != "report_id"}
+        )
+        with self.assertRaisesRegex(
+            AuthoringReconciliationError, "missing required fields"
+        ):
+            reconciliation_module._validated_report(tampered)
+
     def test_explicit_fallback_conflicts_with_parallel_approval(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
