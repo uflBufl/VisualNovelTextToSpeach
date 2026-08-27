@@ -55,6 +55,7 @@ from vntts.authoring.source_reference_quality import (
 )
 from vntts.authoring.workbench import (
     contained_workspace_path,
+    inspect_generation_readiness,
     inspect_voice_readiness,
     inspect_workspace,
     load_workspace_authority,
@@ -350,6 +351,30 @@ def build_authoring_reconciliation(
         )
         missing = set(missing)
         pending_ids = spoken_ids - completed_ids - missing
+        selectable_pending_ids = tuple(
+            item.queue_id for item in spoken if item.queue_id in pending_ids
+        )
+        selected_blocked_reasons = ()
+        if selectable_pending_ids:
+            try:
+                selected_readiness = inspect_generation_readiness(
+                    directory,
+                    queue_ids=selectable_pending_ids,
+                )
+            except Exception as error:
+                raise AuthoringReconciliationError(
+                    f"Unable to inspect exact generation readiness: {error}"
+                ) from error
+            if (
+                selected_readiness.queue_ids != selectable_pending_ids
+                or selected_readiness.selected != len(selectable_pending_ids)
+                or selected_readiness.pending != len(selectable_pending_ids)
+                or selected_readiness.failed != 0
+            ):
+                raise AuthoringReconciliationError(
+                    "Exact generation readiness disagrees with the captured state"
+                )
+            selected_blocked_reasons = selected_readiness.blocked_reasons
         action_counts = Counter()
         terminal_counts = Counter()
         scoped_queue_ids = (
@@ -445,9 +470,9 @@ def build_authoring_reconciliation(
             if item.queue_id in missing:
                 action = "source_reference_or_explicit_fallback"
                 reason = "selected workspace manifest has no usable voice"
-            elif summary.blocked_reasons:
+            elif selected_blocked_reasons:
                 action = "workspace_blocked"
-                reason = "; ".join(summary.blocked_reasons)
+                reason = "; ".join(selected_blocked_reasons)
             else:
                 action = "generation_ready_unselected"
                 reason = "voice and immutable controls are ready"

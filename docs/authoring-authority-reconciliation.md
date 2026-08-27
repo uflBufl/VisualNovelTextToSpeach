@@ -80,7 +80,17 @@ The item-level next actions are deliberately conservative:
   voice for that line;
 - `generation_ready_unselected`: immutable controls are ready, but no exact
   generation selection was authorized;
-- `workspace_blocked`: workspace controls fail their current readiness gate.
+- `workspace_blocked`: workspace controls fail the readiness gate for the exact
+  otherwise-covered absent queue-ID selection.
+
+The last two states are deliberately selection-aware. A partial voice manifest
+can make an unfiltered workspace report `NEEDS_ATTENTION` because some other
+speaker is unresolved while still allowing an exact covered queue-ID batch.
+Reconciliation projects all absent, voice-covered IDs through the same
+`inspect_generation_readiness(..., queue_ids=...)` contract used by
+`generation_command`; global missing-voice reasons never relabel those covered
+items as blocked. This remains planning evidence only: the report does not
+launch the exact batch or widen it to the missing-voice IDs.
 
 Approved, rejected and explicit-fallback results are terminal counts, not new
 actions. Terminal decisions that disagree across parallel workspace histories

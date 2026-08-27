@@ -41,6 +41,16 @@ The reconciled baseline and exact remaining identities are recorded in
 Follow the checkpoint, dependencies and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
 
+- [ ] Make reconciliation readiness selection-aware before planning the next
+      generation batch. A partial voice manifest may block an unfiltered run
+      while exact covered absent queue IDs remain safe to generate. Project
+      those IDs through the same `inspect_generation_readiness(...,
+      queue_ids=...)` gate used by the child command, classify them as
+      `generation_ready_unselected`, retain `workspace_blocked` only for
+      selection-local control failures, and add a partial-manifest regression.
+      Rebuild the current immutable reconciliation and publish exact counts;
+      do not launch the resulting batch until the two outstanding human review
+      decisions are terminal.
 - [ ] After the detailed reference and quality tasks below are complete,
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real

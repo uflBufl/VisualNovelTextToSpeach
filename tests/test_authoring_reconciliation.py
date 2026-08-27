@@ -8,8 +8,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.story_index import write_story_index_document
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
+
 import vntts.authoring.reconciliation as reconciliation_module
 from tests.test_authoring_cohort_review import AuthoringCohortReviewTest
+from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_source_reference_review import (
     AuthoringSourceReferenceReviewTest,
 )
@@ -20,6 +30,7 @@ from vntts.authoring.cohort_bundle import (
     execute_cohort_bundle_decision,
     write_cohort_review_bundle,
 )
+from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.reconciliation import (
     AuthoringReconciliationError,
     build_authoring_reconciliation,
@@ -27,7 +38,7 @@ from vntts.authoring.reconciliation import (
     write_authoring_reconciliation,
 )
 from vntts.authoring.reconciliation_cli import main as reconciliation_main
-from vntts.authoring.workbench import create_resume_workspace
+from vntts.authoring.workbench import create_resume_workspace, generation_command
 
 
 def _tree_hashes(root):
@@ -161,6 +172,146 @@ class AuthoringReconciliationTest(unittest.TestCase):
         self.assertEqual(
             report.document["actions"][0]["action"], "review_plan_required"
         )
+
+    def test_partial_manifest_reports_exact_covered_pending_item_as_ready(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            original = VoiceGenerationQueue.load(fixture["queue"])
+            covered = original.items[0]
+            missing_text = "An uncovered speaker remains outside this selection."
+            missing_hash = text_sha256(missing_text)
+            missing_line = "reverse1999:missing:1"
+            missing_queue_id = expected_voice_generation_queue_id(
+                missing_line, missing_hash
+            )
+            write_voice_generation_queue(
+                fixture["queue"],
+                original.metadata,
+                (
+                    covered.document,
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": missing_queue_id,
+                        "line_id": missing_line,
+                        "text_sha256": missing_hash,
+                        "text": missing_text,
+                        "speaker": "Uncovered",
+                        "voice_character": "Uncovered",
+                        "action": "generate",
+                        "state": "pending",
+                    },
+                ),
+            )
+            queue_sha256 = sha256_file(fixture["queue"])
+            output = Path(fixture["job"]["output"])
+            state_path = output / "generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state.update({"queue_sha256": queue_sha256, "active": None, "items": {}})
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            manifest_path = output / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["source_queue_sha256"] = queue_sha256
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True), encoding="utf-8"
+            )
+            write_story_index_document(
+                fixture["job"]["story_index"],
+                {
+                    "game": "Reverse: 1999",
+                    "language": "en",
+                    "generated_at": "2026-08-16T15:00:00+00:00",
+                    "collections": [
+                        {
+                            "collection_id": "story",
+                            "title": "Partial voice coverage",
+                            "kind": "story",
+                            "order": 1,
+                        }
+                    ],
+                },
+                (
+                    {
+                        "record_type": "line",
+                        "line_id": covered.line_id,
+                        "text_sha256": covered.text_sha256,
+                        "text": covered.text,
+                        "speaker": covered.speaker,
+                        "voice_character": covered.voice_character,
+                        "kind": "dialogue",
+                        "chapter": "story",
+                        "sequence": 1,
+                        "collection_id": "story",
+                        "source_audio_status": "absent",
+                        "source_kind": "story",
+                    },
+                    {
+                        "record_type": "line",
+                        "line_id": missing_line,
+                        "text_sha256": missing_hash,
+                        "text": missing_text,
+                        "speaker": "Uncovered",
+                        "voice_character": "Uncovered",
+                        "kind": "dialogue",
+                        "chapter": "story",
+                        "sequence": 2,
+                        "collection_id": "story",
+                        "source_audio_status": "absent",
+                        "source_kind": "story",
+                    },
+                ),
+            )
+            reference = root / "legacy/rhiannon.wav"
+            reference.write_bytes(b"voice-reference")
+            Path(fixture["job"]["voice_manifest"]).write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "game": "Reverse: 1999",
+                        "language": "en",
+                        "voices": [
+                            {
+                                "character": covered.voice_character,
+                                "speaker": covered.speaker,
+                                "reference": "rhiannon.wav",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "authoring/imports"
+            ).destination
+            workspace = create_resume_workspace(
+                imported,
+                root / "authoring/workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="moss-v1.5",
+                generation_profile="stable",
+                narrator_character=covered.voice_character,
+            ).directory
+            bundles = root / "authoring/review-bundles"
+            bundles.mkdir()
+
+            report = build_authoring_reconciliation(workspace, bundles)
+            actions = {item["queue_id"]: item for item in report.document["actions"]}
+            command = generation_command(
+                workspace,
+                queue_ids=(covered.queue_id,),
+                retries=0,
+            )
+
+        self.assertEqual(
+            actions[covered.queue_id]["action"], "generation_ready_unselected"
+        )
+        self.assertEqual(
+            actions[missing_queue_id]["action"],
+            "source_reference_or_explicit_fallback",
+        )
+        self.assertEqual(command[command.index("--queue-id") + 1], covered.queue_id)
 
     def test_duplicate_current_bundle_authority_is_rejected(self):
         with TemporaryDirectory() as directory:
