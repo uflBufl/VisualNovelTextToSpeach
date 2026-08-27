@@ -46,21 +46,18 @@ Follow the evidence-backed order and invariants in
       [`authoring-audio-events.md`](docs/authoring-audio-events.md): canonical
       text/hash remain unchanged, while `Tsk!`, `*gasp*`, `*gurgle*` and unknown
       stage directions cannot be pronounced by ordinary MOSS or Pocket TTS.
-      Next, prefer an exact original game event whenever one exists. Compare a
-      For `Tsk!`, present the exact 0.751-second Kanjira game clip documented in
-      [`authoring-audio-events.md`](docs/authoring-audio-events.md) for one
-      checksum-bound accept/reject decision as a speaker-neutral tongue-click.
-      Publish a self-contained review artifact first: bind the exact queue
-      snapshot/item/audio-event plan, source line/event/bank/media identity and
-      read-once WAV bytes; expose explicit accept/reject without touching
-      generation state. A terminal decision must be CAS-safe, idempotent and
-      reject queue, candidate or review-authority mutation.
+      The exact 0.751-second Kanjira `Tsk!` game clip is now published as
+      checksum-bound pending review
+      `current-character-story-tsk-game-v1`, review ID
+      `938ff6f824a1fe7ebb5e98b350d77dc16f7097f19604d94f17d59a1639364ac8`.
+      Obtain one explicit accept/reject decision on it as a speaker-neutral
+      tongue-click. Acceptance must then preserve the exact game
+      event/bank/media/WAV hashes, explicitly disclaim Poacher I voice identity,
+      and pass the final composition-ledger review documented below; rejection
+      leaves the line unresolved rather than reading `Tsk` aloud.
       The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical
       losses (`LIMITED` at the unchanged 3.0-second cap), and the ambiguous
-      `common_npc05` media is excluded. Acceptance must preserve the exact game
-      event/bank/media/WAV hashes and explicitly disclaim Poacher I voice
-      identity; rejection leaves the line unresolved rather than reading
-      `Tsk` aloud. When CUDA is available,
+      `common_npc05` media is excluded. When CUDA is available,
       evaluate official MOSS-SoundEffect v2 for isolated gasp/gurgle effects in
       its separate Python 3.12 environment. Require technical validation,
       perceptual approval and a checksum-bound speech/event/mix ledger; never

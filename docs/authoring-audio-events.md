@@ -141,6 +141,16 @@ uv run --no-sync vntts-pregenerate audio-event-review-publish \
 This is review authority only. An accepted decision still needs the composition
 ledger below before it may become a final line WAV.
 
+The real Character Story review was published without a decision at
+`authoring/audio-event-reviews/current-character-story-tsk-game-v1` under the
+VNTTS application-data root. Its review ID is
+`938ff6f824a1fe7ebb5e98b350d77dc16f7097f19604d94f17d59a1639364ac8`;
+it binds queue SHA-256
+`1831f95d367e965a0a1d301e2e240dce686c4bcc23d3acae2d936675db152de7`
+and the source WAV SHA-256 recorded above. `audio-event-review-status` validates
+the complete bundle before replay or decision. No generation state, generated
+manifest, approval or final pack was changed by publication.
+
 ## Required composition ledger
 
 A future accepted mixed WAV must bind all of the following:
