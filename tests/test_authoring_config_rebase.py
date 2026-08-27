@@ -21,7 +21,11 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
-from vntts.authoring.config_rebase import rebase_workspace_config
+from vntts.authoring.config_rebase import (
+    _prior_config_rebase_target_route,
+    _target_route_status,
+    rebase_workspace_config,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -65,6 +69,82 @@ def _prepare(root, *, target_reference_payloads=None, source_queue_override=None
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_chained_rebase_uses_the_immediate_predecessor_target_route(self):
+        result = {
+            "voice_character": "Historical voice absent from current manifest",
+            "config_rebase": {
+                "target_effective_character": "Current selected route",
+                "target_reference_sha256s": ["1" * 64, "2" * 64],
+            },
+        }
+
+        self.assertEqual(
+            _prior_config_rebase_target_route(result),
+            ("Current selected route", ("1" * 64, "2" * 64)),
+        )
+
+    def test_chained_rebase_rejects_malformed_predecessor_target_route(self):
+        with self.assertRaisesRegex(
+            AuthoringWorkbenchError, "target reference SHA-256"
+        ):
+            _prior_config_rebase_target_route(
+                {
+                    "config_rebase": {
+                        "target_effective_character": "Current selected route",
+                        "target_reference_sha256s": ["not-a-digest"],
+                    }
+                }
+            )
+
+    def test_retired_route_preserves_only_exact_rejection(self):
+        queue_id = "line:child"
+        source_route = ("Child variant", ("1" * 64,))
+        target_route = ("Aderyn", ("2" * 64,))
+        retirement = (
+            {
+                "variant_id": "child-variant",
+                "source_reference_plan_sha256": "3" * 64,
+                "voice_character": "Child variant",
+                "reference_sha256": "1" * 64,
+                "queue_ids": [queue_id],
+                "reason": "real_story_quality_failure",
+            },
+        )
+
+        self.assertEqual(
+            _target_route_status(
+                queue_id,
+                "generated",
+                "rejected",
+                source_route,
+                target_route,
+                retirement,
+            ),
+            "retired_rejected",
+        )
+        with self.assertRaisesRegex(
+            AuthoringWorkbenchError, "changes the effective reference"
+        ):
+            _target_route_status(
+                queue_id,
+                "approved",
+                "approved",
+                source_route,
+                target_route,
+                retirement,
+            )
+        self.assertEqual(
+            _target_route_status(
+                queue_id,
+                "generated",
+                "rejected",
+                source_route,
+                ("Aderyn", ()),
+                retirement,
+            ),
+            "retired_rejected",
+        )
+
     def test_allows_distinct_variant_labels_bound_to_same_reference_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -147,6 +147,7 @@ from vntts.authoring.source_reference_quality import SourceReferenceQualityError
 from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
+    publish_source_reference_binding_retirement,
     publish_source_reference_binding_successor,
     publish_source_reference_bindings,
     publish_source_reference_evaluation,
@@ -918,6 +919,22 @@ def create_parser():
     extend_reference_bindings.add_argument("--quality-review", type=Path, required=True)
     extend_reference_bindings.add_argument("--narrator-character", required=True)
     extend_reference_bindings.add_argument("--output", type=Path, required=True)
+    retire_reference_bindings = subparsers.add_parser(
+        "retire-reference-bindings",
+        help="Publish an immutable successor retiring exact source variants",
+    )
+    retire_reference_bindings.add_argument(
+        "--base-binding-manifest", type=Path, required=True
+    )
+    retire_reference_bindings.add_argument(
+        "--variant-id", action="append", required=True, dest="variant_ids"
+    )
+    retire_reference_bindings.add_argument(
+        "--reason",
+        choices=("real_story_quality_failure",),
+        default="real_story_quality_failure",
+    )
+    retire_reference_bindings.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -1873,6 +1890,15 @@ def main(argv=None):
                 arguments.quality_review,
                 arguments.narrator_character,
                 arguments.output,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "retire-reference-bindings":
+            result = publish_source_reference_binding_retirement(
+                arguments.base_binding_manifest,
+                arguments.variant_ids,
+                arguments.output,
+                reason=arguments.reason,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0

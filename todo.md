@@ -55,9 +55,18 @@ Follow the evidence-backed order and invariants in
       Real-story synthesis sounded bad even though its source clip passed the
       fixed evaluation. Preserve Aderyn as source identity, keep adult and child
       portrait groups separate, retain crying-only rejects and do not mutate the
-      v3 review or v4 binding. Keep the 41 lower-priority unreviewed candidates
-      pending; do not merge `Poacher I`, `Poacher II` or Glyndwr or treat
-      configured-unavailable audio as installed.
+      v3 review or v4/v5 bindings. Publish a new immutable binding successor
+      that removes only child portrait `533706` variant
+      `cluster-6a3c52e451a4abb5a69c32a8-anchor-1` and its three exact queue
+      overrides, binds the predecessor manifest/variant/reference/queue hashes
+      and retains its copied reference only as inactive provenance. Extend
+      config rebase so an explicitly retired route may preserve only an exact
+      pre-existing rejection, never an approval or pending/generated outcome.
+      Create a new config-addressed workspace and no-generation rebase, proving
+      that all three child rejections remain terminal while no future line can
+      select the retired reference. Keep the 41 lower-priority unreviewed
+      candidates pending; do not merge `Poacher I`, `Poacher II` or Glyndwr or
+      treat configured-unavailable audio as installed.
 - [ ] Repair the Dobharchú synthesis cohort before reusing it in another story.
       Follow the immutable census and candidate contract in
       [`docs/dobharchu-repair-comparison.md`](docs/dobharchu-repair-comparison.md).

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -24,6 +25,10 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+)
+from vntts.authoring.source_reference_bindings import (
+    SourceReferenceBindingError,
+    retired_source_reference_variants_from_manifest,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -44,7 +49,8 @@ from vntts.authoring.workbench import (
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
-CONFIG_REBASE_VERSION = 1
+CONFIG_REBASE_VERSION = 2
+SUPPORTED_CONFIG_REBASE_VERSIONS = frozenset({1, CONFIG_REBASE_VERSION})
 _WORKFLOW_FIELDS = {
     "carry_forward",
     "outcome_merge",
@@ -133,6 +139,16 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             }
             target_policy = _workspace_missing_voice_policy(target_document)
             source_policy = _workspace_missing_voice_policy(source_document)
+            target_voice = _selected_voice_manifest(target_directory, target_document)
+            try:
+                target_voice_document, _target_voice_entries = load_voice_manifest(
+                    target_voice, allow_legacy=False
+                )
+                retired_variants = retired_source_reference_variants_from_manifest(
+                    target_voice_document
+                )
+            except (VoiceManifestError, SourceReferenceBindingError) as error:
+                raise AuthoringWorkbenchError(str(error)) from error
 
             records = []
             projected_state = copy.deepcopy(target_state)
@@ -162,6 +178,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                         target_document,
                         target_overrides,
                         queue_item,
+                        allow_missing=True,
                     )
                     if not set(source_route[1]) & set(target_route[1]):
                         raise AuthoringWorkbenchError(
@@ -180,17 +197,21 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     target_document,
                     target_overrides,
                     queue_item,
+                    allow_missing=True,
                 )
                 if not set(source_route[1]).issubset(target_reference_sha256s):
                     raise AuthoringWorkbenchError(
                         "Config rebase target omits source reference bytes for "
                         f"{queue_id!r}"
                     )
-                if not set(source_route[1]).issubset(target_route[1]):
-                    raise AuthoringWorkbenchError(
-                        "Config rebase changes the effective reference for "
-                        f"terminal item {queue_id!r}"
-                    )
+                route_status = _target_route_status(
+                    queue_id,
+                    result.get("status"),
+                    result.get("review_status"),
+                    source_route,
+                    target_route,
+                    retired_variants,
+                )
                 relative = _safe_relative(
                     result.get("path"), f"Config rebase item {queue_id!r} WAV"
                 )
@@ -216,6 +237,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     "target_effective_character": target_route[0],
                     "source_reference_sha256s": list(source_route[1]),
                     "target_reference_sha256s": list(target_route[1]),
+                    "target_route_status": route_status,
                 }
                 projected["config_rebase"] = {
                     key: value for key, value in record.items() if key != "queue_id"
@@ -228,7 +250,6 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 )
 
             source_voice = _selected_voice_manifest(source_directory, source_document)
-            target_voice = _selected_voice_manifest(target_directory, target_document)
             rebase = {
                 "schema": CONFIG_REBASE_SCHEMA,
                 "schema_version": CONFIG_REBASE_VERSION,
@@ -420,7 +441,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         not isinstance(rebase, dict)
         or set(rebase) != required
         or rebase.get("schema") != CONFIG_REBASE_SCHEMA
-        or rebase.get("schema_version") != CONFIG_REBASE_VERSION
+        or rebase.get("schema_version") not in SUPPORTED_CONFIG_REBASE_VERSIONS
     ):
         raise AuthoringWorkbenchError("Workspace config rebase ledger is malformed")
     for field in (
@@ -465,6 +486,21 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         or sha256_file(selected_voice) != rebase["target_voice_manifest_sha256"]
     ):
         raise AuthoringWorkbenchError("Config rebase voice authority changed")
+    try:
+        target_voice_document, _target_voice_entries = load_voice_manifest(
+            selected_voice, allow_legacy=False
+        )
+        retired_variants = retired_source_reference_variants_from_manifest(
+            target_voice_document
+        )
+    except (VoiceManifestError, SourceReferenceBindingError) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    target_registry = _workspace_voice_registry(directory, workspace)
+    target_reference_sha256s = {
+        sha256_file(reference)
+        for voice in target_registry.unique_voices()
+        for reference in voice.references
+    }
     source_state = _load_json(source_state_path, "config rebase source state")
     if not isinstance(source_state.get("items"), dict):
         raise AuthoringWorkbenchError(
@@ -479,7 +515,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         raise AuthoringWorkbenchError("Config rebase item ledger is empty")
     observed_ids = []
     for record in records:
-        if not isinstance(record, dict) or set(record) != {
+        record_fields = {
             "queue_id",
             "source_item_sha256",
             "projected_item_sha256",
@@ -490,7 +526,10 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             "target_effective_character",
             "source_reference_sha256s",
             "target_reference_sha256s",
-        }:
+        }
+        if rebase["schema_version"] >= 2:
+            record_fields.add("target_route_status")
+        if not isinstance(record, dict) or set(record) != record_fields:
             raise AuthoringWorkbenchError("Config rebase item record is malformed")
         queue_id = record["queue_id"]
         if not isinstance(queue_id, str) or not queue_id:
@@ -500,24 +539,44 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             _require_sha256(record.get(field), f"Config rebase item {field}")
         for field in ("source_reference_sha256s", "target_reference_sha256s"):
             values = record.get(field)
-            if (
-                not isinstance(values, list)
-                or not values
-                or values != sorted(set(values))
+            if not isinstance(values, list) or values != sorted(set(values)):
+                raise AuthoringWorkbenchError(
+                    f"Config rebase item {field} is not canonical"
+                )
+            if not values and (
+                field == "source_reference_sha256s" or rebase["schema_version"] < 2
             ):
                 raise AuthoringWorkbenchError(
                     f"Config rebase item {field} is not canonical"
                 )
             for value in values:
                 _require_sha256(value, f"Config rebase item {field}")
+        if not set(record["source_reference_sha256s"]).issubset(
+            target_reference_sha256s
+        ):
+            raise AuthoringWorkbenchError(
+                f"Config rebase target omits source reference bytes for {queue_id!r}"
+            )
         for field in ("source_effective_character", "target_effective_character"):
             if not isinstance(record.get(field), str) or not record[field].strip():
                 raise AuthoringWorkbenchError(f"Config rebase item {field} is invalid")
-        if not set(record["source_reference_sha256s"]).issubset(
-            record["target_reference_sha256s"]
-        ):
+        expected_route_status = _target_route_status(
+            queue_id,
+            record.get("status"),
+            record.get("review_status"),
+            (
+                record["source_effective_character"],
+                tuple(record["source_reference_sha256s"]),
+            ),
+            (
+                record["target_effective_character"],
+                tuple(record["target_reference_sha256s"]),
+            ),
+            retired_variants,
+        )
+        if record.get("target_route_status", "active") != expected_route_status:
             raise AuthoringWorkbenchError(
-                f"Config rebase item changes reference bytes for {queue_id!r}"
+                f"Config rebase target route status is invalid for {queue_id!r}"
             )
         source_item = source_state["items"].get(queue_id)
         if (
@@ -628,7 +687,52 @@ def _project_source_item(result):
     return projected
 
 
-def _route_reference_identity(registry, workspace, overrides, queue_item, result=None):
+def _retired_route_for_queue(records, queue_id, source_route):
+    character, reference_sha256s = source_route
+    for record in records:
+        if (
+            queue_id in record["queue_ids"]
+            and record["voice_character"] == character
+            and record["reference_sha256"] in reference_sha256s
+        ):
+            return record
+    return None
+
+
+def _target_route_status(
+    queue_id,
+    status,
+    review_status,
+    source_route,
+    target_route,
+    retired_variants,
+):
+    if set(source_route[1]).issubset(target_route[1]):
+        return "active"
+    if (
+        status == "generated"
+        and review_status == "rejected"
+        and _retired_route_for_queue(retired_variants, queue_id, source_route)
+        is not None
+    ):
+        return "retired_rejected"
+    raise AuthoringWorkbenchError(
+        f"Config rebase changes the effective reference for terminal item {queue_id!r}"
+    )
+
+
+def _route_reference_identity(
+    registry,
+    workspace,
+    overrides,
+    queue_item,
+    result=None,
+    *,
+    allow_missing=False,
+):
+    prior_route = _prior_config_rebase_target_route(result)
+    if prior_route is not None:
+        return prior_route
     requested = synthesis_character_for_line(
         queue_item.speaker, queue_item.voice_character
     )
@@ -645,10 +749,43 @@ def _route_reference_identity(registry, workspace, overrides, queue_item, result
             character = workspace["narrator_character"]
             voice = registry.resolve(character)
     if voice is None or not voice.references:
+        if allow_missing:
+            return character, ()
         raise AuthoringWorkbenchError(
             f"Config rebase voice references are missing for {character!r}"
         )
     digests = tuple(sorted(sha256_file(reference) for reference in voice.references))
+    return character, digests
+
+
+def _prior_config_rebase_target_route(result):
+    """Return the effective route owned by an immediately preceding rebase.
+
+    The complete preceding item, including its earlier source provenance, is
+    still bound by ``source_item_sha256`` in the new ledger.  Each successor
+    therefore records the preceding workspace's effective target route rather
+    than flattening or re-resolving a historical synthesis character that may
+    no longer be active in the selected manifest.
+    """
+    if not isinstance(result, dict):
+        return None
+    rebase = result.get("config_rebase")
+    if not isinstance(rebase, dict):
+        return None
+    character = rebase.get("target_effective_character")
+    values = rebase.get("target_reference_sha256s")
+    if not isinstance(character, str) or not character.strip():
+        raise AuthoringWorkbenchError(
+            "Prior config rebase target character is malformed"
+        )
+    if not isinstance(values, list) or not values or values != sorted(set(values)):
+        raise AuthoringWorkbenchError(
+            "Prior config rebase target references are malformed"
+        )
+    digests = tuple(
+        _require_sha256(value, "Prior config rebase target reference SHA-256")
+        for value in values
+    )
     return character, digests
 
 
@@ -685,6 +822,7 @@ def _load_json_queue(path):
 __all__ = [
     "CONFIG_REBASE_SCHEMA",
     "CONFIG_REBASE_VERSION",
+    "SUPPORTED_CONFIG_REBASE_VERSIONS",
     "rebase_workspace_config",
     "validate_config_rebase_publication_authority",
     "validate_config_rebase_workspace",

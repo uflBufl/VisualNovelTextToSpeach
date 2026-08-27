@@ -36,11 +36,14 @@ from vntts.authoring.listening import (
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+    SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
     SOURCE_REFERENCE_BINDINGS_SCHEMA,
     SOURCE_REFERENCE_BINDINGS_VERSION,
+    SOURCE_REFERENCE_RETIREMENT_REASONS,
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
+    retired_source_reference_variants_from_manifest,
 )
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
@@ -824,16 +827,29 @@ def publish_source_reference_binding_successor(
             sources, selected_variants = _combined_binding_ledgers(
                 base_binding, addition_binding
             )
+            retired_variants = sorted(
+                (
+                    *retired_source_reference_variants_from_manifest(base_document),
+                    *retired_source_reference_variants_from_manifest(addition_document),
+                ),
+                key=lambda record: record["variant_id"],
+            )
             overrides = dict(sorted({**base_overrides, **addition_overrides}.items()))
             bindings = {
                 "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
-                "schema_version": SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+                "schema_version": (
+                    SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION
+                    if retired_variants
+                    else SOURCE_REFERENCE_BINDINGS_MULTI_VERSION
+                ),
                 "predecessor_manifest_sha256": hashlib.sha256(base_payload).hexdigest(),
                 "sources": sources,
                 "selected_variants": selected_variants,
                 "queue_voice_overrides": overrides,
                 "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
             }
+            if retired_variants:
+                bindings["retired_variants"] = retired_variants
             manifest = {
                 **base_document,
                 "voices": voices,
@@ -873,6 +889,217 @@ def publish_source_reference_binding_successor(
             raise
 
 
+def publish_source_reference_binding_retirement(
+    base_binding_manifest,
+    variant_ids,
+    output,
+    *,
+    reason="real_story_quality_failure",
+):
+    """Publish an immutable successor with exact selected variants retired."""
+    if reason not in SOURCE_REFERENCE_RETIREMENT_REASONS:
+        raise SourceReferenceReviewError(
+            f"Unsupported source-reference retirement reason: {reason}"
+        )
+    requested = tuple(sorted(set(variant_ids or ())))
+    if not requested or any(
+        not isinstance(value, str) or not value for value in requested
+    ):
+        raise SourceReferenceReviewError(
+            "Source-reference retirement requires exact variant IDs"
+        )
+    base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise SourceReferenceReviewError(
+            f"Source-reference bindings output exists: {output}"
+        )
+    try:
+        base_payload = base_binding_manifest.read_bytes()
+        base_document, base_voices = load_voice_manifest(
+            base_binding_manifest, allow_legacy=False
+        )
+        base_overrides = queue_voice_overrides_from_manifest(
+            base_document, voices=base_voices
+        )
+    except (OSError, VoiceManifestError, SourceReferenceBindingError) as error:
+        raise SourceReferenceReviewError(str(error)) from error
+    base_binding = base_document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
+    if not isinstance(base_binding, dict) or base_binding.get("schema_version") not in {
+        SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+        SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+    }:
+        raise SourceReferenceReviewError(
+            "Source-reference retirement requires a multi-plan binding manifest"
+        )
+    variants = {
+        variant.get("variant_id"): variant
+        for variant in base_binding.get("selected_variants", [])
+        if isinstance(variant, dict)
+    }
+    missing = sorted(set(requested) - set(variants))
+    if missing:
+        raise SourceReferenceReviewError(
+            "Source-reference retirement variants are not selected: "
+            + ", ".join(missing)
+        )
+    voices_by_character = {
+        normalize_character_name(voice.character): voice for voice in base_voices
+    }
+    retired_records = list(
+        retired_source_reference_variants_from_manifest(base_document)
+    )
+    retired_ids = {record["variant_id"] for record in retired_records}
+    if retired_ids & set(requested):
+        raise SourceReferenceReviewError("Source-reference variant is already retired")
+    removed_queue_ids = set()
+    for variant_id in requested:
+        variant = variants[variant_id]
+        voice_character = _text(
+            variant.get("voice_character"), "retired source-reference voice"
+        )
+        voice = voices_by_character.get(normalize_character_name(voice_character))
+        if voice is None or len(voice.references) != 1:
+            raise SourceReferenceReviewError(
+                f"Retired source-reference voice is missing or ambiguous: {voice_character}"
+            )
+        reference = _contained_file(base_binding_manifest.parent, voice.references[0])
+        reference_sha256 = sha256_file(reference)
+        if reference_sha256 != _sha256(
+            variant.get("reference_sha256"),
+            "retired source-reference variant SHA-256",
+        ):
+            raise SourceReferenceReviewError(
+                f"Retired source-reference bytes changed: {variant_id}"
+            )
+        queue_ids = variant.get("queue_ids")
+        if (
+            not isinstance(queue_ids, list)
+            or not queue_ids
+            or queue_ids != sorted(set(queue_ids))
+        ):
+            raise SourceReferenceReviewError(
+                f"Retired source-reference queue IDs are invalid: {variant_id}"
+            )
+        for queue_id in queue_ids:
+            if base_overrides.get(queue_id) != voice_character:
+                raise SourceReferenceReviewError(
+                    f"Retired source-reference queue binding changed: {queue_id}"
+                )
+            if queue_id in removed_queue_ids:
+                raise SourceReferenceReviewError(
+                    f"Retired source-reference queue ID is duplicated: {queue_id}"
+                )
+            removed_queue_ids.add(queue_id)
+        retired_records.append(
+            {
+                "variant_id": variant_id,
+                "source_reference_plan_sha256": _sha256(
+                    variant.get("source_reference_plan_sha256"),
+                    "retired source-reference plan SHA-256",
+                ),
+                "voice_character": voice_character,
+                "reference_sha256": reference_sha256,
+                "queue_ids": queue_ids,
+                "reason": reason,
+            }
+        )
+    remaining_variants = [
+        variant
+        for variant in base_binding["selected_variants"]
+        if variant["variant_id"] not in requested
+    ]
+    if not remaining_variants:
+        raise SourceReferenceReviewError(
+            "Source-reference retirement cannot remove every selected variant"
+        )
+    overrides = {
+        queue_id: character
+        for queue_id, character in base_overrides.items()
+        if queue_id not in removed_queue_ids
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.retirement-", dir=output.parent)
+    ).resolve()
+    snapshots = []
+    try:
+        voices = []
+        for voice_index, voice in enumerate(base_voices, start=1):
+            references = []
+            for reference_index, relative in enumerate(voice.references, start=1):
+                source = _contained_file(base_binding_manifest.parent, relative)
+                digest = sha256_file(source)
+                suffix = source.suffix.lower() or ".wav"
+                target_relative = (
+                    Path("references")
+                    / f"voice-{voice_index:02d}"
+                    / f"{reference_index:02d}{suffix}"
+                )
+                target = staging / target_relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                if sha256_file(target) != digest:
+                    raise SourceReferenceReviewError(
+                        f"Retired binding reference changed while copied: {voice.character}"
+                    )
+                references.append(target_relative.as_posix())
+                snapshots.append((source, digest))
+            voices.append(
+                {
+                    "character": voice.character,
+                    "speaker": voice.speaker,
+                    "aliases": list(voice.aliases),
+                    "references": references,
+                }
+            )
+        binding = {
+            "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
+            "schema_version": SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+            "predecessor_manifest_sha256": hashlib.sha256(base_payload).hexdigest(),
+            "sources": base_binding["sources"],
+            "selected_variants": remaining_variants,
+            "retired_variants": sorted(
+                retired_records, key=lambda record: record["variant_id"]
+            ),
+            "queue_voice_overrides": dict(sorted(overrides.items())),
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        }
+        manifest = {
+            **base_document,
+            "voices": voices,
+            SOURCE_REFERENCE_BINDINGS_FIELD: binding,
+        }
+        manifest_path = staging / "voice-manifest.json"
+        write_voice_manifest(manifest_path, manifest)
+        validated_document, validated_voices = load_voice_manifest(
+            manifest_path, allow_legacy=False
+        )
+        parsed = queue_voice_overrides_from_manifest(
+            validated_document, voices=validated_voices
+        )
+        if parsed != overrides:
+            raise SourceReferenceReviewError(
+                "Retired source-reference queue bindings changed during publication"
+            )
+        if base_binding_manifest.read_bytes() != base_payload:
+            raise SourceReferenceReviewError(
+                "Base source-reference manifest changed during retirement"
+            )
+        for source, digest in snapshots:
+            _assert_source_unchanged(
+                source, digest, f"retired binding reference {source.name}"
+            )
+        _rename_directory_no_replace(staging, output)
+        staging = None
+        return SourceReferenceBindingsResult(
+            output, len(remaining_variants), len(overrides)
+        )
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+
+
 def _combined_binding_ledgers(*bindings):
     sources = []
     selected_variants = []
@@ -891,7 +1118,10 @@ def _combined_binding_ledgers(*bindings):
                     ),
                 }
             ]
-        elif version == SOURCE_REFERENCE_BINDINGS_MULTI_VERSION:
+        elif version in {
+            SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+            SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+        }:
             binding_sources = binding.get("sources")
         else:
             raise SourceReferenceReviewError(

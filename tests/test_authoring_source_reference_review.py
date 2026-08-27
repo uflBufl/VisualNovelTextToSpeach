@@ -39,6 +39,7 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
+    retired_source_reference_variants_from_manifest,
 )
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
@@ -53,6 +54,7 @@ from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_binding_retirement,
     publish_source_reference_binding_successor,
     publish_source_reference_bindings,
     publish_source_reference_evaluation,
@@ -987,8 +989,10 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             root = Path(directory)
             first_root = root / "first"
             second_root = root / "second"
+            third_root = root / "third"
             first_root.mkdir()
             second_root.mkdir()
+            third_root.mkdir()
             first_plan, _evaluation, _generation, first_quality = (
                 self.publish_quality_fixture(first_root)
             )
@@ -999,7 +1003,14 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     line_prefix="guide-",
                 )
             )
-            for quality in (first_quality, second_quality):
+            third_plan, _evaluation, _generation, third_quality = (
+                self.publish_quality_fixture(
+                    third_root,
+                    character="Witness",
+                    line_prefix="witness-",
+                )
+            )
+            for quality in (first_quality, second_quality, third_quality):
                 session = load_source_reference_quality_review(quality.session)
                 for card in session["variants"]:
                     record_source_reference_quality_decision(
@@ -1052,6 +1063,99 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     self.assertTrue(
                         reference.resolve().is_relative_to(successor.directory)
                     )
+
+            retired_variant = binding["selected_variants"][0]
+            retirement = publish_source_reference_binding_retirement(
+                successor.directory / "voice-manifest.json",
+                (retired_variant["variant_id"],),
+                root / "retired",
+            )
+            retired_document, retired_voices = load_voice_manifest(
+                retirement.directory / "voice-manifest.json", allow_legacy=False
+            )
+            retired_overrides = queue_voice_overrides_from_manifest(
+                retired_document, voices=retired_voices
+            )
+            retired_records = retired_source_reference_variants_from_manifest(
+                retired_document
+            )
+            self.assertEqual(retirement.selected_variants, 3)
+            self.assertEqual(retirement.bound_queue_items, 3)
+            self.assertEqual(len(retired_records), 1)
+            self.assertEqual(
+                retired_records[0]["variant_id"], retired_variant["variant_id"]
+            )
+            self.assertEqual(retired_records[0]["reason"], "real_story_quality_failure")
+            self.assertTrue(
+                set(retired_variant["queue_ids"]).isdisjoint(retired_overrides)
+            )
+            self.assertIn(
+                retired_variant["voice_character"],
+                {voice.character for voice in retired_voices},
+            )
+            extended_retirement = publish_source_reference_binding_successor(
+                retirement.directory / "voice-manifest.json",
+                third_plan.directory,
+                third_quality.session,
+                "Centurion",
+                root / "extended-retirement",
+            )
+            extended_document, extended_voices = load_voice_manifest(
+                extended_retirement.directory / "voice-manifest.json",
+                allow_legacy=False,
+            )
+            extended_overrides = queue_voice_overrides_from_manifest(
+                extended_document, voices=extended_voices
+            )
+            self.assertEqual(
+                extended_document["vntts.authoring.source_reference_bindings"][
+                    "schema_version"
+                ],
+                3,
+            )
+            self.assertEqual(
+                retired_source_reference_variants_from_manifest(extended_document),
+                retired_records,
+            )
+            self.assertTrue(
+                set(retired_variant["queue_ids"]).isdisjoint(extended_overrides)
+            )
+            tampered_retirement = json.loads(json.dumps(extended_document))
+            tampered_retirement["vntts.authoring.source_reference_bindings"][
+                "selected_variants"
+            ][0]["source_reference_plan_sha256"] = "0" * 64
+            with self.assertRaisesRegex(
+                SourceReferenceBindingError, "unknown source plan"
+            ):
+                queue_voice_overrides_from_manifest(
+                    tampered_retirement, voices=extended_voices
+                )
+            active_voices = tuple(
+                voice
+                for voice in extended_voices
+                if voice.character != retired_variant["voice_character"]
+            )
+            with self.assertRaisesRegex(
+                SourceReferenceBindingError, "Retired source-reference voice is absent"
+            ):
+                queue_voice_overrides_from_manifest(
+                    extended_document, voices=active_voices
+                )
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "retire-reference-bindings",
+                        "--base-binding-manifest",
+                        str(successor.directory / "voice-manifest.json"),
+                        "--variant-id",
+                        retired_variant["variant_id"],
+                        "--output",
+                        str(root / "retired-cli"),
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["selected_variants"], 3)
 
             tampered = json.loads(json.dumps(document))
             tampered["vntts.authoring.source_reference_bindings"]["selected_variants"][

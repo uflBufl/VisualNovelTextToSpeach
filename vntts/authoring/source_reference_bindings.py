@@ -11,9 +11,15 @@ SOURCE_REFERENCE_BINDINGS_FIELD = "vntts.authoring.source_reference_bindings"
 SOURCE_REFERENCE_BINDINGS_SCHEMA = "vntts.authoring-source-reference-bindings"
 SOURCE_REFERENCE_BINDINGS_VERSION = 1
 SOURCE_REFERENCE_BINDINGS_MULTI_VERSION = 2
+SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION = 3
 SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS = frozenset(
-    {SOURCE_REFERENCE_BINDINGS_VERSION, SOURCE_REFERENCE_BINDINGS_MULTI_VERSION}
+    {
+        SOURCE_REFERENCE_BINDINGS_VERSION,
+        SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+        SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+    }
 )
+SOURCE_REFERENCE_RETIREMENT_REASONS = frozenset({"real_story_quality_failure"})
 
 
 class SourceReferenceBindingError(ValueError):
@@ -77,6 +83,13 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
                     "Source-reference binding source plans must be distinct"
                 )
             plan_sha256s.add(plan_sha256)
+        retired_variants = value.get("retired_variants")
+        if version == SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
+            _validate_retired_variants(retired_variants, plan_sha256s)
+        elif retired_variants is not None:
+            raise SourceReferenceBindingError(
+                "Retired variants require source-reference binding schema version 3"
+            )
     variants = value.get("selected_variants")
     if not isinstance(variants, list) or not variants:
         raise SourceReferenceBindingError(
@@ -93,7 +106,10 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         character = _text(
             variant.get("voice_character"), "Source-reference variant voice"
         )
-        if version == SOURCE_REFERENCE_BINDINGS_MULTI_VERSION:
+        if version in {
+            SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+            SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+        }:
             variant_plan_sha256 = _required_sha256(
                 variant.get("source_reference_plan_sha256"),
                 "Source-reference variant plan SHA-256",
@@ -156,6 +172,26 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         raise SourceReferenceBindingError(
             "Selected source-reference variants must each bind at least one queue item"
         )
+    if version == SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
+        retired = value["retired_variants"]
+        retired_voices = {
+            normalize_character_name(record["voice_character"]) for record in retired
+        }
+        if known_voices and not retired_voices.issubset(known_voices):
+            raise SourceReferenceBindingError(
+                "Retired source-reference voice is absent from the manifest"
+            )
+        if retired_voices & selected_voices:
+            raise SourceReferenceBindingError(
+                "A source-reference voice cannot be selected and retired"
+            )
+        retired_queue_ids = {
+            queue_id for record in retired for queue_id in record["queue_ids"]
+        }
+        if retired_queue_ids & set(parsed):
+            raise SourceReferenceBindingError(
+                "Retired source-reference queue IDs must not remain active"
+            )
     declared_sha256 = value.get("queue_voice_overrides_sha256")
     calculated_sha256 = queue_voice_overrides_sha256(parsed)
     if declared_sha256 != calculated_sha256:
@@ -163,6 +199,25 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             "Source-reference queue voice override checksum is inconsistent"
         )
     return parsed
+
+
+def retired_source_reference_variants_from_manifest(document):
+    """Return validated inactive variant records from a version-3 manifest."""
+    value = document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
+    if value is None:
+        return ()
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    if version != SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
+        return ()
+    sources = value.get("sources")
+    plan_sha256s = {
+        source.get("source_reference_plan_sha256")
+        for source in sources
+        if isinstance(source, dict)
+    }
+    retired = value.get("retired_variants")
+    _validate_retired_variants(retired, plan_sha256s)
+    return tuple(dict(record) for record in retired)
 
 
 def queue_voice_overrides_sha256(overrides):
@@ -195,13 +250,75 @@ def _required_sha256(value, label):
     return value
 
 
+def _validate_retired_variants(records, plan_sha256s):
+    if not isinstance(records, list) or not records:
+        raise SourceReferenceBindingError(
+            "Retired source-reference bindings require retired variants"
+        )
+    observed_variants = []
+    observed_queue_ids = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {
+            "variant_id",
+            "source_reference_plan_sha256",
+            "voice_character",
+            "reference_sha256",
+            "queue_ids",
+            "reason",
+        }:
+            raise SourceReferenceBindingError(
+                "Retired source-reference variant record is malformed"
+            )
+        variant_id = _text(record.get("variant_id"), "Retired variant ID")
+        plan_sha256 = _required_sha256(
+            record.get("source_reference_plan_sha256"),
+            "Retired variant source plan SHA-256",
+        )
+        if plan_sha256 not in plan_sha256s:
+            raise SourceReferenceBindingError(
+                "Retired variant references an unknown source plan"
+            )
+        _text(record.get("voice_character"), "Retired variant voice")
+        _required_sha256(
+            record.get("reference_sha256"),
+            "Retired variant reference SHA-256",
+        )
+        reason = record.get("reason")
+        if reason not in SOURCE_REFERENCE_RETIREMENT_REASONS:
+            raise SourceReferenceBindingError("Retired variant reason is unsupported")
+        queue_ids = record.get("queue_ids")
+        if (
+            not isinstance(queue_ids, list)
+            or not queue_ids
+            or queue_ids != sorted(set(queue_ids))
+        ):
+            raise SourceReferenceBindingError(
+                "Retired variant queue IDs are not canonical"
+            )
+        for queue_id in queue_ids:
+            _text(queue_id, "Retired variant queue ID")
+            if queue_id in observed_queue_ids:
+                raise SourceReferenceBindingError(
+                    "Retired source-reference variants overlap queue IDs"
+                )
+            observed_queue_ids.add(queue_id)
+        observed_variants.append(variant_id)
+    if observed_variants != sorted(set(observed_variants)):
+        raise SourceReferenceBindingError(
+            "Retired source-reference variants are not canonical"
+        )
+
+
 __all__ = [
     "SOURCE_REFERENCE_BINDINGS_FIELD",
     "SOURCE_REFERENCE_BINDINGS_SCHEMA",
     "SOURCE_REFERENCE_BINDINGS_VERSION",
     "SOURCE_REFERENCE_BINDINGS_MULTI_VERSION",
+    "SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION",
+    "SOURCE_REFERENCE_RETIREMENT_REASONS",
     "SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS",
     "SourceReferenceBindingError",
     "queue_voice_overrides_from_manifest",
     "queue_voice_overrides_sha256",
+    "retired_source_reference_variants_from_manifest",
 ]
