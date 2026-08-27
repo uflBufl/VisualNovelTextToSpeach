@@ -59,10 +59,12 @@ Follow the evidence-backed order and invariants in
       remain untouched. Publish a third no-replace successor that preserves the
       exact queue/story, source item/WAV/state hashes and terminal decisions,
       records both source and target authorities, and re-attests an item only
-      when its effective queue override/fallback route and exact reference-byte
-      identity are unchanged. Added Mrs. Owen mappings and the Hotelier-only
+      when its effective queue override/fallback route retains every exact
+      source reference byte. Different internal variant labels are allowed only
+      when this byte identity proves they route to the same source voice. Added
+      Mrs. Owen mappings and the Hotelier-only
       Narrator fallback may affect only previously nonterminal items. Reject any
-      changed existing reference, alias collision, effective character change,
+      changed existing reference, alias collision, incompatible effective route,
       missing source authority, active lease or concurrent mutation. Centralize
       the validation so approved-manifest and final-pack publication both reject
       orphaned or tampered rebase ledgers. Prove idempotency and fail-closed race

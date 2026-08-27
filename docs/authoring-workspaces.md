@@ -47,10 +47,13 @@ import identity, and publishes a third no-replace workspace. Its base state and
 top-level synthesis controls come from the new config. Only exact terminal
 items come from the reviewed source. Each carried item binds the source
 workspace/state/item/WAV hashes, its original synthesis fields, effective
-character, source reference digests and the target route that still contains
-those exact reference bytes. A changed character, removed/changed reference,
-active attempt, partial WAV, path collision or concurrent source mutation
-aborts before publication.
+source variant label, source reference digests and the target route that still
+contains every exact source reference byte. Internal source/target variant
+labels may differ because reviewed single-reference overlays and canonical
+multi-reference voices have different names; this is accepted only when the
+target route contains the exact source bytes. A removed/changed reference,
+incompatible route, active attempt, partial WAV, path collision or concurrent
+source mutation aborts before publication.
 
 The successor snapshots both workspace/state authorities and the source input
 controls. Its approved-only manifest retains an additive `config_rebase`

@@ -181,11 +181,6 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     target_overrides,
                     queue_item,
                 )
-                if source_route[0] != target_route[0]:
-                    raise AuthoringWorkbenchError(
-                        "Config rebase changes the effective character for "
-                        f"{queue_id!r}"
-                    )
                 if not set(source_route[1]).issubset(target_reference_sha256s):
                     raise AuthoringWorkbenchError(
                         "Config rebase target omits source reference bytes for "
@@ -518,10 +513,6 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         for field in ("source_effective_character", "target_effective_character"):
             if not isinstance(record.get(field), str) or not record[field].strip():
                 raise AuthoringWorkbenchError(f"Config rebase item {field} is invalid")
-        if record["source_effective_character"] != record["target_effective_character"]:
-            raise AuthoringWorkbenchError(
-                f"Config rebase item changes effective character for {queue_id!r}"
-            )
         if not set(record["source_reference_sha256s"]).issubset(
             record["target_reference_sha256s"]
         ):

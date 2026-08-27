@@ -38,8 +38,10 @@ def _tree_hashes(root):
     }
 
 
-def _prepare(root, *, target_reference_payloads=None):
-    fixture, imported, source = create_carry_source_workspace(root)
+def _prepare(root, *, target_reference_payloads=None, source_queue_override=None):
+    fixture, imported, source = create_carry_source_workspace(
+        root, queue_voice_override=source_queue_override
+    )
     review_generation_item(
         source.directory / "generated-audio" / "generation-state.json",
         fixture["queue_id"],
@@ -63,6 +65,31 @@ def _prepare(root, *, target_reference_payloads=None):
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_allows_distinct_variant_labels_bound_to_same_reference_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, target = _prepare(
+                root,
+                source_queue_override="Source reference Rhiannon exact-variant",
+            )
+
+            result = rebase_workspace_config(source, target, root / "workspaces")
+            state = load_generation_state(
+                result.directory / "generated-audio" / "generation-state.json",
+                result.directory / "queue.jsonl",
+            )
+            authority = state["items"][fixture["queue_id"]]["config_rebase"]
+            self.assertEqual(
+                authority["source_effective_character"],
+                "Source reference Rhiannon exact-variant",
+            )
+            self.assertEqual(authority["target_effective_character"], "Rhiannon")
+            self.assertTrue(
+                set(authority["source_reference_sha256s"]).issubset(
+                    authority["target_reference_sha256s"]
+                )
+            )
+
     def test_cli_publishes_config_rebase_workspace(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
