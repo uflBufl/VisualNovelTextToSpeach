@@ -31,6 +31,7 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.source_reference_bindings import (
@@ -40,6 +41,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.game_pack import import_game_pack
+from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -60,6 +62,9 @@ class SyntheticRenderer:
     name = "synthetic"
     model_name = "synthetic-v1"
 
+    def __init__(self, completion=SynthesisCompletion.COMPLETE):
+        self.completion = completion
+
     def render(self, request):
         pcm = audio_samples()
 
@@ -68,7 +73,7 @@ class SyntheticRenderer:
             return SynthesisResult(
                 pcm=pcm,
                 sample_rate=16_000,
-                completion=SynthesisCompletion.COMPLETE,
+                completion=self.completion,
                 limits=SynthesisLimits(256, 180.0),
                 timing=SynthesisTiming(1.0, 2.0),
                 diagnostics=SynthesisDiagnostics(
@@ -259,6 +264,93 @@ def publish(fixture, destination, **overrides):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def prepare_exhausted_hypothesis_fixture(self, root):
+        fixture = prepare_authoring_fixture(
+            root / "source", names=("one. Another sentence follows",)
+        )
+        base = root / "base"
+        base.mkdir()
+        queue = base / "queue.jsonl"
+        shutil.copyfile(fixture["queue"], queue)
+        workspace = {
+            "schema": "vntts.authoring-workspace",
+            "schema_version": 1,
+            "workspace_id": "resume-" + "a" * 24 + "-" + "b" * 16,
+            "source": {"import_id": "legacy-" + "a" * 24},
+        }
+        (base / "workspace.json").write_text(
+            json.dumps(workspace, sort_keys=True), encoding="utf-8"
+        )
+        controls = {
+            "voice_manifest": fixture["voices"],
+            "voice_reference:0001": fixture["reference"],
+        }
+        renderer = SyntheticRenderer(SynthesisCompletion.LIMITED)
+        renderer.name = "moss-tts"
+        renderer.model_name = "moss-local"
+        generated = run_bulk_generation(
+            queue,
+            base / "generated-audio",
+            renderer,
+            provider="moss-tts",
+            model="moss-local",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            control_files=controls,
+        )
+        queue_id = fixture["items"][0]["queue_id"]
+        base_state = json.loads(generated.state.read_text(encoding="utf-8"))
+        base_result_sha256 = _canonical_sha256(base_state["items"][queue_id])
+
+        evidence = root / "evidence"
+        evidence.mkdir()
+        shutil.copyfile(queue, evidence / "queue.jsonl")
+        evidence_workspace = {
+            **workspace,
+            "workspace_id": "resume-" + "a" * 24 + "-" + "c" * 16,
+        }
+        (evidence / "workspace.json").write_text(
+            json.dumps(evidence_workspace, sort_keys=True), encoding="utf-8"
+        )
+        evidence_output = evidence / "generated-audio"
+        evidence_output.mkdir()
+        shutil.copyfile(generated.state, evidence_output / "generation-state.json")
+        repair_renderer = SyntheticRenderer(SynthesisCompletion.LIMITED)
+        repair_renderer.name = "moss-tts"
+        repair_renderer.model_name = "moss-local"
+        repaired = run_bulk_generation(
+            evidence / "queue.jsonl",
+            evidence_output,
+            repair_renderer,
+            provider="moss-tts",
+            model="moss-local",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            include_queue_ids=(queue_id,),
+            failure_repair_policy=FailureRepairPolicy(
+                sentence_segment_queue_ids=(queue_id,)
+            ),
+            control_files=controls,
+        )
+        evidence_state = json.loads(repaired.state.read_text(encoding="utf-8"))
+        evidence_state["items"][queue_id]["carry_forward"] = {
+            "source_item_sha256": base_result_sha256
+        }
+        repaired.state.write_text(
+            json.dumps(evidence_state, sort_keys=True), encoding="utf-8"
+        )
+        fixture.update(
+            {
+                "queue": queue,
+                "output": base / "generated-audio",
+                "state": generated.state,
+                "manifest": generated.manifest,
+            }
+        )
+        return fixture, evidence, queue_id
+
     def test_forged_config_rebase_provenance_cannot_enter_final_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -469,6 +561,170 @@ class AuthoringGamePackTest(unittest.TestCase):
             ledger["entries"][0]["decision_sha256"],
             game_pack_module._canonical_sha256(decision),
         )
+
+    def test_exhausted_hypothesis_fallback_binds_repair_and_loads_from_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "live-fallback",
+                        "--state",
+                        str(fixture["state"]),
+                        "--queue",
+                        str(fixture["queue"]),
+                        "--reason",
+                        "generation_hypotheses_exhausted",
+                        "--model",
+                        "pocket-tts",
+                        "--evidence-workspace",
+                        str(evidence),
+                        queue_id,
+                    ]
+                )
+            decision = json.loads(stdout.getvalue())
+            result = publish(fixture, root / "pack")
+            pack = load_game_pack(result.manifest)
+            library = GeneratedAudioLibrary.load_optional(pack.generated_audio.path)
+            loaded = next(iter(library.live_fallbacks.values()))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(decision["schema_version"], 2)
+        self.assertEqual(
+            decision["evidence"]["hypotheses"][0]["strategy"],
+            "sentence_boundary_segmentation",
+        )
+        self.assertEqual(loaded.reason, "generation_hypotheses_exhausted")
+        self.assertEqual(loaded.evidence, decision["evidence"])
+        self.assertEqual(result.live_fallback_count, 1)
+
+    def test_exhausted_hypothesis_fallback_rejects_stale_repair_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            before = fixture["state"].read_bytes()
+            state_path = evidence / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id]["carry_forward"]["source_item_sha256"] = "0" * 64
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(BulkGenerationError, "exact current item"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    queue_id,
+                    reason="generation_hypotheses_exhausted",
+                    model="pocket-tts",
+                    evidence_workspaces=(evidence,),
+                )
+            self.assertEqual(fixture["state"].read_bytes(), before)
+
+    def test_exhausted_hypothesis_fallback_requires_exact_inactive_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            with self.assertRaisesRegex(BulkGenerationError, "evidence workspace"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    queue_id,
+                    reason="generation_hypotheses_exhausted",
+                    model="pocket-tts",
+                )
+
+            partial = evidence / "generated-audio/audio/render.partial.wav"
+            partial.parent.mkdir(exist_ok=True)
+            partial.write_bytes(b"partial")
+            with self.assertRaisesRegex(BulkGenerationError, "active or incomplete"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    queue_id,
+                    reason="generation_hypotheses_exhausted",
+                    model="pocket-tts",
+                    evidence_workspaces=(evidence,),
+                )
+
+    def test_exhausted_hypothesis_fallback_rejects_queue_or_import_mismatch(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            other = prepare_authoring_fixture(root / "other", names=("different",))
+            shutil.copyfile(other["queue"], evidence / "queue.jsonl")
+            with self.assertRaisesRegex(BulkGenerationError, "queue differs"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    queue_id,
+                    reason="generation_hypotheses_exhausted",
+                    model="pocket-tts",
+                    evidence_workspaces=(evidence,),
+                )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            workspace_path = evidence / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["source"]["import_id"] = "legacy-" + "f" * 24
+            workspace_path.write_text(
+                json.dumps(workspace, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(BulkGenerationError, "import differs"):
+                authorize_live_fallback(
+                    fixture["state"],
+                    fixture["queue"],
+                    queue_id,
+                    reason="generation_hypotheses_exhausted",
+                    model="pocket-tts",
+                    evidence_workspaces=(evidence,),
+                )
+
+    def test_exhausted_hypothesis_fallback_rechecks_evidence_before_commit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            before = fixture["state"].read_bytes()
+            real_write = bulk_generation_module._write_generated_manifest_from_state
+
+            def mutate_evidence(*args, **kwargs):
+                result = real_write(*args, **kwargs)
+                workspace_path = evidence / "workspace.json"
+                workspace_path.write_text(
+                    workspace_path.read_text(encoding="utf-8") + "\n",
+                    encoding="utf-8",
+                )
+                return result
+
+            with patch.object(
+                bulk_generation_module,
+                "_write_generated_manifest_from_state",
+                side_effect=mutate_evidence,
+            ):
+                with self.assertRaisesRegex(BulkGenerationError, "evidence changed"):
+                    authorize_live_fallback(
+                        fixture["state"],
+                        fixture["queue"],
+                        queue_id,
+                        reason="generation_hypotheses_exhausted",
+                        model="pocket-tts",
+                        evidence_workspaces=(evidence,),
+                    )
+            self.assertEqual(fixture["state"].read_bytes(), before)
 
     def test_live_fallback_refuses_pending_or_unbound_backend(self):
         with TemporaryDirectory() as directory:

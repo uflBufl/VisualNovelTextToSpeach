@@ -46,27 +46,9 @@ Follow the evidence-backed order and invariants in
       [`authoring-audio-events.md`](docs/authoring-audio-events.md): canonical
       text/hash remain unchanged, while `Tsk!`, `*gasp*`, `*gurgle*` and unknown
       stage directions cannot be pronounced by ordinary MOSS or Pocket TTS.
-      The exact 0.751-second Kanjira `Tsk!` game clip is now published as
-      checksum-bound pending review
-      `current-character-story-tsk-game-v1`, review ID
-      `938ff6f824a1fe7ebb5e98b350d77dc16f7097f19604d94f17d59a1639364ac8`.
-      The human accepted its exact WAV as a speaker-neutral tongue-click. Build
-      the production composition successor in this order. The self-contained
-      exact-copy composition is published as
-      `current-character-story-tsk-game-v1`, composition ID `a3750a73c...`, and
-      binds the review/decision, queue, event plan, game event/bank/media and WAV
-      hashes with `speaker_identity_claim=false`. The exact composition is
-      approved and its config-addressed production successor is now published
-      as `resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`. It preserves the
-      exact base workspace/state/rejected-WAV bytes under immutable inputs and
-      projects only the unchanged event WAV. The user's exact approval is now
-      recorded as `approved/approved`, and the checksum-bound composition
-      ledger is present in the 401-entry approved-only manifest. No further
-      `Tsk!` review or merge is required. Do not treat the accepted effect as
-      Poacher I voice evidence, alter its bytes, or read `Tsk` aloud.
-      The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical
-      losses (`LIMITED` at the unchanged 3.0-second cap), and the ambiguous
-      `common_npc05` media is excluded. When CUDA is available,
+      `Tsk!` is already resolved by its approved exact source-event composition;
+      do not review, regenerate or treat it as character-voice evidence. When
+      CUDA is available,
       evaluate official MOSS-SoundEffect v2 for isolated gasp/gurgle effects in
       its separate Python 3.12 environment. Require technical validation,
       perceptual approval and a checksum-bound speech/event/mix ledger; never
@@ -152,7 +134,21 @@ Follow the evidence-backed order and invariants in
       fallback authority that consumes the exhausted current-control,
       alternative-reference and segmentation evidence; it must not infer
       provider exhaustion from disconnected workspace attempt counters or
-      silently promote Pocket output. Preserve the completed older 12-failure
+      silently promote Pocket output. Implement it as a versioned decision that:
+      (1) binds the exact current queue/state/item authority before mutation;
+      (2) accepts only stable, inactive evidence workspaces with the identical
+      queue record and immutable import; (3) embeds canonical failed-result
+      snapshots and hashes rather than only external paths; (4) requires each
+      repair result to carry forward the exact current item hash and requires a
+      completed `sentence_boundary_segmentation` hypothesis; (5) rechecks every
+      source hash under the generation lease before atomic commit; and (6)
+      remains readable by both final-pack publication and live routing while
+      preserving existing schema-v1 decisions. Add negative tests for stale
+      items, active or changed sources, mismatched queues, missing repair
+      evidence and unsupported providers, plus an end-to-end publication/load
+      test. Then apply the authority only to the exact two lines in a new
+      config-addressed or otherwise immutable successor; do not mutate a
+      superseded source workspace merely to make the test pass. Preserve the completed older 12-failure
       evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
       and do not repeat an exhausted seed/provider/repair. Keep all failed

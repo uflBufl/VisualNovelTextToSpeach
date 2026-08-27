@@ -28,6 +28,7 @@ LIVE_FALLBACK_REASONS = frozenset(
         "offline_fallback_exhausted",
         "reference_unavailable_after_audit",
         "generated_audio_rejected",
+        "generation_hypotheses_exhausted",
     }
 )
 
@@ -131,6 +132,7 @@ class LiveFallbackDecision:
     previous_result_sha256: str | None
     decided_at: str
     decision_sha256: str
+    evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -733,7 +735,7 @@ def _live_fallback_index(metadata):
         or not isinstance(value.get("entries"), list)
     ):
         raise ValueError("Generated-audio live fallback ledger is malformed")
-    fields = {
+    common_fields = {
         "schema",
         "schema_version",
         "reason",
@@ -751,6 +753,8 @@ def _live_fallback_index(metadata):
     }
     indexed = {}
     for raw in value["entries"]:
+        version = raw.get("schema_version") if isinstance(raw, dict) else None
+        fields = common_fields | ({"evidence"} if version == 2 else set())
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
         for field in fields - {
@@ -758,15 +762,16 @@ def _live_fallback_index(metadata):
             "text_sha256",
             "previous_result_sha256",
             "decision_sha256",
+            "evidence",
         }:
             if not isinstance(raw[field], str) or not raw[field].strip():
                 raise ValueError(
                     "Generated-audio live fallback text fields must be non-empty"
                 )
-        if (
-            raw["schema"] != "vntts.authoring-live-fallback-decision"
-            or raw["schema_version"] != 1
-        ):
+        if raw["schema"] != "vntts.authoring-live-fallback-decision" or version not in {
+            1,
+            2,
+        }:
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
             value_hash = raw[field]
@@ -794,6 +799,16 @@ def _live_fallback_index(metadata):
             or raw["generation_profile"] != "default"
         ):
             raise ValueError("Generated-audio live fallback policy is unsupported")
+        if version == 2:
+            if raw["reason"] != "generation_hypotheses_exhausted":
+                raise ValueError(
+                    "Generated-audio evidence fallback reason is unsupported"
+                )
+            _validate_live_fallback_evidence(
+                raw["evidence"], raw["previous_result_sha256"]
+            )
+        elif raw["reason"] == "generation_hypotheses_exhausted":
+            raise ValueError("Generated-audio live fallback evidence is missing")
         decision_document = {
             key: value for key, value in raw.items() if key != "decision_sha256"
         }
@@ -807,12 +822,103 @@ def _live_fallback_index(metadata):
         ).hexdigest()
         if decision_sha256 != raw["decision_sha256"]:
             raise ValueError("Generated-audio live fallback decision hash changed")
-        decision = LiveFallbackDecision(**raw)
+        decision = LiveFallbackDecision(
+            **raw, **({"evidence": None} if version == 1 else {})
+        )
         identity = decision.line_id, decision.text_sha256
         if identity in indexed:
             raise ValueError("Generated-audio live fallback identity is duplicated")
         indexed[identity] = decision
     return indexed
+
+
+def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+    fields = {
+        "schema",
+        "schema_version",
+        "queue_sha256",
+        "base_result_sha256",
+        "hypotheses",
+    }
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
+        or evidence.get("schema_version") != 1
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or not _lowercase_sha256(evidence.get("queue_sha256"))
+        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+    ):
+        raise ValueError("Generated-audio live fallback evidence is malformed")
+    hypotheses = evidence.get("hypotheses")
+    if not isinstance(hypotheses, list) or not hypotheses:
+        raise ValueError("Generated-audio live fallback evidence is empty")
+    order = []
+    hypothesis_fields = {
+        "workspace_id",
+        "workspace_sha256",
+        "state_sha256",
+        "queue_sha256",
+        "result_sha256",
+        "strategy",
+        "result",
+    }
+    for hypothesis in hypotheses:
+        if (
+            not isinstance(hypothesis, dict)
+            or set(hypothesis) != hypothesis_fields
+            or not isinstance(hypothesis.get("workspace_id"), str)
+            or not hypothesis["workspace_id"].startswith("resume-")
+            or hypothesis.get("strategy") != "sentence_boundary_segmentation"
+            or hypothesis.get("queue_sha256") != evidence["queue_sha256"]
+            or any(
+                not _lowercase_sha256(hypothesis.get(field))
+                for field in ("workspace_sha256", "state_sha256", "result_sha256")
+            )
+            or not isinstance(hypothesis.get("result"), dict)
+            or _canonical_sha256(hypothesis["result"]) != hypothesis["result_sha256"]
+        ):
+            raise ValueError(
+                "Generated-audio live fallback evidence hypothesis is malformed"
+            )
+        result = hypothesis["result"]
+        repair = result.get("failure_repair")
+        carry = result.get("carry_forward")
+        if (
+            result.get("status") != "failed"
+            or not isinstance(result.get("failure"), dict)
+            or not isinstance(repair, dict)
+            or repair.get("strategy") != hypothesis["strategy"]
+            or not isinstance(carry, dict)
+            or carry.get("source_item_sha256") != evidence["base_result_sha256"]
+        ):
+            raise ValueError(
+                "Generated-audio live fallback evidence result is inconsistent"
+            )
+        order.append((hypothesis["workspace_id"], hypothesis["result_sha256"]))
+    if order != sorted(order) or len(order) != len(set(order)):
+        raise ValueError(
+            "Generated-audio live fallback evidence hypotheses are not canonical"
+        )
+
+
+def _lowercase_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_sha256(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _validate_live_fallback_backend(backend, decision):

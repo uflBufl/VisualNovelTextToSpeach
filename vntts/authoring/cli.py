@@ -603,6 +603,16 @@ def create_parser():
     live_fallback.add_argument("--provider", default="pocket-tts")
     live_fallback.add_argument("--model", required=True)
     live_fallback.add_argument("--generation-profile", default="default")
+    live_fallback.add_argument(
+        "--evidence-workspace",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Bind one immutable failed repair workspace; repeat for "
+            "generation_hypotheses_exhausted"
+        ),
+    )
     publish = subparsers.add_parser(
         "publish", help="Rebuild the approved-only manifest from generation state"
     )
@@ -1542,6 +1552,7 @@ def main(argv=None):
                 provider=arguments.provider,
                 model=arguments.model,
                 generation_profile=arguments.generation_profile,
+                evidence_workspaces=arguments.evidence_workspace,
             )
             print(json.dumps(decision, indent=2, sort_keys=True))
             return 0

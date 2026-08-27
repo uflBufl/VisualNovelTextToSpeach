@@ -533,6 +533,33 @@ binds the queue line/text/speaker and prior result hash, and rebuilds the
 approved-only manifest under the generation lease. Raw failed or pending-review
 items remain nonterminal until this explicit decision is recorded.
 
+An exact typed MOSS failure whose distinct repair hypothesis completed in a
+different workspace uses the stricter `generation_hypotheses_exhausted`
+decision. Supply each selected source with `--evidence-workspace`. Version 2 of
+the decision requires the same immutable import and byte-identical queue,
+rejects active/partial evidence, validates only the selected failed repair item
+(so an unrelated legacy-invalid sibling cannot become authority), and requires
+a `sentence_boundary_segmentation` result whose carry-forward item hash equals
+the current failed item. The decision embeds the canonical failed result plus
+workspace, state, queue and item hashes, then rechecks every source before the
+atomic state/manifest commit. It never derives exhaustion from aggregate
+attempt counters and never represents Pocket as pregenerated audio:
+
+```sh
+uv run vntts-pregenerate live-fallback \
+  --state WORKSPACE/generated-audio/generation-state.json \
+  --queue WORKSPACE/queue.jsonl \
+  --reason generation_hypotheses_exhausted \
+  --model pocket-tts \
+  --evidence-workspace FAILED_REPAIR_WORKSPACE \
+  QUEUE_ID
+```
+
+Final-pack publication and live routing accept both the original version-1
+decisions and the evidence-bound version-2 decision. Changing the embedded
+repair result, its carry-forward hash or any decision field invalidates the
+published decision digest.
+
 Optional `--carry-forward-character` values may preserve terminal approved or
 rejected decisions for unchanged non-Narrator character references in the new
 workspace. Their original provider and full synthesis provenance remain on the

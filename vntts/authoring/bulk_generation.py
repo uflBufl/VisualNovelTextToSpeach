@@ -106,11 +106,15 @@ SHORT_TRAILING_ELLIPSIS_PATTERN = re.compile(
 )
 LIVE_FALLBACK_SCHEMA = "vntts.authoring-live-fallback-decision"
 LIVE_FALLBACK_VERSION = 1
+LIVE_FALLBACK_EVIDENCE_VERSION = 2
+LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
+LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
     {
         "offline_fallback_exhausted",
         "reference_unavailable_after_audit",
         "generated_audio_rejected",
+        LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
     }
 )
 
@@ -2748,6 +2752,7 @@ def authorize_live_fallback(
     provider="pocket-tts",
     model,
     generation_profile="default",
+    evidence_workspaces=(),
 ):
     """Record one exact terminal live-Pocket decision without publishing audio."""
     if reason not in LIVE_FALLBACK_REASONS:
@@ -2788,13 +2793,40 @@ def authorize_live_fallback(
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = state["items"].get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
+        if (
+            reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED
+            and state.get("active") is not None
+        ):
+            raise BulkGenerationError(
+                "Exhausted-hypothesis fallback requires an inactive base workspace"
+            )
         previous_sha256 = None if existing is None else _canonical_sha256(existing)
+        evidence = None
+        evidence_sources = ()
+        if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+            evidence, evidence_sources = _capture_live_fallback_evidence(
+                state_path,
+                queue_path,
+                queue_sha256,
+                queue_item,
+                existing,
+                evidence_workspaces,
+            )
+        elif tuple(evidence_workspaces):
+            raise BulkGenerationError(
+                "Live fallback evidence workspaces require the "
+                "generation_hypotheses_exhausted reason"
+            )
         requested = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
         )
         decision = {
             "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": LIVE_FALLBACK_VERSION,
+            "schema_version": (
+                LIVE_FALLBACK_EVIDENCE_VERSION
+                if evidence is not None
+                else LIVE_FALLBACK_VERSION
+            ),
             "reason": reason,
             "provider": provider,
             "model": model,
@@ -2807,6 +2839,8 @@ def authorize_live_fallback(
             "previous_result_sha256": previous_sha256,
             "decided_at": _now(),
         }
+        if evidence is not None:
+            decision["evidence"] = evidence
         proposed = copy.deepcopy(state)
         proposed_item = copy.deepcopy(existing) if isinstance(existing, dict) else {}
         if reason == "generated_audio_rejected":
@@ -2862,6 +2896,22 @@ def authorize_live_fallback(
                 raise BulkGenerationSourceChangedError(
                     "Generation state changed before live fallback commit"
                 )
+            for source_path, source_sha256 in evidence_sources:
+                if (
+                    not source_path.is_file()
+                    or sha256_file(source_path) != source_sha256
+                ):
+                    raise BulkGenerationSourceChangedError(
+                        "Live fallback evidence changed before commit"
+                    )
+            for source_path, _source_sha256 in evidence_sources:
+                if source_path.name != "generation-state.json":
+                    continue
+                output = source_path.parent
+                if any(output.rglob("*.partial.wav")):
+                    raise BulkGenerationSourceChangedError(
+                        "Live fallback evidence became active before commit"
+                    )
             _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
             lease.assert_owned()
             os.replace(staged_state, state_path)
@@ -2898,6 +2948,19 @@ def _validate_live_fallback_source(existing, queue_item, reason):
         return
     if not isinstance(existing, dict):
         raise BulkGenerationError("Live fallback requires an existing outcome")
+    if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+        if (
+            existing.get("status") != "failed"
+            or existing.get("provider") != "moss-tts"
+            or not isinstance(existing.get("failure"), dict)
+            or existing["failure"].get("kind")
+            not in {"missed_eos_audio_limit", "speech_silence"}
+        ):
+            raise BulkGenerationError(
+                "Exhausted-hypothesis fallback requires an exact typed failed "
+                "MOSS current-control outcome"
+            )
+        return
     if reason == "generated_audio_rejected":
         if (existing.get("status"), existing.get("review_status")) != (
             "generated",
@@ -2918,6 +2981,253 @@ def _validate_live_fallback_source(existing, queue_item, reason):
         raise BulkGenerationError(
             "Offline-exhausted live fallback requires a typed failed Pocket fallback"
         )
+
+
+def _capture_live_fallback_evidence(
+    state_path,
+    queue_path,
+    queue_sha256,
+    queue_item,
+    existing,
+    evidence_workspaces,
+):
+    values = tuple(Path(value).expanduser().resolve() for value in evidence_workspaces)
+    if not values:
+        raise BulkGenerationError(
+            "Exhausted-hypothesis fallback requires an evidence workspace"
+        )
+    if len(values) != len(set(values)):
+        raise BulkGenerationError("Live fallback evidence workspace is duplicated")
+    base_root = state_path.parent.parent
+    base_workspace_path = base_root / "workspace.json"
+    try:
+        base_workspace_payload = base_workspace_path.read_bytes()
+        base_workspace = json.loads(base_workspace_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read live fallback base workspace: {error}"
+        ) from error
+    _base_workspace_id, base_import = _live_fallback_workspace_import(
+        base_workspace, "base"
+    )
+    if queue_path != base_root / "queue.jsonl":
+        raise BulkGenerationError(
+            "Live fallback queue must belong to its base workspace"
+        )
+    base_result_sha256 = _canonical_sha256(existing)
+    hypotheses = []
+    snapshots = []
+    for directory in values:
+        if directory == base_root:
+            raise BulkGenerationError(
+                "Live fallback evidence must differ from the current workspace"
+            )
+        workspace_path = directory / "workspace.json"
+        source_queue_path = directory / "queue.jsonl"
+        source_state_path = directory / "generated-audio" / "generation-state.json"
+        try:
+            workspace_payload = workspace_path.read_bytes()
+            source_queue_payload = source_queue_path.read_bytes()
+            source_state_payload = source_state_path.read_bytes()
+            workspace = json.loads(workspace_payload.decode("utf-8"))
+            source_state = json.loads(source_state_payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise BulkGenerationError(
+                f"Unable to read live fallback evidence workspace {directory}: {error}"
+            ) from error
+        workspace_id, source_import = _live_fallback_workspace_import(
+            workspace, "evidence"
+        )
+        if source_import != base_import:
+            raise BulkGenerationError(
+                "Live fallback evidence immutable import differs from its base"
+            )
+        source_queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
+        if source_queue_sha256 != queue_sha256:
+            raise BulkGenerationError(
+                "Live fallback evidence queue differs from its base"
+            )
+        source_queue, stable_queue_sha256 = _load_stable_queue(source_queue_path)
+        if stable_queue_sha256 != source_queue_sha256:
+            raise BulkGenerationSourceChangedError(
+                "Live fallback evidence queue changed while it was read"
+            )
+        if (
+            (source_state.get("schema"), source_state.get("schema_version"))
+            not in {
+                (STATE_SCHEMA, STATE_VERSION),
+                (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
+            }
+            or source_state.get("queue_sha256") != source_queue_sha256
+            or not isinstance(source_state.get("items"), dict)
+        ):
+            raise BulkGenerationError(
+                "Live fallback evidence generation state is malformed"
+            )
+        if source_state.get("active") is not None or any(
+            source_state_path.parent.rglob("*.partial.wav")
+        ):
+            raise BulkGenerationError(
+                "Live fallback evidence workspace is active or incomplete"
+            )
+        source_result = source_state["items"].get(queue_item.queue_id)
+        if (
+            not isinstance(source_result, dict)
+            or source_result.get("status") != "failed"
+        ):
+            raise BulkGenerationError(
+                "Live fallback evidence must contain the exact failed queue item"
+            )
+        source_queue_item = next(
+            item for item in source_queue.items if item.queue_id == queue_item.queue_id
+        )
+        _validate_failure_record(
+            source_result.get("failure"),
+            queue_item.queue_id,
+            result=source_result,
+        )
+        _validate_synthesis_identity(
+            source_result, queue_item.queue_id, source_queue_item
+        )
+        _validate_failure_repair_record(
+            source_result, queue_item.queue_id, source_queue_item
+        )
+        _validate_seed_application(source_result, queue_item.queue_id)
+        repair = source_result.get("failure_repair")
+        carry = source_result.get("carry_forward")
+        if (
+            not isinstance(repair, dict)
+            or repair.get("strategy") != SENTENCE_BOUNDARY_SEGMENTATION
+            or not isinstance(carry, dict)
+            or carry.get("source_item_sha256") != base_result_sha256
+        ):
+            raise BulkGenerationError(
+                "Live fallback evidence must be a completed sentence-boundary "
+                "repair carried from the exact current item"
+            )
+        workspace_sha256 = hashlib.sha256(workspace_payload).hexdigest()
+        state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
+        result_sha256 = _canonical_sha256(source_result)
+        hypotheses.append(
+            {
+                "workspace_id": workspace_id,
+                "workspace_sha256": workspace_sha256,
+                "state_sha256": state_sha256,
+                "queue_sha256": source_queue_sha256,
+                "result_sha256": result_sha256,
+                "strategy": SENTENCE_BOUNDARY_SEGMENTATION,
+                "result": copy.deepcopy(source_result),
+            }
+        )
+        snapshots.extend(
+            (
+                (workspace_path, workspace_sha256),
+                (source_queue_path, source_queue_sha256),
+                (source_state_path, state_sha256),
+            )
+        )
+    hypotheses.sort(key=lambda value: (value["workspace_id"], value["result_sha256"]))
+    evidence = {
+        "schema": LIVE_FALLBACK_EVIDENCE_SCHEMA,
+        "schema_version": 1,
+        "queue_sha256": queue_sha256,
+        "base_result_sha256": base_result_sha256,
+        "hypotheses": hypotheses,
+    }
+    _validate_live_fallback_evidence(evidence, base_result_sha256)
+    snapshots.extend(
+        (
+            (
+                base_workspace_path,
+                hashlib.sha256(base_workspace_payload).hexdigest(),
+            ),
+            (queue_path, queue_sha256),
+        )
+    )
+    return evidence, tuple(snapshots)
+
+
+def _live_fallback_workspace_import(workspace, label):
+    if (
+        not isinstance(workspace, dict)
+        or workspace.get("schema") != "vntts.authoring-workspace"
+        or workspace.get("schema_version") != 1
+        or not isinstance(workspace.get("workspace_id"), str)
+        or not workspace["workspace_id"].startswith("resume-")
+        or not isinstance(workspace.get("source"), dict)
+        or not isinstance(workspace["source"].get("import_id"), str)
+        or not workspace["source"]["import_id"]
+    ):
+        raise BulkGenerationError(
+            f"Live fallback {label} workspace authority is malformed"
+        )
+    return workspace["workspace_id"], workspace["source"]["import_id"]
+
+
+def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "schema",
+            "schema_version",
+            "queue_sha256",
+            "base_result_sha256",
+            "hypotheses",
+        }
+        or evidence.get("schema") != LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("base_result_sha256") != previous_result_sha256
+    ):
+        raise BulkGenerationError("Live fallback evidence authority is malformed")
+    _required_sha256(evidence.get("queue_sha256"), "Live fallback evidence queue")
+    _required_sha256(
+        evidence.get("base_result_sha256"), "Live fallback evidence base result"
+    )
+    hypotheses = evidence.get("hypotheses")
+    if not isinstance(hypotheses, list) or not hypotheses:
+        raise BulkGenerationError("Live fallback evidence hypothesis ledger is empty")
+    observed_order = []
+    for hypothesis in hypotheses:
+        if (
+            not isinstance(hypothesis, dict)
+            or set(hypothesis)
+            != {
+                "workspace_id",
+                "workspace_sha256",
+                "state_sha256",
+                "queue_sha256",
+                "result_sha256",
+                "strategy",
+                "result",
+            }
+            or hypothesis.get("strategy") != SENTENCE_BOUNDARY_SEGMENTATION
+            or hypothesis.get("queue_sha256") != evidence["queue_sha256"]
+            or not isinstance(hypothesis.get("workspace_id"), str)
+            or not hypothesis["workspace_id"].startswith("resume-")
+        ):
+            raise BulkGenerationError("Live fallback evidence hypothesis is malformed")
+        for field in ("workspace_sha256", "state_sha256", "result_sha256"):
+            _required_sha256(hypothesis.get(field), f"Live fallback evidence {field}")
+        result = hypothesis.get("result")
+        repair = result.get("failure_repair") if isinstance(result, dict) else None
+        carry = result.get("carry_forward") if isinstance(result, dict) else None
+        if (
+            not isinstance(result, dict)
+            or _canonical_sha256(result) != hypothesis["result_sha256"]
+            or result.get("status") != "failed"
+            or not isinstance(result.get("failure"), dict)
+            or not isinstance(repair, dict)
+            or repair.get("strategy") != hypothesis["strategy"]
+            or not isinstance(carry, dict)
+            or carry.get("source_item_sha256") != evidence["base_result_sha256"]
+        ):
+            raise BulkGenerationError("Live fallback evidence result authority changed")
+        observed_order.append((hypothesis["workspace_id"], hypothesis["result_sha256"]))
+    if observed_order != sorted(observed_order) or len(observed_order) != len(
+        set(observed_order)
+    ):
+        raise BulkGenerationError("Live fallback evidence hypotheses are not canonical")
 
 
 def _review_generation_item_locked(
@@ -3455,7 +3765,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
                 f"State item {queue_id!r} live fallback decision is missing"
             )
         return
-    expected_fields = {
+    common_fields = {
         "schema",
         "schema_version",
         "reason",
@@ -3470,11 +3780,17 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         "previous_result_sha256",
         "decided_at",
     }
+    version = decision.get("schema_version") if isinstance(decision, dict) else None
+    expected_fields = (
+        common_fields | {"evidence"}
+        if version == LIVE_FALLBACK_EVIDENCE_VERSION
+        else common_fields
+    )
     if (
         not isinstance(decision, dict)
         or set(decision) != expected_fields
         or decision.get("schema") != LIVE_FALLBACK_SCHEMA
-        or decision.get("schema_version") != LIVE_FALLBACK_VERSION
+        or version not in {LIVE_FALLBACK_VERSION, LIVE_FALLBACK_EVIDENCE_VERSION}
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
         or decision.get("model") != "pocket-tts"
@@ -3483,6 +3799,18 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
     ):
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback decision is malformed"
+        )
+    if version == LIVE_FALLBACK_EVIDENCE_VERSION:
+        if decision.get("reason") != LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} evidence fallback reason is invalid"
+            )
+        _validate_live_fallback_evidence(
+            decision.get("evidence"), decision.get("previous_result_sha256")
+        )
+    elif decision.get("reason") == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} exhausted-hypothesis evidence is missing"
         )
     for field in ("model", "generation_profile", "decided_at"):
         _required_text(
