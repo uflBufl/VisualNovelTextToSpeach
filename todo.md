@@ -34,15 +34,22 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Generate only the eight currently ready, absent spoken outcomes in the
-      composed workspace with seed 0 and no automatic retry: six exact
-      Mrs. Owen source-bound lines (`314601:83`, `314601:96`, `314603:13`,
-      `314603:14`, `314605:4`, `314608:86`) and the two Hotelier lines
-      (`314601:28`, `314601:47`) covered by the explicit Centurion Narrator
-      fallback policy. Require an 8/8 ready, zero-missing-voice preflight,
-      preserve every other state item byte-for-byte, then publish a
-      checksum-bound review cohort for any resulting WAVs and classify typed
-      failures before deciding another bounded action.
+- [ ] Keep all eight newly exhausted Mrs. Owen/Hotelier lines out of automatic
+      production repair. Hotelier `314601:47` and Mrs. Owen `314601:83`,
+      `314601:96`, `314603:14` exhausted their third current-provider attempt
+      after segmentation/bounded repair and ended with 2.88-3.28-second
+      internal pauses; the typed planner now requires reference comparison.
+      Hotelier `314601:28` and Mrs. Owen `314605:4` produced multiple roughly
+      3.1-second internal pauses that are not safe independent-segment cases;
+      compare a bounded inline-marker hypothesis with the exact failed control
+      before selection. Mrs. Owen `314608:86` also joined this path after its
+      bounded seed changed the prior audio-limit failure into a 3.04-second
+      internal pause. Mrs. Owen `314603:13` has a 3.04-second internal pause
+      inside a one-boundary line and requires reference/listening evidence.
+      Publish checksum-bound, blinded comparisons that preserve the exact
+      control failure and expose only genuinely distinct reference/marker
+      hypotheses. Do not infer acceptance from a completed but unpublished
+      failure WAV or spend another seed outside those comparison workflows.
 - [ ] Resolve the remaining missing-voice boundary without silently widening a
       reference: 93 spoken Aderyn lines have no age/portrait-safe route after
       the child variant's real-story rejection, and Dobharchú `314608:95` and

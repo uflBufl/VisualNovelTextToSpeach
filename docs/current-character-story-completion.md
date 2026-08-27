@@ -917,3 +917,35 @@ route after the child variant's real-story rejection, while Dobharchú
 non-verbal events are `*whimper*`, `*yelp*`, `*pop*`, three `*bang*` lines and
 `*buzzzzz*`; approved `Tsk!` and the two rejected mixed `*gasp*`/`*gurgle*`
 outputs account for the other three typed events.
+
+The exact eight ready spoken lines then ran in the composed workspace with
+seed 0, no retries and no regeneration of existing outcomes. All eight ended as
+typed failures and published no WAV: five `missed_eos_audio_limit` and three
+`speech_silence`. The generation summary skipped the other 584 queue items and
+left `active=null`. The resulting state and manifest SHA-256 values are
+`04a59cc5baf0884abe102489fda8a794db9bb334ac0f950631af440d21548434`
+and
+`4bedd679f855281eb0b65c502e3920592f7b13be5eeaf1088a1087b7e7ef402e`.
+
+Planner-authorized repairs ran only in immutable child workspaces. Workspace
+`resume-395a5e5eec0327a3a793b66d-f24bd8763ea2287c` carried five exact failures:
+three safe sentence-segmentation cases and two bounded seed retries. All five
+seed-1 attempts failed without a WAV. Its state and manifest SHA-256 values are
+`ddba1a3a24e086a170c229bae378d6456ed82d6bedc42920e7a9a6f1042afb7c`
+and
+`c46b2304cd11800159d4c6241904a957379eec53d6c923190a8a4e47a1447e72`.
+The planner allowed one final current-provider attempt for four remaining
+`missed_eos_audio_limit` lines; Mrs. Owen `314608:86` instead moved to the
+comparison path after a 3.04-second internal-pause failure.
+
+Workspace `resume-395a5e5eec0327a3a793b66d-b9716bf5de811152` carried only
+those four final bounded cases. Every seed-2 attempt completed audio but failed
+speech-silence validation with a 2.88-3.28-second internal pause, so no WAV was
+published and no review cohort exists. Its state and manifest SHA-256 values
+are `7468cde2004f751395b51c7ba78409ddd42975b56bfad3f6ba76d078d8a447fd`
+and
+`c7afc8e1db3f20d7259df319ab7f153fb9dedc624df1e47dc51ad4e8b4661b0a`.
+The typed planner now requires reference/listening evidence for all four and
+will not authorize a fourth MOSS seed. Together with the four earlier
+pause/reference cases, all eight Mrs. Owen/Hotelier lines now require explicit
+comparison evidence rather than more automatic production attempts.
