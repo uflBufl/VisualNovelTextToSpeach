@@ -281,6 +281,18 @@ therefore compare only arms 01 and 02 from this same immutable artifact. The
 failed third arm remains evidence and must not receive another seed merely to
 make a three-way listening task.
 
+The exact blind pair was published from clean commit `cea5b12` at
+`current-character-story-poacher-ii-reference-render-v1-listening`. It contains
+one pending trial, seed 19 and source SHA-256
+`0c1c6d5a61d17ac23f237bde3dad77dc678952ecfc6d0353e6ca066ad27bdecc`.
+The session SHA-256 is
+`2bb185afcb004cd00f0ec21a687c180a01b477fb25903929db06d2777ac0d03e`;
+its mode-0600 blind key SHA-256 is
+`af9acbb5a9db0079721fa837b5853e3b6f1e5aa66bfb0147397070a8c72b4b69`.
+Opaque sides bind the two completed WAV hashes above; the operator must hear
+both and choose A, B or neither before any reference binding or production
+render is allowed.
+
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four
 lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those

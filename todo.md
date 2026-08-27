@@ -65,9 +65,11 @@ Follow the evidence-backed order and invariants in
       published no WAV. The checksum-bound listening command now accepts an
       explicit complete two-arm subset of the same comparison, retains the
       omitted-arm failure evidence and does not rerender either completed
-      candidate. Publish that two-complete-arm session for the operator. A
-      selected hypothesis still needs one bounded production render, technical
-      validation, individual human review and exact outcome merge.
+      candidate. The one-trial blind session is published at
+      `current-character-story-poacher-ii-reference-render-v1-listening`; hear
+      both opaque sides and choose A, B or neither. A selected hypothesis still
+      needs one bounded production render, technical validation, individual
+      human review and exact outcome merge.
       `Neither` leaves the line failed for explicit live fallback; it does not
       authorize another MOSS seed or automatic Pocket transition.
 - [ ] Resolve the five source-local Dobharchú failures before reusing this voice
