@@ -61,7 +61,6 @@ from vntts.authoring.bulk_generation import (
     _sentence_repair_matches_failure,
     _snapshot_control_files,
     _write_generated_manifest_from_state,
-    inspect_generated_speech,
     inspect_generated_wav,
     is_spoken_queue_item,
     load_generation_state,
@@ -1011,7 +1010,9 @@ def create_audio_event_composition_workspace(
             quality = asdict(
                 inspect_generated_wav(target_audio, allow_short_audio_event=True)
             )
-            speech_quality = asdict(inspect_generated_speech(target_audio))
+            speech_quality = asdict(
+                measure_generated_speech_bytes(target_audio.read_bytes())
+            )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
         target_state = copy.deepcopy(state)

@@ -4220,9 +4220,23 @@ def _validate_success_item(
             raise BulkGenerationError(
                 f"Generated WAV speech quality version is invalid for {queue_id!r}"
             )
-        actual_speech_quality = asdict(
-            inspect_generated_speech(audio, analysis_version=analysis_version)
-        )
+        if result.get("provider") == "original-game-audio-event":
+            try:
+                audio_payload = audio.read_bytes()
+            except OSError as error:
+                raise BulkGenerationError(
+                    f"Generated audio event is unreadable for {queue_id!r}: {error}"
+                ) from error
+            actual_speech_quality = asdict(
+                measure_generated_speech_bytes(
+                    audio_payload,
+                    analysis_version=analysis_version,
+                )
+            )
+        else:
+            actual_speech_quality = asdict(
+                inspect_generated_speech(audio, analysis_version=analysis_version)
+            )
         if analysis_version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
             actual_speech_quality.pop("analysis_version")
         if stored_speech_quality != actual_speech_quality:

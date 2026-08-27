@@ -58,8 +58,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         publish_generated_manifest(state_path)
 
         source_audio = root / "source-event.wav"
-        samples = np.zeros(1_200, dtype=np.float32)
-        samples[300:340] = 0.4
+        samples = np.zeros(18_024, dtype=np.float32)
+        samples[6_000:7_000] = 0.4
         write_pcm16_wav(source_audio, samples, 24_000)
         review = publish_source_audio_event_review(
             queue_path,
