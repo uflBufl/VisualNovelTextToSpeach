@@ -213,21 +213,23 @@ The real reviewable successor is
 `9fa9e59f09dabadc878695d8ac418e19b439fca619c210730a115c1cb17f1146`;
 its generation-state
 SHA-256 is
-`c53f6278d7607aaf6e2fedb4ba6d3dc33fa98aefada278e40193d42850ec03d6`.
-The item is `generated/pending_review`, uses review identity `Audio Event`, has
-no speech-only technical warnings, and retains exact final WAV SHA-256
+`2d839de3dd57e1a8aa1c487bb73a03dc96671a1c2a92a8397d26c43d17c5446d`.
+The item is `approved/approved`, uses review identity `Audio Event`, had no
+speech-only technical warnings, and retains exact final WAV SHA-256
 `492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
-The approved-only manifest has 400 entries, including the separately approved
-Narrator line 94, and deliberately excludes this pending item. Its manifest
+The approved-only manifest has 401 entries, including the separately approved
+Narrator line 94 and this event. Its manifest
 SHA-256 is
-`a5c57182d06694282e666b67eb1af59c88db0d2da7c185ff86374dbe1bc56323`.
+`2d0e9cffa92fb16611c592362ca43fa49d4f8e154bf1f6a6eb31e917f1d69f57`;
+the event entry retains the same checksum-bound composition ledger as state.
 Its copied base state SHA-256 is
 `f906935a13fd124ae10d95004c56145dd4f5a95a8cc29b8aa88504ab75392ba9`;
 the replaced rejected WAV remains
 `a7fcc6dd2c6b9f626f3301bfe63be16fc541094681a4b1a7ee9fecd8db0c6fcd`.
 Repeated creation returns the same workspace with `created=false`, and both
-source and successor have no active attempt, lease or partial WAV. One ordinary
-individual verdict remains before merge.
+source and successor have no active attempt, lease or partial WAV. The user's
+explicit approval of the exact composition was applied to the byte-identical
+state item; no additional `Tsk!` review or merge remains.
 
 ## Required composition ledger
 

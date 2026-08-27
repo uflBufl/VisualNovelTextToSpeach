@@ -835,13 +835,14 @@ composition are now projected into reviewable successor
 `resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`. Its workspace, state and
 manifest SHA-256 values are respectively
 `9fa9e59f09dabadc878695d8ac418e19b439fca619c210730a115c1cb17f1146`,
-`c53f6278d7607aaf6e2fedb4ba6d3dc33fa98aefada278e40193d42850ec03d6`
-and `a5c57182d06694282e666b67eb1af59c88db0d2da7c185ff86374dbe1bc56323`.
-The line remains `generated/pending_review`; the 400-entry approved-only
-manifest excludes it. The successor preserves exact snapshots of base state
+`2d839de3dd57e1a8aa1c487bb73a03dc96671a1c2a92a8397d26c43d17c5446d`
+and `2d0e9cffa92fb16611c592362ca43fa49d4f8e154bf1f6a6eb31e917f1d69f57`.
+The user's exact approval is recorded as `approved/approved`; the 401-entry
+approved-only manifest includes the same checksum-bound composition ledger.
+The successor preserves exact snapshots of base state
 `f906935a13fd124ae10d95004c56145dd4f5a95a8cc29b8aa88504ab75392ba9`
 and rejected WAV
 `a7fcc6dd2c6b9f626f3301bfe63be16fc541094681a4b1a7ee9fecd8db0c6fcd`,
 while its event WAV remains exact SHA-256
 `492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
-It needs one ordinary individual verdict before any merge.
+No further `Tsk!` review or merge is required.

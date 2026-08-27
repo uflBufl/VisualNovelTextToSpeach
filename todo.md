@@ -59,10 +59,10 @@ Follow the evidence-backed order and invariants in
       approved and its config-addressed production successor is now published
       as `resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`. It preserves the
       exact base workspace/state/rejected-WAV bytes under immutable inputs and
-      projects only the unchanged event WAV as `generated/pending_review`.
-      Obtain one ordinary individual approve/reject verdict for this exact
-      state item. Approval may then enter the normal successor merge; rejection
-      leaves the line unresolved. Do not treat the accepted effect as
+      projects only the unchanged event WAV. The user's exact approval is now
+      recorded as `approved/approved`, and the checksum-bound composition
+      ledger is present in the 401-entry approved-only manifest. No further
+      `Tsk!` review or merge is required. Do not treat the accepted effect as
       Poacher I voice evidence, alter its bytes, or read `Tsk` aloud.
       The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical
       losses (`LIMITED` at the unchanged 3.0-second cap), and the ambiguous
