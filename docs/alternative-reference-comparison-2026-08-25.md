@@ -63,6 +63,22 @@ publication for `reverse1999:314606:43:09977e2b04515b66` has comparison ID
 `84a920b70271c64a30372c889f0305905e068c8f20e300abb6ebb24302ce01f0`;
 both alternative references ended typed limited, so it has no blind trial.
 
+As of the exact 2026-08-27 authority check, the matched blind session remains
+at `0/1`; later completion claims for other cohort and terminal-conflict UIs do
+not imply a choice here. Open it explicitly with:
+
+```sh
+uv run vntts-listen ui --session \
+  "$HOME/Library/Application Support/VisualNovelTextToSpeech/authoring/model-listening/current-character-story-narrator-alternative-reference-v2/session.json"
+```
+
+A preference selects only the next exact reference hypothesis for queue item
+`314606:54`. It is not a production approval. The selected reference must be
+bound into a new exact-ID workspace, rendered once, validated and reviewed
+before its terminal outcome can be merged. `No preference` and `Neither` remain
+valid results; in particular, neither must not be converted into a reference
+binding or another blind seed.
+
 ## Dobharchu results
 
 The final publication is

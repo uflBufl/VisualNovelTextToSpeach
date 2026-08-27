@@ -96,6 +96,17 @@ Follow the evidence-backed order and invariants in
       and do not repeat an exhausted seed/provider/repair. For each remaining
       failure, require a new bounded hypothesis, exact-ID successor, validated
       WAV, checksum-bound review and terminal merge as separate transactions.
+      First finish the one existing matched blind trial for
+      `reverse1999:314606:54:0450c81c4d1b3cc4` with
+      `uv run vntts-listen ui --session
+      "$HOME/Library/Application Support/VisualNovelTextToSpeech/authoring/model-listening/current-character-story-narrator-alternative-reference-v2/session.json"`.
+      Current durable progress is `0/1`. Choose the better candidate only if it
+      is acceptable, otherwise choose neither. This selects Centurion reference
+      2 versus reference 3 as the next bounded hypothesis; it does not approve
+      a production WAV. After the choice, create one exact reference-bound
+      successor, render only that queue ID, review the resulting WAV, and merge
+      it only if explicitly approved. The four unmatched/fully-limited lines
+      still require a different matched hypothesis or typed supported fallback.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in
