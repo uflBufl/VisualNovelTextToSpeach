@@ -819,5 +819,13 @@ hypothesis.
 The already completed unmatched alternative-reference WAVs for `314608:58`
 and `314608:94` were copied into the self-contained reviews documented in
 [`render-hypothesis-review.md`](render-hypothesis-review.md). This reused exact
-evidence and did not rerender MOSS or mutate generation state. Each review still
-needs one human `accept_hypothesis` or `need_different` verdict.
+evidence and did not rerender MOSS. The human rejected the `314608:58`
+hypothesis because of its long pause. The human accepted the `314608:94`
+reference-03 hypothesis and then approved its exact production WAV in isolated
+workspace `resume-395a5e5eec0327a3a793b66d-8f248017c2917708`. The approved WAV
+SHA-256 is
+`59c6f5eb48c4204adc653d3da06f245a98926e6aace304514ba055b6ff9f68a8`;
+the approved-only manifest contains exactly one matching entry, with no active
+attempt or generation lease. This is valid isolated outcome authority and still
+needs normal reconciliation into the composed primary; it is not evidence to
+retry `314608:58` or either exhausted segmentation case.

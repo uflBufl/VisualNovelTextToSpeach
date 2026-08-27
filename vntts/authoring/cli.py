@@ -211,6 +211,7 @@ from vntts.authoring.voice_repair_comparison import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
+    create_audio_event_composition_workspace,
     create_failure_reference_workspace,
     create_resume_workspace,
     default_workspaces_root,
@@ -654,6 +655,13 @@ def create_parser():
         help="Validate and inspect one event-only production composition",
     )
     audio_event_composition_status.add_argument("directory", type=Path)
+    audio_event_workspace = subparsers.add_parser(
+        "audio-event-composition-workspace",
+        help="Create a reviewable successor from one approved event composition",
+    )
+    audio_event_workspace.add_argument("base_workspace", type=Path)
+    audio_event_workspace.add_argument("composition", type=Path)
+    audio_event_workspace.add_argument("--workspaces-root", type=Path)
     render_hypothesis_publish = subparsers.add_parser(
         "render-hypothesis-review-publish",
         help="Publish one immutable unmatched render/reference review",
@@ -1614,6 +1622,23 @@ def main(argv=None):
         if arguments.command == "audio-event-composition-status":
             result = load_audio_event_composition(arguments.directory)
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "audio-event-composition-workspace":
+            result = create_audio_event_composition_workspace(
+                arguments.base_workspace,
+                arguments.composition,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "created": result.created,
+                        "workspace": str(result.directory),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         if arguments.command == "render-hypothesis-review-publish":
             result = publish_render_hypothesis_review(

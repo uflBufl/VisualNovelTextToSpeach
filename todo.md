@@ -56,11 +56,19 @@ Follow the evidence-backed order and invariants in
       `current-character-story-tsk-game-v1`, composition ID `a3750a73c...`, and
       binds the review/decision, queue, event plan, game event/bank/media and WAV
       hashes with `speaker_identity_claim=false`. Obtain one explicit final
-      approve/reject decision on that production composition. Only after
-      approval, create one config-addressed successor that copies the base state
-      and stores the composition under immutable inputs; project the unchanged
-      event WAV as `generated/pending_review`; and validate that workspace,
-      state and later manifest publication all require the same ledger.
+      approve/reject decision on that production composition. The exact
+      composition is now approved. Create one config-addressed successor from
+      the current composed primary with a typed CLI/API: hold its generation
+      publication lease; snapshot the approved composition and decision under
+      immutable inputs; bind the base workspace/state/item/WAV plus composition,
+      decision, queue and final-audio hashes into the workspace fingerprint;
+      replace only this rejected spoken rendition with the unchanged event WAV
+      as `generated/pending_review`; retain the ledger in generated-manifest
+      extensions; and make workspace/state/review/final-pack validation reject
+      missing, forged or changed composition authority. Prove idempotency,
+      source non-mutation, exact-copy bytes and pre-publication race rejection,
+      then publish the real successor and leave the event pending ordinary
+      individual review before merging it into the composed primary.
       Rejection leaves the line unresolved. Do not treat the accepted effect as
       Poacher I voice evidence, alter its bytes, or read `Tsk` aloud.
       The bounded `/ǀ/` and `/ǃ/` Local 4B attempts are complete technical

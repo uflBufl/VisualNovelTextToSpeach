@@ -159,6 +159,25 @@ offset zero, gain 1.0 and zero fades. Its ledger records
 The final decision is separate from the source-event suitability decision and
 must be explicit before a workspace/state successor is created.
 
+After approval, create the reviewable state successor with:
+
+```bash
+uv run vntts-pregenerate audio-event-composition-workspace \
+  BASE_WORKSPACE COMPOSITION_DIRECTORY \
+  --workspaces-root WORKSPACES_ROOT
+```
+
+The command holds the base generation-publication lease, copies the complete
+approved composition authority into immutable workspace inputs, and binds the
+base workspace, state item, replaced WAV, composition, decision, queue and
+exact final WAV hashes into the new configuration fingerprint. It replaces
+only the rejected rendition with the unchanged event WAV as
+`generated/pending_review`; the base workspace remains byte-identical. The
+ordinary individual review is still required. On approval, the same additive
+ledger is projected into the approved-only manifest and is revalidated before
+final-pack publication. Missing, changed or forged composition authority fails
+closed.
+
 The real Character Story review was published at
 `authoring/audio-event-reviews/current-character-story-tsk-game-v1` under the
 VNTTS application-data root. Its review ID is
@@ -180,8 +199,10 @@ binds the same queue item and final WAV SHA-256
 `492a92aa42f2e982a05974a96e8608b24cff50db38629aa2ebe6bb24cbb46634`.
 Its ledger has sample offset zero, gain 1.0, zero fades, exact-copy bytes,
 `speaker_identity_claim=false`, and no synthesis provider or voice. The final
-composition decision remains unset; no workspace state or manifest projection
-has been created.
+composition was explicitly approved on 2026-08-27. That decision authorizes the
+exact-copy successor workflow above; it does not by itself approve a generation
+state item, project a manifest entry or identify the sound as Poacher I's
+voice.
 
 ## Required composition ledger
 

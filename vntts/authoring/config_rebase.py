@@ -280,7 +280,12 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 target_document.get("voice_manifest"),
                 target_document["narrator_character"],
                 target_document["run_config"],
+                target_document.get("carry_forward"),
+                target_document.get("outcome_merge"),
+                target_document.get("failure_reference_binding"),
+                target_document.get("terminal_conflict_merge"),
                 config_rebase=rebase,
+                audio_event_composition=target_document.get("audio_event_composition"),
             )
             workspace_id = (
                 "resume-"

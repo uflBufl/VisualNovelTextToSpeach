@@ -453,7 +453,7 @@ def load_review_audio_bytes(state_path, queue_path, queue_id, expected_authority
     return audio_bytes
 
 
-def inspect_generated_wav(path):
+def inspect_generated_wav(path, *, allow_short_audio_event=False):
     """Validate the normalized generated-audio WAV contract."""
     try:
         info = probe_pcm16_mono_wav(path)
@@ -463,7 +463,8 @@ def inspect_generated_wav(path):
         ) from error
     if info.sample_rate < 16_000:
         raise BulkGenerationError("Generated WAV sample rate must be at least 16 kHz")
-    if info.duration_seconds < 0.1 or info.duration_seconds > 180:
+    minimum_duration = 0.02 if allow_short_audio_event else 0.1
+    if info.duration_seconds < minimum_duration or info.duration_seconds > 180:
         raise BulkGenerationError(
             f"Generated WAV duration is implausible: {info.duration_seconds:.2f}s"
         )
@@ -2463,6 +2464,7 @@ def _approved_manifest_entries(state, output_directory, *, validate_files=True):
             "outcome_merge",
             "terminal_conflict_resolution",
             "seed_applied",
+            "audio_event_composition",
         ):
             if field in result:
                 entry[field] = result[field]
@@ -4227,6 +4229,19 @@ def _validate_success_item(
             raise BulkGenerationError(
                 f"Generated WAV speech quality mismatch for {queue_id!r}"
             )
+        if (
+            result.get("provider") == "original-game-audio-event"
+            or "audio_event_composition" in result
+        ):
+            module = importlib.import_module("vntts.authoring.audio_event_workspace")
+            try:
+                module.validate_audio_event_composition_state_item(
+                    output_directory.parent,
+                    queue_id,
+                    result,
+                )
+            except module.AudioEventWorkspaceError as error:
+                raise BulkGenerationError(str(error)) from error
 
 
 def _validate_success_file(queue_id, result, audio):
@@ -4234,7 +4249,10 @@ def _validate_success_file(queue_id, result, audio):
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
     if sha256_file(audio) != result.get("file_sha256"):
         raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
-    quality = inspect_generated_wav(audio)
+    quality = inspect_generated_wav(
+        audio,
+        allow_short_audio_event=(result.get("provider") == "original-game-audio-event"),
+    )
     stored = result.get("quality")
     if not isinstance(stored, dict):
         raise BulkGenerationError(f"Generated WAV quality is missing for {queue_id!r}")

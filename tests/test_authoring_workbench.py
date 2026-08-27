@@ -58,8 +58,9 @@ from vntts.authoring.workbench import (
 )
 
 
-def create_test_workspace(root):
-    fixture = write_legacy_fixture(root / "legacy")
+def create_test_workspace(root, *, text=None):
+    fixture_options = {} if text is None else {"text": text}
+    fixture = write_legacy_fixture(root / "legacy", **fixture_options)
     queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
     side_text = "A source-audio line outside the generation queue."
     write_story_index_document(
