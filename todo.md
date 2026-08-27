@@ -49,6 +49,20 @@ Follow the evidence-backed order and invariants in
       successor of the 392-approved composed workspace and verify the complete
       source-state/WAV/lease/manifest ledger. Do not reuse intermediate v1/v2
       bundles, repeat an exhausted strategy or regenerate a reviewed WAV.
+- [ ] Treat inline non-verbal stage directions as typed audio events instead of
+      pronounceable text. The exact Poacher I line `reverse1999:314607:84`
+      (`N-No! *gurgle*`) was correctly rejected after MOSS pronounced the
+      annotation literally; `Tsk!`, `*gasp*` and similar cues need the same
+      explicit policy. Preserve canonical text and text hashes, but split the
+      synthesis plan into spoken text plus ordered event tokens with a
+      checksum-bound transform/mix ledger. Unsupported events must fail closed
+      or omit only the event after review, never silently become spoken words.
+      Keep Pocket as speech-only. For MOSS, compare a bounded IPA/pronunciation
+      candidate for short vocal interjections such as `Tsk!`; evaluate the
+      separately released MOSS-SoundEffect model for isolated effects such as a
+      gasp or gurgle, then mix only a technically valid, perceptually approved
+      result without claiming that the effect inherited the cloned speaker
+      identity. Prefer an exact original game event whenever one exists.
 - [ ] Resolve Poacher II failure
       `reverse1999:314606:62:e3f44f0529c8ced0` through the narrow immutable
       audit `current-character-story-poacher-ii-reference-audit-v1`. Compare
