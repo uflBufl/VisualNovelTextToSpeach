@@ -28,11 +28,13 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
+    queue_voice_overrides_sha256,
     retired_source_reference_variants_from_manifest,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
+    _failure_reference_runtime_binding,
     _load_json,
     _read_file_bytes,
     _require_sha256,
@@ -129,6 +131,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             source_overrides = _workspace_queue_voice_overrides(
                 source_directory, source_document
             )
+            source_failure_binding = _failure_reference_runtime_binding(
+                source_directory, source_document
+            )
             target_overrides = _workspace_queue_voice_overrides(
                 target_directory, target_document
             )
@@ -172,12 +177,15 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                         source_overrides,
                         queue_item,
                         result=result,
+                        failure_reference_binding=source_failure_binding,
                     )
                     target_route = _route_reference_identity(
                         target_registry,
                         target_document,
                         target_overrides,
                         queue_item,
+                        source_result=result,
+                        failure_reference_binding=source_failure_binding,
                         allow_missing=True,
                     )
                     if not set(source_route[1]) & set(target_route[1]):
@@ -191,12 +199,15 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     source_overrides,
                     queue_item,
                     result=result,
+                    failure_reference_binding=source_failure_binding,
                 )
                 target_route = _route_reference_identity(
                     target_registry,
                     target_document,
                     target_overrides,
                     queue_item,
+                    source_result=result,
+                    failure_reference_binding=source_failure_binding,
                     allow_missing=True,
                 )
                 if not set(source_route[1]).issubset(target_reference_sha256s):
@@ -765,14 +776,26 @@ def _route_reference_identity(
     queue_item,
     result=None,
     *,
+    source_result=None,
+    failure_reference_binding=None,
     allow_missing=False,
 ):
+    failure_route = _failure_reference_route(
+        failure_reference_binding,
+        queue_item,
+        result if result is not None else source_result,
+    )
+    if failure_route is not None:
+        source_route, requested = failure_route
+        if result is not None:
+            return source_route
+    else:
+        requested = synthesis_character_for_line(
+            queue_item.speaker, queue_item.voice_character
+        )
     prior_route = _prior_config_rebase_target_route(result)
     if prior_route is not None:
         return prior_route
-    requested = synthesis_character_for_line(
-        queue_item.speaker, queue_item.voice_character
-    )
     character = None
     if isinstance(result, dict):
         character = result.get("voice_character")
@@ -793,6 +816,52 @@ def _route_reference_identity(
         )
     digests = tuple(sorted(sha256_file(reference) for reference in voice.references))
     return character, digests
+
+
+def _failure_reference_route(binding, queue_item, result):
+    if binding is None or not isinstance(result, dict):
+        return None
+    queue_id = queue_item.queue_id
+    synthetic_character = binding.queue_voice_overrides.get(queue_id)
+    if synthetic_character is None:
+        return None
+    source_binding = result.get("source_reference_binding")
+    required = {
+        "schema_version",
+        "queue_id",
+        "source_voice_character",
+        "synthesis_voice_character",
+        "queue_voice_overrides_sha256",
+    }
+    if (
+        not isinstance(source_binding, dict)
+        or set(source_binding) != required
+        or source_binding.get("schema_version") != 1
+        or source_binding.get("queue_id") != queue_id
+        or source_binding.get("synthesis_voice_character") != synthetic_character
+        or result.get("voice_character") != synthetic_character
+        or source_binding.get("queue_voice_overrides_sha256")
+        != queue_voice_overrides_sha256(binding.queue_voice_overrides)
+    ):
+        raise AuthoringWorkbenchError(
+            f"Config rebase failure-reference binding changed for {queue_id!r}"
+        )
+    requested = source_binding.get("source_voice_character")
+    if not isinstance(requested, str) or not requested.strip():
+        raise AuthoringWorkbenchError(
+            f"Config rebase failure-reference source voice is invalid for {queue_id!r}"
+        )
+    voices = [
+        voice for voice in binding.voices if voice.character == synthetic_character
+    ]
+    if len(voices) != 1 or not voices[0].references:
+        raise AuthoringWorkbenchError(
+            f"Config rebase failure-reference controls changed for {queue_id!r}"
+        )
+    digests = tuple(
+        sorted(sha256_file(reference) for reference in voices[0].references)
+    )
+    return (synthetic_character, digests), requested.strip()
 
 
 def _prior_config_rebase_target_route(result):

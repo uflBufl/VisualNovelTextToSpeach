@@ -13,6 +13,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
     build_cohort_review_plan,
 )
+from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.failure_reference_audit import (
     publish_failure_reference_audit,
     record_failure_reference_decision,
@@ -470,6 +471,100 @@ class FailureReferenceBindingTest(unittest.TestCase):
 
             self.assertEqual(projection.review_status, "approved")
             self.assertEqual(reviewed_state["items"][queue_id]["status"], "approved")
+
+    def test_approved_failure_reference_rebases_through_its_source_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, base_workspace, queue_id, _group, _candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            source = create_failure_reference_workspace(
+                base_workspace,
+                binding,
+                root / "successors",
+            ).directory
+
+            def create_backend(_name, registry, *_args, **options):
+                renderer = SyntheticRenderer()
+                renderer.name = "moss-tts"
+                renderer.model_name = options["model_name"]
+                renderer.registry = registry
+                return renderer
+
+            command = generation_command(
+                source,
+                queue_ids=(queue_id,),
+                retries=0,
+                seed=0,
+            )
+            with patch("vntts.authoring.cli.create_backend", create_backend):
+                self.assertEqual(authoring_main(command[3:]), 0)
+            plan = build_cohort_review_plan(source, queue_ids=(queue_id,))
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            apply_cohort_review_decision(source, plan, decision)
+
+            base_document = json.loads((base_workspace / "workspace.json").read_text())
+            imported = next((root / "imports").glob("legacy-*"))
+            target = create_resume_workspace(
+                imported,
+                root / "target-workspaces",
+                story_index=base_workspace / base_document["story_index"]["path"],
+                voice_manifest=(
+                    base_workspace / base_document["voice_manifest"]["path"]
+                ),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            ).directory
+            target_state_path = target / "generated-audio/generation-state.json"
+            target_state = json.loads(target_state_path.read_text())
+            target_state["active"] = None
+            target_state_path.write_text(json.dumps(target_state, sort_keys=True))
+            rebased = rebase_workspace_config(
+                source,
+                target,
+                root / "rebased-workspaces",
+            )
+            repeated = rebase_workspace_config(
+                source,
+                target,
+                root / "rebased-workspaces",
+            )
+            state = json.loads(
+                (
+                    rebased.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+            result = state["items"][queue_id]
+            authority = result["config_rebase"]
+            runtime = failure_reference_runtime_binding(source)
+            selected_sha256 = runtime.document["groups"][0]["reference_sha256"]
+
+            self.assertTrue(rebased.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(repeated.directory, rebased.directory)
+            self.assertEqual(result["status"], "approved")
+            self.assertEqual(result["review_status"], "approved")
+            self.assertEqual(
+                authority["source_effective_character"],
+                runtime.queue_voice_overrides[queue_id],
+            )
+            self.assertEqual(authority["target_effective_character"], "Rhiannon")
+            self.assertIn(selected_sha256, authority["source_reference_sha256s"])
+            self.assertTrue(
+                set(authority["source_reference_sha256s"]).issubset(
+                    authority["target_reference_sha256s"]
+                )
+            )
+            self.assertIsNotNone(inspect_workspace(rebased.directory))
 
     def test_same_backend_repair_successor_preserves_the_exact_overlay(self):
         with TemporaryDirectory() as directory:
