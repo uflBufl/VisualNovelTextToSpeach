@@ -191,12 +191,52 @@ class AuthoringFailureRepairTest(unittest.TestCase):
             ("Mrs. Owen waits beside the gate.",),
         )
         self.assertEqual(
+            safe_sentence_segments(
+                "As a daughter, she ought to defend her mother. "
+                "But she knows Mrs. Owen is right."
+            ),
+            (
+                "As a daughter, she ought to defend her mother.",
+                "But she knows Mrs. Owen is right.",
+            ),
+        )
+        self.assertEqual(
+            safe_sentence_segments(
+                "Dr. Evans waits beside the gate. We should leave before dawn."
+            ),
+            (
+                "Dr. Evans waits beside the gate.",
+                "We should leave before dawn.",
+            ),
+        )
+        self.assertEqual(
+            safe_sentence_segments(
+                "A. D. Owen waits beside the gate. We should leave before dawn."
+            ),
+            (
+                "A. D. Owen waits beside the gate.",
+                "We should leave before dawn.",
+            ),
+        )
+        self.assertEqual(
             safe_sentence_segments("Wait here, and listen carefully."),
             ("Wait here, and listen carefully.",),
         )
         self.assertEqual(
             safe_sentence_segments("Stop! Go."),
             ("Stop! Go.",),
+        )
+
+    def test_inline_pause_does_not_split_honorific(self):
+        prompt, count = inline_sentence_pause_prompt(
+            "Mrs. Owen waits beside the gate. We should leave before dawn."
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            prompt,
+            "Mrs. Owen waits beside the gate. [pause 0.18s] "
+            "We should leave before dawn.",
         )
 
     def test_edge_trim_removes_only_excess_boundary_silence(self):

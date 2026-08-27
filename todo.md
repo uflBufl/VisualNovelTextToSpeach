@@ -112,15 +112,25 @@ Follow the evidence-backed order and invariants in
 - [ ] Resolve the exact current five-failure tail without another broad retry.
       Poacher II is handled by its separate blind reference task above. The
       remaining four exact Narrator lines are `314608:58`, `314608:94`,
-      `314606:43` and `314606:6`; the current repair plan classifies all four as
-      `provenance_recovery_or_regeneration` because the carried legacy failures
-      lack complete provider/model/profile/control provenance. Recover exact
-      immutable evidence if it exists; otherwise create a current-control,
-      exact-ID successor and run one bounded generation hypothesis before any
-      repair or Pocket fallback. Preserve the completed older 12-failure
+      `314606:43` and `314606:6`. Their exact current-control regeneration batch
+      is complete: all four retained typed failures at MOSS seed 0, while every
+      unrelated state record and WAV stayed byte-identical. The isolated
+      two-line sentence repair also completed fail-closed with no WAV.
+      `314606:43` still produced a 3.44-second internal pause and now requires a
+      checksum-bound reference comparison or explicit live fallback. The
+      `314606:6` attempt used an invalid `Mrs. Owen` split; the parser is fixed
+      and fully tested, so create one new config-addressed workspace for only
+      its corrected two-segment plan and run that distinct hypothesis once.
+      Any completed WAV remains pending individual human review. The
+      single-sentence internal-silence failures `314608:58` and `314608:94`
+      likewise require new checksum-bound reference comparisons; do not spend
+      another seed or apply sentence splitting to them. Preserve the completed
+      older 12-failure
       evidence described in
       [`alternative-reference-comparison-2026-08-25.md`](docs/alternative-reference-comparison-2026-08-25.md)
-      and do not repeat an exhausted seed/provider/repair.
+      and do not repeat an exhausted seed/provider/repair. Keep both failed
+      repair attempt records as evidence; the corrected `314606:6` run is
+      authorized by its changed exact segment plan, not merely by a new seed.
 
 ### P0 - Make long-pause repair automatic and provenance-safe
 

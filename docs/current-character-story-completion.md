@@ -749,3 +749,56 @@ this successor: `314605:102`, `314605:95`, `314608:8`, `314608:29` and
 `314608:38`. They may remain rejected for live fallback or enter a new
 checksum-bound reference comparison, but must not be silently retried or
 counted among the five current failures.
+
+The current-provenance recovery transaction then published immutable plan
+`current-character-story-narrator-provenance-v1.json`, plan ID
+`5b5591fee83b9889724b83265d6456d5e4485eccdd3946691ac50ccb7ac0661f`.
+It selected exactly the four Narrator failures and excluded Poacher II and all
+terminal outcomes. Its single child used MOSS stable, Centurion, current voice
+controls, retries zero and provider-local seed zero. No WAV passed:
+
+- `314606:43` ended typed `missed_eos_audio_limit` at the exact 14.5-second
+  limit and is now a safe sentence-boundary segmentation candidate;
+- `314606:6` ended typed `speech_silence` with one 3.12-second internal span
+  between multiple complete sentences and is also safe to segment;
+- `314608:58` and `314608:94` ended typed `speech_silence` with respective
+  3.12 and 3.28-second internal spans inside single sentences, so neither is a
+  safe segmentation candidate.
+
+All four now separate three historical attempts under provider
+`legacy-unbound` from one exact current `moss-tts` attempt. The new state
+SHA-256 is
+`a8839038d8560ecdbe93b1ccea45063d24e0d11fc864fb7ddf0a435e111205c6`.
+All 478 unrelated state records retained aggregate SHA-256
+`b96fda53b3d168521334f8d5218be3389f6619e03e412128ba634c56c52a45d5`;
+the 477-WAV inventory retained aggregate SHA-256
+`5a35e2534ee4274246af24886dc31c3b014f2fa25d976d5097c7df304c9eb1e4`.
+The run ended with no active attempt, lease, partial WAV, approval or review
+decision. The deterministic repair plan now contains two sentence segmentation
+actions and three reference comparisons (the two single-sentence Narrator
+failures plus the unchanged Poacher II item).
+
+Isolated repair workspace
+`resume-395a5e5eec0327a3a793b66d-a26944e66772019a` then carried only the two
+safe segmentation actions from the current source. Its exact child selected
+two queue IDs, used retries zero and published no WAV:
+
+- `314606:43` rendered its two correct sentence segments at planned seeds 1
+  and 2, but the combined result still failed with a 3.44-second internal
+  silence;
+- `314606:6` failed typed limited after the old splitter incorrectly produced
+  `As a daughter, she ought to defend her mother.`, `But she knows Mrs.` and
+  `Owen is right.` at planned seeds 1, 2 and 3.
+
+The latter exposed a software defect rather than valid repair evidence. The
+shared safe splitter and inline-pause transformer now ignore English
+honorific/name abbreviations (`Mr.`, `Mrs.`, `Ms.`, `Dr.` and the documented
+conservative set), repeated dotted abbreviations and capital initials. The
+exact real line now produces only the two intended sentences, and focused plus
+full regression suites cover that result. The failed workspace remains
+immutable evidence; only a new config-addressed workspace with the corrected
+two-segment plan may test the materially different hypothesis. The repair
+workspace state SHA-256 is
+`dcb4b8c0c3a92487dfe2a56e272c93c54df36ef010ca115d00139e38313d3c5c`;
+it ended with no active attempt, lease, partial WAV, approval or review
+decision.

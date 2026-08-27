@@ -18,6 +18,26 @@ from vntts.synthesis import (
 
 SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[\"'“‘A-Z])")
 WORD_PATTERN = re.compile(r"\b[\w'’]+\b")
+NONTERMINAL_ENGLISH_ABBREVIATIONS = frozenset(
+    {
+        "capt",
+        "col",
+        "dr",
+        "fr",
+        "gen",
+        "hon",
+        "jr",
+        "lt",
+        "mr",
+        "mrs",
+        "ms",
+        "prof",
+        "rev",
+        "sgt",
+        "sr",
+        "st",
+    }
+)
 DEFAULT_MIN_SEGMENT_WORDS = 3
 DEFAULT_EDGE_TRIGGER_SECONDS = 0.8
 DEFAULT_EDGE_PADDING_SECONDS = 0.08
@@ -291,11 +311,8 @@ def safe_sentence_segments(text, *, minimum_words=DEFAULT_MIN_SEGMENT_WORDS):
     if minimum_words < 1:
         raise ValueError("Minimum segment words must be positive")
     original = text.strip()
-    segments = tuple(
-        value.strip()
-        for value in SENTENCE_BOUNDARY_PATTERN.split(original)
-        if value.strip()
-    )
+    boundaries = _safe_sentence_boundaries(original)
+    segments = _split_sentence_boundaries(original, boundaries)
     if len(segments) < 2:
         return (original,)
     if any(len(WORD_PATTERN.findall(value)) < minimum_words for value in segments):
@@ -314,12 +331,51 @@ def inline_sentence_pause_prompt(text, *, pause_ms=DEFAULT_INLINE_PAUSE_MS):
     ):
         raise ValueError("Inline pause must be an integer from 50 to 1000 ms")
     original = text.strip()
-    boundaries = tuple(SENTENCE_BOUNDARY_PATTERN.finditer(original))
+    boundaries = _safe_sentence_boundaries(original)
     if not boundaries:
         raise ValueError("Inline pause repair requires a sentence boundary")
     seconds = f"{pause_ms / 1000:.3f}".rstrip("0").rstrip(".")
     marker = f" [pause {seconds}s] "
-    return SENTENCE_BOUNDARY_PATTERN.sub(marker, original), len(boundaries)
+    pieces = []
+    start = 0
+    for boundary in boundaries:
+        pieces.append(original[start : boundary.start()])
+        pieces.append(marker)
+        start = boundary.end()
+    pieces.append(original[start:])
+    return "".join(pieces), len(boundaries)
+
+
+def _safe_sentence_boundaries(text):
+    return tuple(
+        boundary
+        for boundary in SENTENCE_BOUNDARY_PATTERN.finditer(text)
+        if not _ends_with_nonterminal_abbreviation(text[: boundary.start()])
+    )
+
+
+def _ends_with_nonterminal_abbreviation(prefix):
+    stripped = prefix.rstrip()
+    word = re.search(r"([A-Za-z]+)\.$", stripped)
+    if word and word.group(1).casefold() in NONTERMINAL_ENGLISH_ABBREVIATIONS:
+        return True
+    if re.search(r"(?:\b[A-Za-z]\.){2,}$", stripped):
+        return True
+    return re.search(r"\b[A-Z]\.$", stripped) is not None
+
+
+def _split_sentence_boundaries(text, boundaries):
+    segments = []
+    start = 0
+    for boundary in boundaries:
+        segment = text[start : boundary.start()].strip()
+        if segment:
+            segments.append(segment)
+        start = boundary.end()
+    final = text[start:].strip()
+    if final:
+        segments.append(final)
+    return tuple(segments)
 
 
 def trim_excess_edge_silence(
