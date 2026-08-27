@@ -26,6 +26,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     TerminalConflictReviewError,
+    assert_terminal_conflict_progress_carry_forward,
     assert_terminal_conflict_review_source_authorities,
     validate_terminal_conflict_review_document,
     validate_terminal_conflict_review_progress_document,
@@ -81,6 +82,7 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
         progress = validate_terminal_conflict_review_progress_document(
             progress_snapshot.json_document("terminal conflict progress"), review
         )
+        assert_terminal_conflict_progress_carry_forward(progress, review)
         assert_terminal_conflict_review_source_authorities(review)
     except (AuthoringAuthorityError, TerminalConflictReviewError) as error:
         raise TerminalConflictResolutionError(str(error)) from error
@@ -312,6 +314,7 @@ def assert_terminal_conflict_resolution_source_authorities(directory):
             progress_snapshot.json_document("terminal conflict source progress"),
             review,
         )
+        assert_terminal_conflict_progress_carry_forward(progress, review)
         if (
             review["review_id"] != resolution["source_review_id"]
             or review["source_report_id"] != resolution["source_report_id"]

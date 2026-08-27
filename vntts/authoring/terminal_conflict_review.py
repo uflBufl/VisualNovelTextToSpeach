@@ -53,6 +53,10 @@ TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
 TERMINAL_CONFLICT_PROGRESS_SCHEMA = "vntts.authoring-terminal-conflict-review-progress"
 TERMINAL_CONFLICT_PROGRESS_VERSION = 1
+TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION = 2
+SUPPORTED_TERMINAL_CONFLICT_PROGRESS_VERSIONS = frozenset(
+    {TERMINAL_CONFLICT_PROGRESS_VERSION, TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION}
+)
 NEITHER_ACCEPTABLE = "neither_acceptable"
 PROGRESS_LEASE_SCHEMA = "vntts.authoring-terminal-conflict-progress-lease"
 PROGRESS_LEASE_VERSION = 1
@@ -653,6 +657,7 @@ def load_terminal_conflict_review_progress(directory):
         )
         progress = progress_snapshot.json_document("terminal conflict progress")
         validated = _validate_progress(progress, review)
+        _assert_progress_carry_forward(validated, review)
         assert_authority_snapshot(review_snapshot, "terminal conflict review")
         assert_authority_snapshot(progress_snapshot, "terminal conflict progress")
     except AuthoringAuthorityError as error:
@@ -689,6 +694,7 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
             progress = _validate_progress(
                 progress_snapshot.json_document("terminal conflict progress"), review
             )
+            _assert_progress_carry_forward(progress, review)
             original_progress = progress_snapshot.payload
         else:
             progress = {
@@ -718,6 +724,7 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
         progress["decisions"].sort(key=lambda value: value["case_id"])
         progress["updated_at"] = now
         _validate_progress(progress, review)
+        _assert_progress_carry_forward(progress, review)
         assert_authority_snapshot(review_snapshot, "terminal conflict review")
         _assert_source_authorities(review)
         if (
@@ -731,9 +738,115 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
         return load_terminal_conflict_review_progress(directory)
 
 
+def carry_terminal_conflict_decisions(source_directory, target_directory):
+    """Carry only content-identical completed cases into a refreshed review."""
+    source_directory = _review_directory(source_directory)
+    target_directory = _review_directory(target_directory)
+    if source_directory == target_directory:
+        raise TerminalConflictReviewError(
+            "Terminal conflict carry requires distinct review directories"
+        )
+    with _progress_lock(target_directory):
+        target_progress = target_directory / "progress.json"
+        if target_progress.exists() or target_progress.is_symlink():
+            raise TerminalConflictReviewError(
+                "Target terminal conflict review already has progress"
+            )
+        try:
+            source_review_snapshot = capture_authority_file(
+                source_directory / "review.json", "source terminal conflict review"
+            )
+            source_progress_snapshot = capture_authority_file(
+                source_directory / "progress.json",
+                "source terminal conflict progress",
+            )
+            target_review_snapshot = capture_authority_file(
+                target_directory / "review.json", "target terminal conflict review"
+            )
+            source_review = validate_terminal_conflict_review_document(
+                source_review_snapshot.json_document("source terminal conflict review"),
+                source_directory,
+            )
+            source_progress = _validate_progress(
+                source_progress_snapshot.json_document(
+                    "source terminal conflict progress"
+                ),
+                source_review,
+            )
+            target_review = validate_terminal_conflict_review_document(
+                target_review_snapshot.json_document("target terminal conflict review"),
+                target_directory,
+            )
+        except AuthoringAuthorityError as error:
+            raise TerminalConflictReviewError(str(error)) from error
+        _assert_progress_carry_forward(source_progress, source_review)
+        source_cases = {case["case_id"]: case for case in source_review["cases"]}
+        target_cases = {case["case_id"]: case for case in target_review["cases"]}
+        carried = []
+        for decision in source_progress["decisions"]:
+            case_id = decision["case_id"]
+            source_case = source_cases.get(case_id)
+            target_case = target_cases.get(case_id)
+            if source_case is None or target_case is None:
+                continue
+            source_candidates = [
+                candidate["candidate_id"] for candidate in source_case["candidates"]
+            ]
+            target_candidates = [
+                candidate["candidate_id"] for candidate in target_case["candidates"]
+            ]
+            if source_candidates != target_candidates:
+                continue
+            carried.append(copy.deepcopy(decision))
+        if not carried:
+            raise TerminalConflictReviewError(
+                "No content-identical terminal conflict decisions can be carried"
+            )
+        carried.sort(key=lambda value: value["case_id"])
+        now = datetime.now(timezone.utc).isoformat()
+        progress = {
+            "schema": TERMINAL_CONFLICT_PROGRESS_SCHEMA,
+            "schema_version": TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION,
+            "review_id": target_review["review_id"],
+            "updated_at": now,
+            "decisions": carried,
+            "carry_forward": {
+                "source_review": str(source_review_snapshot.path),
+                "source_review_sha256": source_review_snapshot.sha256,
+                "source_progress": str(source_progress_snapshot.path),
+                "source_progress_sha256": source_progress_snapshot.sha256,
+                "source_review_id": source_review["review_id"],
+                "case_ids": [decision["case_id"] for decision in carried],
+            },
+        }
+        _validate_progress(progress, target_review)
+        assert_authority_snapshot(
+            source_review_snapshot, "source terminal conflict review"
+        )
+        assert_authority_snapshot(
+            source_progress_snapshot, "source terminal conflict progress"
+        )
+        assert_authority_snapshot(
+            target_review_snapshot, "target terminal conflict review"
+        )
+        _assert_source_authorities(source_review)
+        _assert_source_authorities(target_review)
+        if target_progress.exists() or target_progress.is_symlink():
+            raise TerminalConflictReviewError(
+                "Target terminal conflict progress appeared before carry"
+            )
+        atomic_write_json(target_progress, progress, sort_keys=True)
+        return load_terminal_conflict_review_progress(target_directory)
+
+
 def validate_terminal_conflict_review_progress_document(progress, review):
     """Return validated mutable decisions for an already validated review."""
     return _validate_progress(progress, review)
+
+
+def assert_terminal_conflict_progress_carry_forward(progress, review):
+    """Recheck an optional predecessor decision ledger and its authorities."""
+    _assert_progress_carry_forward(progress, review)
 
 
 def assert_terminal_conflict_review_source_authorities(review):
@@ -805,13 +918,16 @@ def _assert_source_authorities(review):
 
 def _validate_progress(progress, review):
     value = copy.deepcopy(progress)
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    required = {"schema", "schema_version", "review_id", "updated_at", "decisions"}
+    if version == TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
+        required.add("carry_forward")
     if (
         not isinstance(value, dict)
         or value.get("schema") != TERMINAL_CONFLICT_PROGRESS_SCHEMA
-        or value.get("schema_version") != TERMINAL_CONFLICT_PROGRESS_VERSION
+        or version not in SUPPORTED_TERMINAL_CONFLICT_PROGRESS_VERSIONS
         or value.get("review_id") != review["review_id"]
-        or set(value)
-        != {"schema", "schema_version", "review_id", "updated_at", "decisions"}
+        or set(value) != required
     ):
         raise TerminalConflictReviewError("Terminal conflict progress is invalid")
     _aware_timestamp(value["updated_at"], "Terminal conflict progress timestamp")
@@ -842,7 +958,105 @@ def _validate_progress(progress, review):
         )
     if decisions != sorted(decisions, key=lambda item: item["case_id"]):
         raise TerminalConflictReviewError("Terminal conflict decisions are not sorted")
+    if version == TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
+        carry = value["carry_forward"]
+        if not isinstance(carry, dict) or set(carry) != {
+            "source_review",
+            "source_review_sha256",
+            "source_progress",
+            "source_progress_sha256",
+            "source_review_id",
+            "case_ids",
+        }:
+            raise TerminalConflictReviewError(
+                "Terminal conflict carry-forward ledger is malformed"
+            )
+        for field in ("source_review", "source_progress"):
+            path = carry.get(field)
+            if not isinstance(path, str) or not Path(path).is_absolute():
+                raise TerminalConflictReviewError(
+                    "Terminal conflict carry-forward path is invalid"
+                )
+        for field in ("source_review_sha256", "source_progress_sha256"):
+            _sha256(carry.get(field), f"Terminal conflict carry-forward {field}")
+        _sha256(carry.get("source_review_id"), "Terminal conflict source review ID")
+        case_ids = carry.get("case_ids")
+        if (
+            not isinstance(case_ids, list)
+            or not case_ids
+            or case_ids != sorted(set(case_ids))
+            or not set(case_ids).issubset(seen)
+        ):
+            raise TerminalConflictReviewError(
+                "Terminal conflict carried case identities are invalid"
+            )
     return value
+
+
+def _assert_progress_carry_forward(progress, review, seen=None):
+    if progress.get("schema_version") != TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
+        return
+    carry = progress["carry_forward"]
+    key = (carry["source_review"], carry["source_progress"])
+    observed = set() if seen is None else set(seen)
+    if key in observed:
+        raise TerminalConflictReviewError(
+            "Terminal conflict carry-forward ledger contains a cycle"
+        )
+    observed.add(key)
+    try:
+        review_snapshot = capture_authority_file(
+            carry["source_review"], "carried terminal conflict review"
+        )
+        progress_snapshot = capture_authority_file(
+            carry["source_progress"], "carried terminal conflict progress"
+        )
+        if (
+            review_snapshot.sha256 != carry["source_review_sha256"]
+            or progress_snapshot.sha256 != carry["source_progress_sha256"]
+        ):
+            raise TerminalConflictReviewError(
+                "Carried terminal conflict authority changed"
+            )
+        source_review = validate_terminal_conflict_review_document(
+            review_snapshot.json_document("carried terminal conflict review"),
+            review_snapshot.path.parent,
+        )
+        source_progress = _validate_progress(
+            progress_snapshot.json_document("carried terminal conflict progress"),
+            source_review,
+        )
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    if source_review["review_id"] != carry["source_review_id"]:
+        raise TerminalConflictReviewError(
+            "Carried terminal conflict review identity changed"
+        )
+    source_cases = {case["case_id"]: case for case in source_review["cases"]}
+    target_cases = {case["case_id"]: case for case in review["cases"]}
+    source_decisions = {
+        decision["case_id"]: decision for decision in source_progress["decisions"]
+    }
+    target_decisions = {
+        decision["case_id"]: decision for decision in progress["decisions"]
+    }
+    for case_id in carry["case_ids"]:
+        source_case = source_cases.get(case_id)
+        target_case = target_cases.get(case_id)
+        if (
+            source_case is None
+            or target_case is None
+            or [candidate["candidate_id"] for candidate in source_case["candidates"]]
+            != [candidate["candidate_id"] for candidate in target_case["candidates"]]
+            or source_decisions.get(case_id) != target_decisions.get(case_id)
+        ):
+            raise TerminalConflictReviewError(
+                "Carried terminal conflict decision identity changed"
+            )
+    _assert_progress_carry_forward(source_progress, source_review, observed)
+    _assert_source_authorities(source_review)
+    assert_authority_snapshot(review_snapshot, "carried terminal conflict review")
+    assert_authority_snapshot(progress_snapshot, "carried terminal conflict progress")
 
 
 def _contained_file(root, value, label):
@@ -1016,11 +1230,15 @@ __all__ = [
     "NEITHER_ACCEPTABLE",
     "TERMINAL_CONFLICT_PROGRESS_SCHEMA",
     "TERMINAL_CONFLICT_PROGRESS_VERSION",
+    "TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION",
+    "SUPPORTED_TERMINAL_CONFLICT_PROGRESS_VERSIONS",
     "TERMINAL_CONFLICT_REVIEW_SCHEMA",
     "TERMINAL_CONFLICT_REVIEW_VERSION",
     "TerminalConflictReview",
     "TerminalConflictReviewError",
     "assert_terminal_conflict_review_source_authorities",
+    "assert_terminal_conflict_progress_carry_forward",
+    "carry_terminal_conflict_decisions",
     "load_terminal_conflict_review",
     "load_terminal_conflict_candidate_audio",
     "load_terminal_conflict_review_document",

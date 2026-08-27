@@ -161,6 +161,10 @@ from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionError,
     publish_terminal_conflict_resolution,
 )
+from vntts.authoring.terminal_conflict_review import (
+    TerminalConflictReviewError,
+    carry_terminal_conflict_decisions,
+)
 from vntts.authoring.terminal_conflict_successor import (
     TerminalConflictSuccessorError,
     publish_terminal_conflict_successor,
@@ -460,6 +464,12 @@ def create_parser():
     )
     terminal_resolution.add_argument("review_directory", type=Path)
     terminal_resolution.add_argument("output", type=Path)
+    terminal_carry = subparsers.add_parser(
+        "terminal-conflict-carry",
+        help="Carry unchanged completed decisions into a refreshed review",
+    )
+    terminal_carry.add_argument("source_review_directory", type=Path)
+    terminal_carry.add_argument("target_review_directory", type=Path)
     terminal_successor = subparsers.add_parser(
         "terminal-conflict-successor",
         help="Publish a resolution-aware reconciliation successor",
@@ -1092,6 +1102,13 @@ def main(argv=None):
                 arguments.review_directory, arguments.output
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "terminal-conflict-carry":
+            progress = carry_terminal_conflict_decisions(
+                arguments.source_review_directory,
+                arguments.target_review_directory,
+            )
+            print(json.dumps(progress, indent=2, sort_keys=True))
             return 0
         if arguments.command == "terminal-conflict-successor":
             result = publish_terminal_conflict_successor(
@@ -1999,6 +2016,7 @@ def main(argv=None):
         SourceReferenceBindingError,
         StoryIndexError,
         TerminalConflictResolutionError,
+        TerminalConflictReviewError,
         TerminalConflictSuccessorError,
         VoiceGenerationQueueError,
         VoiceManifestError,

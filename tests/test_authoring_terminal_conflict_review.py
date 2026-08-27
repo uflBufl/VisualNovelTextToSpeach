@@ -27,7 +27,9 @@ from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     PROGRESS_LEASE_SCHEMA,
     PROGRESS_LEASE_VERSION,
+    TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION,
     TerminalConflictReviewError,
+    carry_terminal_conflict_decisions,
     load_terminal_conflict_review,
     load_terminal_conflict_review_progress,
     publish_terminal_conflict_review,
@@ -113,6 +115,72 @@ class TerminalConflictReviewTest(unittest.TestCase):
             )
             self.assertTrue(primary.is_dir())
             self.assertTrue(secondary.is_dir())
+
+    def test_carries_only_content_identical_decision_with_predecessor_ledger(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            source = root / "source-review"
+            target = root / "target-review"
+            source_result = publish_terminal_conflict_review(report_path, source)
+            target_result = publish_terminal_conflict_review(report_path, target)
+            review = json.loads(source_result.review.read_text(encoding="utf-8"))
+            case = review["cases"][0]
+            chosen = case["candidates"][0]["candidate_id"]
+            source_progress = record_terminal_conflict_decision(
+                source, case["case_id"], chosen
+            )
+
+            carried = carry_terminal_conflict_decisions(source, target)
+
+            self.assertEqual(
+                carried["schema_version"], TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION
+            )
+            self.assertEqual(carried["review_id"], target_result.review_id)
+            self.assertEqual(carried["decisions"], source_progress["decisions"])
+            self.assertEqual(carried["carry_forward"]["case_ids"], [case["case_id"]])
+            self.assertEqual(
+                carried["carry_forward"]["source_review_id"], source_result.review_id
+            )
+            self.assertEqual(load_terminal_conflict_review(target).completed_count, 1)
+            target_progress_before = (target / "progress.json").read_bytes()
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "decision identity changed"
+            ):
+                record_terminal_conflict_decision(
+                    target, case["case_id"], NEITHER_ACCEPTABLE, overwrite=True
+                )
+            self.assertEqual(
+                (target / "progress.json").read_bytes(), target_progress_before
+            )
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "already has progress"
+            ):
+                carry_terminal_conflict_decisions(source, target)
+
+    def test_carried_progress_rejects_changed_predecessor(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            source = root / "source-review"
+            target = root / "target-review"
+            source_result = publish_terminal_conflict_review(report_path, source)
+            publish_terminal_conflict_review(report_path, target)
+            review = json.loads(source_result.review.read_text(encoding="utf-8"))
+            case = review["cases"][0]
+            first, second = [
+                candidate["candidate_id"] for candidate in case["candidates"]
+            ]
+            record_terminal_conflict_decision(source, case["case_id"], first)
+            carry_terminal_conflict_decisions(source, target)
+            record_terminal_conflict_decision(
+                source, case["case_id"], second, overwrite=True
+            )
+
+            with self.assertRaisesRegex(
+                TerminalConflictReviewError, "authority changed"
+            ):
+                load_terminal_conflict_review_progress(target)
 
     def test_tampered_copied_wav_is_rejected(self):
         with TemporaryDirectory() as directory:

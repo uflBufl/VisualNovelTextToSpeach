@@ -27,6 +27,19 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ### P0 - Make mixed-quality cohort review expressible and understandable
 
+- [ ] Carry already completed terminal-conflict decisions across an authority
+      refresh without asking for duplicate listening or pretending a new human
+      review occurred. Add a versioned progress ledger that binds the exact
+      predecessor review/progress paths, SHA-256 values and review ID, preserves
+      the original `reviewed_at` timestamps, and carries only cases whose
+      content-addressed case and chosen candidate IDs are unchanged in the new
+      review. Revalidate both predecessor and target source authorities before
+      publication, keep newly appeared conflicts pending, preserve the ledger
+      through later target decisions, and make resolution/publication reject a
+      missing or changed predecessor. Apply it to terminal-conflict review v3:
+      the five v2 cases are byte/identity-equivalent and may carry; new
+      Dobharchú case `reverse1999:314608:70:3a46fdd9e8224081` must remain a
+      separate human decision.
 - [ ] Complete the one remaining real Dobharchú cohort through the redesigned
       dialog. The checksum-bound session already restores all 15 heard samples,
       exactly one `pause_or_pacing` bad marker, and an exact 15/15 sample/target
