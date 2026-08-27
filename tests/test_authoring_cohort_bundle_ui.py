@@ -158,7 +158,17 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.replay.isEnabled())
             self.assertFalse(dialog.accept.isEnabled())
 
+            stop_calls = []
+            original_stop = dialog.stop_playback
+
+            def tracked_stop():
+                stop_calls.append(True)
+                original_stop()
+
+            dialog.stop_playback = tracked_stop
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertEqual(stop_calls, [])
+            self.wait_for(lambda: bool(stop_calls))
 
             self.assertTrue(dialog.replay.isEnabled())
             self.assertTrue(dialog.accept.isEnabled())
@@ -195,6 +205,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIsNotNone(dialog._playback_target)
 
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(lambda: dialog.table.item(0, 0).text() == "Heard")
 
             self.assertEqual(
                 dialog._selected_sample().item.queue_id, second.item.queue_id
@@ -384,6 +395,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             QTest.keyClick(dialog.table, Qt.Key.Key_Space)
             self.wait_for(lambda: dialog._playback_target is not None)
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(lambda: dialog.mark_bad.isEnabled())
             QTest.keyClick(dialog.table, Qt.Key.Key_B)
             dialog.table.doubleClicked.emit(dialog.table.model().index(0, 0))
             self.wait_for(lambda: dialog._playback_target is not None)
@@ -591,6 +603,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(lambda: dialog.mark_bad.isEnabled())
             dialog.toggle_bad()
             dialog.close()
             self.wait_for(lambda: not dialog.isVisible())

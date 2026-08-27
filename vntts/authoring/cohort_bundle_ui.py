@@ -1008,10 +1008,25 @@ class CohortReviewBundleDialog(QDialog):
             self.heard[(workspace_id, cohort_id)].add(queue_id)
             self.status.setText(f"HEARD: {target.item.line_id}")
         self._playback_target = None
-        self._discard_playback_buffer()
+        selected_queue_id = selected.item.queue_id if selected is not None else None
+        playback_serial = self._playback_serial
+        # Qt Multimedia can still be inside its backend's EndOfMedia callback here.
+        # Calling stop() or closing the QIODevice re-entrantly can deadlock the
+        # Cocoa/FFmpeg backend, so return to the event loop before cleanup.
+        QTimer.singleShot(
+            0,
+            lambda: self._finish_completed_playback(
+                playback_serial,
+                selected_queue_id,
+            ),
+        )
+
+    def _finish_completed_playback(self, playback_serial, selected_queue_id):
+        if playback_serial != self._playback_serial:
+            return
         self._show_current_cohort()
-        if selected is not None:
-            self._select_queue_id(selected.item.queue_id)
+        if selected_queue_id is not None:
+            self._select_queue_id(selected_queue_id)
         self._checkpoint_observations()
 
     def _media_error(self, _error, message=""):
