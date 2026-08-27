@@ -631,6 +631,39 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError(
                 f"Config rebase state item changed for {queue_id!r}"
             )
+        live_fallback = current.get("live_fallback")
+        if live_fallback is not None:
+            expected_base = copy.deepcopy(projected)
+            expected_base["config_rebase"] = expected_extension
+            if (
+                not isinstance(live_fallback, dict)
+                or live_fallback.get("reason") != "generated_audio_rejected"
+                or live_fallback.get("previous_result_sha256")
+                != _canonical_sha256(expected_base)
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Config rebase live fallback base changed for {queue_id!r}"
+                )
+            current_without_fallback = copy.deepcopy(current)
+            current_without_fallback.pop("live_fallback")
+            if "updated_at" in expected_base:
+                current_without_fallback["updated_at"] = expected_base["updated_at"]
+            else:
+                current_without_fallback.pop("updated_at", None)
+            if current_without_fallback != expected_base:
+                raise AuthoringWorkbenchError(
+                    f"Config rebase item projection changed for {queue_id!r}"
+                )
+            audio = _within(
+                directory / "generated-audio",
+                _safe_relative(current.get("path"), "Config rebase WAV"),
+                "Config rebase WAV",
+            )
+            if not audio.is_file() or sha256_file(audio) != record["audio_sha256"]:
+                raise AuthoringWorkbenchError(
+                    f"Config rebase WAV changed for {queue_id!r}"
+                )
+            continue
         overlays = later_extensions.get(queue_id, {})
         if overlays and all(
             current.get(key) == value for key, value in overlays.items()

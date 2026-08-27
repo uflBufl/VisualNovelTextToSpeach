@@ -603,8 +603,23 @@ class AuthoringGamePackTest(unittest.TestCase):
             pack = load_game_pack(result.manifest)
             generated = GeneratedAudioIndex.load(pack.generated_audio.path)
             ledger = generated.metadata["vntts.authoring.live_fallback"]
+            status_stdout = io.StringIO()
+            with redirect_stdout(status_stdout):
+                status_exit = authoring_main(
+                    [
+                        "status",
+                        "--state",
+                        str(fixture["state"]),
+                        "--queue",
+                        str(fixture["queue"]),
+                    ]
+                )
+            status = json.loads(status_stdout.getvalue())
 
         self.assertEqual(exit_code, 0)
+        self.assertEqual(status_exit, 0)
+        self.assertEqual(status["live_fallback"], 1)
+        self.assertEqual(status["generated"], 1)
         self.assertEqual(result.approved_count, 1)
         self.assertEqual(result.rejected_count, 1)
         self.assertEqual(result.live_fallback_count, 1)

@@ -1577,10 +1577,14 @@ def main(argv=None):
                 "failed": 0,
                 "generated": 0,
                 "approved": 0,
-                "live_fallback": 0,
             }
             for item in state["items"].values():
-                counts[item["status"]] += 1
+                if item["status"] != "live_fallback":
+                    counts[item["status"]] += 1
+            counts["live_fallback"] = sum(
+                isinstance(item.get("live_fallback"), dict)
+                for item in state["items"].values()
+            )
             print(
                 json.dumps(
                     {

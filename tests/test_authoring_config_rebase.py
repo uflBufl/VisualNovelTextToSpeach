@@ -17,6 +17,7 @@ from tests.test_authoring_workbench import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    authorize_live_fallback,
     load_generation_state,
     publish_generated_manifest,
     review_generation_item,
@@ -45,14 +46,20 @@ def _tree_hashes(root):
     }
 
 
-def _prepare(root, *, target_reference_payloads=None, source_queue_override=None):
+def _prepare(
+    root,
+    *,
+    target_reference_payloads=None,
+    source_queue_override=None,
+    review_status="approved",
+):
     fixture, imported, source = create_carry_source_workspace(
         root, queue_voice_override=source_queue_override
     )
     review_generation_item(
         source.directory / "generated-audio" / "generation-state.json",
         fixture["queue_id"],
-        "approved",
+        review_status,
     )
     target_manifest = write_carry_target_manifest(
         root,
@@ -335,6 +342,40 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             validate_config_rebase_workspace(result.directory, workspace, state)
             state["items"][queue_id]["config_rebase"] = {"changed": True}
             with self.assertRaisesRegex(AuthoringWorkbenchError, "state item changed"):
+                validate_config_rebase_workspace(result.directory, workspace, state)
+
+    def test_validation_allows_exact_rejected_live_fallback_extension(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, target = _prepare(root, review_status="rejected")
+            result = rebase_workspace_config(source, target, root / "workspaces")
+            state_path = result.directory / "generated-audio/generation-state.json"
+            queue_path = result.directory / "queue.jsonl"
+            authorize_live_fallback(
+                state_path,
+                queue_path,
+                fixture["queue_id"],
+                reason="generated_audio_rejected",
+                model="pocket-tts",
+            )
+            workspace = json.loads(
+                (result.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            state = load_generation_state(state_path, queue_path)
+
+            validate_config_rebase_workspace(result.directory, workspace, state)
+            state["items"][fixture["queue_id"]]["quality"]["peak"] = 0.25
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "item projection changed"
+            ):
+                validate_config_rebase_workspace(result.directory, workspace, state)
+            state = load_generation_state(state_path, queue_path)
+            state["items"][fixture["queue_id"]]["live_fallback"][
+                "previous_result_sha256"
+            ] = "0" * 64
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "live fallback base changed"
+            ):
                 validate_config_rebase_workspace(result.directory, workspace, state)
 
     def test_rejects_changed_reference_bytes_before_publication(self):

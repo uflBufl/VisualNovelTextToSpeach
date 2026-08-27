@@ -34,6 +34,24 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
+- [ ] Generate only the eight currently ready, absent spoken outcomes in the
+      composed workspace with seed 0 and no automatic retry: six exact
+      Mrs. Owen source-bound lines (`314601:83`, `314601:96`, `314603:13`,
+      `314603:14`, `314605:4`, `314608:86`) and the two Hotelier lines
+      (`314601:28`, `314601:47`) covered by the explicit Centurion Narrator
+      fallback policy. Require an 8/8 ready, zero-missing-voice preflight,
+      preserve every other state item byte-for-byte, then publish a
+      checksum-bound review cohort for any resulting WAVs and classify typed
+      failures before deciding another bounded action.
+- [ ] Resolve the remaining missing-voice boundary without silently widening a
+      reference: 93 spoken Aderyn lines have no age/portrait-safe route after
+      the child variant's real-story rejection, and Dobharchú `314608:95` and
+      `314608:96` belong to the intentionally unbound portrait `534705`.
+      Preserve the known speaker identities. Adult Rhiannon, an existing
+      Dobharchú portrait, or Centurion Narrator may be used only through a new
+      explicit, checksum-bound reuse/fallback decision with generated evidence
+      and human approval; unknown-character fallback policy is not authority
+      for these known roles.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
@@ -84,37 +102,6 @@ Follow the evidence-backed order and invariants in
       human review and exact outcome merge.
       `Neither` leaves the line failed for explicit live fallback; it does not
       authorize another MOSS seed or automatic Pocket transition.
-- [ ] Resolve the five source-local Dobharchú rejections before reusing this
-      voice in another story. They are not current generation failures and must
-      not be retried automatically. The four real cohorts are terminal:
-      workspace `resume-395a5e5eec0327a3a793b66d-b3a3c14c9725777a` has 20
-      approvals and one rejection, and its exact accepted outcomes are already
-      represented in the composed current workspace. Preserve that authority.
-      The current composed workspace keeps explicit rejected outcomes for
-      `reverse1999:314605:102:1ab22c5fa4f30490`,
-      `reverse1999:314605:95:ebc446c3c6e843bb`,
-      `reverse1999:314608:8:7c5e047cb7785953`,
-      `reverse1999:314608:29:7be68e27f6d36933` and
-      `reverse1999:314608:38:4988416dc161621c`. For each line, either retain the
-      rejection and record an explicit Pocket live-fallback decision, or first
-      publish a genuinely new reference hypothesis and checksum-bound output
-      comparison. Do not repeat an exhausted seed/repair, treat a rejection as
-      a failure, or extend the portrait alias to unbound portrait `534705`.
-- [ ] Resolve the remaining Narrator failure
-      `reverse1999:314608:58:c3e23840e6ecc840` without another render. Its exact
-      current-control MOSS failure and one complete alternative-reference WAV
-      already exist; the human rejected that alternative as `need_different`
-      because of a long pause. Extend the evidence-bound live-fallback authority
-      to consume the immutable render-hypothesis review and exact terminal
-      decision, bind its queue/text/reference/result hashes to the current
-      failed item, and reject undecided, accepted, stale or externally changed
-      review evidence. Publish/load regression coverage must remain compatible
-      with schema-v1 decisions and the completed segmentation-evidence schema.
-      Apply the exact fallback only after a read-only real preflight. Do not
-      rerender the completed arm, spend another unbound seed, apply sentence
-      splitting to this single-sentence line, or infer a review decision from
-      the WAV alone.
-
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

@@ -864,3 +864,56 @@ Public status is 401 approved, 77 rejected generated WAVs, two explicit live
 fallbacks and two remaining failures, with no active attempt. The only failures
 are Poacher II `314606:62` and Narrator `314608:58`; both require their separate
 reference-decision paths rather than another broad retry.
+
+Narrator `314608:58` was then terminalized from its exact rejected
+render-hypothesis review, not from the presence of its WAV. Decision schema 3
+binds current failed item `71bc1d75...`, review `51600bc4...`, review file
+`40d1844f...`, terminal `need_different` decision file `d4119041...`, Centurion
+reference `d2be6ca0...` and rejected result `7ff11a60...`. Its live-fallback
+decision SHA-256 is
+`174fca4e629e96f38543003be7032272692e7f9f0ad4ad6098c1a6eb355d6429`.
+The current state and manifest SHA-256 values are now
+`d7e090f44aa06f7d0abff68c8d4b0bbdc212ce277889d56550e71b8cf5395169`
+and
+`15e13019176c0f3fead1f7fa2389472a45a2b90bb40c7122422370b2b24e2d2b`.
+Public status is 401 approved, 77 rejected generated WAVs, three explicit live
+fallbacks and one remaining failure, with no active attempt. The only failed
+item is Poacher II `314606:62`; its blind reference task remains the sole
+generation-failure decision gate.
+
+The five already reviewed Dobharchú rejections then received explicit
+schema-v1 `generated_audio_rejected` fallback ledgers. Their rejected WAV bytes
+and `generated/rejected` statuses remain unchanged; no audio was promoted or
+regenerated. In queue order `314605:102`, `314605:95`, `314608:8`, `314608:29`
+and `314608:38`, the decision SHA-256 values are `4985cde4...`, `990efd41...`,
+`eb9b9740...`, `2b10b49f...` and `813bfb91...`. The current state and manifest
+SHA-256 values are
+`f11ab9e2e97438c1b651f95f252d75fa45fde6d03508b713c7e4b01fdb2bd0a4`
+and
+`ee60f3b7b9e96bbb1afd1e6828a4b95b03ac5dc81f040a4e3bec21230c0529dc`.
+Status now reports 401 approved, 77 rejected generated WAVs, eight explicit
+fallback decision ledgers and one failed item, with no active attempt. The
+status command counts fallback ledgers attached to rejected WAVs as well as
+standalone `live_fallback` state items.
+
+Attaching those five ledgers exposed an overly strict config-rebase projection:
+the independently validated `live_fallback` field and its new `updated_at`
+timestamp made `inspect_workspace` reject the otherwise intact successor. The
+validator now accepts only a `generated_audio_rejected` extension whose
+`previous_result_sha256` exactly matches the reconstructed original rebased
+item. It still requires the original status, review, WAV, `config_rebase`
+authority and every projected synthesis field to remain unchanged. Malformed
+fallbacks, changed base hashes and any other item mutation remain fail-closed.
+The real workspace loads again, and the full 1,487-test suite plus Ruff pass.
+
+The resulting full queue census is no longer inferred from state count alone.
+All 592 queue entries use action `generate`: 582 are spoken and ten are typed
+non-verbal events. The state contains 482 outcomes, leaving 110 absent. Of the
+103 absent spoken lines, eight are ready now: six exact Mrs. Owen bindings and
+two Hotelier lines under the explicit Centurion Narrator fallback. The other 95
+are intentionally blocked: 93 spoken Aderyn lines lack an age/portrait-safe
+route after the child variant's real-story rejection, while Dobharchú
+`314608:95` and `314608:96` use unbound portrait `534705`. The seven absent
+non-verbal events are `*whimper*`, `*yelp*`, `*pop*`, three `*bang*` lines and
+`*buzzzzz*`; approved `Tsk!` and the two rejected mixed `*gasp*`/`*gurgle*`
+outputs account for the other three typed events.
