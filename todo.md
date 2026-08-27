@@ -51,6 +51,16 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
+- [ ] Publish a lossless multi-plan source-reference binding successor after the
+      accepted Mrs. Owen exact-bank review. Preserve every existing accepted
+      variant, queue override and copied reference from the current v4 binding,
+      add only the 34 exact Mrs. Owen queue IDs, retain version-1 manifest
+      compatibility, reject cross-plan queue/voice conflicts, and bind every
+      contributing plan and quality-review SHA-256. Then create a new
+      config-addressed workspace and prove exact preflight without generation.
+      Keep the completed Hotelier `needs_sample` decision as an explicit
+      Hotelier-only Narrator fallback; do not invent or search for another voice.
+
 - [ ] Finish the two remaining exact-source Character Story quality gates.
       Review the published Mrs. Owen `0/1` card by hearing original media
       `562400954` and valid `fixed-1`; then publish a successor binding only if

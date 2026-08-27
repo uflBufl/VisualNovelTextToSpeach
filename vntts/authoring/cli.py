@@ -146,6 +146,7 @@ from vntts.authoring.source_reference_quality import SourceReferenceQualityError
 from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
+    publish_source_reference_binding_successor,
     publish_source_reference_bindings,
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
@@ -896,6 +897,17 @@ def create_parser():
         ),
     )
     reference_bindings.add_argument("--output", type=Path, required=True)
+    extend_reference_bindings = subparsers.add_parser(
+        "extend-reference-bindings",
+        help="Publish a lossless successor adding one reviewed source plan",
+    )
+    extend_reference_bindings.add_argument(
+        "--base-binding-manifest", type=Path, required=True
+    )
+    extend_reference_bindings.add_argument("--plan", type=Path, required=True)
+    extend_reference_bindings.add_argument("--quality-review", type=Path, required=True)
+    extend_reference_bindings.add_argument("--narrator-character", required=True)
+    extend_reference_bindings.add_argument("--output", type=Path, required=True)
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )
@@ -1827,6 +1839,16 @@ def main(argv=None):
                 arguments.output,
                 quality_review=arguments.quality_review,
                 base_characters=arguments.base_characters,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "extend-reference-bindings":
+            result = publish_source_reference_binding_successor(
+                arguments.base_binding_manifest,
+                arguments.plan,
+                arguments.quality_review,
+                arguments.narrator_character,
+                arguments.output,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0

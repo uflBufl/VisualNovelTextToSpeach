@@ -10,6 +10,10 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 SOURCE_REFERENCE_BINDINGS_FIELD = "vntts.authoring.source_reference_bindings"
 SOURCE_REFERENCE_BINDINGS_SCHEMA = "vntts.authoring-source-reference-bindings"
 SOURCE_REFERENCE_BINDINGS_VERSION = 1
+SOURCE_REFERENCE_BINDINGS_MULTI_VERSION = 2
+SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS = frozenset(
+    {SOURCE_REFERENCE_BINDINGS_VERSION, SOURCE_REFERENCE_BINDINGS_MULTI_VERSION}
+)
 
 
 class SourceReferenceBindingError(ValueError):
@@ -23,21 +27,56 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         return {}
     if not isinstance(value, dict):
         raise SourceReferenceBindingError("Source-reference bindings must be an object")
+    version = value.get("schema_version")
     if (
         value.get("schema") != SOURCE_REFERENCE_BINDINGS_SCHEMA
-        or value.get("schema_version") != SOURCE_REFERENCE_BINDINGS_VERSION
+        or version not in SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS
     ):
         raise SourceReferenceBindingError("Unsupported source-reference binding schema")
-    plan_sha256 = value.get("source_reference_plan_sha256")
-    if not _is_sha256(plan_sha256):
-        raise SourceReferenceBindingError(
-            "Source-reference bindings require the exact plan SHA-256"
+    if version == SOURCE_REFERENCE_BINDINGS_VERSION:
+        plan_sha256s = {
+            _required_sha256(
+                value.get("source_reference_plan_sha256"),
+                "Source-reference bindings plan SHA-256",
+            )
+        }
+        quality_review_sha256 = value.get("source_reference_quality_review_sha256")
+        if quality_review_sha256 is not None and not _is_sha256(quality_review_sha256):
+            raise SourceReferenceBindingError(
+                "Source-reference bindings quality-review SHA-256 is invalid"
+            )
+    else:
+        _required_sha256(
+            value.get("predecessor_manifest_sha256"),
+            "Multi-plan source-reference predecessor manifest SHA-256",
         )
-    quality_review_sha256 = value.get("source_reference_quality_review_sha256")
-    if quality_review_sha256 is not None and not _is_sha256(quality_review_sha256):
-        raise SourceReferenceBindingError(
-            "Source-reference bindings quality-review SHA-256 is invalid"
-        )
+        sources = value.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise SourceReferenceBindingError(
+                "Multi-plan source-reference bindings require source ledgers"
+            )
+        plan_sha256s = set()
+        for source in sources:
+            if not isinstance(source, dict) or set(source) != {
+                "source_reference_plan_sha256",
+                "source_reference_quality_review_sha256",
+            }:
+                raise SourceReferenceBindingError(
+                    "Source-reference binding source ledger is invalid"
+                )
+            plan_sha256 = _required_sha256(
+                source.get("source_reference_plan_sha256"),
+                "Source-reference binding source plan SHA-256",
+            )
+            _required_sha256(
+                source.get("source_reference_quality_review_sha256"),
+                "Source-reference binding source quality-review SHA-256",
+            )
+            if plan_sha256 in plan_sha256s:
+                raise SourceReferenceBindingError(
+                    "Source-reference binding source plans must be distinct"
+                )
+            plan_sha256s.add(plan_sha256)
     variants = value.get("selected_variants")
     if not isinstance(variants, list) or not variants:
         raise SourceReferenceBindingError(
@@ -54,6 +93,15 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         character = _text(
             variant.get("voice_character"), "Source-reference variant voice"
         )
+        if version == SOURCE_REFERENCE_BINDINGS_MULTI_VERSION:
+            variant_plan_sha256 = _required_sha256(
+                variant.get("source_reference_plan_sha256"),
+                "Source-reference variant plan SHA-256",
+            )
+            if variant_plan_sha256 not in plan_sha256s:
+                raise SourceReferenceBindingError(
+                    "Source-reference variant references an unknown source plan"
+                )
         if variant_id in seen_variants:
             raise SourceReferenceBindingError(
                 f"Duplicate source-reference variant: {variant_id}"
@@ -141,10 +189,18 @@ def _is_sha256(value):
     )
 
 
+def _required_sha256(value, label):
+    if not _is_sha256(value):
+        raise SourceReferenceBindingError(f"{label} is invalid")
+    return value
+
+
 __all__ = [
     "SOURCE_REFERENCE_BINDINGS_FIELD",
     "SOURCE_REFERENCE_BINDINGS_SCHEMA",
     "SOURCE_REFERENCE_BINDINGS_VERSION",
+    "SOURCE_REFERENCE_BINDINGS_MULTI_VERSION",
+    "SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS",
     "SourceReferenceBindingError",
     "queue_voice_overrides_from_manifest",
     "queue_voice_overrides_sha256",

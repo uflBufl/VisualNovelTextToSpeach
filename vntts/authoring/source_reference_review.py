@@ -35,8 +35,11 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
+    SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
     SOURCE_REFERENCE_BINDINGS_SCHEMA,
     SOURCE_REFERENCE_BINDINGS_VERSION,
+    SourceReferenceBindingError,
+    queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
 
@@ -684,6 +687,257 @@ def publish_source_reference_bindings(
         if staging.exists():
             shutil.rmtree(staging)
         raise
+
+
+def publish_source_reference_binding_successor(
+    base_binding_manifest,
+    plan_directory,
+    quality_review,
+    narrator_character,
+    output,
+):
+    """Add one reviewed plan without dropping existing exact queue bindings."""
+    base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
+    plan_directory = Path(plan_directory).expanduser().resolve()
+    quality_review = Path(quality_review).expanduser().resolve()
+    output = Path(output).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise SourceReferenceReviewError(
+            f"Source-reference bindings output exists: {output}"
+        )
+    try:
+        base_payload = base_binding_manifest.read_bytes()
+        base_document, base_voices = load_voice_manifest(
+            base_binding_manifest, allow_legacy=False
+        )
+        base_overrides = queue_voice_overrides_from_manifest(
+            base_document, voices=base_voices
+        )
+    except (OSError, VoiceManifestError, SourceReferenceBindingError) as error:
+        raise SourceReferenceReviewError(str(error)) from error
+    base_binding = base_document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
+    if not isinstance(base_binding, dict):
+        raise SourceReferenceReviewError(
+            "Base voice manifest has no source-reference binding authority"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output.name}.addition-", dir=output.parent
+    ) as temporary_directory:
+        addition_directory = Path(temporary_directory) / "binding"
+        publish_source_reference_bindings(
+            plan_directory,
+            base_binding_manifest,
+            narrator_character,
+            None,
+            addition_directory,
+            quality_review=quality_review,
+        )
+        addition_manifest = addition_directory / "voice-manifest.json"
+        try:
+            addition_payload = addition_manifest.read_bytes()
+            addition_document, addition_voices = load_voice_manifest(
+                addition_manifest, allow_legacy=False
+            )
+            addition_overrides = queue_voice_overrides_from_manifest(
+                addition_document, voices=addition_voices
+            )
+        except (OSError, VoiceManifestError, SourceReferenceBindingError) as error:
+            raise SourceReferenceReviewError(str(error)) from error
+        addition_binding = addition_document[SOURCE_REFERENCE_BINDINGS_FIELD]
+        conflicts = sorted(set(base_overrides) & set(addition_overrides))
+        if conflicts:
+            raise SourceReferenceReviewError(
+                "Successor source-reference plans overlap queue IDs: "
+                + ", ".join(conflicts)
+            )
+        if base_document.get("game") != addition_document.get(
+            "game"
+        ) or base_document.get("language") != addition_document.get("language"):
+            raise SourceReferenceReviewError(
+                "Successor source-reference manifests have different game or language"
+            )
+
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+        ).resolve()
+        snapshots = []
+        try:
+            voices = []
+            voice_digests = {}
+            for source_index, (manifest_path, manifest_voices) in enumerate(
+                (
+                    (base_binding_manifest, base_voices),
+                    (addition_manifest, addition_voices),
+                ),
+                start=1,
+            ):
+                for voice_index, voice in enumerate(manifest_voices, start=1):
+                    copied_references = []
+                    reference_digests = []
+                    for reference_index, relative in enumerate(
+                        voice.references, start=1
+                    ):
+                        source = _contained_file(manifest_path.parent, relative)
+                        digest = sha256_file(source)
+                        reference_digests.append(digest)
+                        suffix = source.suffix.lower() or ".wav"
+                        target_relative = (
+                            Path("references")
+                            / f"source-{source_index:02d}"
+                            / f"voice-{voice_index:02d}"
+                            / f"{reference_index:02d}{suffix}"
+                        )
+                        target = staging / target_relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(source, target)
+                        if sha256_file(target) != digest:
+                            raise SourceReferenceReviewError(
+                                f"Successor reference changed while copied: {voice.character}"
+                            )
+                        copied_references.append(target_relative.as_posix())
+                        snapshots.append((source, digest))
+                    normalized = normalize_character_name(voice.character)
+                    identity = (
+                        voice.speaker,
+                        tuple(voice.aliases),
+                        tuple(reference_digests),
+                    )
+                    previous = voice_digests.get(normalized)
+                    if previous is not None:
+                        if previous != identity:
+                            raise SourceReferenceReviewError(
+                                "Successor manifests define different bytes for voice "
+                                f"{voice.character}"
+                            )
+                        continue
+                    voice_digests[normalized] = identity
+                    voices.append(
+                        {
+                            "character": voice.character,
+                            "speaker": voice.speaker,
+                            "aliases": list(voice.aliases),
+                            "references": copied_references,
+                        }
+                    )
+
+            sources, selected_variants = _combined_binding_ledgers(
+                base_binding, addition_binding
+            )
+            overrides = dict(sorted({**base_overrides, **addition_overrides}.items()))
+            bindings = {
+                "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
+                "schema_version": SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+                "predecessor_manifest_sha256": hashlib.sha256(base_payload).hexdigest(),
+                "sources": sources,
+                "selected_variants": selected_variants,
+                "queue_voice_overrides": overrides,
+                "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+            }
+            manifest = {
+                **base_document,
+                "voices": voices,
+                SOURCE_REFERENCE_BINDINGS_FIELD: bindings,
+            }
+            manifest_path = staging / "voice-manifest.json"
+            write_voice_manifest(manifest_path, manifest)
+            validated_document, validated_voices = load_voice_manifest(
+                manifest_path, allow_legacy=False
+            )
+            parsed = queue_voice_overrides_from_manifest(
+                validated_document, voices=validated_voices
+            )
+            if parsed != overrides:
+                raise SourceReferenceReviewError(
+                    "Successor queue bindings changed during publication"
+                )
+            if base_binding_manifest.read_bytes() != base_payload:
+                raise SourceReferenceReviewError(
+                    "Base source-reference manifest changed during publication"
+                )
+            if addition_manifest.read_bytes() != addition_payload:
+                raise SourceReferenceReviewError(
+                    "Added source-reference manifest changed during publication"
+                )
+            for source, digest in snapshots:
+                _assert_source_unchanged(
+                    source, digest, f"successor voice reference {source.name}"
+                )
+            _rename_directory_no_replace(staging, output)
+            return SourceReferenceBindingsResult(
+                output, len(selected_variants), len(overrides)
+            )
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
+
+
+def _combined_binding_ledgers(*bindings):
+    sources = []
+    selected_variants = []
+    seen_sources = {}
+    seen_variants = set()
+    for binding in bindings:
+        version = binding.get("schema_version")
+        if version == SOURCE_REFERENCE_BINDINGS_VERSION:
+            binding_sources = [
+                {
+                    "source_reference_plan_sha256": binding.get(
+                        "source_reference_plan_sha256"
+                    ),
+                    "source_reference_quality_review_sha256": binding.get(
+                        "source_reference_quality_review_sha256"
+                    ),
+                }
+            ]
+        elif version == SOURCE_REFERENCE_BINDINGS_MULTI_VERSION:
+            binding_sources = binding.get("sources")
+        else:
+            raise SourceReferenceReviewError(
+                "Successor source-reference binding schema is unsupported"
+            )
+        for source in binding_sources:
+            plan_sha256 = _sha256(
+                source.get("source_reference_plan_sha256"),
+                "successor source-reference plan SHA-256",
+            )
+            review_sha256 = _sha256(
+                source.get("source_reference_quality_review_sha256"),
+                "successor source-reference quality-review SHA-256",
+            )
+            previous = seen_sources.get(plan_sha256)
+            if previous is not None and previous != review_sha256:
+                raise SourceReferenceReviewError(
+                    "One source-reference plan has conflicting quality reviews"
+                )
+            if previous is None:
+                seen_sources[plan_sha256] = review_sha256
+                sources.append(
+                    {
+                        "source_reference_plan_sha256": plan_sha256,
+                        "source_reference_quality_review_sha256": review_sha256,
+                    }
+                )
+        default_plan = binding_sources[0]["source_reference_plan_sha256"]
+        for variant in binding.get("selected_variants", []):
+            variant_id = _text(
+                variant.get("variant_id"), "successor selected variant ID"
+            )
+            if variant_id in seen_variants:
+                raise SourceReferenceReviewError(
+                    f"Successor source-reference variant is duplicated: {variant_id}"
+                )
+            seen_variants.add(variant_id)
+            selected_variants.append(
+                {
+                    **variant,
+                    "source_reference_plan_sha256": variant.get(
+                        "source_reference_plan_sha256", default_plan
+                    ),
+                }
+            )
+    return sources, selected_variants
 
 
 def publish_source_reference_evaluation(plan_directory, output):

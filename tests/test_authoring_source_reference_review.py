@@ -53,6 +53,7 @@ from vntts.authoring.source_reference_review import (
     SourceReferenceReviewError,
     import_source_reference_review,
     load_source_reference_plan,
+    publish_source_reference_binding_successor,
     publish_source_reference_bindings,
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
@@ -131,10 +132,19 @@ def candidate_key(character, portrait, bank, media_id, reference_sha256):
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def publish_quality_fixture(
-        self, root, *, portrait_directory=None, shared_portrait_bank=False
+        self,
+        root,
+        *,
+        portrait_directory=None,
+        shared_portrait_bank=False,
+        character="Hero",
+        line_prefix="",
     ):
         report, review, story = self.write_inputs(
-            root, shared_portrait_bank=shared_portrait_bank
+            root,
+            shared_portrait_bank=shared_portrait_bank,
+            character=character,
+            line_prefix=line_prefix,
         )
         plan = import_source_reference_review(report, review, story, root / "plan")
         evaluation = publish_source_reference_evaluation(
@@ -157,7 +167,14 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         return plan, evaluation, generation, quality
 
-    def write_inputs(self, root, *, shared_portrait_bank=False):
+    def write_inputs(
+        self,
+        root,
+        *,
+        shared_portrait_bank=False,
+        character="Hero",
+        line_prefix="",
+    ):
         root = Path(root)
         references = root / "references"
         references.mkdir()
@@ -179,7 +196,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             write_pcm16_wav(reference, values, 16_000)
             reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
             candidate = {
-                "character": "Hero",
+                "character": character,
                 "portrait": portrait,
                 "source_bank": bank,
                 "media_id": index,
@@ -202,7 +219,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     separators=(",", ":"),
                 ).encode()
             ).hexdigest()
-            key = candidate_key("Hero", portrait, bank, index, reference_sha256)
+            key = candidate_key(character, portrait, bank, index, reference_sha256)
             candidates.append(candidate)
             decisions.append(
                 {
@@ -250,11 +267,11 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             records.append(
                 {
                     "record_type": "line",
-                    "line_id": f"target:{index}",
+                    "line_id": f"{line_prefix}target:{index}",
                     "chapter": "one",
                     "sequence": index,
-                    "speaker": "Hero",
-                    "voice_character": "Hero",
+                    "speaker": character,
+                    "voice_character": character,
                     "text": text,
                     "text_sha256": text_sha256(text),
                     "kind": "dialogue",
@@ -964,6 +981,160 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 result["source_reference_binding"]["synthesis_voice_character"],
                 character,
             )
+
+    def test_binding_successor_preserves_existing_plan_and_adds_reviewed_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            first_plan, _evaluation, _generation, first_quality = (
+                self.publish_quality_fixture(first_root)
+            )
+            second_plan, _evaluation, _generation, second_quality = (
+                self.publish_quality_fixture(
+                    second_root,
+                    character="Guide",
+                    line_prefix="guide-",
+                )
+            )
+            for quality in (first_quality, second_quality):
+                session = load_source_reference_quality_review(quality.session)
+                for card in session["variants"]:
+                    record_source_reference_quality_decision(
+                        quality.session, card["variant_id"], "accept"
+                    )
+            base_manifest = self.write_base_voice_manifest(root)
+            base = publish_source_reference_bindings(
+                first_plan.directory,
+                base_manifest,
+                "Centurion",
+                None,
+                root / "base-bindings",
+                quality_review=first_quality.session,
+            )
+            base_document, base_voices = load_voice_manifest(
+                base.directory / "voice-manifest.json", allow_legacy=False
+            )
+            base_overrides = queue_voice_overrides_from_manifest(
+                base_document, voices=base_voices
+            )
+
+            successor = publish_source_reference_binding_successor(
+                base.directory / "voice-manifest.json",
+                second_plan.directory,
+                second_quality.session,
+                "Centurion",
+                root / "successor",
+            )
+            document, voices = load_voice_manifest(
+                successor.directory / "voice-manifest.json", allow_legacy=False
+            )
+            overrides = queue_voice_overrides_from_manifest(document, voices=voices)
+            binding = document["vntts.authoring.source_reference_bindings"]
+
+            self.assertEqual(successor.selected_variants, 4)
+            self.assertEqual(successor.bound_queue_items, 4)
+            self.assertEqual(binding["schema_version"], 2)
+            self.assertEqual(len(binding["sources"]), 2)
+            self.assertEqual(len(binding["selected_variants"]), 4)
+            self.assertEqual(len(overrides), 4)
+            self.assertEqual(
+                {queue_id: overrides[queue_id] for queue_id in base_overrides},
+                base_overrides,
+            )
+            self.assertEqual(len({voice.character for voice in voices}), 5)
+            for voice in voices:
+                for relative in voice.references:
+                    reference = successor.directory / relative
+                    self.assertTrue(reference.is_file())
+                    self.assertTrue(
+                        reference.resolve().is_relative_to(successor.directory)
+                    )
+
+            tampered = json.loads(json.dumps(document))
+            tampered["vntts.authoring.source_reference_bindings"]["selected_variants"][
+                0
+            ]["source_reference_plan_sha256"] = "0" * 64
+            with self.assertRaisesRegex(
+                SourceReferenceBindingError, "unknown source plan"
+            ):
+                queue_voice_overrides_from_manifest(tampered, voices=voices)
+            tampered = json.loads(json.dumps(document))
+            tampered["vntts.authoring.source_reference_bindings"][
+                "predecessor_manifest_sha256"
+            ] = "invalid"
+            with self.assertRaisesRegex(
+                SourceReferenceBindingError, "predecessor manifest"
+            ):
+                queue_voice_overrides_from_manifest(tampered, voices=voices)
+
+    def test_binding_successor_cli_and_overlap_fail_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            first_plan, _evaluation, _generation, first_quality = (
+                self.publish_quality_fixture(first_root)
+            )
+            second_plan, _evaluation, _generation, second_quality = (
+                self.publish_quality_fixture(
+                    second_root,
+                    character="Guide",
+                    line_prefix="guide-",
+                )
+            )
+            for quality in (first_quality, second_quality):
+                session = load_source_reference_quality_review(quality.session)
+                for card in session["variants"]:
+                    record_source_reference_quality_decision(
+                        quality.session, card["variant_id"], "accept"
+                    )
+            base_manifest = self.write_base_voice_manifest(root)
+            base = publish_source_reference_bindings(
+                first_plan.directory,
+                base_manifest,
+                "Centurion",
+                None,
+                root / "base-bindings",
+                quality_review=first_quality.session,
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "extend-reference-bindings",
+                        "--base-binding-manifest",
+                        str(base.directory / "voice-manifest.json"),
+                        "--plan",
+                        str(second_plan.directory),
+                        "--quality-review",
+                        str(second_quality.session),
+                        "--narrator-character",
+                        "Centurion",
+                        "--output",
+                        str(root / "successor"),
+                    ]
+                )
+            payload = json.loads(stdout.getvalue())
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["selected_variants"], 4)
+            self.assertEqual(payload["bound_queue_items"], 4)
+            with self.assertRaisesRegex(
+                SourceReferenceReviewError, "overlap queue IDs"
+            ):
+                publish_source_reference_binding_successor(
+                    base.directory / "voice-manifest.json",
+                    first_plan.directory,
+                    first_quality.session,
+                    "Centurion",
+                    root / "overlap",
+                )
+            self.assertFalse((root / "overlap").exists())
 
     def test_binding_manifest_copies_only_explicit_base_characters(self):
         with TemporaryDirectory() as directory:
