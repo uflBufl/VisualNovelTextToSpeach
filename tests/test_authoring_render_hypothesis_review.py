@@ -57,8 +57,8 @@ def write_comparison(root, *, reference_format="wav"):
     else:
         reference.write_bytes(b"OggS\x00checksum-bound-fixture")
     reference_sha = sha256_file(reference)
-    queue_id = "reverse1999:1:2:" + "a" * 16
     text_sha = hashlib.sha256(b"A measured test line.").hexdigest()
+    queue_id = "reverse1999:1:2:" + text_sha[:16]
     reports = []
     arms = []
     for index, arm_id in enumerate(("reference-02", "reference-03"), start=1):

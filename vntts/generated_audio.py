@@ -754,7 +754,7 @@ def _live_fallback_index(metadata):
     indexed = {}
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
-        fields = common_fields | ({"evidence"} if version == 2 else set())
+        fields = common_fields | ({"evidence"} if version in {2, 3} else set())
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
         for field in fields - {
@@ -771,6 +771,7 @@ def _live_fallback_index(metadata):
         if raw["schema"] != "vntts.authoring-live-fallback-decision" or version not in {
             1,
             2,
+            3,
         }:
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
@@ -799,7 +800,7 @@ def _live_fallback_index(metadata):
             or raw["generation_profile"] != "default"
         ):
             raise ValueError("Generated-audio live fallback policy is unsupported")
-        if version == 2:
+        if version in {2, 3}:
             if raw["reason"] != "generation_hypotheses_exhausted":
                 raise ValueError(
                     "Generated-audio evidence fallback reason is unsupported"
@@ -833,6 +834,10 @@ def _live_fallback_index(metadata):
 
 
 def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+    if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
+        return _validate_render_review_fallback_evidence(
+            evidence, previous_result_sha256
+        )
     fields = {
         "schema",
         "schema_version",
@@ -899,6 +904,88 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
     if order != sorted(order) or len(order) != len(set(order)):
         raise ValueError(
             "Generated-audio live fallback evidence hypotheses are not canonical"
+        )
+
+
+def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
+    fields = {
+        "schema",
+        "schema_version",
+        "queue_sha256",
+        "base_result_sha256",
+        "hypotheses",
+    }
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
+        or evidence.get("schema_version") != 2
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or not _lowercase_sha256(evidence.get("queue_sha256"))
+        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+    ):
+        raise ValueError("Generated-audio live fallback review evidence is malformed")
+    hypotheses = evidence.get("hypotheses")
+    if not isinstance(hypotheses, list) or not hypotheses:
+        raise ValueError("Generated-audio live fallback review evidence is empty")
+    hypothesis_fields = {
+        "kind",
+        "review_id",
+        "review_sha256",
+        "review_document_sha256",
+        "decision_sha256",
+        "decision_document_sha256",
+        "comparison_sha256",
+        "arm_report_sha256",
+        "reference_sha256",
+        "result_sha256",
+        "decision",
+        "review",
+        "decision_document",
+    }
+    order = []
+    for hypothesis in hypotheses:
+        if (
+            not isinstance(hypothesis, dict)
+            or set(hypothesis) != hypothesis_fields
+            or hypothesis.get("kind") != "render_hypothesis_review"
+            or hypothesis.get("decision") != "need_different"
+            or not isinstance(hypothesis.get("review"), dict)
+            or not isinstance(hypothesis.get("decision_document"), dict)
+            or any(
+                not _lowercase_sha256(hypothesis.get(field))
+                for field in hypothesis_fields
+                - {"kind", "decision", "review", "decision_document"}
+            )
+        ):
+            raise ValueError(
+                "Generated-audio live fallback render-review hypothesis is malformed"
+            )
+        review = hypothesis["review"]
+        decision = hypothesis["decision_document"]
+        if (
+            _canonical_sha256(review) != hypothesis["review_document_sha256"]
+            or _canonical_sha256(decision) != hypothesis["decision_document_sha256"]
+            or review.get("review_id") != hypothesis["review_id"]
+            or review.get("comparison_sha256") != hypothesis["comparison_sha256"]
+            or review.get("arm_report_sha256") != hypothesis["arm_report_sha256"]
+            or review.get("reference_sha256") != hypothesis["reference_sha256"]
+            or review.get("result_sha256") != hypothesis["result_sha256"]
+            or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
+            or decision.get("schema_version") != 1
+            or decision.get("review_id") != hypothesis["review_id"]
+            or decision.get("review_sha256") != hypothesis["review_sha256"]
+            or decision.get("reference_sha256") != hypothesis["reference_sha256"]
+            or decision.get("result_sha256") != hypothesis["result_sha256"]
+            or decision.get("decision") != hypothesis["decision"]
+        ):
+            raise ValueError(
+                "Generated-audio live fallback render-review authority changed"
+            )
+        order.append((hypothesis["kind"], hypothesis["review_id"]))
+    if order != sorted(order) or len(order) != len(set(order)):
+        raise ValueError(
+            "Generated-audio live fallback render-review hypotheses are not canonical"
         )
 
 

@@ -613,6 +613,16 @@ def create_parser():
             "generation_hypotheses_exhausted"
         ),
     )
+    live_fallback.add_argument(
+        "--evidence-review",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Bind one terminal need_different render-hypothesis review; repeat "
+            "for generation_hypotheses_exhausted"
+        ),
+    )
     publish = subparsers.add_parser(
         "publish", help="Rebuild the approved-only manifest from generation state"
     )
@@ -1553,6 +1563,7 @@ def main(argv=None):
                 model=arguments.model,
                 generation_profile=arguments.generation_profile,
                 evidence_workspaces=arguments.evidence_workspace,
+                evidence_reviews=arguments.evidence_review,
             )
             print(json.dumps(decision, indent=2, sort_keys=True))
             return 0

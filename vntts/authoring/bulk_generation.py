@@ -107,6 +107,7 @@ SHORT_TRAILING_ELLIPSIS_PATTERN = re.compile(
 LIVE_FALLBACK_SCHEMA = "vntts.authoring-live-fallback-decision"
 LIVE_FALLBACK_VERSION = 1
 LIVE_FALLBACK_EVIDENCE_VERSION = 2
+LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION = 3
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
@@ -2753,6 +2754,7 @@ def authorize_live_fallback(
     model,
     generation_profile="default",
     evidence_workspaces=(),
+    evidence_reviews=(),
 ):
     """Record one exact terminal live-Pocket decision without publishing audio."""
     if reason not in LIVE_FALLBACK_REASONS:
@@ -2804,17 +2806,31 @@ def authorize_live_fallback(
         evidence = None
         evidence_sources = ()
         if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
-            evidence, evidence_sources = _capture_live_fallback_evidence(
-                state_path,
-                queue_path,
-                queue_sha256,
-                queue_item,
-                existing,
-                evidence_workspaces,
-            )
-        elif tuple(evidence_workspaces):
+            if tuple(evidence_workspaces) and tuple(evidence_reviews):
+                raise BulkGenerationError(
+                    "Live fallback cannot mix repair-workspace and render-review evidence"
+                )
+            if tuple(evidence_reviews):
+                evidence, evidence_sources = _capture_render_review_fallback_evidence(
+                    state_path,
+                    queue_path,
+                    queue_sha256,
+                    queue_item,
+                    existing,
+                    evidence_reviews,
+                )
+            else:
+                evidence, evidence_sources = _capture_live_fallback_evidence(
+                    state_path,
+                    queue_path,
+                    queue_sha256,
+                    queue_item,
+                    existing,
+                    evidence_workspaces,
+                )
+        elif tuple(evidence_workspaces) or tuple(evidence_reviews):
             raise BulkGenerationError(
-                "Live fallback evidence workspaces require the "
+                "Live fallback evidence sources require the "
                 "generation_hypotheses_exhausted reason"
             )
         requested = synthesis_character_for_line(
@@ -2823,9 +2839,13 @@ def authorize_live_fallback(
         decision = {
             "schema": LIVE_FALLBACK_SCHEMA,
             "schema_version": (
-                LIVE_FALLBACK_EVIDENCE_VERSION
-                if evidence is not None
-                else LIVE_FALLBACK_VERSION
+                LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION
+                if isinstance(evidence, dict) and evidence.get("schema_version") == 2
+                else (
+                    LIVE_FALLBACK_EVIDENCE_VERSION
+                    if evidence is not None
+                    else LIVE_FALLBACK_VERSION
+                )
             ),
             "reason": reason,
             "provider": provider,
@@ -3147,6 +3167,91 @@ def _capture_live_fallback_evidence(
     return evidence, tuple(snapshots)
 
 
+def _capture_render_review_fallback_evidence(
+    state_path,
+    queue_path,
+    queue_sha256,
+    queue_item,
+    existing,
+    evidence_reviews,
+):
+    from vntts.authoring.render_hypothesis_records import (
+        RenderHypothesisRecordError,
+        load_render_hypothesis_record,
+    )
+
+    values = tuple(Path(value).expanduser().resolve() for value in evidence_reviews)
+    if not values:
+        raise BulkGenerationError(
+            "Exhausted-hypothesis fallback requires a render review"
+        )
+    if len(values) != len(set(values)):
+        raise BulkGenerationError("Live fallback render review is duplicated")
+    base_root = state_path.parent.parent
+    if queue_path != base_root / "queue.jsonl":
+        raise BulkGenerationError(
+            "Live fallback queue must belong to its base workspace"
+        )
+    base_result_sha256 = _canonical_sha256(existing)
+    hypotheses = []
+    snapshots = [(queue_path, queue_sha256)]
+    for directory in values:
+        try:
+            record = load_render_hypothesis_record(directory)
+        except RenderHypothesisRecordError as error:
+            raise BulkGenerationError(
+                f"Unable to read live fallback render review {directory}: {error}"
+            ) from error
+        review = record.review
+        decision = record.decision
+        if (
+            not isinstance(decision, dict)
+            or decision.get("decision") != "need_different"
+        ):
+            raise BulkGenerationError(
+                "Live fallback render review must be terminal need_different"
+            )
+        if (
+            review.get("queue_id") != queue_item.queue_id
+            or review.get("line_id") != queue_item.line_id
+            or review.get("text_sha256") != queue_item.text_sha256
+        ):
+            raise BulkGenerationError(
+                "Live fallback render review queue identity changed"
+            )
+        source_files = tuple(
+            (snapshot.path, snapshot.sha256) for snapshot in record.snapshots
+        )
+        hypotheses.append(
+            {
+                "kind": "render_hypothesis_review",
+                "review_id": review["review_id"],
+                "review_sha256": record.review_snapshot.sha256,
+                "review_document_sha256": _canonical_sha256(review),
+                "decision_sha256": record.decision_snapshot.sha256,
+                "decision_document_sha256": _canonical_sha256(decision),
+                "comparison_sha256": review["comparison_sha256"],
+                "arm_report_sha256": review["arm_report_sha256"],
+                "reference_sha256": review["reference_sha256"],
+                "result_sha256": review["result_sha256"],
+                "decision": "need_different",
+                "review": review,
+                "decision_document": decision,
+            }
+        )
+        snapshots.extend(source_files)
+    hypotheses.sort(key=lambda value: (value["kind"], value["review_id"]))
+    evidence = {
+        "schema": LIVE_FALLBACK_EVIDENCE_SCHEMA,
+        "schema_version": 2,
+        "queue_sha256": queue_sha256,
+        "base_result_sha256": base_result_sha256,
+        "hypotheses": hypotheses,
+    }
+    _validate_live_fallback_evidence(evidence, base_result_sha256)
+    return evidence, tuple(snapshots)
+
+
 def _live_fallback_workspace_import(workspace, label):
     if (
         not isinstance(workspace, dict)
@@ -3165,6 +3270,10 @@ def _live_fallback_workspace_import(workspace, label):
 
 
 def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+    if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
+        return _validate_render_review_fallback_evidence(
+            evidence, previous_result_sha256
+        )
     if (
         not isinstance(evidence, dict)
         or set(evidence)
@@ -3228,6 +3337,91 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
         set(observed_order)
     ):
         raise BulkGenerationError("Live fallback evidence hypotheses are not canonical")
+
+
+def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
+    if (
+        set(evidence)
+        != {
+            "schema",
+            "schema_version",
+            "queue_sha256",
+            "base_result_sha256",
+            "hypotheses",
+        }
+        or evidence.get("schema") != LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 2
+        or evidence.get("base_result_sha256") != previous_result_sha256
+    ):
+        raise BulkGenerationError("Live fallback review evidence is malformed")
+    _required_sha256(evidence.get("queue_sha256"), "Live fallback evidence queue")
+    _required_sha256(
+        evidence.get("base_result_sha256"), "Live fallback evidence base result"
+    )
+    hypotheses = evidence.get("hypotheses")
+    if not isinstance(hypotheses, list) or not hypotheses:
+        raise BulkGenerationError("Live fallback review evidence is empty")
+    fields = {
+        "kind",
+        "review_id",
+        "review_sha256",
+        "review_document_sha256",
+        "decision_sha256",
+        "decision_document_sha256",
+        "comparison_sha256",
+        "arm_report_sha256",
+        "reference_sha256",
+        "result_sha256",
+        "decision",
+        "review",
+        "decision_document",
+    }
+    order = []
+    for hypothesis in hypotheses:
+        if (
+            not isinstance(hypothesis, dict)
+            or set(hypothesis) != fields
+            or hypothesis.get("kind") != "render_hypothesis_review"
+            or hypothesis.get("decision") != "need_different"
+            or not isinstance(hypothesis.get("review"), dict)
+            or not isinstance(hypothesis.get("decision_document"), dict)
+        ):
+            raise BulkGenerationError(
+                "Live fallback render-review hypothesis is malformed"
+            )
+        for field in fields - {
+            "kind",
+            "decision",
+            "review",
+            "decision_document",
+        }:
+            _required_sha256(
+                hypothesis.get(field), f"Live fallback render review {field}"
+            )
+        review = hypothesis["review"]
+        decision = hypothesis["decision_document"]
+        if (
+            _canonical_sha256(review) != hypothesis["review_document_sha256"]
+            or _canonical_sha256(decision) != hypothesis["decision_document_sha256"]
+            or review.get("review_id") != hypothesis["review_id"]
+            or review.get("comparison_sha256") != hypothesis["comparison_sha256"]
+            or review.get("arm_report_sha256") != hypothesis["arm_report_sha256"]
+            or review.get("reference_sha256") != hypothesis["reference_sha256"]
+            or review.get("result_sha256") != hypothesis["result_sha256"]
+            or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
+            or decision.get("schema_version") != 1
+            or decision.get("review_id") != hypothesis["review_id"]
+            or decision.get("review_sha256") != hypothesis["review_sha256"]
+            or decision.get("reference_sha256") != hypothesis["reference_sha256"]
+            or decision.get("result_sha256") != hypothesis["result_sha256"]
+            or decision.get("decision") != hypothesis["decision"]
+        ):
+            raise BulkGenerationError("Live fallback render-review authority changed")
+        order.append((hypothesis["kind"], hypothesis["review_id"]))
+    if order != sorted(order) or len(order) != len(set(order)):
+        raise BulkGenerationError(
+            "Live fallback render-review hypotheses are not canonical"
+        )
 
 
 def _review_generation_item_locked(
@@ -3783,14 +3977,23 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
     version = decision.get("schema_version") if isinstance(decision, dict) else None
     expected_fields = (
         common_fields | {"evidence"}
-        if version == LIVE_FALLBACK_EVIDENCE_VERSION
+        if version
+        in {
+            LIVE_FALLBACK_EVIDENCE_VERSION,
+            LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
+        }
         else common_fields
     )
     if (
         not isinstance(decision, dict)
         or set(decision) != expected_fields
         or decision.get("schema") != LIVE_FALLBACK_SCHEMA
-        or version not in {LIVE_FALLBACK_VERSION, LIVE_FALLBACK_EVIDENCE_VERSION}
+        or version
+        not in {
+            LIVE_FALLBACK_VERSION,
+            LIVE_FALLBACK_EVIDENCE_VERSION,
+            LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
+        }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
         or decision.get("model") != "pocket-tts"
@@ -3800,7 +4003,10 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback decision is malformed"
         )
-    if version == LIVE_FALLBACK_EVIDENCE_VERSION:
+    if version in {
+        LIVE_FALLBACK_EVIDENCE_VERSION,
+        LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
+    }:
         if decision.get("reason") != LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
             raise BulkGenerationError(
                 f"State item {queue_id!r} evidence fallback reason is invalid"

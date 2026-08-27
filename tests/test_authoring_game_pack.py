@@ -23,6 +23,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+from tests.test_authoring_render_hypothesis_review import write_comparison
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,
@@ -34,6 +35,10 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.render_hypothesis_review import (
+    publish_render_hypothesis_review,
+    record_render_hypothesis_decision,
+)
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_SCHEMA,
@@ -350,6 +355,56 @@ class AuthoringGamePackTest(unittest.TestCase):
             }
         )
         return fixture, evidence, queue_id
+
+    def prepare_rejected_render_hypothesis_fixture(
+        self, root, *, decision="need_different"
+    ):
+        comparison = root / "comparison"
+        queue_id = write_comparison(comparison)
+        review = root / "review"
+        publish_render_hypothesis_review(comparison, queue_id, "reference-02", review)
+        if decision is not None:
+            record_render_hypothesis_decision(review, decision)
+        text = "A measured test line."
+        queue = write_voice_generation_queue(
+            root / "queue.jsonl",
+            {"game": "Synthetic Game", "language": "en"},
+            [
+                {
+                    "record_type": "generation_item",
+                    "queue_id": queue_id,
+                    "line_id": "reverse1999:1:2",
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "text": text,
+                    "speaker": "Hero",
+                    "voice_character": "Hero",
+                    "action": "generate",
+                }
+            ],
+        )
+        workspace = {
+            "schema": "vntts.authoring-workspace",
+            "schema_version": 1,
+            "workspace_id": "resume-" + "d" * 24 + "-" + "e" * 16,
+            "source": {"import_id": "legacy-" + "d" * 24},
+        }
+        (root / "workspace.json").write_text(
+            json.dumps(workspace, sort_keys=True), encoding="utf-8"
+        )
+        renderer = SyntheticRenderer(SynthesisCompletion.LIMITED)
+        renderer.name = "moss-tts"
+        renderer.model_name = "moss-local"
+        generated = run_bulk_generation(
+            queue,
+            root / "generated-audio",
+            renderer,
+            provider="moss-tts",
+            model="moss-local",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+        )
+        return queue, generated.state, review, queue_id
 
     def test_forged_config_rebase_provenance_cannot_enter_final_pack(self):
         with TemporaryDirectory() as directory:
@@ -725,6 +780,112 @@ class AuthoringGamePackTest(unittest.TestCase):
                         evidence_workspaces=(evidence,),
                     )
             self.assertEqual(fixture["state"].read_bytes(), before)
+
+    def test_rejected_render_hypothesis_fallback_loads_as_schema_v3(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue, state, review, queue_id = (
+                self.prepare_rejected_render_hypothesis_fixture(root)
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "live-fallback",
+                        "--state",
+                        str(state),
+                        "--queue",
+                        str(queue),
+                        "--reason",
+                        "generation_hypotheses_exhausted",
+                        "--model",
+                        "pocket-tts",
+                        "--evidence-review",
+                        str(review),
+                        queue_id,
+                    ]
+                )
+            decision = json.loads(stdout.getvalue())
+            record = {
+                **decision,
+                "decision_sha256": _canonical_sha256(decision),
+            }
+            manifest = root / "generated-audio-runtime.json"
+            write_generated_audio_manifest(
+                manifest,
+                {
+                    "vntts.authoring.live_fallback": {
+                        "schema_version": 1,
+                        "mode": "explicit",
+                        "entries": [record],
+                    }
+                },
+                [],
+            )
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            loaded = next(iter(library.live_fallbacks.values()))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(decision["schema_version"], 3)
+        self.assertEqual(decision["evidence"]["schema_version"], 2)
+        self.assertEqual(
+            decision["evidence"]["hypotheses"][0]["decision"],
+            "need_different",
+        )
+        self.assertEqual(loaded.evidence, decision["evidence"])
+
+    def test_render_hypothesis_fallback_rejects_unfinished_or_accepted_review(self):
+        for decision in (None, "accept_hypothesis"):
+            with self.subTest(decision=decision), TemporaryDirectory() as directory:
+                root = Path(directory)
+                queue, state, review, queue_id = (
+                    self.prepare_rejected_render_hypothesis_fixture(
+                        root, decision=decision
+                    )
+                )
+                with self.assertRaisesRegex(BulkGenerationError, "need_different"):
+                    authorize_live_fallback(
+                        state,
+                        queue,
+                        queue_id,
+                        reason="generation_hypotheses_exhausted",
+                        model="pocket-tts",
+                        evidence_reviews=(review,),
+                    )
+
+    def test_render_hypothesis_fallback_rechecks_review_before_commit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue, state, review, queue_id = (
+                self.prepare_rejected_render_hypothesis_fixture(root)
+            )
+            before = state.read_bytes()
+            real_write = bulk_generation_module._write_generated_manifest_from_state
+
+            def mutate_review(*args, **kwargs):
+                result = real_write(*args, **kwargs)
+                decision_path = review / "decision.json"
+                decision_path.write_text(
+                    decision_path.read_text(encoding="utf-8") + "\n",
+                    encoding="utf-8",
+                )
+                return result
+
+            with patch.object(
+                bulk_generation_module,
+                "_write_generated_manifest_from_state",
+                side_effect=mutate_review,
+            ):
+                with self.assertRaisesRegex(BulkGenerationError, "evidence changed"):
+                    authorize_live_fallback(
+                        state,
+                        queue,
+                        queue_id,
+                        reason="generation_hypotheses_exhausted",
+                        model="pocket-tts",
+                        evidence_reviews=(review,),
+                    )
+            self.assertEqual(state.read_bytes(), before)
 
     def test_live_fallback_refuses_pending_or_unbound_backend(self):
         with TemporaryDirectory() as directory:

@@ -560,6 +560,29 @@ decisions and the evidence-bound version-2 decision. Changing the embedded
 repair result, its carry-forward hash or any decision field invalidates the
 published decision digest.
 
+A completed alternative-reference render that was explicitly rejected uses
+`--evidence-review` instead. Decision schema 3 requires a self-contained
+render-hypothesis review with terminal `need_different`; accepted or undecided
+reviews are not fallback authority. Its evidence schema binds the full review
+and decision documents, their file and canonical hashes, and the exact
+comparison, arm-report, reference, result, queue, line and text hashes. Every
+source file is rechecked before commit. This transition consumes an already
+heard rejected hypothesis without rerendering it or inferring rejection from a
+WAV:
+
+```sh
+uv run vntts-pregenerate live-fallback \
+  --state WORKSPACE/generated-audio/generation-state.json \
+  --queue WORKSPACE/queue.jsonl \
+  --reason generation_hypotheses_exhausted \
+  --model pocket-tts \
+  --evidence-review NEED_DIFFERENT_REVIEW \
+  QUEUE_ID
+```
+
+Repair-workspace and render-review evidence cannot be mixed in one decision.
+Runtime loading remains fail-closed for all three decision schemas.
+
 Optional `--carry-forward-character` values may preserve terminal approved or
 rejected decisions for unchanged non-Narrator character references in the new
 workspace. Their original provider and full synthesis provenance remain on the
