@@ -394,11 +394,56 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.sample_text.isVisible())
             self.assertTrue(dialog.reject.isVisible())
             self.assertIn("press Space to play/replay", dialog.shortcuts_help.text())
-            table_bottom = dialog.table.mapTo(
-                dialog, QPoint(0, dialog.table.height())
+            review_bottom = dialog.review_scroll.mapTo(
+                dialog, QPoint(0, dialog.review_scroll.height())
             ).y()
             decision_top = dialog.decision_help.mapTo(dialog, QPoint(0, 0)).y()
-            self.assertLessEqual(table_bottom, decision_top)
+            self.assertLessEqual(review_bottom, decision_top)
+
+    def test_compact_decision_rows_and_shortcuts_never_overlap(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            dialog.resize(900, 820)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(sample.item.queue_id)
+            dialog._show_current_cohort()
+            self.application.processEvents()
+
+            first_row_bottom = max(
+                widget.mapTo(dialog, QPoint(0, widget.height())).y()
+                for widget in (
+                    dialog.mark_bad,
+                    dialog.need_another,
+                    dialog.leave_undecided,
+                )
+            )
+            second_row_top = min(
+                widget.mapTo(dialog, QPoint(0, 0)).y()
+                for widget in (
+                    dialog.repair_marked,
+                    dialog.accept,
+                    dialog.reject,
+                )
+            )
+            second_row_bottom = max(
+                widget.mapTo(dialog, QPoint(0, widget.height())).y()
+                for widget in (
+                    dialog.repair_marked,
+                    dialog.accept,
+                    dialog.reject,
+                )
+            )
+            shortcut_top = dialog.shortcuts_help.mapTo(dialog, QPoint(0, 0)).y()
+
+            self.assertLessEqual(first_row_bottom, second_row_top)
+            self.assertLessEqual(second_row_bottom, shortcut_top)
+            self.assertTrue(dialog.review_scroll.isVisible())
+            self.assertTrue(dialog.accept.isVisible())
+            self.assertTrue(dialog.reject.isVisible())
 
     def test_decision_is_source_local_and_navigation_remains_live_while_saving(self):
         calls = []

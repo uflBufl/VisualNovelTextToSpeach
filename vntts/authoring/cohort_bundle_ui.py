@@ -39,9 +39,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.authoring.cohort_bundle import (
@@ -557,14 +559,25 @@ class CohortReviewBundleDialog(QDialog):
         decision_group = QGroupBox("Cohort decision")
         decision_group.setLayout(decision_layout)
 
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.setSpacing(10)
+        review_layout.addWidget(self.heading)
+        review_layout.addWidget(self.guide)
+        review_layout.addWidget(progress_group)
+        review_layout.addWidget(cohort_group)
+        review_layout.addWidget(sample_group)
+        review_layout.addWidget(self.table, 1)
+        self.review_scroll = QScrollArea()
+        self.review_scroll.setAccessibleName("Scrollable cohort review context")
+        self.review_scroll.setWidgetResizable(True)
+        self.review_scroll.setMinimumHeight(240)
+        self.review_scroll.setWidget(review_content)
+
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        layout.addWidget(self.heading)
-        layout.addWidget(self.guide)
-        layout.addWidget(progress_group)
-        layout.addWidget(cohort_group)
-        layout.addWidget(sample_group)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(decision_group)
 
         self.setStyleSheet(
