@@ -53,6 +53,9 @@ Follow the evidence-backed order and invariants in
       instead of treating the internal `Selected failure reference ...` label
       as a manifest character; require the target Narrator route to contain the
       exact selected reference SHA before carrying that outcome.
+      A chained `retired_rejected` route must likewise carry its preserved
+      source reference identity rather than treating the intentionally empty
+      inactive target route as malformed or active.
       Generate only the 23 newly covered queue IDs once at seed 0 with no broad
       retry or approval side effect. Preserve typed failures; if valid WAVs are
       produced, publish one checksum-bound fallback cohort review and stop for

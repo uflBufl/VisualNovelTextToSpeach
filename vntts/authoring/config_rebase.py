@@ -916,15 +916,24 @@ def _prior_config_rebase_target_route(result):
     still bound by ``source_item_sha256`` in the new ledger.  Each successor
     therefore records the preceding workspace's effective target route rather
     than flattening or re-resolving a historical synthesis character that may
-    no longer be active in the selected manifest.
+    no longer be active in the selected manifest.  A retired rejection keeps
+    its exact source route because its intentionally empty target route is not
+    active synthesis authority and must be revalidated against retirement.
     """
     if not isinstance(result, dict):
         return None
     rebase = result.get("config_rebase")
     if not isinstance(rebase, dict):
         return None
-    character = rebase.get("target_effective_character")
-    values = rebase.get("target_reference_sha256s")
+    retired = rebase.get("target_route_status") == "retired_rejected"
+    character_field = (
+        "source_effective_character" if retired else "target_effective_character"
+    )
+    references_field = (
+        "source_reference_sha256s" if retired else "target_reference_sha256s"
+    )
+    character = rebase.get(character_field)
+    values = rebase.get(references_field)
     if not isinstance(character, str) or not character.strip():
         raise AuthoringWorkbenchError(
             "Prior config rebase target character is malformed"

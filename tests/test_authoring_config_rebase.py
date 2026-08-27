@@ -136,6 +136,22 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 }
             )
 
+    def test_chained_retired_rejection_uses_its_preserved_source_route(self):
+        result = {
+            "config_rebase": {
+                "source_effective_character": "Retired exact variant",
+                "source_reference_sha256s": ["1" * 64],
+                "target_effective_character": "Aderyn",
+                "target_reference_sha256s": [],
+                "target_route_status": "retired_rejected",
+            }
+        }
+
+        self.assertEqual(
+            _prior_config_rebase_target_route(result),
+            ("Retired exact variant", ("1" * 64,)),
+        )
+
     def test_retired_route_preserves_only_exact_rejection(self):
         queue_id = "line:child"
         source_route = ("Child variant", ("1" * 64,))
