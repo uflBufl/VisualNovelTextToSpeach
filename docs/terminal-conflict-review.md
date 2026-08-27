@@ -202,3 +202,32 @@ older `outcome_merge` layer included the newer
 validator now removes that later overlay only when the same queue ID is present
 in the terminal merge ledger. An otherwise identical unbound overlay still
 fails closed.
+
+## Content-addressed decision carry-forward
+
+The v6 Character Story config refresh produced reconciliation report
+`2deb3bb5abebae780ec9d4d883673097ee533a897e3c0f561f432e0e7a78e401`.
+It contains the same five earlier conflicts plus one newly surfaced Dobharchú
+conflict, `reverse1999:314608:70:3a46fdd9e8224081`. Review v3 has review ID
+`e6821cab664898b87cc2568b98db20a2bc47a55fa5774374393e433e23cd2179`,
+six cases and 12 copied candidates.
+
+The five prior cases retained exactly the same content-addressed case IDs,
+ordered candidate IDs, prior authority and WAV SHA-256 values as review v2.
+`terminal-conflict-carry` therefore copied only those five decision records,
+including their original `reviewed_at` timestamps, into progress schema version
+2. Its ledger binds v2 review ID
+`784954f97ced807c8f26fa84ef93fd3034e2e0059b5bcaca91a3f130fb44dec3`,
+review SHA-256
+`ab83bdf0169e7ebba88006dafbf72be3057263df732c2c22c5056df045e73d04`
+and progress SHA-256
+`bd11f575e061675549a88042936e8a1cb36c0c8111fa92f015592ee30c52342a`.
+Loading, editing and resolution publication revalidate both predecessor files
+and their historical source workspaces; a changed predecessor or an attempt to
+overwrite a carried decision fails before writing.
+
+No decision was inferred for the new Dobharchú case. Review v3 now reports
+exactly 5/6 complete, with only case
+`b64c207cee54471fb1fc56a60ac6cbfad8da493c310dc3c1f40653c37c46a396`
+pending human listening. This separates reuse of an identical prior human
+decision from authorization of newly conflicting audio.
