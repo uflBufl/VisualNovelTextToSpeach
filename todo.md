@@ -146,12 +146,14 @@ Follow the evidence-backed order and invariants in
       mutation. The human rejected `314608:58` as `need_different` because of a
       long pause; preserve that terminal hypothesis decision and do not rerender
       its completed arm. The human accepted the exact reference-03 hypothesis
-      for `314608:94`. Add a provenance-preserving import from that accepted
-      single-candidate review into a fresh current failure audit, publish its
-      exact reference overlay, create one config-addressed successor, and run
-      exactly one production-shaped attempt. Any completed WAV remains pending
-      individual human review. Do not spend another unbound seed or apply
-      sentence splitting to either single-sentence line.
+      for `314608:94`. Its checksum-bound import, reference overlay and
+      config-addressed successor are complete, and the one permitted production
+      attempt completed as a 7.76-second PCM16 mono WAV with 0.40-second longest
+      internal silence. Obtain one normal individual human approve/reject verdict
+      for exact WAV SHA-256 `59c6f5eb48c4...`; approval may then enter the normal
+      successor merge, while rejection exhausts this reference hypothesis. Do
+      not spend another unbound seed or apply sentence splitting to either
+      single-sentence line.
       For `314606:43` and `314606:6`, design an explicit cross-provider/live
       fallback authority that consumes the exhausted current-control,
       alternative-reference and segmentation evidence; it must not infer

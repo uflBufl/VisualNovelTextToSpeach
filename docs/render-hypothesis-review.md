@@ -64,4 +64,17 @@ The human decisions were recorded on 2026-08-27:
   the next attempt needs a materially different provider or reference.
 - `314608:94` is `accept_hypothesis`. It authorizes importing reference 03 into
   a fresh one-case failure audit and exactly one production-shaped successor
-  render. That new WAV, if complete, remains pending normal human review.
+  render.
+
+The authorized production run completed in config-addressed workspace
+`resume-395a5e5eec0327a3a793b66d-8f248017c2917708`. It produced only queue item
+`reverse1999:314608:94:f6c23264391ffae3` as a pending-review PCM16 mono 48 kHz
+WAV: 372,480 frames (7.76 seconds), SHA-256
+`59c6f5eb48c4204adc653d3da06f245a98926e6aace304514ba055b6ff9f68a8`.
+The measured longest internal silence is 0.40 seconds, silence ratio 0.0619,
+and both edge silences are zero. The attempt used MOSS provider attempt 2/seed
+1 for this provider (five cumulative historical attempts including three
+legacy-unbound attempts). All other 481 state records retained aggregate
+canonical SHA-256 `6664f2d90587...`; the source workspace state remained
+`a8839038d856...`; no active attempt, lease or partial WAV remained. This WAV is
+not approved and requires one normal individual human verdict.
