@@ -2517,7 +2517,19 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             sfx["text"] = "*Door closes*"
             sfx["text_sha256"] = hashlib.sha256(sfx["text"].encode()).hexdigest()
             sfx["queue_id"] = f"line:sfx:{sfx['text_sha256'][:16]}"
-            queue = write_queue(root / "queue.jsonl", [spoken, sfx])
+            mixed = queue_item("mixed-sfx")
+            mixed["text"] = "N-No! *gurgle*"
+            mixed["text_sha256"] = hashlib.sha256(mixed["text"].encode()).hexdigest()
+            mixed["queue_id"] = f"line:mixed-sfx:{mixed['text_sha256'][:16]}"
+            interjection = queue_item("interjection")
+            interjection["text"] = "Tsk!"
+            interjection["text_sha256"] = hashlib.sha256(b"Tsk!").hexdigest()
+            interjection["queue_id"] = (
+                f"line:interjection:{interjection['text_sha256'][:16]}"
+            )
+            queue = write_queue(
+                root / "queue.jsonl", [spoken, sfx, mixed, interjection]
+            )
             renderer = SyntheticRenderer()
             result = self.run_generation(
                 queue,
@@ -2531,7 +2543,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             generated = state["items"][spoken["queue_id"]]
 
         self.assertEqual(result.generated, 1)
-        self.assertEqual(result.skipped_items, 1)
+        self.assertEqual(result.skipped_items, 3)
         self.assertEqual(renderer.requests[0].text, "Wait.")
         self.assertEqual(generated["text_transform"], "short-trailing-ellipsis-v1")
         self.assertEqual(

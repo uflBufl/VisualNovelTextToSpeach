@@ -50,6 +50,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.authoring.audio_events import requires_audio_event_composition
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
@@ -723,11 +724,18 @@ def inspect_generated_speech(
 
 
 def is_spoken_queue_item(item):
-    """Skip explicit legacy pure-SFX records without game-specific IDs."""
+    """Skip pure or inline audio events until a typed composition is approved."""
     document = item.document if hasattr(item, "document") else item
     if document.get("speakable") is False:
         return False
-    return PURE_SOUND_EFFECT_PATTERN.fullmatch(str(document.get("text") or "")) is None
+    text = str(document.get("text") or "")
+    try:
+        requires_composition = requires_audio_event_composition(document)
+    except ValueError as error:
+        raise BulkGenerationError(str(error)) from error
+    return (
+        not requires_composition and PURE_SOUND_EFFECT_PATTERN.fullmatch(text) is None
+    )
 
 
 def normalize_short_trailing_ellipsis(text):

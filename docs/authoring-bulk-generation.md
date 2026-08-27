@@ -104,10 +104,14 @@ uv run vntts-pregenerate generate \
 skipped, matching legacy resume semantics. `--character` can be repeated, and
 `--include-prefer-source` explicitly opts recoverable source-audio records into
 generation. The CLI skips characters without configured local references and
-legacy pure `*sound effect*` lines. For MOSS only, one/two-word trailing
-ellipses are transformed to a terminal period; both the original queue text
-hash and exact transformed synthesis-text hash are persisted. Negative limits
-or retries are rejected.
+legacy pure `*sound effect*` lines. Mixed inline directions such as
+`N-No! *gurgle*`, `Wh-What! *gasp*`, and event-only `Tsk!` are also excluded
+from ordinary TTS through the typed policy documented in
+[`authoring-audio-events.md`](authoring-audio-events.md). They require an exact
+reviewed composition; the marker is never sent as pronounceable text. For MOSS
+only, one/two-word trailing ellipses are transformed to a terminal period; both
+the original queue text hash and exact transformed synthesis-text hash are
+persisted. Negative limits or retries are rejected.
 
 Review, recover a manifest and inspect state:
 

@@ -26,6 +26,10 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.audio_events import (
+    AUDIO_EVENT_PLAN_FIELD,
+    audio_event_plan_document,
+)
 from vntts.authoring.delivery import (
     DELIVERY_ANNOTATION_VERSION,
     LEGACY_ENGLISH_POLICY,
@@ -56,6 +60,7 @@ class GenerationQueueSummary:
     action_counts: dict[str, int]
     source_audio_status_counts: dict[str, int]
     missing_reference_characters: tuple[str, ...]
+    audio_event_composition: int = 0
 
     def to_dict(self):
         return {
@@ -67,6 +72,7 @@ class GenerationQueueSummary:
             "missing_reference": self.missing_reference,
             "recoverable_source_audio": self.recoverable_source_audio,
             "manual_review": self.manual_review,
+            "audio_event_composition": self.audio_event_composition,
             "skipped_available": self.skipped_available,
             "skipped_unspeakable": self.skipped_unspeakable,
             "skipped_unselected": self.skipped_unselected,
@@ -105,6 +111,7 @@ _QUEUE_OWNED_FIELDS = frozenset(
         "source_audio_reason",
         "action",
         "state",
+        AUDIO_EVENT_PLAN_FIELD,
     }
 )
 
@@ -169,6 +176,7 @@ def plan_generation_queue(
     missing_reference = 0
     recoverable = 0
     manual_review = 0
+    audio_event_composition = 0
     missing_characters = set()
     for record in selected:
         if not record.speakable:
@@ -184,10 +192,13 @@ def plan_generation_queue(
         requested_character = synthesis_character_for_line(
             record.speaker, record.voice_character
         )
+        audio_event_plan = audio_event_plan_document(record.text)
         entry = voice_index.get(normalize_character_name(requested_character))
         voice_character = entry.character if entry is not None else requested_character
         if action == "generate":
-            if entry is not None and reference_availability[entry]:
+            if audio_event_plan is not None:
+                audio_event_composition += 1
+            elif entry is not None and reference_availability[entry]:
                 ready += 1
             else:
                 missing_reference += 1
@@ -196,7 +207,12 @@ def plan_generation_queue(
             recoverable += 1
         else:
             manual_review += 1
-        item = _queue_item(record, voice_character, action)
+        item = _queue_item(
+            record,
+            voice_character,
+            action,
+            audio_event_plan=audio_event_plan,
+        )
         try:
             application = apply_delivery_policy(item, delivery_policy)
         except DeliveryAnnotationError as error:
@@ -225,6 +241,7 @@ def plan_generation_queue(
         missing_reference=missing_reference,
         recoverable_source_audio=recoverable,
         manual_review=manual_review,
+        audio_event_composition=audio_event_composition,
         skipped_available=skipped_available,
         skipped_unspeakable=skipped_unspeakable,
         skipped_unselected=len(document.records) - len(selected),
@@ -386,7 +403,17 @@ def _has_local_reference(entry, manifest_directory):
     return True
 
 
-def _queue_item(record: StoryIndexRecord, voice_character, action):
+def _queue_item(
+    record: StoryIndexRecord,
+    voice_character,
+    action,
+    *,
+    audio_event_plan=None,
+):
+    if AUDIO_EVENT_PLAN_FIELD in record.producer_fields:
+        raise GenerationQueueBuildError(
+            f"Story line {record.line_id!r} collides with reserved audio-event plan"
+        )
     item = {
         key: value
         for key, value in record.producer_fields.items()
@@ -418,6 +445,8 @@ def _queue_item(record: StoryIndexRecord, voice_character, action):
             "state": "pending",
         }
     )
+    if audio_event_plan is not None:
+        item[AUDIO_EVENT_PLAN_FIELD] = audio_event_plan
     return item
 
 

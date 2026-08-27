@@ -40,20 +40,20 @@ Follow the checkpoint, dependencies and acceptance boundaries in
 Follow the evidence-backed order and invariants in
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md).
 
-- [ ] Treat inline non-verbal stage directions as typed audio events instead of
-      pronounceable text. The exact Poacher I line `reverse1999:314607:84`
-      (`N-No! *gurgle*`) was correctly rejected after MOSS pronounced the
-      annotation literally; `Tsk!`, `*gasp*` and similar cues need the same
-      explicit policy. Preserve canonical text and text hashes, but split the
-      synthesis plan into spoken text plus ordered event tokens with a
-      checksum-bound transform/mix ledger. Unsupported events must fail closed
-      or omit only the event after review, never silently become spoken words.
-      Keep Pocket as speech-only. For MOSS, compare a bounded IPA/pronunciation
-      candidate for short vocal interjections such as `Tsk!`; evaluate the
-      separately released MOSS-SoundEffect model for isolated effects such as a
-      gasp or gurgle, then mix only a technically valid, perceptually approved
-      result without claiming that the effect inherited the cloned speaker
-      identity. Prefer an exact original game event whenever one exists.
+- [ ] Render and review the remaining typed non-verbal audio events. The exact
+      parser, queue provenance and fail-closed speech filter are implemented and
+      documented in
+      [`authoring-audio-events.md`](docs/authoring-audio-events.md): canonical
+      text/hash remain unchanged, while `Tsk!`, `*gasp*`, `*gurgle*` and unknown
+      stage directions cannot be pronounced by ordinary MOSS or Pocket TTS.
+      Next, prefer an exact original game event whenever one exists. Compare a
+      bounded IPA/pronunciation candidate for `Tsk!`; when CUDA is available,
+      evaluate official MOSS-SoundEffect v2 for isolated gasp/gurgle effects in
+      its separate Python 3.12 environment. Require technical validation,
+      perceptual approval and a checksum-bound speech/event/mix ledger; never
+      claim that a generated effect inherited cloned speaker identity. Failed
+      or unsupported effects stay unresolved or use an explicitly reviewed
+      omission, never a silent production drop.
 - [ ] Resolve Poacher II failure
       `reverse1999:314606:62:e3f44f0529c8ced0` through the narrow immutable
       audit `current-character-story-poacher-ii-reference-audit-v1`. Compare

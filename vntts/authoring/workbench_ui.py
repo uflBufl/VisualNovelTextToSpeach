@@ -1288,7 +1288,8 @@ class AuthoringWorkbenchDialog(QDialog):
             + "<br><b>Skipped</b>: "
             + " | ".join(
                 (
-                    f"Sound effects: {self.summary.skipped_sound_effects}",
+                    "Audio events / sound effects: "
+                    f"{self.summary.skipped_sound_effects}",
                     f"Other actions: {self.summary.skipped_actions}",
                 )
             )

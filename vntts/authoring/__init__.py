@@ -1,5 +1,14 @@
 """Offline VNTTS authoring and non-destructive legacy-work import."""
 
+from vntts.authoring.audio_events import (
+    AUDIO_EVENT_PLAN_FIELD,
+    AUDIO_EVENT_PLAN_SCHEMA,
+    AUDIO_EVENT_PLAN_VERSION,
+    AudioEventPlan,
+    audio_event_plan_document,
+    plan_inline_audio_events,
+    requires_audio_event_composition,
+)
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
@@ -428,6 +437,10 @@ from vntts.authoring.workbench import (
 )
 
 __all__ = [
+    "AUDIO_EVENT_PLAN_FIELD",
+    "AUDIO_EVENT_PLAN_SCHEMA",
+    "AUDIO_EVENT_PLAN_VERSION",
+    "AudioEventPlan",
     "SPEECH_ROBUSTNESS_ASR_SCHEMA",
     "SPEECH_ROBUSTNESS_ASR_VERSION",
     "SpeechRobustnessAsrError",
@@ -509,6 +522,7 @@ __all__ = [
     "FinalGamePackResult",
     "SpeechQuality",
     "authorize_live_fallback",
+    "audio_event_plan_document",
     "LegacyAuthoringImportError",
     "LegacyImportCandidate",
     "LegacyImportResult",
@@ -700,6 +714,8 @@ __all__ = [
     "render_sentence_segments",
     "run_bulk_generation",
     "safe_sentence_segments",
+    "plan_inline_audio_events",
+    "requires_audio_event_composition",
     "immutable_history_timestamps",
     "create_failure_reference_workspace",
     "failure_reference_runtime_binding",

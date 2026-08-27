@@ -17,6 +17,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
@@ -111,6 +112,53 @@ def write_inputs(root, records):
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_inline_audio_event_plan_is_additive_and_canonical(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "N-No! *gurgle*"
+            story_path, manifest_path = write_inputs(
+                root,
+                [
+                    story_record(
+                        "line-1",
+                        "absent",
+                        text=text,
+                        text_sha256=text_sha256(text),
+                    )
+                ],
+            )
+
+            plan = inspect_generation_queue(story_path, manifest_path)
+            item = plan.items[0]
+
+        self.assertEqual(item["text"], text)
+        self.assertEqual(item["text_sha256"], text_sha256(text))
+        self.assertEqual(item[AUDIO_EVENT_PLAN_FIELD]["spoken_text"], "N-No!")
+        self.assertEqual(
+            item[AUDIO_EVENT_PLAN_FIELD]["events"][0]["kind"], "human-gurgle"
+        )
+        self.assertEqual(plan.summary.audio_event_composition, 1)
+        self.assertEqual(plan.summary.ready, 0)
+
+    def test_source_cannot_spoof_reserved_audio_event_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root,
+                [
+                    story_record(
+                        "line-1",
+                        "absent",
+                        **{AUDIO_EVENT_PLAN_FIELD: {"spoofed": True}},
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                GenerationQueueBuildError, "reserved audio-event plan"
+            ):
+                inspect_generation_queue(story_path, manifest_path)
+
     def test_exact_unknown_voice_character_is_planned_as_narrator(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -177,6 +225,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 "missing_reference": 1,
                 "recoverable_source_audio": 1,
                 "manual_review": 1,
+                "audio_event_composition": 0,
                 "skipped_available": 1,
                 "skipped_unspeakable": 1,
                 "skipped_unselected": 1,
