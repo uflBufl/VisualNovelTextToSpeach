@@ -762,6 +762,7 @@ def create_failure_reference_workspace(
             base_document.get("outcome_merge"),
             binding_config,
             base_document.get("terminal_conflict_merge"),
+            base_document.get("config_rebase"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

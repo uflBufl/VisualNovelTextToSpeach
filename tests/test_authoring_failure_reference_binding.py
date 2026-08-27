@@ -222,6 +222,63 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 audio_before,
             )
 
+    def test_successor_fingerprint_preserves_existing_config_rebase(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, workspace, _queue_id, _group, _candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            workspace_document = json.loads((workspace / "workspace.json").read_text())
+            config_rebase = {"test_only_authority": "preserved"}
+            fingerprint = workbench_module._workspace_config_fingerprint(
+                workspace_document["source"]["import_id"],
+                workspace_document.get("story_index"),
+                workspace_document.get("voice_manifest"),
+                workspace_document["narrator_character"],
+                workspace_document["run_config"],
+                workspace_document.get("carry_forward"),
+                workspace_document.get("outcome_merge"),
+                workspace_document.get("failure_reference_binding"),
+                workspace_document.get("terminal_conflict_merge"),
+                config_rebase,
+            )
+            workspace_id = (
+                "resume-"
+                + workspace_document["source"]["import_id"].removeprefix("legacy-")
+                + "-"
+                + fingerprint[:16]
+            )
+            workspace_document.update(
+                {
+                    "workspace_id": workspace_id,
+                    "config_fingerprint": fingerprint,
+                    "config_rebase": config_rebase,
+                }
+            )
+            (workspace / "workspace.json").write_text(
+                json.dumps(workspace_document, sort_keys=True)
+            )
+            rebased_workspace = workspace.with_name(workspace_id)
+            workspace.rename(rebased_workspace)
+
+            with patch(
+                "vntts.authoring.config_rebase.validate_config_rebase_workspace"
+            ):
+                successor = create_failure_reference_workspace(
+                    rebased_workspace,
+                    binding,
+                    root / "successors",
+                )
+                summary = inspect_workspace(successor.directory)
+
+            created_document = json.loads(
+                (successor.directory / "workspace.json").read_text()
+            )
+            self.assertEqual(created_document["config_rebase"], config_rebase)
+            self.assertEqual(summary.failed, 1)
+
     def test_successor_rejects_stale_base_and_tampered_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
