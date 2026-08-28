@@ -46,9 +46,35 @@ High-consequence review interfaces must use the same operator contract:
    must not weaken queue, state, WAV, hidden-key or lease validation.
 8. Expose discoverable shortcuts, accessible names/descriptions and a deliberate
    focus order. Table editing must never steal a decision shortcut.
+9. Before playback, use the shared `Decision context` card to name the task,
+   speaker in the game, synthesis voice, reference state, backend, model,
+   profile, controls and exact decision effect. A blinded or unavailable field
+   must say why it is hidden or unknown; it must not silently disappear.
 
 Daily application and setup surfaces use the same status, busy, recovery,
 accessibility and compact-layout conventions, but do not need the review ledger.
+
+## Decision-context implementation, 2026-08-28
+
+The specialist cohort, missing-voice/failed-line, failed-reference audit,
+source-reference quality, generic blind A/B and terminal-conflict reviewers now
+share one compact context component and canonical field names. Operator facts
+stay above playback, while exact model paths, workspace IDs, plan/bundle IDs and
+other provenance stay in the collapsed technical disclosure.
+
+New missing-voice/failed-line review bundles publish and validate the common
+speaker, synthesis voice, reference set, backend, model, profile, seed and repair
+hypothesis as part of the immutable bundle. A one-candidate repair therefore
+reveals the useful identity; a multi-candidate comparison publishes only values
+shared by every arm and explicitly labels differing values as hidden. New
+source-reference quality cards likewise capture backend, model, profile and seed
+from their validated generation state. Older bundles remain readable and show
+`Unknown (legacy review format)` instead of consulting mutable current settings.
+
+The generic model comparison and terminal conflict interfaces intentionally
+keep candidate-specific synthesis identity hidden until the blind decision gate.
+They still show the line identity, decision purpose and consequence, and say
+that candidate metadata is hidden rather than leaving an unexplained blank.
 
 ## Surface matrix
 

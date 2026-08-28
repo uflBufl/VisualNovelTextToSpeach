@@ -34,6 +34,7 @@ from vntts.authoring.listening import (
     next_pending_trial,
     record_trial_preference,
 )
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 
 
 class SeekSlider(QSlider):
@@ -104,6 +105,7 @@ class ModelListeningDialog(QDialog):
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setAccessibleName("Completed blind listening trials")
+        self.decision_context = ReviewDecisionContext()
         self.trial_heading = QLabel()
         self.trial_heading.setWordWrap(True)
         self.trial_heading.setAccessibleName("Current blind trial")
@@ -221,6 +223,7 @@ class ModelListeningDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
         layout.addWidget(self.progress_bar)
+        layout.addWidget(self.decision_context)
         layout.addWidget(self.current_trial_card, 1)
         layout.addWidget(self.now_playing)
         layout.addLayout(playback)
@@ -279,6 +282,12 @@ class ModelListeningDialog(QDialog):
         self.progress_bar.setValue(completed)
         if self.current_trial is None:
             self.trial_heading.setText(f"All {total} trials reviewed")
+            self.decision_context.set_context(
+                {
+                    "purpose": "Compare two anonymous synthesis outputs",
+                    "effect": "Session complete; no further preference is required",
+                }
+            )
             return
         trial_id = self.current_trial["trial_id"]
         position = next(
@@ -288,6 +297,27 @@ class ModelListeningDialog(QDialog):
         )
         identity = self.current_trial.get("line_id") or self.current_trial["queue_id"]
         self.trial_heading.setText(f"Trial {position} of {total} | {identity}")
+        self.decision_context.set_context(
+            {
+                "purpose": "Compare two anonymous synthesis outputs",
+                "game_speaker": "Unknown (not captured by the benchmark corpus)",
+                "synthesis_voice": "Hidden to preserve the blind comparison",
+                "reference": "Hidden to preserve the blind comparison",
+                "backend": "Hidden to preserve the blind comparison",
+                "model": "Hidden to preserve the blind comparison",
+                "generation_profile": "Hidden to preserve the blind comparison",
+                "controls": "Same exact text; anonymous samples A and B",
+                "effect": (
+                    "record a blind preference only; production selection remains "
+                    "a separate approval"
+                ),
+            },
+            technical=(
+                f"Trial: {trial_id}\n"
+                f"Line: {identity}\n"
+                f"Queue identity: {self.current_trial['queue_id']}"
+            ),
+        )
 
     def apply_side_button_style(self, button, side, *, active=False):
         colors = self.side_colors[side]

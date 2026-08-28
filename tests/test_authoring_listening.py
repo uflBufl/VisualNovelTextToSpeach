@@ -531,6 +531,14 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress_bar.maximum(), 3)
             self.assertEqual(dialog.progress_bar.value(), 0)
             self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
+            self.assertIn(
+                "blind comparison",
+                dialog.decision_context.values["model"].text(),
+            )
+            self.assertIn(
+                "preference only",
+                dialog.decision_context.values["effect"].text(),
+            )
             self.assertEqual(
                 dialog.dialogue.toPlainText(), "Shared listening line 0 ..."
             )

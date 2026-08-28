@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     TerminalConflictReviewError,
@@ -67,6 +68,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.setMinimumSize(760, 420)
         self.progress = QLabel()
         self.progress.setAccessibleName("Terminal conflict review progress")
+        self.decision_context = ReviewDecisionContext()
         self.identity = QLabel()
         self.identity.setWordWrap(True)
         self.identity.setTextInteractionFlags(
@@ -121,6 +123,7 @@ class TerminalConflictReviewDialog(QDialog):
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
+        layout.addWidget(self.decision_context)
         layout.addWidget(self.identity)
         layout.addWidget(self.text, 1)
         layout.addLayout(playback)
@@ -159,6 +162,12 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self._heard.clear()
         if self._current is None:
+            self.decision_context.set_context(
+                {
+                    "purpose": "Resolve contradictory terminal WAV authorities",
+                    "effect": "Review complete; no further decision is required",
+                }
+            )
             self.identity.setText("All terminal conflicts have an explicit decision.")
             self.text.clear()
             self.evidence.setText("No additional listening is required in this bundle.")
@@ -190,6 +199,29 @@ class TerminalConflictReviewDialog(QDialog):
         self.identity.setText(
             f"Line: {self._current['line_id']} | Speaker: {self._current['speaker']} | "
             f"Voice: {self._current['voice_character']}"
+        )
+        self.decision_context.set_context(
+            {
+                "purpose": "Resolve two contradictory historical WAV decisions",
+                "game_speaker": self._current["speaker"],
+                "synthesis_voice": self._current["voice_character"],
+                "reference": "Hidden because the two candidates are compared blind",
+                "backend": "Hidden with candidate authority until both are heard",
+                "model": "Hidden with candidate authority until both are heard",
+                "generation_profile": (
+                    "Hidden with candidate authority until both are heard"
+                ),
+                "controls": "Two checksum-distinct historical WAV candidates",
+                "effect": (
+                    "keep one terminal authority, or require repair if neither is "
+                    "acceptable"
+                ),
+            },
+            technical=(
+                f"Review: {self.document['review_id']}\n"
+                f"Conflict: {self._current['case_id']}\n"
+                f"Line: {self._current['line_id']}"
+            ),
         )
         self.text.setText(self._current["text"])
         self.evidence.setText("Listen to both blind candidates before choosing.")

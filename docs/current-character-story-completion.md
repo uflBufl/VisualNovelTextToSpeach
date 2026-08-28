@@ -1395,16 +1395,22 @@ plans. Plan IDs for `314605:80`, `314606:65` and `314603:58` are respectively
 `b03b244b7d6beaa46f45d83242d18e90983183bec10ef1479ee7784f47fd2f63`
 and
 `1fb627186ff5815f083496f4643e4dad7b9bd49a23b80a7fde709946db03c38e`.
-Each uses a 180 ms canonical marker, seed zero, stable MOSS and the existing
-Rhiannon controls. `314605:80` and `314603:58` reached their typed audio limits
+Each uses a 180 ms canonical marker, stable MOSS and the existing Rhiannon
+controls. `314605:80` and `314603:58` reached their typed audio limits
 without publishing WAVs; their automatic unresolved selection IDs are
 `4ce7be2bf2c27b49c85de6ec466aa10da1635854cfda33e7837fbe31b5743f68`
 and
 `06fad43f38288bf2a9619863e17b24324f141dc057eb5decb4d3fce7be3a52ae`.
-`314606:65` produced a 4.72-second pending WAV with SHA-256
+`314606:65` produced its 4.72-second pending WAV on its second bounded attempt,
+seed 1, with SHA-256
 `06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`;
 its one-cohort review bundle ID is
 `25518bfff0badfdf0fca162e37a18935ad1f81ed36b7ed3407adef267a104519`.
+The user heard that exact WAV and selected candidate A. The imported selection
+contains one selected item, zero unresolved items and selection ID
+`5f861cf2826928d173f08959c9f48fb33f6edcf940569d9d31920642a2bf92d6`.
+It selects only this checksum-bound 180 ms inline-pause result; it does not
+authorize the two typed-limited hypotheses or any broader regeneration.
 
 Candidate creation exposed two reusable fail-closed composition gaps. A
 failed-control comparison may now replace an earlier missing-voice binding

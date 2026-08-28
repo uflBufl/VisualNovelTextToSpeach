@@ -48,12 +48,12 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       references 02 and 03 produced large pauses, so the 13 reference cases are
       blocked until a new safe reference hypothesis exists. The five exhausted
       Pocket failures have an immutable specialist plan. All three single-ID
-      inline-pause hypotheses were rendered: two typed limited results are
-      automatically unresolved, while `314606:65` produced one 4.72-second WAV.
-      Review its single pending checksum-bound cohort and import the decision;
-      do not show or request acknowledgement for the two failed-only cases. Any
-      line
-      still unavailable may receive only an explicit live Pocket fallback whose
+      inline-pause hypotheses are terminal: two typed limited results are
+      automatically unresolved, while the reviewed `314606:65` 4.72-second WAV
+      is selected by imported selection
+      `5f861cf2826928d173f08959c9f48fb33f6edcf940569d9d31920642a2bf92d6`.
+      Do not show or request acknowledgement for the two failed-only cases. Any
+      line still unavailable may receive only an explicit live Pocket fallback whose
       requested synthesis voice is `Rhiannon` while its audible role
       announcement remains `Aderyn`; Centurion/Narrator must never be the
       Aderyn fallback. Refresh runtime routing tests after the remaining

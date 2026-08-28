@@ -142,6 +142,22 @@ def validate_source_reference_quality_review_document(document, root):
             f"quality variant {variant_id} affected count",
         )
         _validate_audio_record(path.parent, card.get("reference"), variant_id)
+        context = card.get("decision_context")
+        if context is not None:
+            if (
+                not isinstance(context, dict)
+                or set(context) != {"backend", "model", "generation_profile", "seed"}
+                or any(
+                    not isinstance(context.get(field), str)
+                    or not context[field].strip()
+                    for field in ("backend", "model", "generation_profile")
+                )
+                or not isinstance(context.get("seed"), (str, int))
+                or isinstance(context.get("seed"), bool)
+            ):
+                raise SourceReferenceQualityError(
+                    f"Quality variant {variant_id} decision context is invalid"
+                )
         generated = card.get("generated_samples")
         excluded = card.get("excluded_results")
         if not isinstance(generated, list) or not isinstance(excluded, list):

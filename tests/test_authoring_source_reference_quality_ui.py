@@ -171,6 +171,17 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertFalse(dialog.portrait_image.pixmap().isNull())
             self.assertNotIn("534704", dialog.identity.text())
             self.assertIn("Text: Generated sample 1.", dialog.generated_details.text())
+            self.assertEqual(
+                dialog.decision_context.values["game_speaker"].text(), "Dobharchu"
+            )
+            self.assertIn(
+                "legacy review format",
+                dialog.decision_context.values["model"].text(),
+            )
+            self.assertIn(
+                "later voice binding",
+                dialog.decision_context.values["effect"].text(),
+            )
 
             self.finish_audio(dialog, "reference")
             self.assertFalse(dialog.accept.isEnabled())

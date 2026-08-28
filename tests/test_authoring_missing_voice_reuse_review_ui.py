@@ -76,6 +76,28 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             )
             dialog.deleteLater()
 
+    def test_decision_context_explains_speaker_voice_and_synthesis_controls(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+
+            values = dialog.decision_context.values
+            self.assertEqual(values["game_speaker"].text(), "Aderyn")
+            self.assertEqual(
+                values["synthesis_voice"].text(),
+                "Hidden for this blind comparison",
+            )
+            self.assertEqual(
+                values["reference"].text(),
+                "Hidden for this blind comparison",
+            )
+            self.assertEqual(values["backend"].text(), "moss-tts")
+            self.assertEqual(values["generation_profile"].text(), "stable")
+            self.assertIn("Seed: 0", values["controls"].text())
+            self.assertIn("bind one complete candidate", values["effect"].text())
+            self.assertIn("Plan:", dialog.decision_context.technical.text())
+            dialog.deleteLater()
+
     def finish_current_audio(self, dialog):
         dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
         dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)

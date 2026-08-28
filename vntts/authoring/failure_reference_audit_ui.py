@@ -47,6 +47,7 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 
 
 class _TaskSignals(QObject):
@@ -128,6 +129,13 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.explanation.setAccessibleName("Reference selection explanation")
         self.explanation.setWordWrap(True)
+        self.decision_context = ReviewDecisionContext()
+        workspace = json.loads(
+            (Path(self.document["workspace"]) / "workspace.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self._run_config = workspace["run_config"]
         self.progress = QProgressBar()
         self.progress.setRange(0, len(self.document["groups"]))
         self.progress.setAccessibleName("Reference groups decided")
@@ -235,6 +243,7 @@ class FailureReferenceAuditDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.heading)
         layout.addWidget(self.explanation)
+        layout.addWidget(self.decision_context)
         layout.addWidget(self.progress)
         layout.addWidget(self.summary)
         layout.addWidget(self.status)
@@ -364,6 +373,33 @@ class FailureReferenceAuditDialog(QDialog):
             f"decided | Voice target: {group['synthesis_voice_character']} | "
             f"Current decision: {decision_text}.\n"
             "This records reference evidence only; it does not approve generated speech."
+        )
+        speakers = sorted({str(case["speaker"]) for case in group["cases"]})
+        speaker = ", ".join(speakers) if speakers else "Unknown"
+        model = str(self._run_config.get("model") or "Unknown")
+        self.decision_context.set_context(
+            {
+                "purpose": "Choose source audio suitable for voice cloning",
+                "game_speaker": speaker,
+                "synthesis_voice": group["synthesis_voice_character"],
+                "reference": "Current candidate is blinded until decision import",
+                "backend": self._run_config.get("backend") or "Unknown",
+                "model": Path(model).name if "/" in model else model,
+                "generation_profile": (
+                    self._run_config.get("generation_profile") or "Unknown"
+                ),
+                "controls": "Generated preview uses seed 0; source playback is original",
+                "effect": (
+                    "select reference evidence for later binding; it does not approve "
+                    "a character or generated WAV"
+                ),
+            },
+            technical=(
+                f"Exact model: {model}\n"
+                f"Workspace: {self.document['workspace_id']}\n"
+                f"Audit: {self.document['audit_id']}\n"
+                f"Reference group: {group['group_id']}"
+            ),
         )
         self._update_candidate_card()
         self._update_actions()

@@ -140,6 +140,18 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.table.isColumnHidden(5))
             self.assertTrue(dialog.table.isColumnHidden(6))
             self.assertIn("Generated role", dialog.sample_identity.text())
+            self.assertEqual(
+                dialog.decision_context.values["game_speaker"].text(),
+                dialog._selected_sample().item.speaker,
+            )
+            self.assertEqual(
+                dialog.decision_context.values["synthesis_voice"].text(),
+                dialog._current_cohort()["identity"]["voice_character"],
+            )
+            self.assertIn(
+                "checksum-bound WAV",
+                dialog.decision_context.values["effect"].text(),
+            )
             self.assertIn("listening decides", dialog.sample_identity.text())
             self.assertIn("not a rejection verdict", dialog.guide.text())
             self.assertNotIn("technical-attention", dialog.table.item(0, 4).text())

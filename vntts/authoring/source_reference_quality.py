@@ -223,6 +223,7 @@ def publish_source_reference_quality_review(
                 )
             generated = []
             excluded = []
+            synthesis_contexts = []
             for item_index, (expected_kind, queue_id) in enumerate(queue_ids):
                 item = queue_by_id.get(queue_id)
                 if item is None:
@@ -238,6 +239,15 @@ def publish_source_reference_quality_review(
                         f"Variant {variant_id} queue binding changed: {queue_id}"
                     )
                 result = state["items"].get(queue_id)
+                if isinstance(result, dict):
+                    synthesis_contexts.append(
+                        {
+                            "backend": result.get("provider"),
+                            "model": result.get("model"),
+                            "generation_profile": result.get("generation_profile"),
+                            "seed": result.get("seed"),
+                        }
+                    )
                 status = result.get("status") if isinstance(result, dict) else "pending"
                 common = {
                     "queue_id": queue_id,
@@ -327,6 +337,7 @@ def publish_source_reference_quality_review(
                     "media_id": reference["media_id"],
                     "affected_queue_item_count": len(cluster["queue_items"]),
                     "reference": reference_record,
+                    "decision_context": _quality_decision_context(synthesis_contexts),
                     "generated_samples": generated,
                     "excluded_results": excluded,
                     "decision": None,
@@ -451,6 +462,22 @@ def main(argv=None):
         raise
     except (SourceReferenceQualityError, OSError, json.JSONDecodeError) as error:
         return cli_error(error)
+
+
+def _quality_decision_context(values):
+    def shared(field):
+        candidates = {value.get(field) for value in values}
+        candidates.discard(None)
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return "Mixed" if candidates else "Unknown"
+
+    return {
+        "backend": str(shared("backend")),
+        "model": str(shared("model")),
+        "generation_profile": str(shared("generation_profile")),
+        "seed": shared("seed"),
+    }
 
 
 def _validate_variant_identity(variant, cluster, reference, variant_id):

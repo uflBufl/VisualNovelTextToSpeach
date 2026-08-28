@@ -62,6 +62,7 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
 )
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 from vntts.authoring.voice_quality_gate import (
     inspect_voice_quality_cohort,
     load_voice_quality_gate,
@@ -381,6 +382,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.guide.setWordWrap(True)
         self.guide.setObjectName("reviewGuide")
+        self.decision_context = ReviewDecisionContext()
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.summary.setObjectName("reviewSummary")
@@ -565,6 +567,7 @@ class CohortReviewBundleDialog(QDialog):
         review_layout.setSpacing(10)
         review_layout.addWidget(self.heading)
         review_layout.addWidget(self.guide)
+        review_layout.addWidget(self.decision_context)
         review_layout.addWidget(progress_group)
         review_layout.addWidget(cohort_group)
         review_layout.addWidget(sample_group)
@@ -841,6 +844,12 @@ class CohortReviewBundleDialog(QDialog):
             self.sample_identity.clear()
             self.sample_text.setText("Select a cohort and sample to begin.")
             self.cohort_audit.clear()
+            self.decision_context.set_context(
+                {
+                    "purpose": "Approve or reject checksum-bound generated WAVs",
+                    "effect": "change only the exact current cohort",
+                }
+            )
             return
         row = self.table.currentRow() + 1
         heard = len(self.heard[key])
@@ -857,6 +866,36 @@ class CohortReviewBundleDialog(QDialog):
         cohort = self._current_cohort()
         if cohort is not None:
             identity = cohort["identity"]
+            model = str(identity["model"])
+            binding = identity.get("source_reference_binding")
+            reference = (
+                "Checksum-bound source-reference binding"
+                if binding is not None
+                else "Workspace voice manifest reference"
+            )
+            repair = identity.get("repair_strategy") or "direct render"
+            self.decision_context.set_context(
+                {
+                    "purpose": "Approve or reject generated story WAVs",
+                    "game_speaker": sample.item.speaker,
+                    "synthesis_voice": identity["voice_character"],
+                    "reference": reference,
+                    "backend": identity["provider"],
+                    "model": Path(model).name if "/" in model else model,
+                    "generation_profile": identity["generation_profile"],
+                    "controls": f"{repair} | Seed: {identity['seed']}",
+                    "effect": (
+                        f"apply only to {cohort['item_count']} checksum-bound WAV(s) "
+                        "in this cohort"
+                    ),
+                },
+                technical=(
+                    f"Exact model: {model}\n"
+                    f"Workspace: {cohort['workspace_id']}\n"
+                    f"Cohort: {cohort['cohort_id']}\n"
+                    f"Line: {sample.item.line_id}"
+                ),
+            )
             self.cohort_audit.setText(
                 f"Provider: {identity['provider']} | Profile: "
                 f"{identity['generation_profile']} | Repair: "

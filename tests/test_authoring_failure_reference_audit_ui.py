@@ -162,6 +162,14 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 "selects voice-cloning source audio", dialog.explanation.text()
             )
             self.assertIn("Voice target: Rhiannon", dialog.summary.text())
+            self.assertEqual(
+                dialog.decision_context.values["synthesis_voice"].text(), "Rhiannon"
+            )
+            self.assertIn("blinded", dialog.decision_context.values["reference"].text())
+            self.assertIn(
+                "does not approve",
+                dialog.decision_context.values["effect"].text(),
+            )
             self.assertTrue(dialog.preview_text_choice.accessibleName())
             self.assertIn(
                 "without saving authoring state",

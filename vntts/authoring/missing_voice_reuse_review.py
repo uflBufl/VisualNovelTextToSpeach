@@ -49,6 +49,100 @@ def _utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _shared_value(values, *, hidden="Hidden for this blind comparison"):
+    normalized = {value for value in values if value not in {None, ""}}
+    if len(normalized) == 1:
+        return next(iter(normalized))
+    return hidden if len(normalized) > 1 else "Unknown"
+
+
+def _published_decision_context(
+    document, candidates, candidate_snapshots, candidate_evidence
+):
+    """Publish shared synthesis facts without revealing differing blind arms."""
+    run_configs = [
+        snapshot["workspace"].get("run_config", {})
+        for candidate in candidates
+        for snapshot in candidate_snapshots[candidate["candidate_id"]]
+    ]
+    outcome_items = [
+        item for evidence in candidate_evidence.values() for item in evidence.values()
+    ]
+    references = {
+        tuple(reference["path"] for reference in candidate["ordered_references"])
+        for candidate in candidates
+    }
+    reference = "Hidden for this blind comparison"
+    if len(references) == 1:
+        paths = next(iter(references))
+        reference = ", ".join("/".join(Path(value).parts[-2:]) for value in paths)
+        if len(paths) > 1:
+            reference = f"{len(paths)}-file composite: {reference}"
+    strategies = {
+        (
+            candidate.get("render_hypothesis", {}).get("strategy")
+            if isinstance(candidate.get("render_hypothesis"), dict)
+            else "direct render"
+        )
+        for candidate in candidates
+    }
+    controls = _shared_value(strategies)
+    hypotheses = [
+        candidate.get("render_hypothesis")
+        for candidate in candidates
+        if isinstance(candidate.get("render_hypothesis"), dict)
+    ]
+    pause_values = {hypothesis.get("pause_ms") for hypothesis in hypotheses}
+    if (
+        len(hypotheses) == len(candidates)
+        and len(pause_values) == 1
+        and isinstance(hypotheses[0].get("pause_ms"), int)
+    ):
+        controls += f", {hypotheses[0]['pause_ms']} ms inserted pause"
+    mode = document.get("target_mode", "missing")
+
+    def synthesis_value(item_field, config_field):
+        values = {item.get(item_field) for item in outcome_items}
+        if any(value not in {None, ""} for value in values):
+            return _shared_value(values)
+        return _shared_value({config.get(config_field) for config in run_configs})
+
+    return {
+        "purpose": (
+            "Choose a replacement WAV for a line whose original render failed"
+            if mode == "failed"
+            else "Choose a reusable voice for this unvoiced character family"
+        ),
+        "game_speaker": document["character"],
+        "synthesis_voice": _shared_value(
+            {candidate["voice_character"] for candidate in candidates}
+        ),
+        "reference": reference,
+        "backend": synthesis_value("provider", "backend"),
+        "model": synthesis_value("model", "model"),
+        "generation_profile": synthesis_value(
+            "generation_profile", "generation_profile"
+        ),
+        "seed": _shared_value({item.get("seed") for item in outcome_items}),
+        "controls": controls,
+        "effect": (
+            "select this checksum-bound fallback WAV, or keep the line unresolved"
+            if mode == "failed"
+            else "bind one complete candidate to this exact cohort, or keep it unbound"
+        ),
+        "technical": {
+            "plan_id": document["plan_id"],
+            "workspace_ids": sorted(
+                {
+                    snapshot["workspace"]["workspace_id"]
+                    for snapshots in candidate_snapshots.values()
+                    for snapshot in snapshots
+                }
+            ),
+        },
+    }
+
+
 def build_missing_voice_reuse_review(
     plan_path,
     evidence_workspaces,
@@ -91,6 +185,7 @@ def build_missing_voice_reuse_review(
         for sample in document["comparison_samples"]
     }
     evidence = {}
+    candidate_snapshots = {}
     private_candidates = []
     for candidate in candidates:
         candidate_id = candidate["candidate_id"]
@@ -102,6 +197,7 @@ def build_missing_voice_reuse_review(
         snapshots = [
             _load_candidate_workspace(document, candidate, path) for path in paths
         ]
+        candidate_snapshots[candidate_id] = snapshots
         evidence[candidate_id] = _candidate_sample_evidence(
             document, candidate, snapshots
         )
@@ -220,6 +316,9 @@ def build_missing_voice_reuse_review(
                 "plan_id": document["plan_id"],
             },
             "character": document["character"],
+            "decision_context": _published_decision_context(
+                document, candidates, candidate_snapshots, evidence
+            ),
             "seed": seed,
             "policy": {
                 "candidate_identity": "stable opaque labels",
@@ -487,6 +586,10 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "workspace": snapshot["authority"],
                 "attempts": item.get("attempts", 0),
                 "item_sha256": canonical_document_sha256(item),
+                "provider": item.get("provider"),
+                "model": item.get("model"),
+                "generation_profile": item.get("generation_profile"),
+                "seed": item.get("seed"),
             }
             if item["status"] == "generated":
                 relative = safe_workspace_relative_path(
@@ -540,6 +643,10 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "audio_sha256": selected["audio_sha256"],
                 "quality": selected["quality"],
                 "repair_strategy": selected["repair_strategy"],
+                "provider": selected["provider"],
+                "model": selected["model"],
+                "generation_profile": selected["generation_profile"],
+                "seed": selected["seed"],
                 "outcomes": outcomes,
             }
         else:
@@ -557,6 +664,12 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                     if selected
                     else "No generated WAV was published"
                 ),
+                "provider": selected["provider"] if selected else None,
+                "model": selected["model"] if selected else None,
+                "generation_profile": (
+                    selected["generation_profile"] if selected else None
+                ),
+                "seed": selected["seed"] if selected else None,
                 "outcomes": outcomes,
             }
     return evidence
@@ -584,6 +697,44 @@ def _validate_render_hypothesis_outcome(candidate, queue_id, item):
 
 
 def _validate_public_matrix(root, bundle, key):
+    context = bundle.get("decision_context")
+    if context is not None:
+        expected = {
+            "purpose",
+            "game_speaker",
+            "synthesis_voice",
+            "reference",
+            "backend",
+            "model",
+            "generation_profile",
+            "seed",
+            "controls",
+            "effect",
+            "technical",
+        }
+        technical = context.get("technical") if isinstance(context, dict) else None
+        if (
+            not isinstance(context, dict)
+            or set(context) != expected
+            or any(
+                not isinstance(context.get(field), str) or not context[field].strip()
+                for field in expected - {"seed", "technical"}
+            )
+            or not isinstance(context.get("seed"), (str, int))
+            or isinstance(context.get("seed"), bool)
+            or not isinstance(technical, dict)
+            or set(technical) != {"plan_id", "workspace_ids"}
+            or technical.get("plan_id") != bundle.get("plan", {}).get("plan_id")
+            or not isinstance(technical.get("workspace_ids"), list)
+            or not technical["workspace_ids"]
+            or any(
+                not isinstance(value, str) or not value
+                for value in technical["workspace_ids"]
+            )
+        ):
+            raise MissingVoiceReuseReviewError(
+                "Missing-voice review decision context is invalid"
+            )
     labels = [candidate.get("label") for candidate in bundle.get("candidates", [])]
     private_labels = [candidate.get("label") for candidate in key.get("candidates", [])]
     if (

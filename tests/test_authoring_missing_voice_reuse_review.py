@@ -48,6 +48,10 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             item = {
                 "status": status,
                 "attempts": 1,
+                "provider": "moss-tts",
+                "model": "/models/moss-test",
+                "generation_profile": "stable",
+                "seed": 0,
                 "source_reference_binding": {
                     "queue_id": queue_id,
                     "synthesis_voice_character": candidate["voice_character"],
@@ -72,7 +76,14 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 )
             snapshots[candidate_root.resolve()] = {
                 "directory": candidate_root.resolve(),
-                "workspace": {"workspace_id": f"workspace-{index}"},
+                "workspace": {
+                    "workspace_id": f"workspace-{index}",
+                    "run_config": {
+                        "backend": "moss-tts",
+                        "model": "/models/moss-test",
+                        "generation_profile": "stable",
+                    },
+                },
                 "state": {"items": {queue_id: item}},
                 "authority": {
                     "path": str(candidate_root.resolve()),
@@ -229,7 +240,14 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             queue_id = fixture["queue_id"]
             snapshot = {
                 "directory": candidate_root,
-                "workspace": {"workspace_id": "candidate-workspace"},
+                "workspace": {
+                    "workspace_id": "candidate-workspace",
+                    "run_config": {
+                        "backend": "moss-tts",
+                        "model": "/models/moss-test",
+                        "generation_profile": "stable",
+                    },
+                },
                 "state": {
                     "items": {
                         queue_id: {
@@ -238,6 +256,10 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                             "path": "audio/sample.wav",
                             "file_sha256": sha256_file(audio),
                             "quality": {"duration_seconds": 0.1},
+                            "provider": "moss-tts",
+                            "model": "/models/moss-test",
+                            "generation_profile": "stable",
+                            "seed": 1,
                             "source_reference_binding": {
                                 "queue_id": queue_id,
                                 "synthesis_voice_character": candidate[
@@ -276,6 +298,14 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
 
         self.assertEqual(bundle["candidate_count"], 1)
         self.assertEqual(bundle["target_mode"], "failed")
+        self.assertEqual(
+            bundle["decision_context"]["synthesis_voice"],
+            candidate["voice_character"],
+        )
+        self.assertNotIn("Hidden", bundle["decision_context"]["reference"])
+        self.assertEqual(bundle["decision_context"]["model"], "/models/moss-test")
+        self.assertEqual(bundle["decision_context"]["seed"], 1)
+        self.assertIn("checksum-bound fallback", bundle["decision_context"]["effect"])
         self.assertEqual(
             bundle["source_control"],
             [

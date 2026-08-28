@@ -715,6 +715,18 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
         )
         self.assertTrue(all(card["reference"]["audio"] for card in session["variants"]))
         self.assertTrue(all(card["generated_samples"] for card in session["variants"]))
+        self.assertTrue(
+            all(
+                card["decision_context"]
+                == {
+                    "backend": "synthetic",
+                    "model": "synthetic-v1",
+                    "generation_profile": "stable",
+                    "seed": 0,
+                }
+                for card in session["variants"]
+            )
+        )
 
     def test_quality_review_copies_and_validates_available_portraits(self):
         with TemporaryDirectory() as directory:

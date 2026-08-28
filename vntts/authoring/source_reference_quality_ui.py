@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
     next_pending_quality_variant,
@@ -61,6 +62,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.setMinimumSize(700, 500)
         self.progress = QLabel()
         self.progress.setAccessibleName("Source reference review progress")
+        self.decision_context = ReviewDecisionContext()
         self.portrait_image = QLabel()
         self.portrait_image.setAccessibleName("Exact game portrait")
         self.portrait_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -136,6 +138,7 @@ class SourceReferenceQualityDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
+        layout.addWidget(self.decision_context)
         layout.addWidget(self.portrait_image)
         layout.addWidget(self.identity)
         layout.addWidget(self.reference_details)
@@ -173,6 +176,12 @@ class SourceReferenceQualityDialog(QDialog):
         self.completed_audio.clear()
         self.generated.clear()
         if self.current is None:
+            self.decision_context.set_context(
+                {
+                    "purpose": "Judge whether source audio is safe for voice cloning",
+                    "effect": "Review complete; no further decision is required",
+                }
+            )
             self.portrait_image.clear()
             self.portrait_image.setVisible(False)
             self.identity.setText("Review complete")
@@ -199,6 +208,34 @@ class SourceReferenceQualityDialog(QDialog):
         self.identity.setText(
             f"Character: {self.current['character']} | {media} | "
             f"Affected story lines: {self.current['affected_queue_item_count']}"
+        )
+        synthesis = self.current.get("decision_context") or {}
+        model = str(synthesis.get("model") or "Unknown (legacy review format)")
+        seed = synthesis.get("seed", "Unknown")
+        self.decision_context.set_context(
+            {
+                "purpose": "Accept, reject, or replace a voice-cloning reference",
+                "game_speaker": self.current["character"],
+                "synthesis_voice": self.current["character"],
+                "reference": media,
+                "backend": synthesis.get("backend") or "Unknown (legacy review format)",
+                "model": Path(model).name if "/" in model else model,
+                "generation_profile": synthesis.get("generation_profile")
+                or "Unknown (legacy review format)",
+                "controls": (
+                    f"Original plus published generated evidence | Seed: {seed}"
+                ),
+                "effect": (
+                    "allow this exact reference for later voice binding, reject it, "
+                    "or request another source sample"
+                ),
+            },
+            technical=(
+                f"Exact model: {model}\n"
+                f"Variant: {self.current['variant_id']}\n"
+                f"Cluster: {self.current['cluster_id']}\n"
+                f"Affected queue items: {self.current['affected_queue_item_count']}"
+            ),
         )
         self.portrait_image.setVisible(True)
         self._load_portrait()

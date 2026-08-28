@@ -29,6 +29,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     record_missing_voice_reuse_decision,
     record_missing_voice_reuse_heard,
 )
+from vntts.authoring.review_context_ui import ReviewDecisionContext
 
 
 class MissingVoiceReuseReviewDialog(QDialog):
@@ -82,6 +83,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self.instructions = QLabel(instructions)
         self.instructions.setWordWrap(True)
+        self.decision_context = ReviewDecisionContext()
+        self._show_decision_context()
         self.cohort_heading = QLabel()
         self.cohort_heading.setWordWrap(True)
         self.cohort_heading.setAccessibleName("Current missing voice family")
@@ -187,6 +190,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.progress)
         layout.addWidget(self.instructions)
+        layout.addWidget(self.decision_context)
         layout.addWidget(self.cohort_heading)
         layout.addWidget(sample_box)
         layout.addWidget(playback_box, 1)
@@ -202,6 +206,50 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._playback_error)
         self._load_next_cohort()
+
+    def _show_decision_context(self):
+        context = self.bundle.get("decision_context")
+        if not isinstance(context, dict):
+            self.decision_context.set_context(
+                {
+                    "purpose": (
+                        "Choose a replacement WAV for a failed line"
+                        if self.failed_control_mode
+                        else "Choose a reusable voice for an unvoiced family"
+                    ),
+                    "game_speaker": self.bundle.get("character", "Unknown"),
+                    "synthesis_voice": "Unknown (legacy review bundle)",
+                    "reference": "Unknown (legacy review bundle)",
+                    "backend": "Unknown (legacy review bundle)",
+                    "model": "Unknown (legacy review bundle)",
+                    "generation_profile": "Unknown (legacy review bundle)",
+                    "controls": "Unknown (legacy review bundle)",
+                    "effect": (
+                        "select a checksum-bound fallback WAV or keep the line unresolved"
+                        if self.failed_control_mode
+                        else "bind one candidate to this cohort or keep it unbound"
+                    ),
+                },
+                technical=(
+                    f"Bundle: {self.bundle.get('bundle_id', 'Unknown')}\n"
+                    "This bundle predates published synthesis context; mutable "
+                    "workspace settings are not guessed."
+                ),
+            )
+            return
+        model = str(context["model"])
+        model_label = Path(model).name if "/" in model else model
+        controls = f"{context['controls']} | Seed: {context['seed']}"
+        technical = context["technical"]
+        self.decision_context.set_context(
+            {**context, "model": model_label, "controls": controls},
+            technical=(
+                f"Exact model: {model}\n"
+                f"Plan: {technical['plan_id']}\n"
+                f"Evidence workspaces: {', '.join(technical['workspace_ids'])}\n"
+                f"Bundle: {self.bundle['bundle_id']}"
+            ),
+        )
 
     def _load_next_cohort(self):
         self._stop()
