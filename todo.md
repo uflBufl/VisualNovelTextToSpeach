@@ -46,13 +46,15 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       Pocket fallback produced 23 clean WAVs and five final failures. Keep the
       current three inline-pause and 13
       reference-comparison cases as explicit listening work rather than
-      auto-repair. Review the exact three-item child bundle first. After its
-      decisions are terminal, publish an adult bundle over the other 80 valid
-      WAVs using the implemented per-workspace queue selection, excluding all
-      197 inherited legacy pending records. Keep MOSS and generic Pocket cohorts
-      distinct and use representative short/medium/long samples; do not
-      auto-approve from a clean technical result. Any line still unavailable after bounded
-      repairs may receive only an explicit Pocket fallback whose requested
+      auto-repair. The exact three-item child review is terminal: two MOSS WAVs
+      are approved and one Pocket fallback is rejected. Review the published
+      six-cohort adult bundle
+      `current-character-story-aderyn-rhiannon-adult-production-v1.json`; it
+      contains exactly the other 80 valid WAVs and 36 required samples while
+      excluding all 197 inherited legacy pending records. Keep MOSS and generic
+      Pocket cohorts distinct; do not auto-approve from a clean technical
+      result. Any line still unavailable after bounded repairs may receive only
+      an explicit Pocket fallback whose requested
       synthesis voice is `Rhiannon` while its audible role announcement remains
       `Aderyn`; Centurion/Narrator must never be the Aderyn fallback. Refresh
       the coverage census and runtime routing tests after review/import.
@@ -255,11 +257,6 @@ while one-sentence controls remained below 0.25 seconds.
       pronunciation, prosody, noise, repetitions, and trailing silence. Compare
       the stable generation profile with the current reference codec roundtrip
       and the original extracted line before tuning sampling again.
-- [ ] Finish the manual contamination review and blinded comparison of the three
-      objectively passing Rhiannon references, then decide whether to keep the
-      documented first-reference policy, select another clean reference, or
-      build and validate a combined prompt. Objective preflight cannot detect
-      music or a second speaker reliably.
 - [ ] Validate the selected 4-frame/0.25-second MOSS stream on real audio output
       during the hardware soak. The local discard-sink grid reduced first PCM
       from about 1264 ms to 640 ms at RTF 0.88, but cannot expose driver jitter.

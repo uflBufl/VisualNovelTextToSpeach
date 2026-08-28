@@ -1314,6 +1314,53 @@ The bundle contains exactly two workspaces, two cohorts, three pending items
 and three required samples, so no child line can be approved through an adult
 sample.
 
+The child review completed both cohorts on 2026-08-28. Decision
+`cc1e9142bfd6c87aba818aa8b8fe6a45f75911e15cabcc6b26b115410f83f383`
+approved both MOSS WAVs, including the 5.52-second result for
+`reverse1999:314604:72:721879c12bb3873b`. Decision
+`6102910f6af6012cb2f20c3401c0b82e733832d343dc4fd692d7fe521e18f47e`
+rejected the one Pocket fallback WAV for
+`reverse1999:314604:77:a848a1190ada63a4`. The progress successor contains
+zero cohorts and zero pending items; its file SHA-256 is
+`6bc9d5a7e5ff3d2bde2e6d80b14e96c9896ddf2dadb53194beacf8b93017a8dd`.
+
+With the child gate terminal, immutable adult review bundle
+`current-character-story-aderyn-rhiannon-adult-production-v1.json` was
+published with bundle ID
+`ae20b0835e50df46396d60297b21c32b92af13473c3885f51f001b6b0f02418a`
+and file SHA-256
+`e07b33957d133a34013ac2dfdcecd89c5d39ef3b30bffcc7f107267274d3bb68`.
+It binds exactly 80 still-pending adult Aderyn/Rhiannon WAVs from six source
+workspaces: 58 MOSS and 22 Pocket results. Exact per-workspace selection keeps
+all 197 unrelated inherited legacy pending records outside the task. The
+bundle contains six cohorts and 36 required samples; no adult decision has yet
+been applied.
+
+### Rhiannon first-reference decision, 2026-08-28
+
+A corrected fixed-text comparison rendered `I offer my flesh as pledge: grant
+me sight of this world and the worlds beyond!` independently from each of the
+three base Rhiannon references with MOSS Local 4B, stable profile and seed 0.
+The comparison did not combine references. The checksum-bound results were:
+
+| Reference | Reference SHA-256 | Result duration | Result SHA-256 | Decision |
+| --- | --- | ---: | --- | --- |
+| `voice-02/01.wav` | `5bb83cc73fae544e12945c563d820da4b7ffee5f97cebd4e16c79f1d9a3b8778` | 5.52 s | `9c39e2e3d57edad1fcdfb604fe02cac2ae359fd906b4a5eb225d9cee1e31c363` | accepted |
+| `voice-02/02.wav` | `76527ff41e12301b51879c1830eadeebeb374e627fd37b038a09ccd7f25340cc` | 11.52 s | `4b6d229ffb5d3feca294d537db46839554e67abe3ffc1ce27e9b0b31ea85604d` | rejected: large pauses |
+| `voice-02/03.wav` | `7b3b1a1da981255a2c64a840a3f9972132ef717a1e8683c383a2b4314a34e008` | 10.88 s | `a08a201a1875f13841bb6e22b3de9e6902e06885647b10a5053b7d07da691a19` | rejected: large pauses |
+
+The accepted result from reference 01 is byte-identical to the existing
+production WAV for queue ID
+`reverse1999:314604:72:721879c12bb3873b`. Keep the current first-reference
+MOSS policy and do not promote references 02 or 03 to the first conditioning
+position. No production regeneration or workspace mutation is required.
+
+The first ad-hoc export of this comparison was invalid: it flattened
+frames-by-two-channel PCM into the time axis and therefore doubled WAV duration
+and produced slowed, distorted playback. The corrected export used the same
+channel downmix as `_generated_mono_pcm`; invalid temporary WAVs are not review
+evidence. Production has enforced this invariant since commit `81073bf`.
+
 ## Dobharchú 534705 binding and production review, 2026-08-28
 
 The completed opaque missing-voice review selected candidate C after all four
