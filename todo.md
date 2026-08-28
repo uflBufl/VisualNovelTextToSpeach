@@ -306,24 +306,6 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Reduce dependency magnets without weakening safety invariants
 
-- [ ] Extract stable authoring foundation APIs from
-      `vntts/authoring/bulk_generation.py` and
-      `vntts/authoring/workbench.py`, then migrate the current cross-module
-      imports of private helpers onto those APIs. Keep checksum-bound authority,
-      path containment, immutable snapshots, leases, atomic no-replace
-      publication and compatibility imports unchanged. Completion requires the
-      full unit suite and authoring import-graph regression to pass with no
-      concrete-module cycles and no remaining cross-module dependency on the
-      extracted private helpers.
-      Implement the remaining work in dependency-safe slices: (1) extract
-      generation-state semantic validation/loading into a leaf foundation
-      module and migrate its callers; (2) expose narrower domain APIs for the
-      remaining workspace
-      validation/config helpers instead of re-exporting internals.
-      After each slice run the focused modules plus Ruff/import-graph tests;
-      remove this item only after an AST inventory reports zero production
-      imports of underscore-prefixed names from either dependency magnet and
-      the complete suite passes.
 - [ ] Replace the eager `vntts.authoring` compatibility facade with a small or
       lazy public surface. Preserve every documented external import during the
       migration, but stop a direct leaf-module import from loading unrelated
