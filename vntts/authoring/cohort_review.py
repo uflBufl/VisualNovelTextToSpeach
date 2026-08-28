@@ -23,9 +23,9 @@ from vntts.authoring.workbench import (
     WORKSPACE_SCHEMA,
     WORKSPACE_VERSION,
     AuthoringWorkbenchError,
-    _load_workspace,
     inspect_workspace,
     list_review_items,
+    load_workspace_authority,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
 
@@ -121,7 +121,9 @@ def build_cohort_review_plan(
         set(selected_queue_ids) if selected_queue_ids is not None else None
     )
     try:
-        directory, workspace = _load_workspace(workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
+        )
         summary = inspect_workspace(directory)
     except AuthoringWorkbenchError as error:
         raise CohortReviewError(str(error)) from error

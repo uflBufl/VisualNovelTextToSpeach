@@ -80,6 +80,7 @@ from vntts.authoring.workbench import (
     inspect_workspace,
     list_review_items,
     list_workspace_collections,
+    load_workspace_authority,
     prepare_review_audio,
     review_selected_item,
     review_technical_summary,
@@ -310,9 +311,9 @@ def _load_workbench_projection(
         local_process_started_at=local_process_started_at,
     )
     reviews = tuple(list_review_items(workspace_directory))
-    from vntts.authoring.workbench import _load_workspace
-
-    _directory, workspace = _load_workspace(workspace_directory)
+    _directory, workspace, _workspace_sha256 = load_workspace_authority(
+        workspace_directory
+    )
     collections = tuple(list_workspace_collections(workspace_directory))
     declared = tuple(value.collection_id for value in collections)
     if selected_collection_ids is None:
@@ -1490,9 +1491,10 @@ class AuthoringWorkbenchDialog(QDialog):
     def _workspace_document(self):
         if self._workspace is not None:
             return self.workspace_directory, self._workspace
-        from vntts.authoring.workbench import _load_workspace
-
-        return _load_workspace(self.workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            self.workspace_directory
+        )
+        return directory, workspace
 
     def _load_voice_controller(self, controller):
         if controller is None:

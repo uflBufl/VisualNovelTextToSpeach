@@ -27,7 +27,10 @@ from vntts.authoring.cohort_review import (
     load_cohort_review_decision,
     load_cohort_review_plan,
 )
-from vntts.authoring.workbench import AuthoringWorkbenchError, _load_workspace
+from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
+    load_workspace_authority,
+)
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1
@@ -104,7 +107,9 @@ def build_voice_quality_gate(workspace_directory, plan, decision):
         if value["cohort_id"] == decision_document["cohort_id"]
     )
     try:
-        directory, workspace = _load_workspace(workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
+        )
     except AuthoringWorkbenchError as error:
         raise VoiceQualityGateError(str(error)) from error
     if workspace.get("workspace_id") != plan_document["workspace_id"]:
@@ -174,7 +179,9 @@ def inspect_voice_quality_gate(gate, workspace_directory, queue_id):
         raise VoiceQualityGateError("Selected item has no reusable review cohort")
     cohort = plan.document["cohorts"][0]
     try:
-        directory, workspace = _load_workspace(workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
+        )
     except AuthoringWorkbenchError as error:
         raise VoiceQualityGateError(str(error)) from error
     current = _reusable_identity(directory, workspace, cohort["identity"])
@@ -199,7 +206,9 @@ def inspect_voice_quality_cohort(gate, workspace_directory, cohort_identity):
     if not isinstance(cohort_identity, dict):
         raise VoiceQualityGateError("Voice-quality cohort identity is malformed")
     try:
-        directory, workspace = _load_workspace(workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
+        )
     except AuthoringWorkbenchError as error:
         raise VoiceQualityGateError(str(error)) from error
     current = _reusable_identity(directory, workspace, cohort_identity)

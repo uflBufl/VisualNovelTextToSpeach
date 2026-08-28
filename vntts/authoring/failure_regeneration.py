@@ -15,8 +15,8 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _load_workspace,
     generation_command,
+    load_workspace_authority,
 )
 
 FAILURE_REGENERATION_PLAN_SCHEMA = "vntts.authoring-failure-regeneration-plan"
@@ -58,7 +58,9 @@ class FailureRegenerationCommand:
 def build_failure_regeneration_plan(workspace_directory):
     """Bind every current provenance-unbound failure without changing state."""
     try:
-        directory, workspace = _load_workspace(workspace_directory)
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
+        )
         queue_path = directory / "queue.jsonl"
         state_path = directory / "generated-audio/generation-state.json"
         repair = generation_failure_repair_plan(state_path, queue_path)

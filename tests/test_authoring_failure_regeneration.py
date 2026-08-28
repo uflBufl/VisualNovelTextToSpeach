@@ -50,8 +50,8 @@ class FailureRegenerationPlanTest(unittest.TestCase):
         queue_id, item, repair, workspace = self.fixture()
         with (
             patch(
-                "vntts.authoring.failure_regeneration._load_workspace",
-                return_value=(Path("/workspace"), workspace),
+                "vntts.authoring.failure_regeneration.load_workspace_authority",
+                return_value=(Path("/workspace"), workspace, "4" * 64),
             ),
             patch(
                 "vntts.authoring.failure_regeneration.generation_failure_repair_plan",

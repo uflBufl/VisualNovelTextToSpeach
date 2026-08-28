@@ -72,6 +72,11 @@ message while sharing one implementation.
 with `AuthoringWorkbenchError` semantics. Production callers now use those
 public wrappers for path, file, JSON and digest operations; atomic directory
 publication callers use `publication.rename_directory_no_replace` directly.
+All read-only production consumers load complete workspaces through
+`load_workspace_authority()`, which binds the validated document to the exact
+workspace-file SHA-256 snapshot; `_load_workspace` is now workbench-internal
+compatibility only. Callers that need only the directory and document discard
+the returned digest after validation rather than reopening a weaker snapshot.
 The AST regression forbids importing the superseded private workbench names,
 while the workbench test suite verifies that compatibility behavior is
 unchanged.

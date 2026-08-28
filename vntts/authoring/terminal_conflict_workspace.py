@@ -56,7 +56,6 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _copy_workspace_tree_snapshot,
-    _load_workspace,
     _load_workspace_snapshot,
     _stable_workspace_state,
     _validate_workspace_carry_forward,
@@ -66,6 +65,7 @@ from vntts.authoring.workbench import (
     _validate_workspace_terminal_conflict_merge,
     contained_workspace_path,
     default_workspaces_root,
+    load_workspace_authority,
     load_workspace_json,
     read_workspace_file_bytes,
     require_workspace_sha256,
@@ -578,7 +578,9 @@ def merge_terminal_conflict_resolution(
                 for lease in held_leases:
                     lease.assert_owned()
                 if destination.exists():
-                    _directory, existing = _load_workspace(destination)
+                    _directory, existing, _workspace_sha256 = load_workspace_authority(
+                        destination
+                    )
                     if existing.get("terminal_conflict_merge") != merge:
                         raise AuthoringWorkbenchError(
                             "Terminal conflict workspace conflicts with another resolution"
@@ -588,7 +590,9 @@ def merge_terminal_conflict_resolution(
                     rename_directory_no_replace(staging, destination)
                 except (AtomicPublicationError, OSError) as error:
                     if destination.exists():
-                        _directory, existing = _load_workspace(destination)
+                        _directory, existing, _workspace_sha256 = (
+                            load_workspace_authority(destination)
+                        )
                         if existing.get("terminal_conflict_merge") == merge:
                             for lease in held_leases:
                                 lease.mark_committed()

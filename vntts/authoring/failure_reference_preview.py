@@ -21,7 +21,10 @@ from vntts.authoring.failure_reference_audit import (
     load_failure_reference_audit,
     prepare_failure_reference_audio,
 )
-from vntts.authoring.workbench import AuthoringWorkbenchError, _load_workspace
+from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
+    load_workspace_authority,
+)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -269,7 +272,7 @@ class FailureReferencePreviewService:
     def _load_workspace(self, document):
         expected = Path(document.get("workspace", "")).expanduser().resolve()
         try:
-            directory, workspace = _load_workspace(expected)
+            directory, workspace, _workspace_sha256 = load_workspace_authority(expected)
         except AuthoringWorkbenchError as error:
             raise FailureReferencePreviewError(str(error)) from error
         if directory != expected:

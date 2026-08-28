@@ -120,6 +120,7 @@ class AuthoringImportGraphTest(unittest.TestCase):
     def test_workspace_foundation_primitives_have_no_private_workbench_importers(self):
         for imported_name in (
             "_load_json",
+            "_load_workspace",
             "_read_file_bytes",
             "_rename_directory_no_replace",
             "_require_sha256",

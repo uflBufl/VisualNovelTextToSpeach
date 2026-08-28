@@ -27,7 +27,10 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
-from vntts.authoring.workbench import AuthoringWorkbenchError, _load_workspace
+from vntts.authoring.workbench import (
+    AuthoringWorkbenchError,
+    load_workspace_authority,
+)
 from vntts.reference_quality import analyze_reference_bytes
 
 FAILURE_REFERENCE_AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
@@ -80,7 +83,9 @@ def publish_failure_reference_audit(
     if output.exists() or output.is_symlink():
         raise FailureReferenceAuditError(f"Reference audit output exists: {output}")
     try:
-        directory, configuration = _load_workspace(workspace)
+        directory, configuration, _workspace_sha256 = load_workspace_authority(
+            workspace
+        )
     except AuthoringWorkbenchError as error:
         raise FailureReferenceAuditError(str(error)) from error
     queue_path = directory / configuration["queue"]
