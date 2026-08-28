@@ -1,6 +1,7 @@
 import copy
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -135,6 +136,51 @@ class AuthoringSourceReferenceBindingsTest(unittest.TestCase):
                     SimpleNamespace(character="Centurion"),
                 ),
             )
+
+    def test_exact_failed_comparison_can_repeat_same_known_role_route(self):
+        document = self.document()
+        document = copy.deepcopy(document)
+        reuse = document[MISSING_VOICE_REUSE_BINDING_FIELD]
+        reuse["target_mode"] = "failed"
+        reuse["source_failed_state_item_sha256s"] = {"queue:reuse": "8" * 64}
+
+        with patch(
+            "vntts.authoring.source_reference_bindings."
+            "_known_role_reuse_overrides_from_manifest",
+            return_value={"queue:reuse": "centurion"},
+        ):
+            overrides = queue_voice_overrides_from_manifest(
+                document,
+                queue_ids=("queue:source", "queue:reuse"),
+                voices=(
+                    SimpleNamespace(character="Source variant"),
+                    SimpleNamespace(character="Centurion"),
+                ),
+            )
+
+        self.assertEqual(overrides["queue:reuse"], "centurion")
+
+    def test_failed_comparison_cannot_replace_known_role_with_another_voice(self):
+        document = self.document()
+        document = copy.deepcopy(document)
+        reuse = document[MISSING_VOICE_REUSE_BINDING_FIELD]
+        reuse["target_mode"] = "failed"
+        reuse["source_failed_state_item_sha256s"] = {"queue:reuse": "8" * 64}
+
+        with patch(
+            "vntts.authoring.source_reference_bindings."
+            "_known_role_reuse_overrides_from_manifest",
+            return_value={"queue:reuse": "Rhiannon"},
+        ):
+            with self.assertRaisesRegex(SourceReferenceBindingError, "overlap"):
+                queue_voice_overrides_from_manifest(
+                    document,
+                    queue_ids=("queue:source", "queue:reuse"),
+                    voices=(
+                        SimpleNamespace(character="Source variant"),
+                        SimpleNamespace(character="Centurion"),
+                    ),
+                )
 
 
 if __name__ == "__main__":

@@ -86,10 +86,24 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             )
     overlap = set(reuse_overrides).intersection(known_role_overrides)
     if overlap:
-        raise SourceReferenceBindingError(
-            "Missing-voice and known-role reuse bindings overlap queue IDs: "
-            + ", ".join(sorted(overlap))
+        reuse = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        controls = reuse.get("source_failed_state_item_sha256s", {})
+        compatible_failed_comparison = (
+            reuse.get("target_mode") == "failed"
+            and isinstance(controls, dict)
+            and overlap.issubset(controls)
+            and all(_is_sha256(controls[queue_id]) for queue_id in overlap)
+            and all(
+                normalize_character_name(reuse_overrides[queue_id])
+                == normalize_character_name(known_role_overrides[queue_id])
+                for queue_id in overlap
+            )
         )
+        if not compatible_failed_comparison:
+            raise SourceReferenceBindingError(
+                "Missing-voice and known-role reuse bindings overlap queue IDs: "
+                + ", ".join(sorted(overlap))
+            )
     return {**source_overrides, **reuse_overrides, **known_role_overrides}
 
 

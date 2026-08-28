@@ -1336,6 +1336,87 @@ all 197 unrelated inherited legacy pending records outside the task. The
 bundle contains six cohorts and 36 required samples; no adult decision has yet
 been applied.
 
+The adult review subsequently completed all six cohorts. It approved 57 of 58
+MOSS WAVs, rejected the remaining MOSS WAV and rejected all 22 generic Pocket
+WAVs. Together with the terminal child review, the 83 newly reviewed Aderyn
+WAVs therefore contribute 59 approvals and 24 rejections. These decisions were
+merged with the nine prior Aderyn approvals into immutable successor
+`resume-395a5e5eec0327a3a793b66d-af9b4fb0bb4a451c`. Its workspace, state and
+approved-only manifest SHA-256 values are
+`62406d00c7780658b4ef1a949298074a2336744fcbf3f699d013328a4ea15905`,
+`a292099ecb6a8b5b46f472e66482fcdd8e9046246cc49482c909749d98b43704`
+and
+`dc505ebe61f206196e5206018208af3ae6f05981f02ab60cf8b17240cfb34c0e`.
+The validated whole-workspace summary is 468 approved, 88 rejected, 24 failed,
+one pending, five explicit live fallbacks and two missing-voice lines, with no
+active generation. The Aderyn slice has 68 approved WAVs, 24 rejected WAVs and
+21 failed records.
+
+The merge initially failed closed because the supported direct-repair allowlist
+omitted `bounded_seed_retry`, even though bounded outcomes are first-class,
+checksum-bound repair results. The allowlist now includes that strategy and a
+direct reviewed bounded-result regression test protects the path. A separate
+temporary-root preflight produced the same config-addressed successor before
+the application-data publication.
+
+The remaining 21 Aderyn failures must not be replanned from the merged
+successor alone: terminal-outcome merge deliberately leaves nonterminal base
+records untouched, so its generic repair projection does not contain the
+deeper attempt history from the repair branches. Their exact authorities are:
+
+- five final Pocket failures in
+  `resume-395a5e5eec0327a3a793b66d-8cb0f74eaca6cf10`; no additional MOSS seed or
+  second generic Pocket attempt is authorized;
+- three inline-pause comparisons: `314605:80` and `314606:65` from
+  `resume-395a5e5eec0327a3a793b66d-40a7a5a24af271d0`, plus `314603:58` from
+  `resume-395a5e5eec0327a3a793b66d-cbecf377c313d430`;
+- 13 alternative-reference comparisons: four from `40a7a5a24af271d0`
+  (`314603:18`, `314603:52`, `314605:54`, `314607:14`), three from
+  `706e025553318f5f` (`314603:77`, `314605:103`, `314608:13`), three from
+  `cbecf377c313d430` (`314602:97`, `314605:39`, `314607:15`) and three from
+  `d96c8e798db08e17` (`314603:60`, `314604:9`, `314605:90`).
+
+Reference 01 remains the accepted Rhiannon reference. References 02 and 03
+both produced large pauses in the corrected fixed-text comparison, so the 13
+reference cases are evidence-blocked until a new safe reference hypothesis
+exists; they do not authorize a broad 02/03 generation batch.
+
+The five final Pocket failures are now bound by specialist plan
+`current-character-story-aderyn-pocket-exhausted-v1.json`, plan ID
+`ff5d7d49ad6ffb56d770dbfd0a7f96208ac88beca0d29f55cc0d783f6a9921a7`
+and file SHA-256
+`23b2257a07f067213be2699c907589c2bd1c76756b329f46fe4153d963f6b579`.
+All five select only `reference_comparison_or_live_fallback`; the plan does not
+authorize another Pocket attempt.
+
+The three inline-pause hypotheses were split into the required single-ID
+plans. Plan IDs for `314605:80`, `314606:65` and `314603:58` are respectively
+`b340776c2cb2cb3012ed09b534c54ca038c37a44667ff483c9de70bbca6dea84`,
+`b03b244b7d6beaa46f45d83242d18e90983183bec10ef1479ee7784f47fd2f63`
+and
+`1fb627186ff5815f083496f4643e4dad7b9bd49a23b80a7fde709946db03c38e`.
+Each uses a 180 ms canonical marker, seed zero, stable MOSS and the existing
+Rhiannon controls. `314605:80` and `314603:58` reached their typed audio limits
+without publishing WAVs; their automatic unresolved selection IDs are
+`4ce7be2bf2c27b49c85de6ec466aa10da1635854cfda33e7837fbe31b5743f68`
+and
+`06fad43f38288bf2a9619863e17b24324f141dc057eb5decb4d3fce7be3a52ae`.
+`314606:65` produced a 4.72-second pending WAV with SHA-256
+`06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`;
+its one-cohort review bundle ID is
+`25518bfff0badfdf0fca162e37a18935ad1f81ed36b7ed3407adef267a104519`.
+
+Candidate creation exposed two reusable fail-closed composition gaps. A
+failed-control comparison may now replace an earlier missing-voice binding
+only when that predecessor is a fully validated zero-override `Neither`
+authority. Its overlap with an explicit known-role route is allowed only when
+the failed item hash is present and both layers resolve to the same normalized
+voice. Conflicting voices and non-empty predecessor overrides remain rejected.
+Inline-pause planning also enforces the existing one-queue-ID contract before
+publication rather than failing later during workspace construction. The
+superseded two-item plan and its copied input remain recoverable under
+`interrupted-review-bundles/invalid-aderyn-inline-pause-multi-id-83388fc8`.
+
 ### Rhiannon first-reference decision, 2026-08-28
 
 A corrected fixed-text comparison rendered `I offer my flesh as pledge: grant

@@ -1273,6 +1273,7 @@ def _merge_workspace_outcomes(
                 repair = result.get("failure_repair")
                 if not isinstance(repair, dict) or repair.get("strategy") not in {
                     SENTENCE_BOUNDARY_SEGMENTATION,
+                    BOUNDED_SEED_RETRY,
                     INLINE_PAUSE_MARKER,
                     OFFLINE_FALLBACK_BACKEND,
                 }:

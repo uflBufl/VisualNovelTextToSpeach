@@ -6,6 +6,26 @@ identities rather than a user-specific application-data prefix. The census is
 planning evidence; it does not authorize generation, review, approval or final
 publication.
 
+## Aderyn branch update, 2026-08-28
+
+The exact child and adult Rhiannon-routed Aderyn reviews are terminal. Their 83
+new WAV decisions are 59 approved and 24 rejected. They were merged with the
+nine prior Aderyn approvals into config-addressed successor
+`resume-395a5e5eec0327a3a793b66d-af9b4fb0bb4a451c`, state SHA-256
+`a292099ecb6a8b5b46f472e66482fcdd8e9046246cc49482c909749d98b43704`.
+The Aderyn slice now has 68 approved, 24 rejected and 21 failed records. The
+whole successor has 468 approved, 88 rejected, 24 failed, one pending, five
+live fallbacks and two missing-voice lines.
+
+The 21 remaining Aderyn failures retain source-specific attempt authority:
+five are exhausted Pocket failures, three are inline-pause comparisons and 13
+are alternative-reference comparisons. The accepted Rhiannon reference is 01;
+02 and 03 produced large pauses and are not authorized as a replacement batch.
+The exact source-workspace partition is recorded in
+[`current-character-story-completion.md`](current-character-story-completion.md).
+Do not use the merged successor's generic repair projection to spend another
+seed: terminal-outcome merge does not overlay nonterminal branch history.
+
 ## Authoritative merged history
 
 The current merged workspace is

@@ -19,6 +19,8 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
+    _inline_pause_candidates,
+    _replaceable_predecessor_reuse_binding,
     build_missing_voice_reuse_candidate_command,
     build_missing_voice_reuse_plan,
     load_missing_voice_reuse_plan,
@@ -214,6 +216,60 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             output.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(MissingVoiceReuseError, "identity"):
                 load_missing_voice_reuse_plan(output)
+
+    def test_only_zero_override_neither_predecessor_can_be_layered(self):
+        predecessor = {
+            "schema": "vntts.authoring-missing-voice-reuse-binding",
+            "schema_version": 2,
+            "mode": "approved_cohort_reuse",
+            "selected_candidates": [],
+            "queue_voice_overrides": {},
+            "queue_voice_overrides_sha256": (
+                "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            ),
+            "authority": (
+                "Exact cohort reuse binding. Candidate choices require human review; "
+                "cohorts with no selectable candidate are deterministically unresolved. "
+                "Neither decisions bind no voice."
+            ),
+            "decisions": [{"decision": "neither"}],
+        }
+
+        self.assertTrue(
+            _replaceable_predecessor_reuse_binding(
+                {"vntts.authoring.missing_voice_reuse": predecessor}
+            )
+        )
+        for mutation in (
+            {"selected_candidates": [{"candidate_id": "selected"}]},
+            {"queue_voice_overrides": {"queue": "Rhiannon"}},
+            {"decisions": [{"decision": "candidate"}]},
+        ):
+            blocked = {**predecessor, **mutation}
+            self.assertFalse(
+                _replaceable_predecessor_reuse_binding(
+                    {"vntts.authoring.missing_voice_reuse": blocked}
+                )
+            )
+
+    def test_inline_pause_plan_rejects_multiple_samples_before_publication(self):
+        candidates = [{"candidate_id": "ignored", "voice_character": "Rhiannon"}]
+        targets = [
+            {
+                "queue_id": queue_id,
+                "text": "One sentence. Another sentence.",
+                "text_sha256": digest,
+            }
+            for queue_id, digest in (("queue:1", "1" * 64), ("queue:2", "2" * 64))
+        ]
+
+        with self.assertRaisesRegex(MissingVoiceReuseError, "exactly one"):
+            _inline_pause_candidates(
+                candidates,
+                [{"queue_id": "queue:1"}, {"queue_id": "queue:2"}],
+                targets,
+                180,
+            )
 
     def test_exact_cohorts_candidates_and_retired_voices_fail_closed(self):
         with TemporaryDirectory() as directory:

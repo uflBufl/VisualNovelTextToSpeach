@@ -35,29 +35,29 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
 - [ ] Finish the remaining known-role boundary without silently widening a
-      reference. The explicit `Aderyn -> Rhiannon` authority, safe pending-state
-      rebase and first 104-line MOSS pass are complete and recorded in
+      reference. The explicit `Aderyn -> Rhiannon` authority and all 83 child
+      and adult review decisions are consolidated in successor
+      `resume-395a5e5eec0327a3a793b66d-af9b4fb0bb4a451c` and recorded in
       [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
-      Preserve the nine prior Aderyn approvals and the 11 historical rejection
-      WAVs. The 13 exact safe sentence segmentations produced six additional
-      clean WAVs and seven typed failures. The next 46 exact bounded attempts
-      produced seven more clean WAVs, and the final 31 authorized MOSS seeds
-      produced four. MOSS is now exhausted for every failed bounded case. Run
-      Pocket fallback produced 23 clean WAVs and five final failures. Keep the
-      current three inline-pause and 13
-      reference-comparison cases as explicit listening work rather than
-      auto-repair. The exact three-item child review is terminal: two MOSS WAVs
-      are approved and one Pocket fallback is rejected. Review the published
-      six-cohort adult bundle
-      `current-character-story-aderyn-rhiannon-adult-production-v1.json`; it
-      contains exactly the other 80 valid WAVs and 36 required samples while
-      excluding all 197 inherited legacy pending records. Keep MOSS and generic
-      Pocket cohorts distinct; do not auto-approve from a clean technical
-      result. Any line still unavailable after bounded repairs may receive only
-      an explicit Pocket fallback whose requested
-      synthesis voice is `Rhiannon` while its audible role announcement remains
-      `Aderyn`; Centurion/Narrator must never be the Aderyn fallback. Refresh
-      the coverage census and runtime routing tests after review/import.
+      Preserve its 68 approved and 24 rejected Aderyn WAVs. Publish an exact
+      provenance plan for the remaining 21 failures before any more generation:
+      five are exhausted Pocket failures, three retain an inline-pause
+      comparison and 13 retain an alternative-reference comparison. Never
+      derive new authorization from the successor's generic failure projection,
+      which lacks the deeper branch attempt history. Reference 01 is accepted;
+      references 02 and 03 produced large pauses, so the 13 reference cases are
+      blocked until a new safe reference hypothesis exists. The five exhausted
+      Pocket failures have an immutable specialist plan. All three single-ID
+      inline-pause hypotheses were rendered: two typed limited results are
+      automatically unresolved, while `314606:65` produced one 4.72-second WAV.
+      Review its single pending checksum-bound cohort and import the decision;
+      do not show or request acknowledgement for the two failed-only cases. Any
+      line
+      still unavailable may receive only an explicit live Pocket fallback whose
+      requested synthesis voice is `Rhiannon` while its audible role
+      announcement remains `Aderyn`; Centurion/Narrator must never be the
+      Aderyn fallback. Refresh runtime routing tests after the remaining
+      decisions/import.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 

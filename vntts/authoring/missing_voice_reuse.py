@@ -40,6 +40,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
+    MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
     MISSING_VOICE_REUSE_BINDING_SCHEMA,
     MISSING_VOICE_REUSE_BINDING_VERSION,
@@ -628,7 +629,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
             VoiceManifestError,
         ) as error:
             raise MissingVoiceReuseError(str(error)) from error
-        if MISSING_VOICE_REUSE_BINDING_FIELD in manifest:
+        if not _replaceable_predecessor_reuse_binding(manifest):
             raise MissingVoiceReuseError(
                 "Source manifest already contains a missing-voice reuse binding"
             )
@@ -690,6 +691,36 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
             shutil.rmtree(staging)
         raise
     return destination, True
+
+
+def _replaceable_predecessor_reuse_binding(manifest):
+    """Allow a comparison layer over an exact, zero-override negative decision."""
+    predecessor = manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+    if predecessor is None:
+        return True
+    return (
+        isinstance(predecessor, dict)
+        and predecessor.get("schema") == MISSING_VOICE_REUSE_BINDING_SCHEMA
+        and predecessor.get("schema_version")
+        == MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION
+        and predecessor.get("mode") == "approved_cohort_reuse"
+        and predecessor.get("selected_candidates") == []
+        and predecessor.get("queue_voice_overrides") == {}
+        and predecessor.get("queue_voice_overrides_sha256")
+        == queue_voice_overrides_sha256({})
+        and predecessor.get("authority")
+        == (
+            "Exact cohort reuse binding. Candidate choices require human review; "
+            "cohorts with no selectable candidate are deterministically unresolved. "
+            "Neither decisions bind no voice."
+        )
+        and isinstance(predecessor.get("decisions"), list)
+        and predecessor["decisions"]
+        and all(
+            isinstance(decision, dict) and decision.get("decision") == "neither"
+            for decision in predecessor["decisions"]
+        )
+    )
 
 
 def _validate_candidate_input(directory, document, candidate):
@@ -836,6 +867,10 @@ def _candidate_names(values, *, minimum=2):
 
 
 def _inline_pause_candidates(candidates, samples, targets, pause_ms):
+    if len(samples) != 1:
+        raise MissingVoiceReuseError(
+            "Inline-pause hypothesis requires exactly one comparison sample"
+        )
     if (
         not isinstance(pause_ms, int)
         or isinstance(pause_ms, bool)

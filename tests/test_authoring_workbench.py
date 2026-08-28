@@ -1989,6 +1989,93 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     source.directory, (repaired.directory,), root / "different-root"
                 )
 
+    def test_outcome_merge_accepts_direct_reviewed_bounded_seed_repair(self):
+        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            publish_generated_manifest,
+            run_bulk_generation,
+        )
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            queue_id = fixture["queue_id"]
+            source_state_path = (
+                source.directory / "generated-audio/generation-state.json"
+            )
+            source_state = load_generation_state(
+                source_state_path, source.directory / "queue.jsonl"
+            )
+            initial_item = source_state["items"].pop(queue_id)
+            (source.directory / "generated-audio" / initial_item["path"]).unlink()
+            source_state_path.write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+            publish_generated_manifest(source_state_path)
+            failed = SyntheticRenderer(
+                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+            )
+            failed.name = "moss-tts"
+            failed.model_name = "model with spaces"
+            run_bulk_generation(
+                source.directory / "queue.jsonl",
+                source.directory / "generated-audio",
+                failed,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(queue_id,),
+                regenerate_existing=True,
+            )
+            policy = FailureRepairPolicy(bounded_seed_retry_queue_ids=(queue_id,))
+            repaired = create_resume_workspace(
+                imported,
+                root / "repairs",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                failure_repair_policy=policy,
+                carry_forward_from=source.directory,
+            )
+            success = SyntheticRenderer(diagnostics_backend="moss-tts")
+            success.name = "moss-tts"
+            success.model_name = "model with spaces"
+            run_bulk_generation(
+                repaired.directory / "queue.jsonl",
+                repaired.directory / "generated-audio",
+                success,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(queue_id,),
+                failure_repair_policy=policy,
+            )
+            review_workspace_item(repaired.directory, queue_id, "approved")
+
+            merged = merge_workspace_outcomes(
+                source.directory, (repaired.directory,), root / "merged"
+            )
+            item = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )["items"][queue_id]
+            inspect_workspace(merged.directory)
+
+        self.assertTrue(merged.created)
+        self.assertEqual(item["status"], "approved")
+        self.assertEqual(item["review_status"], "approved")
+        self.assertEqual(item["failure_repair"]["strategy"], "bounded_seed_retry")
+        self.assertEqual([request.seed for request in success.requests], [1])
+
     def test_reconciliation_merges_only_its_exact_terminal_source(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
