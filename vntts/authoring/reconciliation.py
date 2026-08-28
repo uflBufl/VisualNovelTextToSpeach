@@ -82,6 +82,7 @@ def build_authoring_reconciliation(
     primary_workspace,
     bundle_root,
     *,
+    bundle_publications=None,
     quality_reviews=(),
 ):
     """Build an exact report without choosing or mutating review authority."""
@@ -93,7 +94,12 @@ def build_authoring_reconciliation(
     if not _WORKSPACE_NAME.fullmatch(primary.name):
         raise AuthoringReconciliationError("Primary workspace name is not canonical")
     _require_contained_directory(authoring_root, bundle_root, "Review bundle root")
-    bundle_inventory = _json_inventory(bundle_root)
+    selected_publications = _selected_bundle_publications(
+        bundle_root, bundle_publications
+    )
+    bundle_inventory = (
+        _json_inventory(bundle_root) if selected_publications is None else None
+    )
 
     snapshots = {}
     workspace_paths = {primary}
@@ -101,7 +107,12 @@ def build_authoring_reconciliation(
     bundle_actions = {}
     bundle_workspace_queue_ids = {}
     if bundle_root.is_dir():
-        for path in sorted(bundle_root.glob("*.json")):
+        paths = (
+            sorted(bundle_root.glob("*.json"))
+            if selected_publications is None
+            else selected_publications
+        )
+        for path in paths:
             if path.name.endswith(".progress.json"):
                 continue
             payload, candidate = _read_json_snapshot(path, "review bundle")
@@ -109,6 +120,10 @@ def build_authoring_reconciliation(
                 candidate.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA
                 or candidate.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
             ):
+                if selected_publications is not None:
+                    raise AuthoringReconciliationError(
+                        f"Unsupported selected review bundle: {path}"
+                    )
                 continue
             _remember_snapshot(snapshots, path, payload)
             try:
@@ -562,7 +577,10 @@ def build_authoring_reconciliation(
     )
 
     _assert_snapshots_unchanged(snapshots)
-    if _json_inventory(bundle_root) != bundle_inventory:
+    if (
+        bundle_inventory is not None
+        and _json_inventory(bundle_root) != bundle_inventory
+    ):
         raise AuthoringReconciliationError(
             "Review bundle directory changed during reconciliation"
         )
@@ -716,7 +734,9 @@ def _project_terminal_merge_actions(actions, occurrence_index):
     for action in actions:
         if action["action"] not in {
             "generation_ready_unselected",
+            "human_cohort_review",
             "new_hypothesis_required",
+            "review_plan_required",
             "source_reference_or_explicit_fallback",
             "workspace_blocked",
         }:
@@ -892,6 +912,32 @@ def _json_inventory(root):
     if not root.is_dir() or root.is_symlink():
         raise AuthoringReconciliationError("Review bundle root is unavailable")
     return tuple(sorted(path.name for path in root.glob("*.json")))
+
+
+def _selected_bundle_publications(root, publications):
+    if publications is None:
+        return None
+    selected = tuple(
+        sorted(
+            (Path(value).expanduser().resolve() for value in publications),
+            key=str,
+        )
+    )
+    if not selected:
+        raise AuthoringReconciliationError(
+            "Selected review bundle publications cannot be empty"
+        )
+    if len(set(selected)) != len(selected):
+        raise AuthoringReconciliationError(
+            "Review bundle publication path is duplicated"
+        )
+    for path in selected:
+        _require_contained_file(root, path, "Selected review bundle publication")
+        if path.name.endswith(".progress.json"):
+            raise AuthoringReconciliationError(
+                "Selected review bundle publication cannot be a progress document"
+            )
+    return selected
 
 
 def _require_contained_directory(root, path, label):

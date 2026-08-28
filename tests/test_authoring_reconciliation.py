@@ -38,6 +38,7 @@ from vntts.authoring.reconciliation import (
     write_authoring_reconciliation,
 )
 from vntts.authoring.reconciliation_cli import main as reconciliation_main
+from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.workbench import create_resume_workspace, generation_command
 
 
@@ -332,6 +333,58 @@ class AuthoringReconciliationTest(unittest.TestCase):
             ):
                 build_authoring_reconciliation(workspace, bundles)
 
+    def test_explicit_bundle_selection_ignores_unselected_duplicate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                _authoring,
+                workspace,
+                _state,
+                queue_id,
+                bundles,
+                _quality,
+                publication,
+            ) = self.create_fixture(root)
+            (bundles / "superseded.json").write_bytes(publication.read_bytes())
+
+            report = build_authoring_reconciliation(
+                workspace,
+                bundles,
+                bundle_publications=(publication,),
+            )
+
+        self.assertEqual(report.document["summary"]["bundle_count"], 1)
+        self.assertEqual(report.document["actions"][0]["queue_id"], queue_id)
+        self.assertEqual(
+            Path(report.document["review_bundles"][0]["publication"]),
+            publication.resolve(),
+        )
+
+    def test_explicit_bundle_selection_rejects_selected_non_bundle(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                _authoring,
+                workspace,
+                _state,
+                _queue_id,
+                bundles,
+                _quality,
+                _publication,
+            ) = self.create_fixture(root)
+            selected = bundles / "not-a-bundle.json"
+            selected.write_text('{"schema":"different"}', encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError,
+                "Unsupported selected review bundle",
+            ):
+                build_authoring_reconciliation(
+                    workspace,
+                    bundles,
+                    bundle_publications=(selected,),
+                )
+
     def test_completed_secondary_terminal_conflict_uses_original_bundle_scope(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -460,6 +513,48 @@ class AuthoringReconciliationTest(unittest.TestCase):
             AuthoringReconciliationError, "missing required fields"
         ):
             reconciliation_module._validated_report(tampered)
+
+    def test_single_secondary_terminal_outcome_replaces_primary_review_action(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, queue_id, bundles, publication = (
+                self.create_parallel_fixture(root)
+            )
+            self.decide_parallel_bundle(
+                publication,
+                ((secondary.name, "accepted"),),
+            )
+
+            report = build_authoring_reconciliation(primary, bundles)
+            report_path = root / "pending-terminal-report.json"
+            write_authoring_reconciliation(report, report_path)
+            merged = merge_reconciled_terminal_outcomes(
+                primary,
+                report_path,
+                root / "workspaces",
+            )
+            merged_state = json.loads(
+                (merged.directory / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        action = next(
+            value
+            for value in report.document["actions"]
+            if value["workspace_id"] == primary.name and value["queue_id"] == queue_id
+        )
+        self.assertEqual(action["action"], "terminal_merge_required")
+        self.assertEqual(action["terminal_source"]["workspace_id"], secondary.name)
+        self.assertEqual(action["terminal_source"]["authority"], "approved")
+        self.assertEqual(report.document["summary"]["terminal_conflict_count"], 0)
+        self.assertEqual(
+            (
+                merged_state["items"][queue_id]["status"],
+                merged_state["items"][queue_id]["review_status"],
+            ),
+            ("approved", "approved"),
+        )
 
     def test_explicit_fallback_conflicts_with_parallel_approval(self):
         with TemporaryDirectory() as directory:
@@ -650,6 +745,8 @@ class AuthoringReconciliationTest(unittest.TestCase):
                         str(workspace),
                         "--bundle-root",
                         str(bundles),
+                        "--bundle",
+                        str(_publication),
                     ]
                 )
 

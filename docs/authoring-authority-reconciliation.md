@@ -10,10 +10,19 @@ starts generation or infers approval from a WAV file.
 uv run --no-sync vntts-authoring-reconcile \
   --primary-workspace /authoring/workspaces/resume-... \
   --bundle-root /authoring/review-bundles \
+  --bundle /authoring/review-bundles/current-character-a.json \
+  --bundle /authoring/review-bundles/current-character-b.json \
   --quality-review /authoring/source-reference-quality-reviews/current-a/review.json \
   --quality-review /authoring/source-reference-quality-reviews/current-b/review.json \
   --output /new/reconciliation.json
 ```
+
+`--bundle` is repeatable. When at least one publication is named,
+reconciliation validates and snapshots only those exact contained bundle and
+progress authorities; stale or superseded siblings in `--bundle-root` are not
+opened. A missing, duplicated, out-of-root or invalid selected publication
+fails the run. Omitting `--bundle` preserves the directory-wide mode, including
+its before/after inventory check.
 
 The primary workspace contributes its complete spoken generation inventory.
 Other workspaces are admitted only through a current v2 bundle and contribute
@@ -35,7 +44,9 @@ manifest, voice controls, generated manifest and every in-scope generated WAV
 are hash-bound. Cohort publications, mutable progress and quality reviews are
 also parsed from captured documents through their public validators. Missing
 state, manifest and progress paths are bound as absences, and the bundle
-directory inventory is checked again. All observed files are rehashed before
+directory inventory is checked again in directory-wide mode. Explicit-selection
+mode instead rehashes the named publication/progress snapshots without making
+unselected siblings part of authority. All observed files are rehashed before
 the report ID is calculated; symlink substitution or a concurrent appearance,
 removal or byte change fails the run. The output uses shared no-replace
 publication semantics.
@@ -81,7 +92,10 @@ The item-level next actions are deliberately conservative:
 - `terminal_merge_required`: the primary item is nonterminal, but exactly one
   current secondary workspace already owns a checksum-bound approved, rejected
   or explicit-fallback outcome; merge that named state item instead of
-  synthesizing again;
+  synthesizing or reviewing again. This projection also applies when the
+  primary already has a `generated/pending_review` WAV: the named secondary
+  terminal decision remains the authority, and the merge revalidates the exact
+  primary/source state, queue, text and source WAV before publication;
 - `generation_ready_unselected`: immutable controls are ready, but no exact
   generation selection was authorized;
 - `workspace_blocked`: workspace controls fail the readiness gate for the exact

@@ -56,16 +56,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       synthesis voice is `Rhiannon` while its audible role announcement remains
       `Aderyn`; Centurion/Narrator must never be the Aderyn fallback. Refresh
       the coverage census and runtime routing tests after review/import.
-      Dobharchú `314608:95` and `314608:96` still belong to intentionally
-      unbound portrait `534705`. Its task has one complete opaque candidate:
-      the terminal review selected candidate C after all four available WAVs
-      were heard. The no-replace import, exact two-ID extension, additive
-      composition with all 104 `Aderyn -> Rhiannon` overrides, config rebase and
-      exact generation are complete. Review the two pending WAVs in
-      `current-character-story-dobharchu-534705-production-v1.json`; accept or
-      reject each on words, voice identity, cadence and artifacts, with special
-      attention to the short result's fast-pace flag. Merge only checksum-bound
-      terminal outcomes afterward.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
@@ -98,16 +88,6 @@ Follow the evidence-backed order and invariants in
       but every one is unavailable in the current install and the `gasp` cues
       are stream/water events rather than a proven human gasp. `Tsk!`,
       `*whimper*`, `*yelp*` and `*gurgle*` remain unbound.
-- [ ] Let `vntts-authoring-reconcile` accept an explicit repeatable set of
-      checksum-bound cohort publications, or otherwise distinguish current
-      publications from superseded historical bundles. A full scan of the
-      retained review-bundle root currently aborts on an old specialist source
-      workspace whose sentence-repair text no longer passes current validation,
-      even when the requested current Poacher II bundle and primary workspace
-      are valid. Until this is implemented, use a contained immutable scoped
-      bundle directory for exact terminal merges; never weaken workspace
-      validation or silently ignore a caller-selected invalid bundle.
-
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

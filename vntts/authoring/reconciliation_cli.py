@@ -20,6 +20,16 @@ def create_parser():
     parser.add_argument("--primary-workspace", type=Path, required=True)
     parser.add_argument("--bundle-root", type=Path, required=True)
     parser.add_argument(
+        "--bundle",
+        type=Path,
+        action="append",
+        default=None,
+        help=(
+            "Reconcile only this exact cohort publication; repeat as needed. "
+            "Without this option every publication in --bundle-root is scanned."
+        ),
+    )
+    parser.add_argument(
         "--quality-review",
         type=Path,
         action="append",
@@ -36,6 +46,7 @@ def main(argv=None):
         report = build_authoring_reconciliation(
             options.primary_workspace,
             options.bundle_root,
+            bundle_publications=options.bundle,
             quality_reviews=options.quality_review,
         )
         if options.output is not None:

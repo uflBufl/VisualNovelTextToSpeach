@@ -1342,11 +1342,13 @@ seconds with 0.24 seconds maximum internal silence and WAV SHA-256
 `56529ef9f28601953f05298f4ad60b45f0f870d43623272be1465f757d2dd91e`;
 the short line is 1.44 seconds with no internal silence and WAV SHA-256
 `e11aa573bf97413accc86ac08e79c86bf6d842425f24d383aea3ef1cb2c1bbfe`.
-Both remain pending human quality review in exact bundle
+Both were accepted in human quality review through exact bundle
 `current-character-story-dobharchu-534705-production-v1.json`, bundle ID
 `0cc19a3e391e3dd15402375bf3f69028fd6283f5c6b1ca5ee27c85f791f5dead`.
-The short result is surfaced for perceptual attention as fast-paced; this flag
-does not reject or approve it.
+Decision
+`8ef47a7688aec761920cb4668dd460ce727791e9aeb42f2052a918c715d74a02`
+accepted both checksum-bound WAVs after the short result's fast-pace flag was
+heard rather than treated as an automatic rejection.
 
 The earlier Poacher II file
 `current-character-story-poacher-ii-production-v1.json` was a schema-v1
@@ -1370,5 +1372,25 @@ rather than weakening validation or ignoring the error. Reconciliation
 contained exactly one `terminal_merge_required` action and no conflicts. Its
 successor is
 `resume-395a5e5eec0327a3a793b66d-b5f60046824c9d2d`: Poacher II is approved,
-both Dobharchú production WAVs remain pending, every other state item is
-unchanged, and the approved-only manifest now contains 410 entries.
+both Dobharchú production WAVs were still pending at that intermediate point,
+every other state item was unchanged, and the approved-only manifest contained
+410 entries.
+
+The first Dobharchú reconciliation exposed a projector gap: the unique approved
+source was present, but the newer primary's `generated/pending_review` actions
+were not eligible for terminal projection. After extending the same exact
+terminal gate to pending review actions and adding explicit repeatable
+publication selection, real report
+`current-character-story-20260828-dobharchu-534705-approved-v2.json`, report ID
+`a57cc52effb3ae4cd5b6c39b54ba1f5b3966d19bc594cb457b89aae632db0485`,
+was built directly against the retained full review-bundle directory while
+opening only the named Dobharchú publication. It contains exactly two
+`terminal_merge_required` actions and no conflicts.
+
+`merge-reconciled-outcomes` published successor
+`resume-395a5e5eec0327a3a793b66d-2624f64ea2773d6b`. Its state differs from the
+Poacher successor in exactly the two Dobharchú queue IDs; both are approved
+with the WAV SHA-256 values above. Poacher II remains approved with WAV SHA-256
+`051889ddc892a41758b1cad9b2970e3c27b7d5c04a22f1dd3b43f2a113ab9337`,
+all other item documents are unchanged, no generation is active, and the
+approved-only manifest contains 412 entries.
