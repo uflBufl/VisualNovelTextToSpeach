@@ -115,6 +115,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workspace_config import (
     selected_voice_manifest_path,
     workspace_config_fingerprint,
@@ -3135,14 +3136,7 @@ def _carry_forward_review_outcomes(
     return document, tuple(authority_sources)
 
 
-def _terminal_review_outcome(result):
-    return isinstance(result, dict) and (
-        result.get("status"),
-        result.get("review_status"),
-    ) in {
-        ("approved", "approved"),
-        ("generated", "rejected"),
-    }
+_terminal_review_outcome = is_terminal_review_outcome
 
 
 def _root_carry_forward_authority(value):

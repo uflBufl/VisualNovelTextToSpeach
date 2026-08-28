@@ -31,11 +31,11 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     retired_source_reference_variants_from_manifest,
 )
+from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _failure_reference_runtime_binding,
-    _terminal_review_outcome,
     _workspace_missing_voice_policy,
     _workspace_queue_voice_overrides,
     _workspace_voice_registry,
@@ -183,7 +183,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             records = []
             projected_state = copy.deepcopy(target_state)
             for queue_id, result in sorted(source_state["items"].items()):
-                if not isinstance(result, dict) or not _terminal_review_outcome(result):
+                if not is_terminal_review_outcome(result):
                     continue
                 queue_item = queue.get(queue_id)
                 if queue_item is None:

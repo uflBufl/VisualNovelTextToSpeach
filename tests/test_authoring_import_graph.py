@@ -40,11 +40,13 @@ from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     SourceReferenceQualityResult,
 )
+from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workbench import (
     _selected_voice_manifest,
+    _terminal_review_outcome,
     _workspace_config_fingerprint,
 )
 from vntts.authoring.workbench import (
@@ -123,6 +125,7 @@ class AuthoringImportGraphTest(unittest.TestCase):
             "_require_sha256",
             "_safe_relative",
             "_selected_voice_manifest",
+            "_terminal_review_outcome",
             "_within",
             "_workspace_config_fingerprint",
         ):
@@ -138,6 +141,10 @@ class AuthoringImportGraphTest(unittest.TestCase):
         self.assertIs(_workspace_config_fingerprint, workspace_config_fingerprint)
         self.assertIsNone(_selected_voice_manifest(Path.cwd(), {}))
         self.assertIsNone(selected_voice_manifest_path(Path.cwd(), {}))
+        terminal = {"status": "approved", "review_status": "approved"}
+        self.assertIs(_terminal_review_outcome, is_terminal_review_outcome)
+        self.assertTrue(_terminal_review_outcome(terminal))
+        self.assertTrue(is_terminal_review_outcome(terminal))
         self.assertFalse(
             _reachable(
                 _authoring_import_graph(),

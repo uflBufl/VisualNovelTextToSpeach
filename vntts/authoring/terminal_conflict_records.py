@@ -26,6 +26,17 @@ class TerminalConflictRecordError(ValueError):
     """Terminal-conflict item provenance is malformed or unbound."""
 
 
+def is_terminal_review_outcome(result):
+    """Return whether a state item is approved or explicitly rejected."""
+    return isinstance(result, dict) and (
+        result.get("status"),
+        result.get("review_status"),
+    ) in {
+        ("approved", "approved"),
+        ("generated", "rejected"),
+    }
+
+
 def validate_terminal_conflict_item_provenance(value):
     """Validate one state-item provenance record without workspace I/O."""
     if not isinstance(value, dict) or set(value) != _ITEM_FIELDS:
@@ -121,6 +132,7 @@ __all__ = [
     "TERMINAL_CONFLICT_MERGE_SCHEMA",
     "TERMINAL_CONFLICT_MERGE_VERSION",
     "TerminalConflictRecordError",
+    "is_terminal_review_outcome",
     "validate_terminal_conflict_item_provenance",
     "validate_terminal_conflict_state_binding",
 ]

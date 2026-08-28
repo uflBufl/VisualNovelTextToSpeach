@@ -49,6 +49,16 @@ authority name. The import-graph test performs an AST inventory over all
 production modules and fails if a direct private bulk-generation hash import is
 introduced again.
 
+## Terminal-conflict record semantics
+
+`terminal_conflict_records.is_terminal_review_outcome()` owns the shared
+definition of a terminal reviewed state item: approved/approved or
+generated/rejected. Config rebase consumes this record-level predicate directly;
+workbench retains `_terminal_review_outcome` as an identity-preserving
+compatibility alias. The import-graph gate forbids production use of the old
+private name so the terminal status vocabulary cannot diverge between the two
+workflows.
+
 ## Workspace filesystem foundation
 
 `workspace_foundation` is a leaf module for canonical POSIX-relative paths,
