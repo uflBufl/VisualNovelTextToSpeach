@@ -21,12 +21,14 @@ from vntts.authoring.bulk_generation import (
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     BulkGenerationError,
     BulkGenerationSourceChangedError,
-    _approved_manifest_entries,
     _load_stable_queue,
     _validate_state_document,
-    _write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
+from vntts.authoring.generation_manifest import (
+    approved_manifest_entries,
+    write_generated_manifest_from_state,
+)
 from vntts.authoring.missing_voice_reuse import (
     _validate_plan,
     load_missing_voice_reuse_plan,
@@ -226,7 +228,7 @@ def authorize_missing_voice_live_fallback(
             "updated_at": decided_at,
         }
     _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
-    entries = _approved_manifest_entries(proposed, state_path.parent)
+    entries = approved_manifest_entries(proposed, state_path.parent)
     transaction_id = secrets.token_hex(16)
     staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
     manifest_path = state_path.parent / "manifest.json"
@@ -240,7 +242,7 @@ def authorize_missing_voice_live_fallback(
             process_checker=process_is_alive,
         ) as lease:
             atomic_write_json(staged_state, proposed, sort_keys=True)
-            _write_generated_manifest_from_state(
+            write_generated_manifest_from_state(
                 proposed,
                 state_path.parent,
                 staged_manifest,

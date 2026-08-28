@@ -58,7 +58,6 @@ from vntts.authoring.bulk_generation import (
     _inline_pause_matches_failure,
     _sentence_repair_matches_failure,
     _snapshot_control_files,
-    _write_generated_manifest_from_state,
     inspect_generated_wav,
     is_spoken_queue_item,
     load_generation_state,
@@ -94,6 +93,7 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
     NARRATOR_ROLES,
@@ -1082,7 +1082,7 @@ def create_audio_event_composition_workspace(
         target_state["active"] = None
         target_state_path = output / "generation-state.json"
         atomic_write_json(target_state_path, target_state, sort_keys=True)
-        _write_generated_manifest_from_state(
+        write_generated_manifest_from_state(
             target_state,
             output,
             output / "manifest.json",
@@ -1501,7 +1501,7 @@ def _merge_workspace_outcomes(
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
         try:
-            _write_generated_manifest_from_state(
+            write_generated_manifest_from_state(
                 target_state,
                 output,
                 output / "manifest.json",

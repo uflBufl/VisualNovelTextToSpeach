@@ -34,7 +34,6 @@ from vntts.authoring.advisory_lock import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _approved_manifest_entries,
     _load_stable_queue,
     _process_started_at,
     _validate_state_document,
@@ -46,6 +45,7 @@ from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding_document,
 )
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -245,7 +245,7 @@ def publish_final_game_pack(
                     )
                 except BulkGenerationError as error:
                     raise FinalGamePackError(str(error)) from error
-                generated_records = _approved_manifest_entries(state, state_path.parent)
+                generated_records = approved_manifest_entries(state, state_path.parent)
                 live_fallback_records = _live_fallback_records(state, queue)
                 _validate_generated_story_records(generated_records, story)
                 _validate_live_fallback_story_records(live_fallback_records, story)

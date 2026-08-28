@@ -316,10 +316,9 @@ while one-sentence controls remained below 0.25 seconds.
       concrete-module cycles and no remaining cross-module dependency on the
       extracted private helpers.
       Implement the remaining work in dependency-safe slices: (1) extract
-      generation-state validation/loading plus approved-manifest
-      projection into a leaf foundation module, migrate live-fallback,
-      config-rebase and terminal-conflict callers, and preserve public behavior;
-      (2) expose narrower domain APIs for the remaining workspace
+      generation-state semantic validation/loading into a leaf foundation
+      module and migrate its callers; (2) expose narrower domain APIs for the
+      remaining workspace
       validation/config helpers instead of re-exporting internals.
       After each slice run the focused modules plus Ruff/import-graph tests;
       remove this item only after an AST inventory reports zero production

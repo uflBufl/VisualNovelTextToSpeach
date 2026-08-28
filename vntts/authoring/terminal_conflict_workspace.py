@@ -23,10 +23,10 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
-    _write_generated_manifest_from_state,
     load_review_audio_bytes,
     process_is_alive,
 )
+from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -510,7 +510,7 @@ def merge_terminal_conflict_resolution(
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
         try:
-            _write_generated_manifest_from_state(
+            write_generated_manifest_from_state(
                 target_state,
                 output,
                 output / "manifest.json",

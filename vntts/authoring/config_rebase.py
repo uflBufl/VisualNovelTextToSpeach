@@ -16,11 +16,11 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manife
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _write_generated_manifest_from_state,
     load_generation_state,
     process_is_alive,
     synthesis_character_for_line,
 )
+from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -477,7 +477,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 }
             )
             atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-            _write_generated_manifest_from_state(
+            write_generated_manifest_from_state(
                 projected_state, output, output / "manifest.json"
             )
             validate_config_rebase_workspace(staging, workspace, projected_state)

@@ -540,7 +540,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             wav = (
                 source / "generated-audio" / state["items"][fixture["queue_id"]]["path"]
             )
-            original_writer = config_rebase_module._write_generated_manifest_from_state
+            original_writer = config_rebase_module.write_generated_manifest_from_state
 
             def mutate_after_staging(*args, **kwargs):
                 result = original_writer(*args, **kwargs)
@@ -550,7 +550,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             try:
                 with patch.object(
                     config_rebase_module,
-                    "_write_generated_manifest_from_state",
+                    "write_generated_manifest_from_state",
                     side_effect=mutate_after_staging,
                 ):
                     with self.assertRaisesRegex(

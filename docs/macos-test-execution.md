@@ -26,6 +26,6 @@ cannot become discovery aliases. A repository regression
 asserts that raw `unittest` discovery contains no duplicate IDs; the runner does
 not deduplicate or hide violations.
 
-The 2026-08-28 acceptance run executed 74 app tests and 1,385 remaining tests:
-1,459 unique exact IDs in total, with zero discovery aliases. Both shards
+The 2026-08-28 acceptance run executed 74 app tests and 1,386 remaining tests:
+1,460 unique exact IDs in total, with zero discovery aliases. Both shards
 completed successfully without ignoring a native exit code.

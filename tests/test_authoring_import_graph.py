@@ -4,12 +4,20 @@ from pathlib import Path
 
 import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
-from vntts.authoring.bulk_generation import _GenerationLease
+from vntts.authoring.bulk_generation import (
+    _approved_manifest_entries,
+    _GenerationLease,
+    _write_generated_manifest_from_state,
+)
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
     FailureReferenceBindingError,
 )
 from vntts.authoring.generation_lease import GenerationLease
+from vntts.authoring.generation_manifest import (
+    approved_manifest_entries,
+    write_generated_manifest_from_state,
+)
 from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
@@ -118,6 +126,32 @@ class AuthoringImportGraphTest(unittest.TestCase):
             _reachable(
                 graph,
                 "vntts.authoring.generation_lease",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+
+    def test_generation_manifest_has_no_private_bulk_generation_importers(self):
+        for imported_name in (
+            "_approved_manifest_entries",
+            "_write_generated_manifest_from_state",
+        ):
+            with self.subTest(imported_name=imported_name):
+                self.assertEqual(
+                    _production_importers(
+                        "vntts.authoring.bulk_generation", imported_name
+                    ),
+                    [],
+                )
+        self.assertIs(_approved_manifest_entries, approved_manifest_entries)
+        self.assertIs(
+            _write_generated_manifest_from_state,
+            write_generated_manifest_from_state,
+        )
+        graph = _authoring_import_graph()
+        self.assertFalse(
+            _reachable(
+                graph,
+                "vntts.authoring.generation_manifest",
                 "vntts.authoring.bulk_generation",
             )
         )
