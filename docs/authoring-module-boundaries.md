@@ -99,12 +99,26 @@ checksum/quality checks, contained POSIX paths and the existing atomic manifest
 schema. The import-graph regression forbids production callers from importing
 the historical private projection names.
 
+## Generation state foundation
+
+`generation_state` begins the state boundary with immutable queue loading: it
+reads queue bytes once, hashes that exact snapshot and parses only a temporary
+copy of those bytes. Bulk generation, live-fallback, known-role reuse and final
+pack publication therefore share one race-resistant public loader.
+
+`bulk_generation._load_stable_queue` remains a compatibility alias. The
+import-graph regression forbids production imports of that private name and
+ensures the state foundation cannot reach the bulk orchestrator. Semantic state
+document validation remains in `bulk_generation` until its complete validation
+closure can move without weakening typed failure, repair, provenance or audio
+event checks.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and
 asserts that neither extracted record module can reach its higher layers and
 that no pair in either former strongly connected component is mutually
-reachable. It also enforces the canonical-hash, generation-lease and generated
-manifest leaf boundaries described above.
+reachable. It also enforces the canonical-hash, generation-lease, generated
+manifest and generation-state leaf boundaries described above.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

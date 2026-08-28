@@ -34,7 +34,6 @@ from vntts.authoring.advisory_lock import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _load_stable_queue,
     _process_started_at,
     _validate_state_document,
     load_generation_state,
@@ -46,6 +45,7 @@ from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document,
 )
 from vntts.authoring.generation_manifest import approved_manifest_entries
+from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -132,7 +132,7 @@ def publish_final_game_pack(
         ) as generation_leases:
             generation_lease = generation_leases[0]
             try:
-                queue, queue_sha256 = _load_stable_queue(queue_path)
+                queue, queue_sha256 = load_stable_generation_queue(queue_path)
             except BulkGenerationError as error:
                 raise FinalGamePackError(str(error)) from error
             state, state_sha256 = _load_stable_state(state_path, queue, queue_sha256)

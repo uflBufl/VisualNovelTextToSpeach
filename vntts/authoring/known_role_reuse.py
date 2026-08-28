@@ -22,10 +22,10 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _load_stable_queue,
     _validate_state_document,
     is_spoken_queue_item,
 )
+from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
     _load_authority,
@@ -110,7 +110,7 @@ def publish_known_role_reuse_binding(
     workspace_document = _read_json(workspace_path, "workspace")
     workspace_sha256 = sha256_file(workspace_path)
     queue_path = workspace / "queue.jsonl"
-    queue, queue_sha256 = _load_stable_queue(queue_path)
+    queue, queue_sha256 = load_stable_generation_queue(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_path = workspace / "generated-audio/generation-state.json"
     state_payload = state_path.read_bytes()

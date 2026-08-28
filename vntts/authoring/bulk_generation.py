@@ -68,6 +68,7 @@ from vntts.authoring.generation_manifest import (
     validate_success_file,
     write_generated_manifest_from_state,
 )
+from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -4868,20 +4869,7 @@ def _within(root, relative, label):
     return candidate
 
 
-def _load_stable_queue(queue_path):
-    try:
-        payload = queue_path.read_bytes()
-    except OSError as error:
-        raise BulkGenerationError(str(error)) from error
-    digest = hashlib.sha256(payload).hexdigest()
-    try:
-        with TemporaryDirectory() as directory:
-            snapshot = Path(directory) / "queue.jsonl"
-            snapshot.write_bytes(payload)
-            queue = VoiceGenerationQueue.load(snapshot)
-    except (OSError, VoiceGenerationQueueError) as error:
-        raise BulkGenerationError(str(error)) from error
-    return queue, digest
+_load_stable_queue = load_stable_generation_queue
 
 
 def _snapshot_control_files(control_files):

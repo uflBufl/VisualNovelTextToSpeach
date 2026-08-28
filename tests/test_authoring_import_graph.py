@@ -7,6 +7,7 @@ import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 from vntts.authoring.bulk_generation import (
     _approved_manifest_entries,
     _GenerationLease,
+    _load_stable_queue,
     _write_generated_manifest_from_state,
 )
 from vntts.authoring.failure_reference_binding import (
@@ -18,6 +19,7 @@ from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     write_generated_manifest_from_state,
 )
+from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
@@ -152,6 +154,23 @@ class AuthoringImportGraphTest(unittest.TestCase):
             _reachable(
                 graph,
                 "vntts.authoring.generation_manifest",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+
+    def test_generation_state_queue_loader_has_no_private_bulk_importers(self):
+        self.assertEqual(
+            _production_importers(
+                "vntts.authoring.bulk_generation", "_load_stable_queue"
+            ),
+            [],
+        )
+        self.assertIs(_load_stable_queue, load_stable_generation_queue)
+        graph = _authoring_import_graph()
+        self.assertFalse(
+            _reachable(
+                graph,
+                "vntts.authoring.generation_state",
                 "vntts.authoring.bulk_generation",
             )
         )

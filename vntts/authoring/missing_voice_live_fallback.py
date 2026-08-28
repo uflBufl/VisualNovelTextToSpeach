@@ -21,7 +21,6 @@ from vntts.authoring.bulk_generation import (
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     BulkGenerationError,
     BulkGenerationSourceChangedError,
-    _load_stable_queue,
     _validate_state_document,
 )
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
@@ -29,6 +28,7 @@ from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     write_generated_manifest_from_state,
 )
+from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.missing_voice_reuse import (
     _validate_plan,
     load_missing_voice_reuse_plan,
@@ -86,7 +86,7 @@ def authorize_missing_voice_live_fallback(
     narrator_character = _required_text(
         workspace_document.get("narrator_character"), "Configured narrator character"
     )
-    queue, queue_sha256 = _load_stable_queue(queue_path)
+    queue, queue_sha256 = load_stable_generation_queue(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_payload = state_path.read_bytes()
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
