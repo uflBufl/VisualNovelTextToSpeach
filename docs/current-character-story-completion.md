@@ -1026,6 +1026,17 @@ as an auditable zero-override authority. The importer rechecks the current
 source workspace, plan, review bundle, session, key, candidate references and
 all copied manifest inputs; it cannot regenerate or approve a WAV.
 
+Both Aderyn cohorts later resolved automatically to `Neither` because none of
+their three candidates had complete exact sample evidence. The no-replace
+zero-override bundle is
+`authoring/missing-voice-reuse-bindings/current-character-story-aderyn-missing-voice-reuse-v1-unresolved`,
+decision ID
+`8239afefb72e57fcd112f7ff17ad1ad56877839f7dd4e6bc10285842dd008a07`.
+It binds both cohort identities, retains zero queue voice overrides and does
+not authorize generation or reuse for any of the 93 Aderyn lines. Those lines
+therefore remain known-role unresolved and require an explicit Narrator/live
+fallback decision rather than another candidate audition.
+
 The same exact matrix now supports exhausted failed controls. Three immutable
 Mrs. Owen -> Centurion plans bind the final authorities separately: b971 plan
 `e0ac3de0eacec6111d24cd3a822c29f4fd32c9bb1fded98fd9bc1d7205fe6f06`
