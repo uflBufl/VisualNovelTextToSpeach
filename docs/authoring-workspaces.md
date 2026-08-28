@@ -1531,3 +1531,21 @@ Both binding importers retain the automatic origin, and failed-control voice
 bindings retain every exact source failed-item hash even when their override map
 is empty. Validation compares only the reuse layer against the combined routing
 map, so unrelated pre-existing source-reference overrides remain valid.
+
+## Composing reviewed reuse overlays
+
+An explicit known-role reuse decision may be layered over an already reviewed
+missing-voice cohort overlay when both authorities descend from the same exact
+voice controls. `known-role-reuse-binding` proves this by removing only the
+independent missing-voice metadata field and requiring the remaining manifest
+documents to be equal. The selected overlay must use the approved-cohort schema,
+must name the same predecessor manifest hash as the unresolved authority, and
+must itself pass full queue, voice and reference validation. Comparison-only
+overlays, changed voice definitions and changed predecessor hashes fail closed.
+
+The successor is built from the selected additive manifest, so its reviewed
+queue overrides and copied references survive unchanged before the new
+known-role authority is added. Normal combined-routing validation then rejects
+any overlap between the two layers. This permits independently reviewed,
+non-overlapping role families to share one config-addressed workspace without
+manually editing a manifest or weakening either review chain.

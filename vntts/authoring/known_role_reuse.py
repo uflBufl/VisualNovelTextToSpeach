@@ -36,6 +36,7 @@ from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_BINDING_FIELD,
     KNOWN_ROLE_REUSE_BINDING_SCHEMA,
     KNOWN_ROLE_REUSE_BINDING_VERSION,
+    MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -186,24 +187,51 @@ def publish_known_role_reuse_binding(
         for key, value in voice_document.items()
         if key != MISSING_VOICE_REUSE_BINDING_FIELD
     }
-    if (
-        binding.get("source_voice_manifest_sha256") != selected_voice_sha256
-        or authority_predecessor != selected_voice_document
-    ):
+    selected_predecessor = {
+        key: value
+        for key, value in selected_voice_document.items()
+        if key != MISSING_VOICE_REUSE_BINDING_FIELD
+    }
+    selected_reuse_binding = selected_voice_document.get(
+        MISSING_VOICE_REUSE_BINDING_FIELD
+    )
+    if authority_predecessor != selected_predecessor:
         raise KnownRoleReuseError(
             "Unresolved authority belongs to different selected voice controls"
         )
+    if selected_reuse_binding is None:
+        if binding.get("source_voice_manifest_sha256") != selected_voice_sha256:
+            raise KnownRoleReuseError(
+                "Unresolved authority belongs to different selected voice controls"
+            )
+        successor = copy.deepcopy(voice_document)
+        successor_voice_manifest = authority_voice_manifest
+        successor_voices = voices
+    else:
+        if (
+            selected_reuse_binding.get("schema_version")
+            != MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION
+            or selected_reuse_binding.get("mode") != "approved_cohort_reuse"
+            or selected_reuse_binding.get("source_voice_manifest_sha256")
+            != binding.get("source_voice_manifest_sha256")
+        ):
+            raise KnownRoleReuseError(
+                "Selected voice controls are not an additive reviewed reuse overlay"
+            )
+        successor = copy.deepcopy(selected_voice_document)
+        successor_voice_manifest = selected_voice_manifest
+        successor_voices = selected_voices
     if voice_document.get(MISSING_VOICE_REUSE_BINDING_FIELD) != binding:
         raise KnownRoleReuseError(
             "Source manifest does not contain the exact unresolved authority"
         )
-    reuse_voice = _resolve_exact_voice(voices, reuse_voice_character)
+    reuse_voice = _resolve_exact_voice(successor_voices, reuse_voice_character)
     all_reference_records = _reference_records(
-        authority_voice_manifest.parent,
-        [reference for voice in voices for reference in voice.references],
+        successor_voice_manifest.parent,
+        [reference for voice in successor_voices for reference in voice.references],
     )
     reuse_reference_records = _reference_records(
-        authority_voice_manifest.parent, reuse_voice.references
+        successor_voice_manifest.parent, reuse_voice.references
     )
 
     unresolved_ids = {target["queue_id"] for target in unresolved_targets}
@@ -320,7 +348,6 @@ def publish_known_role_reuse_binding(
         ),
         "authority": KNOWN_ROLE_REUSE_AUTHORITY,
     }
-    successor = copy.deepcopy(voice_document)
     successor[KNOWN_ROLE_REUSE_BINDING_FIELD] = known_binding
     decision_body = {
         "schema": KNOWN_ROLE_REUSE_DECISION_SCHEMA,

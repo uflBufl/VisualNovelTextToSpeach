@@ -1313,3 +1313,46 @@ and file SHA-256
 The bundle contains exactly two workspaces, two cohorts, three pending items
 and three required samples, so no child line can be approved through an adult
 sample.
+
+## Dobharchú 534705 binding and production review, 2026-08-28
+
+The completed opaque missing-voice review selected candidate C after all four
+available WAVs were heard. The no-replace importer unblinded it as source
+reference variant `cluster-2f4d52a49d13c24bbd0e74ad-anchor-1`, the existing
+`534703.png` Dobharchú voice, and bound exactly
+`reverse1999:314608:95:965bd814a6e36dbf` and
+`reverse1999:314608:96:5e1fe5bdc801e728`. The published binding directory is
+`current-character-story-dobharchu-534705-missing-voice-reuse-v1-selected`;
+its decision ID is
+`1f50973ab7de0e5a46e60afe181efcae27f30bda742090bc661970a0b2f716ed`.
+
+The Dobharchú overlay was composed with the explicit 104-item `Aderyn ->
+Rhiannon` authority through the reviewed additive-overlay gate. The combined
+known-role bundle lives at
+`current-character-story-aderyn-to-rhiannon-plus-dobharchu-534705-v1` and has
+decision ID
+`d92e855eaae2c32b7927a7d93f1895557039a7f58ffe2aee042e7f59060d5b87`.
+Config rebase preserved the current Aderyn history and produced workspace
+`resume-395a5e5eec0327a3a793b66d-55e3fc75baa0668c`. Its validated routing map
+contains all 104 Rhiannon overrides and the two new Dobharchú overrides in
+addition to the existing source-reference routes.
+
+One exact seed-0 MOSS run generated both Dobharchú lines. The long line is 7.12
+seconds with 0.24 seconds maximum internal silence and WAV SHA-256
+`56529ef9f28601953f05298f4ad60b45f0f870d43623272be1465f757d2dd91e`;
+the short line is 1.44 seconds with no internal silence and WAV SHA-256
+`e11aa573bf97413accc86ac08e79c86bf6d842425f24d383aea3ef1cb2c1bbfe`.
+Both remain pending human quality review in exact bundle
+`current-character-story-dobharchu-534705-production-v1.json`, bundle ID
+`0cc19a3e391e3dd15402375bf3f69028fd6283f5c6b1ca5ee27c85f791f5dead`.
+The short result is surfaced for perceptual attention as fast-paced; this flag
+does not reject or approve it.
+
+The earlier Poacher II file
+`current-character-story-poacher-ii-production-v1.json` was a schema-v1
+cohort plan, not a review bundle, so `vntts-review-bundle` correctly rejected it
+and could not show the line. The corrected schema-v2 publication is
+`current-character-story-poacher-ii-production-v2.json`, bundle ID
+`424a5aaae9d0f6ca149a47c01374e0a18cd98991811d9c963724e6e4c1fe8a2c`.
+Headless validation reports one remaining cohort, item and sample for exact
+queue ID `reverse1999:314606:62:e3f44f0529c8ced0`.

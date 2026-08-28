@@ -58,14 +58,14 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       the coverage census and runtime routing tests after review/import.
       Dobharchú `314608:95` and `314608:96` still belong to intentionally
       unbound portrait `534705`. Its task has one complete opaque candidate:
-      hear all four available WAVs and choose that candidate or `Neither`.
-      Replay remains
-      available during background saves and failed arms remain visible but
-      unselectable. After its session is terminal, run the no-replace importer.
-      Extend a selected voice only to the exact two queue IDs, create a
-      config-addressed successor, generate and technically validate both, then
-      obtain ordinary WAV quality review before merge. `Neither` must leave the
-      family unbound for an explicit live Narrator fallback decision.
+      the terminal review selected candidate C after all four available WAVs
+      were heard. The no-replace import, exact two-ID extension, additive
+      composition with all 104 `Aderyn -> Rhiannon` overrides, config rebase and
+      exact generation are complete. Review the two pending WAVs in
+      `current-character-story-dobharchu-534705-production-v1.json`; accept or
+      reject each on words, voice identity, cadence and artifacts, with special
+      attention to the short result's fast-pace flag. Merge only checksum-bound
+      terminal outcomes afterward.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
@@ -99,7 +99,12 @@ Follow the evidence-backed order and invariants in
       are stream/water events rather than a proven human gasp. `Tsk!`,
       `*whimper*`, `*yelp*` and `*gurgle*` remain unbound.
 - [ ] Review the one final Poacher II production WAV in
-      `current-character-story-poacher-ii-production-v1.json`. The completed
+      `current-character-story-poacher-ii-production-v2.json`. The existing file named
+      `current-character-story-poacher-ii-production-v1.json` is only the
+      schema-v1 internal cohort plan and is invalid input for
+      `vntts-review-bundle`, so it cannot display the line. The corrected
+      schema-v2 bundle is published and headless validation exposes one pending
+      cohort/item/sample for the exact Poacher II queue ID. The completed
       blind comparison selected candidate 01 and was imported into fresh audit
       v2; binding `current-character-story-poacher-ii-reference-v2` and
       successor workspace `resume-395a5e5eec0327a3a793b66d-9c0be9a3ebff9afc`

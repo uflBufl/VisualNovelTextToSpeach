@@ -14,8 +14,10 @@ from vntts.authoring.known_role_reuse import (
 )
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_BINDING_FIELD,
+    MISSING_VOICE_REUSE_BINDING_FIELD,
     queue_voice_overrides_from_manifest,
 )
+from vntts.authoring.workbench import create_resume_workspace
 
 
 class AuthoringKnownRoleReuseTest(unittest.TestCase):
@@ -151,6 +153,48 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                     output,
                     accept_known_role_reuse=True,
                 )
+
+    def test_reviewed_reuse_overlay_can_be_composed_without_changing_voice_controls(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_workspace, unresolved, queue_id = self.fixture(root)
+            imported = next((root / "imports").iterdir())
+            additive = create_resume_workspace(
+                imported,
+                root / "additive-workspaces",
+                story_index=source_workspace / "inputs/story-index.jsonl",
+                voice_manifest=unresolved / "manifest.json",
+                backend="moss-tts",
+                model="model",
+                generation_profile="stable",
+                narrator_character="Centurion",
+            ).directory
+
+            result = publish_known_role_reuse_binding(
+                additive,
+                unresolved,
+                "Aderyn",
+                "Rhiannon",
+                root / "composed-known-role",
+                accept_known_role_reuse=True,
+            )
+            selected = json.loads(
+                (unresolved / "manifest.json").read_text(encoding="utf-8")
+            )
+            composed = json.loads(
+                (result.directory / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            composed[MISSING_VOICE_REUSE_BINDING_FIELD],
+            selected[MISSING_VOICE_REUSE_BINDING_FIELD],
+        )
+        self.assertEqual(
+            composed[KNOWN_ROLE_REUSE_BINDING_FIELD]["queue_voice_overrides"],
+            {queue_id: "Rhiannon"},
+        )
 
 
 if __name__ == "__main__":
