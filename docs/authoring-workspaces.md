@@ -281,8 +281,19 @@ either a typed `missed_eos_audio_limit` result with at least three completed
 source attempts, or a current typed `speech_silence` result whose exact
 `inline_pause_marker` repair has exhausted three attempts from that same
 provider. A different source backend and `pocket-tts` as the target backend are
-mandatory. Arbitrary silence failures cannot enter this path. The generated
-child is restricted to exactly those IDs.
+mandatory. Arbitrary silence failures cannot enter this ordinary path. The
+generated child is restricted to exactly those IDs.
+
+An earlier fallback is permitted only after the bounded source/reference
+hypotheses have produced a canonical automatic-unresolved authority. Pass each
+exact `decision.json` from a failed-voice zero-override binding or each failed-
+prompt selection with `--offline-fallback-authority`. Every artifact must have
+origin `automatic_no_complete_candidate`, contain no selected voice/prompt,
+cover the selected queue IDs exactly and bind the current failed state-item
+hashes. Human-pending, human-rejected, selected-candidate, unrelated, stale or
+altered evidence fails before workspace publication. The authority does not
+approve audio; it only replaces the otherwise inapplicable three-attempt gate
+for those exact typed failures.
 
 ```sh
 uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
@@ -293,6 +304,7 @@ uv run vntts-pregenerate create-workspace IMMUTABLE_IMPORT \
   --model pocket-tts \
   --generation-profile default \
   --carry-forward-from MOSS_WORKSPACE \
+  --offline-fallback-authority AUTOMATIC_UNRESOLVED_DECISION.json \
   --offline-fallback-failed QUEUE_ID
 ```
 
@@ -308,9 +320,13 @@ Pocket does not expose deterministic seeded generation, so the
 fallback sends `seed=None` to the backend and records `seed_applied=false`.
 The integer `seed` in state remains a monotonic provider-attempt identity; it
 must not be represented as an applied sampling seed. One config-addressed
-fallback run permits exactly one Pocket attempt (`--retries 0`). State and
-approved-manifest records retain both the fallback repair ledger and provider
-counters. Pocket output passes the same typed-completion,
+fallback permits exactly one Pocket attempt (`--retries 0`), including across
+later command invocations after a failed attempt. Authority-backed workspaces
+use carry-forward schema version 4: each authority is copied below
+`provenance/offline-fallback-authorities/`, listed in the workspace ledger and
+referenced by exact ID, artifact hash, queue ID and source-item hash from the
+carried failure. State and approved-manifest records retain both the fallback
+repair ledger and provider counters. Pocket output passes the same typed-completion,
 PCM16 mono, duration, peak, silence, checksum and manual-review gates as any
 other generated artifact.
 

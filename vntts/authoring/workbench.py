@@ -98,6 +98,11 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.offline_fallback_authority import (
+    OfflineFallbackAuthorityError,
+    load_offline_fallback_authorities,
+    validate_offline_fallback_authority_records,
+)
 from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
@@ -432,6 +437,7 @@ def create_resume_workspace(
     failure_repair_policy=None,
     carry_forward_from=None,
     carry_forward_characters=None,
+    offline_fallback_authorities=None,
 ):
     """Copy one immutable import into a separate mutable resume workspace."""
     source = Path(import_directory).expanduser().resolve()
@@ -549,7 +555,7 @@ def create_resume_workspace(
         )
         selected_sources = (*selected_sources, *binding_sources)
         seed_state = _preserve_seed_generation_state(staging, state_artifact)
-        carry_forward = _carry_forward_review_outcomes(
+        carry_forward, authority_sources = _carry_forward_review_outcomes(
             carry_forward_from,
             staging,
             queue_snapshot,
@@ -559,7 +565,9 @@ def create_resume_workspace(
             characters=carry_forward_characters,
             failure_repair_policy=repair_policy,
             failure_reference_binding=failure_reference_binding,
+            offline_fallback_authorities=offline_fallback_authorities,
         )
+        selected_sources = (*selected_sources, *authority_sources)
         config_fingerprint = _workspace_config_fingerprint(
             import_id,
             story_config,
@@ -2624,6 +2632,7 @@ def _carry_forward_review_outcomes(
     characters,
     failure_repair_policy,
     failure_reference_binding,
+    offline_fallback_authorities,
 ):
     repair_policy = failure_repair_policy
     failed_selected = repair_policy.queue_ids
@@ -2644,11 +2653,11 @@ def _carry_forward_review_outcomes(
             "segmentation, inline pause and offline fallback failures"
         )
     if source_workspace is None:
-        if characters is not None or offline_selected:
+        if characters is not None or offline_selected or offline_fallback_authorities:
             raise AuthoringWorkbenchError(
                 "Carry-forward outcomes require a source workspace"
             )
-        return None
+        return None, ()
     if characters is None and not failed_selected:
         raise AuthoringWorkbenchError(
             "Carry-forward requires characters or exact repair failures"
@@ -2754,6 +2763,42 @@ def _carry_forward_review_outcomes(
     if parsed_source_state.get("active") is not None:
         raise AuthoringWorkbenchError(
             "Carry-forward source has an active generation attempt"
+        )
+
+    try:
+        authorities = load_offline_fallback_authorities(
+            offline_fallback_authorities,
+            parsed_source_state.get("items", {}),
+            offline_selected,
+        )
+    except OfflineFallbackAuthorityError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    authority_by_queue_id = {
+        queue_id: authority
+        for authority in authorities
+        for queue_id in authority.queue_ids
+    }
+    authority_records = []
+    authority_sources = []
+    for authority in authorities:
+        relative = (
+            Path("provenance/offline-fallback-authorities")
+            / f"{authority.authority_id}.json"
+        )
+        target = staging / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(authority.payload)
+        if sha256_file(target) != authority.source_sha256:
+            raise AuthoringWorkbenchError(
+                "Unable to preserve offline fallback authority"
+            )
+        authority_records.append(authority.snapshot_record(relative.as_posix()))
+        authority_sources.append(
+            (
+                authority.source,
+                authority.source_sha256,
+                "offline fallback authority",
+            )
         )
 
     target_state_path = staging / "generated-audio" / "generation-state.json"
@@ -2898,8 +2943,11 @@ def _carry_forward_review_outcomes(
             f"Offline fallback source profile for {queue_id!r}",
         )
         strategy = repair_policy.strategy_for(queue_id)
+        fallback_authority = authority_by_queue_id.get(queue_id)
         minimum_attempts = (
-            MAX_BOUNDED_TOTAL_ATTEMPTS if strategy == OFFLINE_FALLBACK_BACKEND else 1
+            MAX_BOUNDED_TOTAL_ATTEMPTS
+            if strategy == OFFLINE_FALLBACK_BACKEND and fallback_authority is None
+            else 1
         )
         attempts_by_provider = result.get("attempts_by_provider")
         source_provider_attempts = (
@@ -2923,17 +2971,25 @@ def _carry_forward_review_outcomes(
             failure_kind_mismatch = inline_pause_mismatch
         elif strategy == OFFLINE_FALLBACK_BACKEND:
             failure_kind_mismatch = not (
-                isinstance(source_provider_attempts, int)
-                and not isinstance(source_provider_attempts, bool)
-                and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                (
+                    fallback_authority is not None
+                    or (
+                        isinstance(source_provider_attempts, int)
+                        and not isinstance(source_provider_attempts, bool)
+                        and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                    )
+                )
                 and (
                     failure.get("kind") == "missed_eos_audio_limit"
                     or (
                         failure.get("kind") == "speech_silence"
                         and source_repair_strategy
                         in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
-                        and _inline_pause_matches_failure(
-                            failure, queue_by_id[queue_id].text
+                        and (
+                            fallback_authority is not None
+                            or _inline_pause_matches_failure(
+                                failure, queue_by_id[queue_id].text
+                            )
                         )
                     )
                 )
@@ -3009,6 +3065,10 @@ def _carry_forward_review_outcomes(
             carry_record["source_repair_strategy"] = source_repair_strategy
         if strategy == OFFLINE_FALLBACK_BACKEND:
             carry_record["source_provider_attempts"] = source_provider_attempts
+            if fallback_authority is not None:
+                carry_record["source_unresolved_authority"] = (
+                    fallback_authority.reference_record(queue_id)
+                )
         if strategy == BOUNDED_SEED_RETRY:
             carry_record["source_provider_attempts"] = provider_attempts
         parent_carry = result.get("carry_forward")
@@ -3044,7 +3104,7 @@ def _carry_forward_review_outcomes(
             )
     document = {
         "schema": "vntts.authoring-carry-forward",
-        "schema_version": 3 if failed_selected else 1,
+        "schema_version": 4 if authorities else (3 if failed_selected else 1),
         "source_workspace_id": source_document["workspace_id"],
         "source_state_sha256": source_state_sha256,
         "characters": list(selected),
@@ -3053,7 +3113,9 @@ def _carry_forward_review_outcomes(
     if failed_selected:
         document["failed_queue_ids"] = list(failed_selected)
         document["source_run_config"] = source_run_config
-    return document
+    if authorities:
+        document["offline_fallback_authorities"] = authority_records
+    return document, tuple(authority_sources)
 
 
 def _terminal_review_outcome(result):
@@ -3770,16 +3832,17 @@ def _validate_workspace_carry_forward(directory, workspace):
         "items",
     }
     version = carry.get("schema_version") if isinstance(carry, dict) else None
-    expected_fields = (
-        base_fields
-        if version == 1
-        else base_fields | {"failed_queue_ids", "source_run_config"}
-    )
+    if version == 1:
+        expected_fields = base_fields
+    else:
+        expected_fields = base_fields | {"failed_queue_ids", "source_run_config"}
+        if version == 4:
+            expected_fields.add("offline_fallback_authorities")
     if not isinstance(carry, dict) or set(carry) != expected_fields:
         raise AuthoringWorkbenchError("Workspace carry-forward provenance is malformed")
     if (
         carry.get("schema") != "vntts.authoring-carry-forward"
-        or version not in {1, 2, 3}
+        or version not in {1, 2, 3, 4}
         or not isinstance(carry.get("source_workspace_id"), str)
         or not re.fullmatch(
             r"resume-[0-9a-f]{24}-[0-9a-f]{16}", carry["source_workspace_id"]
@@ -3799,7 +3862,7 @@ def _validate_workspace_carry_forward(directory, workspace):
     ):
         raise AuthoringWorkbenchError("Workspace carry-forward characters are invalid")
     failed_queue_ids = []
-    if version in {2, 3}:
+    if version in {2, 3, 4}:
         failed_queue_ids = carry.get("failed_queue_ids")
         if (
             not isinstance(failed_queue_ids, list)
@@ -3870,6 +3933,30 @@ def _validate_workspace_carry_forward(directory, workspace):
     items = carry.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Workspace carry-forward item ledger is missing")
+    authorities = ()
+    authority_by_queue_id = {}
+    if version == 4:
+        try:
+            authorities = validate_offline_fallback_authority_records(
+                carry.get("offline_fallback_authorities"),
+                directory,
+                {
+                    item.get("queue_id"): item.get("source_item_sha256")
+                    for item in items
+                    if isinstance(item, dict) and item.get("mode") == "failed-outcome"
+                },
+            )
+        except OfflineFallbackAuthorityError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        authority_by_queue_id = {
+            queue_id: authority
+            for authority in authorities
+            for queue_id in authority.queue_ids
+        }
+        if set(authority_by_queue_id) != set(failed_queue_ids):
+            raise AuthoringWorkbenchError(
+                "Workspace offline fallback authority selection is incomplete"
+            )
     seen = set()
     for item in items:
         terminal_fields = {
@@ -3899,15 +3986,29 @@ def _validate_workspace_carry_forward(directory, workspace):
         nested_repaired_failed_fields = repaired_failed_fields | {
             "source_parent_carry_forward"
         }
-        if not isinstance(item, dict) or frozenset(item) not in {
-            frozenset(terminal_fields),
-            frozenset(failed_fields),
-            frozenset(bounded_failed_fields),
-            frozenset(repaired_failed_fields),
-            frozenset(nested_failed_fields),
-            frozenset(nested_bounded_failed_fields),
-            frozenset(nested_repaired_failed_fields),
-        }:
+        authority_variants = {
+            frozenset(fields | {"source_unresolved_authority"})
+            for fields in (
+                bounded_failed_fields,
+                repaired_failed_fields,
+                nested_bounded_failed_fields,
+                nested_repaired_failed_fields,
+            )
+        }
+        if (
+            not isinstance(item, dict)
+            or frozenset(item)
+            not in {
+                frozenset(terminal_fields),
+                frozenset(failed_fields),
+                frozenset(bounded_failed_fields),
+                frozenset(repaired_failed_fields),
+                frozenset(nested_failed_fields),
+                frozenset(nested_bounded_failed_fields),
+                frozenset(nested_repaired_failed_fields),
+            }
+            | authority_variants
+        ):
             raise AuthoringWorkbenchError("Workspace carry-forward item is malformed")
         queue_id = _required_text(item.get("queue_id"), "Carry-forward queue ID")
         if queue_id in seen:
@@ -3929,7 +4030,7 @@ def _validate_workspace_carry_forward(directory, workspace):
             item.get("source_item_sha256"), "Carry-forward source item SHA-256"
         )
         if mode == "failed-outcome":
-            if version not in {2, 3} or queue_id not in failed_queue_ids:
+            if version not in {2, 3, 4} or queue_id not in failed_queue_ids:
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure item is not selected"
                 )
@@ -3938,7 +4039,24 @@ def _validate_workspace_carry_forward(directory, workspace):
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure backend is inconsistent"
                 )
-            strategy = repair_policy.strategy_for(queue_id) if version == 3 else None
+            strategy = (
+                repair_policy.strategy_for(queue_id) if version in {3, 4} else None
+            )
+            authority = authority_by_queue_id.get(queue_id)
+            authority_reference = item.get("source_unresolved_authority")
+            if version == 4:
+                if (
+                    authority is None
+                    or authority_reference != authority.reference_record(queue_id)
+                    or strategy != OFFLINE_FALLBACK_BACKEND
+                ):
+                    raise AuthoringWorkbenchError(
+                        "Workspace offline fallback authority reference is inconsistent"
+                    )
+            elif authority_reference is not None:
+                raise AuthoringWorkbenchError(
+                    "Workspace carries an unexpected offline fallback authority"
+                )
             allowed_failure_kinds = {"missed_eos_audio_limit"}
             if strategy in {SENTENCE_BOUNDARY_SEGMENTATION, INLINE_PAUSE_MARKER}:
                 allowed_failure_kinds.add("speech_silence")
@@ -3950,7 +4068,10 @@ def _validate_workspace_carry_forward(directory, workspace):
                 in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
                 and isinstance(source_provider_attempts, int)
                 and not isinstance(source_provider_attempts, bool)
-                and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                and (
+                    authority is not None
+                    or source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+                )
             ):
                 allowed_failure_kinds.add("speech_silence")
             if item.get("source_failure_kind") not in allowed_failure_kinds:
@@ -3970,10 +4091,10 @@ def _validate_workspace_carry_forward(directory, workspace):
                 )
             attempts = item.get("source_attempts")
             minimum_attempts = MAX_BOUNDED_TOTAL_ATTEMPTS
-            if version == 3:
+            if version in {3, 4}:
                 minimum_attempts = (
                     MAX_BOUNDED_TOTAL_ATTEMPTS
-                    if strategy == OFFLINE_FALLBACK_BACKEND
+                    if strategy == OFFLINE_FALLBACK_BACKEND and authority is None
                     else 1
                 )
             if (
@@ -3984,7 +4105,7 @@ def _validate_workspace_carry_forward(directory, workspace):
                 raise AuthoringWorkbenchError(
                     "Workspace carry-forward failure attempts are invalid"
                 )
-            if version == 3 and strategy == BOUNDED_SEED_RETRY:
+            if version in {3, 4} and strategy == BOUNDED_SEED_RETRY:
                 provider_attempts = source_provider_attempts
                 if (
                     not isinstance(provider_attempts, int)
@@ -3995,8 +4116,9 @@ def _validate_workspace_carry_forward(directory, workspace):
                         "Workspace bounded-seed source attempts are exhausted"
                     )
             if (
-                version == 3
+                version in {3, 4}
                 and strategy == OFFLINE_FALLBACK_BACKEND
+                and authority is None
                 and source_provider_attempts is not None
                 and (
                     not isinstance(source_provider_attempts, int)
@@ -4022,7 +4144,7 @@ def _validate_workspace_carry_forward(directory, workspace):
                 )
         else:
             _require_sha256(item.get("audio_sha256"), "Carry-forward WAV SHA-256")
-    if version in {2, 3} and set(failed_queue_ids) != {
+    if version in {2, 3, 4} and set(failed_queue_ids) != {
         item["queue_id"] for item in items if item.get("mode") == "failed-outcome"
     }:
         raise AuthoringWorkbenchError(
@@ -4032,7 +4154,7 @@ def _validate_workspace_carry_forward(directory, workspace):
 
 def _validate_workspace_offline_fallback_state(directory, workspace):
     carry = workspace.get("carry_forward")
-    if not isinstance(carry, dict) or carry.get("schema_version") not in {2, 3}:
+    if not isinstance(carry, dict) or carry.get("schema_version") not in {2, 3, 4}:
         return
     queue_path = directory / "queue.jsonl"
     state_path = directory / "generated-audio" / "generation-state.json"

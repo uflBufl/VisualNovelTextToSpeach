@@ -34,16 +34,14 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Keep all eight newly exhausted Mrs. Owen/Hotelier lines out of automatic
-      production repair. The six exhausted MOSS/reference hypotheses are closed
-      by the automatic unresolved artifacts recorded in
-      [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md);
-      no further MOSS seed is authorized for them. Choose an explicit non-MOSS
-      offline fallback for these exact queue IDs before final coverage. Bind its
-      provider, voice/speaker policy and exact text identities, generate and run
-      technical validation without reinterpreting `needs_sample`, a failed
-      control or an unpublished render as production audio, then require a
-      checksum-bound perceptual approval before publishing the fallback route.
+- [ ] Review all eight exact Pocket fallback WAVs through
+      `current-character-story-pocket-fallback-v2.json`. Judge voice/role,
+      complete words, pace, pauses and artifacts; the five `fast pace` labels
+      are advisory only. Do not use stale v1 or infer approval from technical
+      validation. After the v2 task is terminal, merge only its checksum-bound
+      approved/rejected outcomes into the current Character Story successor and
+      re-run the full coverage census. Rejected lines remain explicit live
+      fallback candidates; do not spend another MOSS or Pocket attempt.
 - [ ] Resolve the remaining missing-voice boundary without silently widening a
       reference: 93 spoken Aderyn lines have no age/portrait-safe route after
       the child variant's real-story rejection, and Dobharchú `314608:95` and

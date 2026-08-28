@@ -487,6 +487,16 @@ def create_parser():
     workspace.add_argument(
         "--carry-forward-character", action="append", dest="carry_forward_characters"
     )
+    workspace.add_argument(
+        "--offline-fallback-authority",
+        action="append",
+        dest="offline_fallback_authorities",
+        type=Path,
+        help=(
+            "Canonical automatic-unresolved decision authorizing the exact "
+            "selected Pocket fallback items; repeat for multiple artifacts"
+        ),
+    )
     _add_missing_voice_policy_arguments(workspace)
     _add_failure_repair_arguments(workspace)
     merge = subparsers.add_parser(
@@ -1347,6 +1357,7 @@ def main(argv=None):
                 failure_repair_policy=failure_repair_policy,
                 carry_forward_from=arguments.carry_forward_from,
                 carry_forward_characters=arguments.carry_forward_characters,
+                offline_fallback_authorities=arguments.offline_fallback_authorities,
             )
             print(
                 json.dumps(

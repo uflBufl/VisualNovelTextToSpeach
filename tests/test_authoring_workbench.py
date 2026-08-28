@@ -29,6 +29,7 @@ import vntts.authoring as authoring_package
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
+from tests.test_authoring_offline_fallback_authority import write_authority
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
@@ -743,20 +744,24 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             second_renderer = SyntheticRenderer(diagnostics_backend="pocket-tts")
             second_renderer.name = "pocket-tts"
             second_renderer.model_name = "pocket-tts"
-            result = run_bulk_generation(
-                fallback.directory / "queue.jsonl",
-                fallback.directory / "generated-audio",
-                second_renderer,
-                provider="pocket-tts",
-                model="pocket-tts",
-                generation_profile="default",
-                retries=0,
-                seed=0,
-                include_queue_ids=(fixture["queue_id"],),
-                failure_repair_policy=policy,
-            )
+            with self.assertRaisesRegex(
+                bulk_generation_module.BulkGenerationError,
+                "single attempt is exhausted",
+            ):
+                run_bulk_generation(
+                    fallback.directory / "queue.jsonl",
+                    fallback.directory / "generated-audio",
+                    second_renderer,
+                    provider="pocket-tts",
+                    model="pocket-tts",
+                    generation_profile="default",
+                    retries=0,
+                    seed=0,
+                    include_queue_ids=(fixture["queue_id"],),
+                    failure_repair_policy=policy,
+                )
             final = load_generation_state(
-                result.state, fallback.directory / "queue.jsonl"
+                first_result.state, fallback.directory / "queue.jsonl"
             )
             source_state_after = source_state_path.read_bytes()
 
@@ -765,15 +770,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(carried_item["carry_forward"]["mode"], "failed-outcome")
         self.assertEqual(carried_item["provider"], "moss-tts")
         self.assertEqual([request.seed for request in renderer.requests], [None])
-        self.assertEqual([request.seed for request in second_renderer.requests], [None])
+        self.assertEqual(second_renderer.requests, [])
         self.assertEqual(after_first["items"][fixture["queue_id"]]["status"], "failed")
-        self.assertEqual(final_item["attempts"], moss_attempts + 2)
+        self.assertEqual(final_item["attempts"], moss_attempts + 1)
         self.assertEqual(
             final_item["attempts_by_provider"],
-            {"moss-tts": moss_attempts, "pocket-tts": 2},
+            {"moss-tts": moss_attempts, "pocket-tts": 1},
         )
         self.assertEqual(final_item["provider"], "pocket-tts")
-        self.assertEqual(final_item["seed"], 1)
+        self.assertEqual(final_item["seed"], 0)
         self.assertFalse(final_item["seed_applied"])
         self.assertEqual(
             final_item["failure_repair"]["source_failure"]["source_provider"],
@@ -784,6 +789,113 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture["queue_id"],
         )
         self.assertEqual(source_state_after, source_state_before)
+
+    def test_automatic_unresolved_authority_unlocks_exact_early_pocket_fallback(self):
+        from tests.test_authoring_bulk_generation import (
+            SyntheticRenderer,
+            audio_samples,
+        )
+        from vntts.authoring.bulk_generation import (
+            load_generation_state,
+            publish_generated_manifest,
+            run_bulk_generation,
+        )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            queue_path = source.directory / "queue.jsonl"
+            output = source.directory / "generated-audio"
+            source_state_path = output / "generation-state.json"
+            source_state = load_generation_state(source_state_path, queue_path)
+            initial_item = source_state["items"].pop(fixture["queue_id"])
+            (output / initial_item["path"]).unlink()
+            source_state_path.write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+            publish_generated_manifest(source_state_path)
+            tone = audio_samples()
+            renderer = SyntheticRenderer(
+                diagnostics_backend="moss-tts",
+                pcm=np.concatenate((tone, np.zeros(16_000 * 2), tone)),
+            )
+            renderer.name = "moss-tts"
+            renderer.model_name = "model with spaces"
+            run_bulk_generation(
+                queue_path,
+                output,
+                renderer,
+                provider="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                regenerate_existing=True,
+            )
+            source_item = load_generation_state(
+                output / "generation-state.json", queue_path
+            )["items"][fixture["queue_id"]]
+            self.assertLess(source_item["attempts_by_provider"]["moss-tts"], 3)
+            self.assertEqual(source_item["failure"]["kind"], "speech_silence")
+            policy = FailureRepairPolicy(
+                offline_fallback_queue_ids=(fixture["queue_id"],)
+            )
+            create_arguments = {
+                "story_index": fixture["job"]["story_index"],
+                "voice_manifest": fixture["job"]["voice_manifest"],
+                "backend": "pocket-tts",
+                "model": "pocket-tts",
+                "generation_profile": "default",
+                "narrator_character": "Rhiannon",
+                "failure_repair_policy": policy,
+                "carry_forward_from": source.directory,
+            }
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "compatible typed backend failure"
+            ):
+                create_resume_workspace(
+                    imported, root / "no-authority", **create_arguments
+                )
+
+            authority_path = write_authority(
+                root / "decision.json",
+                fixture["queue_id"],
+                bulk_generation_module._canonical_sha256(source_item),
+            )
+            fallback = create_resume_workspace(
+                imported,
+                root / "fallback",
+                offline_fallback_authorities=(authority_path,),
+                **create_arguments,
+            )
+            workspace = json.loads(
+                (fallback.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            carried = load_generation_state(
+                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]["carry_forward"]
+            inspect_workspace(fallback.directory)
+            snapshot = (
+                fallback.directory
+                / workspace["carry_forward"]["offline_fallback_authorities"][0]["path"]
+            )
+            snapshot_bytes = snapshot.read_bytes()
+            snapshot.write_text("{}", encoding="utf-8")
+            with self.assertRaises(AuthoringWorkbenchError):
+                inspect_workspace(fallback.directory)
+            snapshot.write_bytes(snapshot_bytes)
+            inspect_workspace(fallback.directory)
+
+        self.assertEqual(workspace["carry_forward"]["schema_version"], 4)
+        self.assertEqual(
+            carried["source_unresolved_authority"]["queue_id"], fixture["queue_id"]
+        )
+        self.assertEqual(
+            carried["source_unresolved_authority"]["source_item_sha256"],
+            bulk_generation_module._canonical_sha256(source_item),
+        )
 
     def test_sentence_repair_carries_exact_current_failure_between_workspaces(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer

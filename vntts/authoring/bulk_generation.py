@@ -1409,13 +1409,21 @@ def _validate_failure_repair_selection(
                 )
         elif strategy == OFFLINE_FALLBACK_BACKEND:
             carry = _offline_fallback_source(result)
+            attempts = _nonnegative_int(
+                result.get("attempts", 0), f"State item {queue_id!r} attempts"
+            )
+            provider_attempts = _provider_attempts(
+                result, attempts, default_provider=result.get("provider")
+            ).get(provider, 0)
             if (
                 not isinstance(carry, dict)
                 or carry.get("mode") != "failed-outcome"
                 or carry.get("source_provider") == provider
+                or provider_attempts >= 1
             ):
                 raise BulkGenerationError(
-                    f"Offline fallback lacks a different bound source backend for {queue_id!r}"
+                    "Offline fallback lacks a different bound source backend or "
+                    f"its single attempt is exhausted for {queue_id!r}"
                 )
         elif strategy == INLINE_PAUSE_MARKER:
             attempts = _nonnegative_int(
@@ -4392,6 +4400,7 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
             "source_parent_carry_forward",
             "source_provider_attempts",
             "source_repair_strategy",
+            "source_unresolved_authority",
         }
         if (
             not isinstance(source, dict)
@@ -4404,13 +4413,51 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
         source_failure_kind = source.get("source_failure_kind")
         source_repair_strategy = source.get("source_repair_strategy")
         source_provider_attempts = source.get("source_provider_attempts")
+        source_authority = source.get("source_unresolved_authority")
+        has_unresolved_authority = source_authority is not None
+        if has_unresolved_authority:
+            if (
+                not isinstance(source_authority, dict)
+                or set(source_authority)
+                != {
+                    "schema",
+                    "schema_version",
+                    "kind",
+                    "authority_id",
+                    "source_sha256",
+                    "queue_id",
+                    "source_item_sha256",
+                }
+                or source_authority.get("schema")
+                != "vntts.authoring-offline-fallback-authority-reference"
+                or source_authority.get("schema_version") != 1
+                or source_authority.get("kind")
+                not in {"failed_voice_review", "failed_prompt_review"}
+                or source_authority.get("queue_id") != queue_id
+                or source_authority.get("source_item_sha256")
+                != source.get("source_item_sha256")
+            ):
+                raise BulkGenerationError(
+                    f"State item {queue_id!r} offline fallback authority is malformed"
+                )
+            _required_sha256(
+                source_authority.get("authority_id"),
+                f"State item {queue_id!r} fallback authority ID",
+            )
+            _required_sha256(
+                source_authority.get("source_sha256"),
+                f"State item {queue_id!r} fallback authority SHA-256",
+            )
         exhausted_silence_source = (
             source_failure_kind == "speech_silence"
             and source_repair_strategy
             in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
             and isinstance(source_provider_attempts, int)
             and not isinstance(source_provider_attempts, bool)
-            and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+            and (
+                has_unresolved_authority
+                or source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+            )
         )
         if (
             source.get("mode") != "failed-outcome"
@@ -4428,7 +4475,10 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
                 source_provider_attempts,
                 f"State item {queue_id!r} source provider attempts",
             )
-            if source_provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+            if (
+                not has_unresolved_authority
+                and source_provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS
+            ):
                 raise BulkGenerationError(
                     f"State item {queue_id!r} offline fallback source attempts are not exhausted"
                 )

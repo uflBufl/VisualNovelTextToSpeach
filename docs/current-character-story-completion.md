@@ -1116,5 +1116,31 @@ Hotelier selection ID is
 Mrs. Owen selection ID is
 `0e20bb4cb7ab927e4a4668c9e569edd389cbbcc7928d51273854390c2b602334`.
 These six artifacts close the bounded MOSS experiments but publish no audio and
-authorize no voice route. The exact lines still need an explicit non-MOSS
-offline fallback before final coverage can be terminal.
+authorize no voice route. They were subsequently used only as exact fallback
+authority for six immutable Pocket workspaces:
+
+- Mrs. Owen b971 (three lines):
+  `resume-395a5e5eec0327a3a793b66d-500c3f83dec7ae82`;
+- Mrs. Owen f24: `resume-395a5e5eec0327a3a793b66d-81b24450fd3dbd50`;
+- Mrs. Owen a2: `resume-395a5e5eec0327a3a793b66d-044308790f726c99`;
+- Hotelier exact-bank:
+  `resume-395a5e5eec0327a3a793b66d-5f629aebc0cb3bec`;
+- Hotelier inline-pause:
+  `resume-395a5e5eec0327a3a793b66d-4049955dac5517b8`;
+- Mrs. Owen inline-pause:
+  `resume-395a5e5eec0327a3a793b66d-dfe4c049b57617d5`.
+
+Each workspace copies its canonical authority into immutable provenance,
+retains the existing Mrs. Owen source-reference or Hotelier Narrator ->
+Centurion route and permits only one unseeded `pocket-tts/default` attempt.
+All eight exact attempts produced technically valid `pending_review` WAVs; no
+result was approved. The current checksum-bound task is
+`authoring/review-bundles/current-character-story-pocket-fallback-v2.json`,
+bundle ID
+`a54c2b70b422ffa500540dd69ee45167d7686739420cef30026e976419bfa69b`.
+It contains six source workspaces, six cohorts, eight pending items, eight
+required samples and zero blocked items. Five samples carry advisory `fast
+pace` attention and three are deterministic clean samples; listening remains
+the decision authority. The older `v1` path is stale against predecessor state
+and must not be used. Final coverage remains gated on this v2 review and an
+exact approved/rejected outcome merge.
