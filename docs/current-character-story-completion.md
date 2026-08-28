@@ -1354,5 +1354,21 @@ cohort plan, not a review bundle, so `vntts-review-bundle` correctly rejected it
 and could not show the line. The corrected schema-v2 publication is
 `current-character-story-poacher-ii-production-v2.json`, bundle ID
 `424a5aaae9d0f6ca149a47c01374e0a18cd98991811d9c963724e6e4c1fe8a2c`.
-Headless validation reports one remaining cohort, item and sample for exact
-queue ID `reverse1999:314606:62:e3f44f0529c8ced0`.
+The human review then accepted that exact WAV. Decision
+`f3363a1199fac0e01c66d0dc03bfa33f9d08bb1e64995cdc1affc141963a213e`
+made the source item and approved-only manifest entry terminal with audio
+SHA-256
+`051889ddc892a41758b1cad9b2970e3c27b7d5c04a22f1dd3b43f2a113ab9337`.
+
+A broad reconciliation over every retained historical bundle exposed one
+superseded specialist workspace that no longer passes the current
+sentence-repair text validator. The merge therefore used contained immutable
+scope `reconciliation-scopes/current-character-story-poacher-ii-approved-v1`
+rather than weakening validation or ignoring the error. Reconciliation
+`current-character-story-20260828-poacher-ii-approved-v1.json`, report ID
+`107f7bbda32b4a280f5a8d1639e7f9865fa2f5a18fcc67c3f0d36be0996a8d46`,
+contained exactly one `terminal_merge_required` action and no conflicts. Its
+successor is
+`resume-395a5e5eec0327a3a793b66d-b5f60046824c9d2d`: Poacher II is approved,
+both Dobharchú production WAVs remain pending, every other state item is
+unchanged, and the approved-only manifest now contains 410 entries.

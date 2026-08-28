@@ -98,23 +98,16 @@ Follow the evidence-backed order and invariants in
       but every one is unavailable in the current install and the `gasp` cues
       are stream/water events rather than a proven human gasp. `Tsk!`,
       `*whimper*`, `*yelp*` and `*gurgle*` remain unbound.
-- [ ] Review the one final Poacher II production WAV in
-      `current-character-story-poacher-ii-production-v2.json`. The existing file named
-      `current-character-story-poacher-ii-production-v1.json` is only the
-      schema-v1 internal cohort plan and is invalid input for
-      `vntts-review-bundle`, so it cannot display the line. The corrected
-      schema-v2 bundle is published and headless validation exposes one pending
-      cohort/item/sample for the exact Poacher II queue ID. The completed
-      blind comparison selected candidate 01 and was imported into fresh audit
-      v2; binding `current-character-story-poacher-ii-reference-v2` and
-      successor workspace `resume-395a5e5eec0327a3a793b66d-9c0be9a3ebff9afc`
-      produced one technically clean pending WAV for
-      `reverse1999:314606:62:e3f44f0529c8ced0`. Accept or reject that exact WAV
-      on voice identity, words, cadence and artifacts. On acceptance, merge the
-      checksum-bound outcome into the current Character Story successor; on
-      rejection, keep the line failed for explicit live fallback. Do not spend
-      another MOSS seed or infer production approval from the earlier blind
-      reference preference.
+- [ ] Let `vntts-authoring-reconcile` accept an explicit repeatable set of
+      checksum-bound cohort publications, or otherwise distinguish current
+      publications from superseded historical bundles. A full scan of the
+      retained review-bundle root currently aborts on an old specialist source
+      workspace whose sentence-repair text no longer passes current validation,
+      even when the requested current Poacher II bundle and primary workspace
+      are valid. Until this is implemented, use a contained immutable scoped
+      bundle directory for exact terminal merges; never weaken workspace
+      validation or silently ignore a caller-selected invalid bundle.
+
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in
