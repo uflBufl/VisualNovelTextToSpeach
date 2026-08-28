@@ -158,9 +158,10 @@ CAS authority, render validation, repair selection or source-change detection.
 
 `workspace_config` owns the canonical workspace configuration fingerprint and
 the contained, checksum-validated path resolution for a selected voice manifest
-and all of its copied reference controls. Cohort planning, config rebase,
-terminal-conflict publication and known-role reuse consume these leaf APIs
-directly.
+and all of its copied reference controls. It also normalizes every supported
+run-config generation and loads typed missing-voice and failure-repair policies.
+Cohort planning, config rebase, terminal-conflict publication and known-role
+reuse consume these APIs directly.
 
 `workbench._workspace_config_fingerprint` remains an identity-preserving alias,
 while `_selected_voice_manifest` remains a compatibility wrapper that supplies
@@ -169,6 +170,15 @@ forbids production imports of both historical private names and ensures
 `workspace_config` cannot reach the workbench dependency magnet. Canonical JSON
 ordering, SHA-256 identity, path containment, selected-path equality and copied
 reference verification are unchanged.
+
+`workspace_voice_runtime` owns the effective runtime voice projection. It
+combines the checksum-validated selected manifest with an optional validated
+failure-reference overlay, constructs the effective registry and derives exact
+per-queue voice overrides. The module cannot reach workbench. Config rebase and
+failed-control carry consume these public projections directly, while
+workbench's historical private helpers delegate with
+`AuthoringWorkbenchError` semantics. The established public
+`FailureReferenceRuntimeBinding` import and pickle identity remain compatible.
 
 ## Workspace generation-state boundary
 

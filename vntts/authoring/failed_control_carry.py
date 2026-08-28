@@ -21,10 +21,12 @@ from vntts.authoring.config_rebase import _route_reference_identity
 from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _failure_reference_runtime_binding,
-    _workspace_queue_voice_overrides,
-    _workspace_voice_registry,
     load_workspace_authority,
+)
+from vntts.authoring.workspace_voice_runtime import (
+    load_failure_reference_runtime_binding,
+    load_workspace_queue_voice_overrides,
+    load_workspace_voice_registry,
 )
 
 FAILED_CONTROL_CARRY_SCHEMA = "vntts.authoring-failed-control-carry"
@@ -111,19 +113,35 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                 )
             queue = VoiceGenerationQueue.load(source_queue)
             queue_by_id = {item.queue_id: item for item in queue.items}
-            source_registry = _workspace_voice_registry(source_directory, source)
-            target_registry = _workspace_voice_registry(target_directory, target)
-            source_overrides = _workspace_queue_voice_overrides(
-                source_directory, source
+            source_registry = load_workspace_voice_registry(
+                source_directory,
+                source,
+                error_type=AuthoringWorkbenchError,
             )
-            target_overrides = _workspace_queue_voice_overrides(
-                target_directory, target
+            target_registry = load_workspace_voice_registry(
+                target_directory,
+                target,
+                error_type=AuthoringWorkbenchError,
             )
-            source_failure_binding = _failure_reference_runtime_binding(
-                source_directory, source
+            source_overrides = load_workspace_queue_voice_overrides(
+                source_directory,
+                source,
+                error_type=AuthoringWorkbenchError,
             )
-            target_failure_binding = _failure_reference_runtime_binding(
-                target_directory, target
+            target_overrides = load_workspace_queue_voice_overrides(
+                target_directory,
+                target,
+                error_type=AuthoringWorkbenchError,
+            )
+            source_failure_binding = load_failure_reference_runtime_binding(
+                source_directory,
+                source,
+                error_type=AuthoringWorkbenchError,
+            )
+            target_failure_binding = load_failure_reference_runtime_binding(
+                target_directory,
+                target,
+                error_type=AuthoringWorkbenchError,
             )
             records = []
             proposed = copy.deepcopy(target_state)

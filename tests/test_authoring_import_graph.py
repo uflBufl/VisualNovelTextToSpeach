@@ -53,9 +53,11 @@ from vntts.authoring.workbench import (
     merge_terminal_conflict_resolution as compatibility_merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workspace_config import (
+    normalize_workspace_run_config,
     selected_voice_manifest_path,
     workspace_config_fingerprint,
 )
+from vntts.authoring.workspace_voice_runtime import load_workspace_voice_registry
 
 
 def _authoring_import_graph():
@@ -109,6 +111,19 @@ def _production_importers(module, imported_name):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_workspace_config_and_voice_runtime_preserve_caller_error_type(self):
+        class DomainError(RuntimeError):
+            pass
+
+        with self.assertRaisesRegex(
+            DomainError, "Workspace run configuration is malformed"
+        ):
+            normalize_workspace_run_config(None, error_type=DomainError)
+        with self.assertRaisesRegex(
+            DomainError, "Workspace has no voice manifest snapshot"
+        ):
+            load_workspace_voice_registry(Path.cwd(), {}, error_type=DomainError)
+
     def test_canonical_document_hash_does_not_import_bulk_private_helper(self):
         self.assertEqual(
             _production_importers(
@@ -120,6 +135,7 @@ class AuthoringImportGraphTest(unittest.TestCase):
     def test_workspace_foundation_primitives_have_no_private_workbench_importers(self):
         for imported_name in (
             "_copy_workspace_tree_snapshot",
+            "_failure_reference_runtime_binding",
             "_load_json",
             "_load_workspace",
             "_load_workspace_snapshot",
@@ -132,6 +148,11 @@ class AuthoringImportGraphTest(unittest.TestCase):
             "_terminal_review_outcome",
             "_within",
             "_workspace_config_fingerprint",
+            "_workspace_failure_repair_policy",
+            "_workspace_missing_voice_policy",
+            "_workspace_queue_voice_overrides",
+            "_workspace_run_config_with_policy",
+            "_workspace_voice_registry",
         ):
             with self.subTest(imported_name=imported_name):
                 self.assertEqual(
@@ -160,6 +181,13 @@ class AuthoringImportGraphTest(unittest.TestCase):
             _reachable(
                 _authoring_import_graph(),
                 "vntts.authoring.workspace_state",
+                "vntts.authoring.workbench",
+            )
+        )
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.workspace_voice_runtime",
                 "vntts.authoring.workbench",
             )
         )

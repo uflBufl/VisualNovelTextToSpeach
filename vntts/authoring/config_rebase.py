@@ -35,10 +35,6 @@ from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    _failure_reference_runtime_binding,
-    _workspace_missing_voice_policy,
-    _workspace_queue_voice_overrides,
-    _workspace_voice_registry,
     contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
@@ -50,6 +46,12 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import (
     selected_voice_manifest_path,
     workspace_config_fingerprint,
+    workspace_missing_voice_policy,
+)
+from vntts.authoring.workspace_voice_runtime import (
+    load_failure_reference_runtime_binding,
+    load_workspace_queue_voice_overrides,
+    load_workspace_voice_registry,
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -133,20 +135,30 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 raise AuthoringWorkbenchError("Config rebase source is incomplete")
 
             queue = _load_json_queue(source_queue)
-            source_registry = _workspace_voice_registry(
-                source_directory, source_document
+            source_registry = load_workspace_voice_registry(
+                source_directory,
+                source_document,
+                error_type=AuthoringWorkbenchError,
             )
-            target_registry = _workspace_voice_registry(
-                target_directory, target_document
+            target_registry = load_workspace_voice_registry(
+                target_directory,
+                target_document,
+                error_type=AuthoringWorkbenchError,
             )
-            source_overrides = _workspace_queue_voice_overrides(
-                source_directory, source_document
+            source_overrides = load_workspace_queue_voice_overrides(
+                source_directory,
+                source_document,
+                error_type=AuthoringWorkbenchError,
             )
-            source_failure_binding = _failure_reference_runtime_binding(
-                source_directory, source_document
+            source_failure_binding = load_failure_reference_runtime_binding(
+                source_directory,
+                source_document,
+                error_type=AuthoringWorkbenchError,
             )
-            target_overrides = _workspace_queue_voice_overrides(
-                target_directory, target_document
+            target_overrides = load_workspace_queue_voice_overrides(
+                target_directory,
+                target_document,
+                error_type=AuthoringWorkbenchError,
             )
             target_reference_sha256s = {
                 sha256_file(reference)
@@ -160,8 +172,12 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                         "Config rebase audio-event composition WAV SHA-256",
                     )
                 )
-            target_policy = _workspace_missing_voice_policy(target_document)
-            source_policy = _workspace_missing_voice_policy(source_document)
+            target_policy = workspace_missing_voice_policy(
+                target_document, error_type=AuthoringWorkbenchError
+            )
+            source_policy = workspace_missing_voice_policy(
+                source_document, error_type=AuthoringWorkbenchError
+            )
             target_voice = selected_voice_manifest_path(
                 target_directory,
                 target_document,
@@ -628,7 +644,9 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         known_role_reuse = target_voice_document.get(KNOWN_ROLE_REUSE_BINDING_FIELD)
     except (VoiceManifestError, SourceReferenceBindingError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    target_registry = _workspace_voice_registry(directory, workspace)
+    target_registry = load_workspace_voice_registry(
+        directory, workspace, error_type=AuthoringWorkbenchError
+    )
     target_reference_sha256s = {
         sha256_file(reference)
         for voice in target_registry.unique_voices()
@@ -1107,7 +1125,9 @@ def _route_reference_identity(
         character = workspace["narrator_character"]
     voice = registry.resolve(character)
     if voice is None or not voice.references:
-        policy = _workspace_missing_voice_policy(workspace)
+        policy = workspace_missing_voice_policy(
+            workspace, error_type=AuthoringWorkbenchError
+        )
         if policy.applies_to(requested):
             character = workspace["narrator_character"]
             voice = registry.resolve(character)

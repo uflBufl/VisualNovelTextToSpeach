@@ -117,8 +117,11 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workspace_config import (
+    normalize_workspace_run_config,
     selected_voice_manifest_path,
     workspace_config_fingerprint,
+    workspace_failure_repair_policy,
+    workspace_missing_voice_policy,
 )
 from vntts.authoring.workspace_foundation import (
     contained_path,
@@ -130,11 +133,13 @@ from vntts.authoring.workspace_foundation import (
     safe_relative_path,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.voices import (
-    CharacterVoice,
-    CharacterVoiceRegistry,
-    synthesis_character_for_line,
+from vntts.authoring.workspace_voice_runtime import (
+    FailureReferenceRuntimeBinding,
+    load_failure_reference_runtime_binding,
+    load_workspace_queue_voice_overrides,
+    load_workspace_voice_registry,
 )
+from vntts.voices import CharacterVoiceRegistry, synthesis_character_for_line
 
 _canonical_sha256 = canonical_document_sha256
 
@@ -165,15 +170,6 @@ class AuthoringRuntimeStatus(str, Enum):
 class WorkspaceCreationResult:
     directory: Path
     created: bool
-
-
-@dataclass(frozen=True)
-class FailureReferenceRuntimeBinding:
-    directory: Path
-    document: dict
-    voices: tuple[CharacterVoice, ...]
-    queue_voice_overrides: dict[str, str]
-    controls: dict[Path, str]
 
 
 @dataclass(frozen=True)
@@ -2254,41 +2250,10 @@ def workspace_voice_snapshot(workspace_directory):
 
 
 def _failure_reference_runtime_binding(directory, workspace):
-    config = workspace.get("failure_reference_binding")
-    if config is None:
-        return None
-    binding_path = _within(
+    return load_failure_reference_runtime_binding(
         directory,
-        _safe_relative(config["path"], "Failure-reference binding"),
-        "Failure-reference binding",
-    )
-    try:
-        document = load_failure_reference_binding_document(binding_path.parent)
-    except FailureReferenceBindingError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    controls = {binding_path: config["sha256"]}
-    voices = []
-    for group, control in zip(document["groups"], config["controls"], strict=True):
-        reference = _within(
-            directory,
-            _safe_relative(control["path"], "Selected reference"),
-            "Selected reference",
-        )
-        _read_bound_bytes(reference, control["sha256"], "Selected reference")
-        controls[reference] = control["sha256"]
-        voices.append(
-            CharacterVoice(
-                character=group["voice_character"],
-                speaker=f"failure-reference:{group['group_id']}",
-                references=(reference,),
-            )
-        )
-    return FailureReferenceRuntimeBinding(
-        binding_path.parent,
-        document,
-        tuple(voices),
-        dict(document["queue_voice_overrides"]),
-        controls,
+        workspace,
+        error_type=AuthoringWorkbenchError,
     )
 
 
@@ -3330,22 +3295,11 @@ def _workspace_generation_provenance(directory, workspace):
 
 
 def _workspace_voice_registry(directory, workspace):
-    manifest = _selected_voice_manifest(directory, workspace)
-    if manifest is None:
-        raise AuthoringWorkbenchError("Workspace has no voice manifest snapshot")
-    try:
-        registry = CharacterVoiceRegistry.from_file(manifest)
-    except VoiceManifestError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    runtime_binding = _failure_reference_runtime_binding(directory, workspace)
-    if runtime_binding is None:
-        return registry
-    try:
-        return CharacterVoiceRegistry(
-            (*registry.unique_voices(), *runtime_binding.voices)
-        )
-    except VoiceManifestError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
+    return load_workspace_voice_registry(
+        directory,
+        workspace,
+        error_type=AuthoringWorkbenchError,
+    )
 
 
 def _registry_from_staged_voice(staging, voice_config, failure_reference_binding=None):
@@ -3401,14 +3355,11 @@ def _queue_voice_overrides_for_manifest(manifest):
 
 
 def _workspace_queue_voice_overrides(directory, workspace):
-    manifest = _selected_voice_manifest(directory, workspace)
-    if manifest is None:
-        raise AuthoringWorkbenchError("Workspace has no voice manifest snapshot")
-    overrides = _queue_voice_overrides_for_manifest(manifest)
-    runtime_binding = _failure_reference_runtime_binding(directory, workspace)
-    if runtime_binding is None:
-        return overrides
-    return {**overrides, **runtime_binding.queue_voice_overrides}
+    return load_workspace_queue_voice_overrides(
+        directory,
+        workspace,
+        error_type=AuthoringWorkbenchError,
+    )
 
 
 def _read_file_bytes(path, label):
@@ -4839,52 +4790,23 @@ _workspace_config_fingerprint = workspace_config_fingerprint
 
 
 def _workspace_run_config_with_policy(run_config):
-    if not isinstance(run_config, dict):
-        raise AuthoringWorkbenchError("Workspace run configuration is malformed")
-    legacy_fields = {"backend", "model", "generation_profile"}
-    fallback_fields = legacy_fields | {"missing_voice_policy"}
-    current_fields = fallback_fields | {"failure_repair_policy"}
-    fields = frozenset(run_config)
-    if fields not in {
-        frozenset(legacy_fields),
-        frozenset(fallback_fields),
-        frozenset(current_fields),
-    }:
-        raise AuthoringWorkbenchError("Workspace run configuration is malformed")
-    try:
-        policy = MissingVoicePolicy.from_document(
-            run_config.get("missing_voice_policy")
-        )
-    except MissingVoicePolicyError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    try:
-        repair_policy = FailureRepairPolicy.from_document(
-            run_config.get("failure_repair_policy")
-        )
-    except FailureRepairPolicyError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    return {
-        "backend": run_config.get("backend"),
-        "model": run_config.get("model"),
-        "generation_profile": run_config.get("generation_profile"),
-        "missing_voice_policy": policy.to_document(),
-        "failure_repair_policy": repair_policy.to_document(),
-    }
+    return normalize_workspace_run_config(
+        run_config,
+        error_type=AuthoringWorkbenchError,
+    )
 
 
 def _workspace_missing_voice_policy(workspace):
-    return MissingVoicePolicy.from_document(
-        _workspace_run_config_with_policy(workspace.get("run_config"))[
-            "missing_voice_policy"
-        ]
+    return workspace_missing_voice_policy(
+        workspace,
+        error_type=AuthoringWorkbenchError,
     )
 
 
 def _workspace_failure_repair_policy(workspace):
-    return FailureRepairPolicy.from_document(
-        _workspace_run_config_with_policy(workspace.get("run_config"))[
-            "failure_repair_policy"
-        ]
+    return workspace_failure_repair_policy(
+        workspace,
+        error_type=AuthoringWorkbenchError,
     )
 
 
@@ -5209,6 +5131,7 @@ __all__ = [
     "AuthoringRuntimeStatus",
     "AuthoringWorkbenchError",
     "CollectionSelection",
+    "FailureReferenceRuntimeBinding",
     "GenerationReadiness",
     "ImmutableHistoryTimestamp",
     "ReviewItem",

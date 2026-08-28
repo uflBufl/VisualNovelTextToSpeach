@@ -8,11 +8,66 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.failure_repair import (
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+)
+from vntts.authoring.missing_voice_policy import (
+    MissingVoicePolicy,
+    MissingVoicePolicyError,
+)
 from vntts.authoring.workspace_foundation import (
     contained_path,
     require_sha256,
     safe_relative_path,
 )
+
+
+def normalize_workspace_run_config(run_config, *, error_type=ValueError):
+    """Normalize every supported workspace run-config generation."""
+    if not isinstance(run_config, dict):
+        raise error_type("Workspace run configuration is malformed")
+    legacy_fields = {"backend", "model", "generation_profile"}
+    fallback_fields = legacy_fields | {"missing_voice_policy"}
+    current_fields = fallback_fields | {"failure_repair_policy"}
+    if frozenset(run_config) not in {
+        frozenset(legacy_fields),
+        frozenset(fallback_fields),
+        frozenset(current_fields),
+    }:
+        raise error_type("Workspace run configuration is malformed")
+    try:
+        policy = MissingVoicePolicy.from_document(
+            run_config.get("missing_voice_policy")
+        )
+        repair_policy = FailureRepairPolicy.from_document(
+            run_config.get("failure_repair_policy")
+        )
+    except (MissingVoicePolicyError, FailureRepairPolicyError) as error:
+        raise error_type(str(error)) from error
+    return {
+        "backend": run_config.get("backend"),
+        "model": run_config.get("model"),
+        "generation_profile": run_config.get("generation_profile"),
+        "missing_voice_policy": policy.to_document(),
+        "failure_repair_policy": repair_policy.to_document(),
+    }
+
+
+def workspace_missing_voice_policy(workspace, *, error_type=ValueError):
+    """Load the normalized missing-voice policy bound to a workspace."""
+    config = normalize_workspace_run_config(
+        workspace.get("run_config"), error_type=error_type
+    )
+    return MissingVoicePolicy.from_document(config["missing_voice_policy"])
+
+
+def workspace_failure_repair_policy(workspace, *, error_type=ValueError):
+    """Load the normalized failure-repair policy bound to a workspace."""
+    config = normalize_workspace_run_config(
+        workspace.get("run_config"), error_type=error_type
+    )
+    return FailureRepairPolicy.from_document(config["failure_repair_policy"])
 
 
 def workspace_config_fingerprint(
@@ -107,4 +162,10 @@ def selected_voice_manifest_path(
     return path
 
 
-__all__ = ["selected_voice_manifest_path", "workspace_config_fingerprint"]
+__all__ = [
+    "normalize_workspace_run_config",
+    "selected_voice_manifest_path",
+    "workspace_config_fingerprint",
+    "workspace_failure_repair_policy",
+    "workspace_missing_voice_policy",
+]
