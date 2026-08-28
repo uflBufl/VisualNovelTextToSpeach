@@ -1401,7 +1401,8 @@ without publishing WAVs; their automatic unresolved selection IDs are
 `4ce7be2bf2c27b49c85de6ec466aa10da1635854cfda33e7837fbe31b5743f68`
 and
 `06fad43f38288bf2a9619863e17b24324f141dc057eb5decb4d3fce7be3a52ae`.
-`314606:65` produced its 4.72-second pending WAV on its second bounded attempt,
+`314606:65` produced its 4.72-second pending WAV in candidate workspace
+`resume-395a5e5eec0327a3a793b66d-dc187d97a6cb802a` on its second bounded attempt,
 seed 1, with SHA-256
 `06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`;
 its one-cohort review bundle ID is
@@ -1592,3 +1593,35 @@ none uses Narrator or Centurion.
 Only `reverse1999:314606:65:1664f7ace785d5c3` remains as Aderyn speech work.
 Its selected hypothesis must still cross the separate terminal audio-quality
 gate because hypothesis preference is not approval.
+
+### Pure audio-event omission checkpoint
+
+The seven pure events with no installed semantically validated source and no
+currently supported local effect generator were terminalized without WAVs or
+TTS attempts. The exact IDs cover Aderyn `*whimper*` and `*yelp*`, Narrator
+`*pop*`, the three `*bang*` records and `*buzzzzz*`. Every typed plan has an
+empty spoken projection; mixed `gurgle` and `gasp` dialogue was deliberately
+excluded.
+
+The immutable successor is
+`resume-395a5e5eec0327a3a793b66d-f122e31c31923351`, with workspace SHA-256
+`fdd6cb4b345a156f9cb172709caea04b0f2d56ce82e57d51ef34cb3227a5d8d8`
+and generation-state SHA-256
+`9f421bdb9fdd89bea67f48ab5a54477d4f99fa35d65eb90d1625ad8d0fc9491f`.
+It has seven `omitted/omitted` authorities, 471 approved WAVs, 28 effective
+live-fallback decisions, zero failed records, no active attempt and no partial
+WAV. Its recorded base-state hash exactly matches the unchanged predecessor
+hash
+`1cc2db4e172a827a03fdd6bcc5ee60ee2a69c1fe1947490531a60f4d1efe0bc3`.
+Repeating the exact command returned the same directory with `created=false`,
+and the runtime manifest validator loaded all seven omission identities.
+
+The final Aderyn speech gate is prepared separately as one-sample review bundle
+`current-character-story-aderyn-final-quality-v1.json`, bundle ID
+`d18033000170a8f842576a686515e35e8084641e543f892462024be26108ff44`.
+It contains only `reverse1999:314606:65:1664f7ace785d5c3`, has no technical
+attention flags, and binds candidate workspace/state, the 4.72-second WAV and
+SHA-256
+`06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`.
+Accepting or rejecting that cohort is the remaining human audio-quality action;
+the bundle publication itself changes no generation state.

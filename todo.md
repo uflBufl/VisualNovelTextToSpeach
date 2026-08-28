@@ -41,22 +41,10 @@ or repeat cohort review merely to combine them.
       that selection explicitly is not audio approval. Present this one exact
       WAV through the terminal quality-review gate, then compose an approval or
       route it to the existing `Aderyn -> Rhiannon` Pocket fallback without
-      rerendering. Do not infer the decision from old chat or TODO text.
-- [ ] Resolve the seven remaining non-verbal events without pronouncing their
-      literal markup: Aderyn `*whimper*` and `*yelp*`, Narrator `*pop*`, three
-      `*bang*` lines and `*buzzzzz*`. Prefer a checksum-bound installed or
-      generated effect only after semantic and perceptual validation; without
-      such evidence retain an explicit omission authority. This event policy
-      is independent of character voice fallback. Implement that authority as
-      an immutable exact-ID workspace successor: validate a pure-event typed
-      plan with an empty spoken projection, bind the queue/plan/base hashes and
-      a constrained omission reason, write no WAV, and reject speech or mixed
-      speech/event inputs. Carry the terminal omission ledger into the final
-      generated manifest. At runtime, an exact line/text match must bypass both
-      generated and live TTS, report an explicit omission route and complete
-      immediately so story advance remains deterministic. Cover state,
-      workspace, manifest, pack and runtime tamper/idempotence behavior with
-      tests before applying the command to the seven current IDs.
+      rerendering. The exact one-sample bundle is
+      `current-character-story-aderyn-final-quality-v1.json`, bundle ID
+      `d18033000170a8f842576a686515e35e8084641e543f892462024be26108ff44`.
+      Do not infer the decision from old chat or TODO text.
 - [ ] Rebuild the approved-only manifest from the composed terminal state and
       require all 592 queue items to have approved audio, an explicit supported
       live fallback or an explicit non-verbal omission. Verify zero pending
