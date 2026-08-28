@@ -20,6 +20,16 @@ SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS = frozenset(
     }
 )
 SOURCE_REFERENCE_RETIREMENT_REASONS = frozenset({"real_story_quality_failure"})
+MISSING_VOICE_REUSE_BINDING_FIELD = "vntts.authoring.missing_voice_reuse"
+MISSING_VOICE_REUSE_BINDING_SCHEMA = "vntts.authoring-missing-voice-reuse-binding"
+MISSING_VOICE_REUSE_BINDING_VERSION = 1
+MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION = 2
+SUPPORTED_MISSING_VOICE_REUSE_BINDING_VERSIONS = frozenset(
+    {
+        MISSING_VOICE_REUSE_BINDING_VERSION,
+        MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
+    }
+)
 
 
 class SourceReferenceBindingError(ValueError):
@@ -27,7 +37,26 @@ class SourceReferenceBindingError(ValueError):
 
 
 def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
-    """Return validated exact queue overrides from a voice-manifest document."""
+    """Return all validated exact queue overrides from a voice manifest."""
+    # Callers commonly pass a generator over the queue. Both independent
+    # binding layers must validate against the same complete identity set.
+    queue_ids = None if queue_ids is None else tuple(queue_ids)
+    source_overrides = _source_reference_overrides_from_manifest(
+        document, queue_ids=queue_ids, voices=voices
+    )
+    reuse_overrides = _missing_voice_reuse_overrides_from_manifest(
+        document, queue_ids=queue_ids, voices=voices
+    )
+    overlap = set(source_overrides).intersection(reuse_overrides)
+    if overlap:
+        raise SourceReferenceBindingError(
+            "Source-reference and missing-voice reuse bindings overlap queue IDs: "
+            + ", ".join(sorted(overlap))
+        )
+    return {**source_overrides, **reuse_overrides}
+
+
+def _source_reference_overrides_from_manifest(document, *, queue_ids=None, voices=()):
     value = document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
     if value is None:
         return {}
@@ -201,6 +230,259 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
     return parsed
 
 
+def _missing_voice_reuse_overrides_from_manifest(
+    document, *, queue_ids=None, voices=()
+):
+    value = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse binding must be an object"
+        )
+    version = value.get("schema_version")
+    mode = value.get("mode")
+    if (
+        value.get("schema") != MISSING_VOICE_REUSE_BINDING_SCHEMA
+        or version not in SUPPORTED_MISSING_VOICE_REUSE_BINDING_VERSIONS
+        or (version, mode)
+        not in {
+            (MISSING_VOICE_REUSE_BINDING_VERSION, "comparison_sample_only"),
+            (MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION, "approved_cohort_reuse"),
+        }
+    ):
+        raise SourceReferenceBindingError(
+            "Unsupported missing-voice reuse binding schema"
+        )
+    _required_sha256(value.get("plan_id"), "Missing-voice reuse plan ID")
+    _required_sha256(
+        value.get("source_voice_manifest_sha256"),
+        "Missing-voice reuse source manifest SHA-256",
+    )
+    _text(
+        value.get("source_workspace_id"),
+        "Missing-voice reuse source workspace ID",
+    )
+    _required_sha256(
+        value.get("source_workspace_sha256"),
+        "Missing-voice reuse source workspace SHA-256",
+    )
+    if mode == "comparison_sample_only":
+        _required_sha256(
+            value.get("candidate_id"), "Missing-voice reuse candidate ID"
+        )
+        candidate = _text(
+            value.get("candidate_voice_character"),
+            "Missing-voice reuse candidate voice",
+        )
+        references = value.get("candidate_reference_sha256s")
+        if not isinstance(references, list) or not references:
+            raise SourceReferenceBindingError(
+                "Missing-voice reuse candidate references are empty"
+            )
+        for reference in references:
+            _required_sha256(
+                reference, "Missing-voice reuse candidate reference SHA-256"
+            )
+        candidates = {normalize_character_name(candidate): candidate}
+    else:
+        candidates = _validate_approved_reuse_authority(value)
+    cohort_ids = value.get("cohort_ids")
+    if (
+        not isinstance(cohort_ids, list)
+        or not cohort_ids
+        or cohort_ids != sorted(set(cohort_ids))
+        or any(not _is_sha256(cohort_id) for cohort_id in cohort_ids)
+    ):
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse cohort IDs are not canonical"
+        )
+    known_queue_ids = None if queue_ids is None else set(queue_ids)
+    known_voices = {
+        normalize_character_name(voice.character): voice.character for voice in voices
+    }
+    if known_voices and not set(candidates).issubset(known_voices):
+        raise SourceReferenceBindingError(
+            "A selected missing-voice reuse candidate is absent from the manifest"
+        )
+    overrides = value.get("queue_voice_overrides")
+    if not isinstance(overrides, dict) or (
+        mode == "comparison_sample_only" and not overrides
+    ):
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse overrides must be a non-empty object"
+        )
+    parsed = {}
+    for queue_id, character in overrides.items():
+        queue_id = _text(queue_id, "Missing-voice reuse queue ID")
+        character = _text(character, f"Missing-voice reuse queue {queue_id!r} voice")
+        if known_queue_ids is not None and queue_id not in known_queue_ids:
+            raise SourceReferenceBindingError(
+                f"Missing-voice reuse queue ID is absent from the queue: {queue_id}"
+            )
+        if normalize_character_name(character) not in candidates:
+            raise SourceReferenceBindingError(
+                "Missing-voice reuse override targets an unselected candidate voice"
+            )
+        parsed[queue_id] = character
+    if value.get("queue_voice_overrides_sha256") != queue_voice_overrides_sha256(
+        parsed
+    ):
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse override checksum is inconsistent"
+        )
+    authority = value.get("authority")
+    expected_authority = (
+        "Comparison-only exact sample bindings. This authority does not bind the "
+        "remaining cohort or approve generated audio."
+        if mode == "comparison_sample_only"
+        else "Human-reviewed exact cohort reuse binding. Neither decisions bind no voice."
+    )
+    if authority != expected_authority:
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse authority statement is invalid"
+        )
+    return parsed
+
+
+def _validate_approved_reuse_authority(value):
+    for field, label in (
+        ("review_bundle_id", "Missing-voice reuse review bundle ID"),
+        ("review_bundle_sha256", "Missing-voice reuse review bundle SHA-256"),
+        ("review_session_sha256", "Missing-voice reuse review session SHA-256"),
+        ("blind_key_sha256", "Missing-voice reuse blind-key SHA-256"),
+    ):
+        _required_sha256(value.get(field), label)
+    selected = value.get("selected_candidates")
+    if not isinstance(selected, list):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice selected candidates must be a list"
+        )
+    candidates = {}
+    candidate_ids = []
+    for record in selected:
+        if not isinstance(record, dict) or set(record) != {
+            "candidate_id",
+            "voice_character",
+            "reference_sha256s",
+        }:
+            raise SourceReferenceBindingError(
+                "Approved missing-voice selected candidate is malformed"
+            )
+        candidate_id = _required_sha256(
+            record.get("candidate_id"), "Approved missing-voice candidate ID"
+        )
+        character = _text(
+            record.get("voice_character"), "Approved missing-voice candidate voice"
+        )
+        references = record.get("reference_sha256s")
+        if not isinstance(references, list) or not references:
+            raise SourceReferenceBindingError(
+                "Approved missing-voice candidate references are empty"
+            )
+        for reference in references:
+            _required_sha256(
+                reference, "Approved missing-voice candidate reference SHA-256"
+            )
+        normalized = normalize_character_name(character)
+        if normalized in candidates:
+            raise SourceReferenceBindingError(
+                "Approved missing-voice candidate voices are duplicated"
+            )
+        candidates[normalized] = character
+        candidate_ids.append(candidate_id)
+    if candidate_ids != sorted(set(candidate_ids)):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice candidates are not canonical"
+        )
+    decisions = value.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions are empty"
+        )
+    observed_cohorts = []
+    observed_queue_ids = set()
+    used_candidate_ids = set()
+    selected_by_id = {
+        record["candidate_id"]: normalize_character_name(record["voice_character"])
+        for record in selected
+    }
+    expected_overrides = {}
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            raise SourceReferenceBindingError(
+                "Approved missing-voice decision is malformed"
+            )
+        cohort_id = _required_sha256(
+            decision.get("cohort_id"), "Approved missing-voice cohort ID"
+        )
+        queue_ids = decision.get("queue_ids")
+        if (
+            not isinstance(queue_ids, list)
+            or not queue_ids
+            or queue_ids != sorted(set(queue_ids))
+        ):
+            raise SourceReferenceBindingError(
+                "Approved missing-voice decision queue IDs are not canonical"
+            )
+        if observed_queue_ids.intersection(queue_ids):
+            raise SourceReferenceBindingError(
+                "Approved missing-voice decisions overlap queue IDs"
+            )
+        observed_queue_ids.update(queue_ids)
+        outcome = decision.get("decision")
+        if outcome == "neither":
+            if set(decision) != {"cohort_id", "decision", "queue_ids"}:
+                raise SourceReferenceBindingError(
+                    "Neither missing-voice decision is malformed"
+                )
+        elif outcome == "candidate":
+            if set(decision) != {
+                "cohort_id",
+                "decision",
+                "candidate_id",
+                "voice_character",
+                "queue_ids",
+            }:
+                raise SourceReferenceBindingError(
+                    "Selected missing-voice decision is malformed"
+                )
+            candidate_id = _required_sha256(
+                decision.get("candidate_id"), "Selected missing-voice candidate ID"
+            )
+            voice = _text(
+                decision.get("voice_character"), "Selected missing-voice voice"
+            )
+            if selected_by_id.get(candidate_id) != normalize_character_name(voice):
+                raise SourceReferenceBindingError(
+                    "Selected missing-voice decision references an unknown candidate"
+                )
+            used_candidate_ids.add(candidate_id)
+            expected_overrides.update({queue_id: voice for queue_id in queue_ids})
+        else:
+            raise SourceReferenceBindingError(
+                "Approved missing-voice decision outcome is unsupported"
+            )
+        observed_cohorts.append(cohort_id)
+    if observed_cohorts != sorted(set(observed_cohorts)):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions are not canonical"
+        )
+    if observed_cohorts != value.get("cohort_ids"):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions disagree with declared cohorts"
+        )
+    if used_candidate_ids != set(selected_by_id):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice selected candidates must each bind a cohort"
+        )
+    if value.get("queue_voice_overrides") != expected_overrides:
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions disagree with queue overrides"
+        )
+    return candidates
+
+
 def retired_source_reference_variants_from_manifest(document):
     """Return validated inactive variant records from a version-3 manifest."""
     value = document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
@@ -316,6 +598,11 @@ __all__ = [
     "SOURCE_REFERENCE_BINDINGS_MULTI_VERSION",
     "SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION",
     "SOURCE_REFERENCE_RETIREMENT_REASONS",
+    "MISSING_VOICE_REUSE_BINDING_FIELD",
+    "MISSING_VOICE_REUSE_BINDING_SCHEMA",
+    "MISSING_VOICE_REUSE_BINDING_VERSION",
+    "MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION",
+    "SUPPORTED_MISSING_VOICE_REUSE_BINDING_VERSIONS",
     "SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS",
     "SourceReferenceBindingError",
     "queue_voice_overrides_from_manifest",

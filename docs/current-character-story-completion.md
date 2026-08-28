@@ -949,3 +949,79 @@ The typed planner now requires reference/listening evidence for all four and
 will not authorize a fourth MOSS seed. Together with the four earlier
 pause/reference cases, all eight Mrs. Owen/Hotelier lines now require explicit
 comparison evidence rather than more automatic production attempts.
+
+The remaining known-role missing-voice scope is now an immutable comparison
+plan rather than a 95-line manual review request. Plan
+`current-character-story-aderyn-missing-voice-reuse-v1.json` has ID
+`a5a0cf1969f1ed4c4b11ea2e8592dccfa2796da0e11298abf28e28bc94b9e96f`.
+It binds all 93 absent spoken Aderyn lines to two explicit review scopes: 53
+lines with the ten observed `3146xx` portrait IDs and 40 lines with the three
+observed `5337xx` IDs. These are review families only, not an assertion that
+neighboring portrait numbers are the same image or voice. The plan compares the
+active adult Aderyn source reference, the three-reference Rhiannon voice and
+Centurion; the retired child source-reference variant is excluded. Deterministic
+short, medium and long sampling reduces the future human gate to six lines.
+
+Plan `current-character-story-dobharchu-534705-missing-voice-reuse-v1.json` has
+ID `c373c52cfb7bbf61b6238cdf9d353b9dab5ab7567422a39e9bffe84c2afb02f0`.
+It preserves the two exact `534705.png` lines as one separate review scope and
+compares the active `534703` and `534704` Dobharchú references with Centurion.
+Both lines are samples because only short and long buckets exist. Neither plan
+changes a queue, state, manifest binding or production selection; candidate
+workspaces and blinded rendered evidence are required before any family can
+inherit a voice.
+
+The bounded candidate generation and planner-authorized repair pass is now
+complete. Every initial run used seed zero and `retries=0`; a failed sample was
+retried only when the typed failure planner selected one bounded seed or safe
+sentence segmentation. Inline-marker and `reference_comparison` cases were not
+silently folded into the trial, and no third seed was spent. The adult Aderyn
+candidate published one of six samples after safe sentence segmentation;
+Rhiannon published one of six direct samples; Centurion published zero of six.
+The remaining arms are typed failures, primarily `missed_eos_audio_limit`, so
+neither Aderyn review family has a complete selectable candidate. This is
+negative evidence, not permission to choose from the successful subset.
+
+The candidate preparation path also closes two predecessor-composition gaps.
+A successive config rebase preserves an already validated
+`generated_audio_rejected` live-fallback ledger byte-for-byte while rebinding
+only the new config projection; any changed review, WAV, status, decision
+ledger or unrelated result field fails closed. It likewise carries the exact
+workspace-level audio-event composition authority and every referenced input
+when an approved composed item is carried, and rejects conflicts or missing
+composition inputs before publication. This keeps sample workspaces loadable
+without weakening earlier terminal decisions.
+
+For Dobharchú portrait `534705`, the `534704` reference and Centurion each
+published the short sample but not the long sample. The `534703` reference
+published both exact samples, including a 7.12-second long line with measured
+0.24-second maximum internal silence, and is the only complete candidate. Its
+identity remains hidden from the operator until the decision is imported.
+
+The immutable Aderyn review bundle has ID
+`a1c72942984c2849434a2e205188dbfc339b8b1291112c7b873bdc350e17a976`
+and lives at
+`current-character-story-aderyn-missing-voice-reuse-v1-review`. The immutable
+Dobharchú bundle has ID
+`91b9e2b76dfb22329d45a97113a7e0ef5bcd491592015f995510c69ed6c4e450`
+and lives at
+`current-character-story-dobharchu-534705-missing-voice-reuse-v1-review`.
+Each public bundle contains a complete opaque `candidate x sample` matrix:
+generated arms bind copied WAV hashes and repair strategy; failed arms retain
+their typed kind and attempt count and never disappear from the comparison.
+Candidate selection is enabled only when the candidate completed every exact
+sample in that cohort and every available cohort WAV reached end of playback.
+`Neither` also requires all available WAVs to be heard. Replay and fixed
+previous/next controls remain available while the small decision ledger is
+saved in the background.
+
+`vntts-pregenerate missing-voice-reuse-review-ui SESSION.json` opens this
+surface, while `missing-voice-reuse-review-status` performs read-only
+validation. After all cohort decisions are terminal,
+`missing-voice-reuse-binding PLAN.json SESSION.json --output DIRECTORY`
+publishes a no-replace successor voice bundle. A selected opaque candidate is
+unblinded through the mode-0600 key and bound to every exact target queue ID in
+that cohort, not merely the listening samples. A `Neither` decision is retained
+as an auditable zero-override authority. The importer rechecks the current
+source workspace, plan, review bundle, session, key, candidate references and
+all copied manifest inputs; it cannot regenerate or approve a WAV.

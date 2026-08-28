@@ -378,6 +378,51 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             ):
                 validate_config_rebase_workspace(result.directory, workspace, state)
 
+    def test_chained_rebase_preserves_exact_rejected_live_fallback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, target = _prepare(root, review_status="rejected")
+            first = rebase_workspace_config(source, target, root / "workspaces")
+            first_state_path = first.directory / "generated-audio/generation-state.json"
+            queue_path = first.directory / "queue.jsonl"
+            authorize_live_fallback(
+                first_state_path,
+                queue_path,
+                fixture["queue_id"],
+                reason="generated_audio_rejected",
+                model="pocket-tts",
+            )
+            first_state = load_generation_state(first_state_path, queue_path)
+            fallback = first_state["items"][fixture["queue_id"]]["live_fallback"]
+
+            second = rebase_workspace_config(
+                first.directory, target, root / "workspaces"
+            )
+            second_workspace = json.loads(
+                (second.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            second_state = load_generation_state(
+                second.directory / "generated-audio/generation-state.json",
+                second.directory / "queue.jsonl",
+            )
+            item = second_state["items"][fixture["queue_id"]]
+
+            self.assertEqual(item["live_fallback"], fallback)
+            self.assertNotEqual(
+                item["config_rebase"],
+                first_state["items"][fixture["queue_id"]]["config_rebase"],
+            )
+            validate_config_rebase_workspace(
+                second.directory, second_workspace, second_state
+            )
+            item["live_fallback"]["previous_result_sha256"] = "0" * 64
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "carried live fallback changed"
+            ):
+                validate_config_rebase_workspace(
+                    second.directory, second_workspace, second_state
+                )
+
     def test_rejects_changed_reference_bytes_before_publication(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

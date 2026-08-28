@@ -59,6 +59,18 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       explicit, checksum-bound reuse/fallback decision with generated evidence
       and human approval; unknown-character fallback policy is not authority
       for these known roles.
+      Review the two published blind checksum-bound tasks. The Aderyn task has
+      no complete candidate after bounded generation and therefore permits only
+      `Neither` after its two available WAVs are heard. The Dobharchú task has
+      one complete opaque candidate; hear all four available WAVs and choose
+      that candidate or `Neither`. Replay remains available during background
+      saves and failed arms remain visible but unselectable.
+      After both sessions are terminal, run the implemented no-replace decision
+      importer. Extend a selected voice only to the exact queue IDs in its
+      approved family, create a config-addressed successor, generate and
+      technically validate the full family, then obtain ordinary WAV quality
+      review before merge. `Neither` must leave the family unbound for an
+      explicit live Narrator fallback decision.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 

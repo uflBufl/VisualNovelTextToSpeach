@@ -30,9 +30,11 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_audio_event_composition_workspace,
+    create_resume_workspace,
     inspect_workspace,
     list_review_items,
 )
@@ -242,6 +244,56 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 load_generation_state(
                     successor_state_path, created.directory / "queue.jsonl"
                 )
+
+    def test_config_rebase_carries_complete_composition_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(root)
+            source = create_audio_event_composition_workspace(
+                base, composition.directory, root / "composition-workspaces"
+            )
+            review_generation_item(
+                source.directory / "generated-audio/generation-state.json",
+                queue_item.queue_id,
+                "approved",
+                queue_path=source.directory / "queue.jsonl",
+            )
+            source_workspace = json.loads(
+                (source.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            imported = root / "imports" / source_workspace["source"]["import_id"]
+            target = create_resume_workspace(
+                imported,
+                root / "target-workspaces",
+                story_index=source.directory / "inputs/story-index.jsonl",
+                voice_manifest=source.directory / "inputs/voice/manifest.json",
+                backend=source_workspace["run_config"]["backend"],
+                model=source_workspace["run_config"]["model"],
+                generation_profile=source_workspace["run_config"]["generation_profile"],
+                narrator_character=source_workspace["narrator_character"],
+            )
+            target_state_path = (
+                target.directory / "generated-audio/generation-state.json"
+            )
+            target_state = json.loads(target_state_path.read_text(encoding="utf-8"))
+            target_state["active"] = None
+            target_state_path.write_text(
+                json.dumps(target_state, sort_keys=True), encoding="utf-8"
+            )
+
+            rebased = rebase_workspace_config(
+                source.directory, target.directory, root / "rebased-workspaces"
+            )
+            summary = inspect_workspace(rebased.directory)
+            rebased_workspace = json.loads(
+                (rebased.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(summary.approved, 1)
+        self.assertEqual(
+            rebased_workspace["audio_event_composition"],
+            source_workspace["audio_event_composition"],
+        )
 
     def test_rejects_unapproved_or_tampered_composition_authority(self):
         with TemporaryDirectory() as directory:

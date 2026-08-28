@@ -104,6 +104,26 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.missing_voice_reuse import (
+    MissingVoiceReuseError,
+    build_missing_voice_reuse_candidate_command,
+    build_missing_voice_reuse_plan,
+    load_missing_voice_reuse_plan,
+    parse_cohort_arguments,
+    prepare_missing_voice_reuse_candidate_workspace,
+    write_missing_voice_reuse_plan,
+)
+from vntts.authoring.missing_voice_reuse_binding import (
+    MissingVoiceReuseBindingError,
+    publish_missing_voice_reuse_binding,
+)
+from vntts.authoring.missing_voice_reuse_review import (
+    MissingVoiceReuseReviewError,
+    build_missing_voice_reuse_review,
+    load_missing_voice_reuse_review,
+    missing_voice_reuse_review_progress,
+    parse_missing_voice_reuse_evidence,
+)
 from vntts.authoring.pending_resolution import (
     build_pending_regeneration_command,
     build_pending_resolution_plan,
@@ -848,6 +868,75 @@ def create_parser():
     voice_repair_command.add_argument("plan", type=Path)
     voice_repair_command.add_argument("candidate_id")
     voice_repair_command.add_argument("workspace", type=Path)
+    missing_voice_reuse = subparsers.add_parser(
+        "missing-voice-reuse-plan",
+        help="Plan bounded existing-voice comparisons for known unbound roles",
+    )
+    missing_voice_reuse.add_argument("workspace", type=Path)
+    missing_voice_reuse.add_argument("character")
+    missing_voice_reuse.add_argument(
+        "--cohort",
+        action="append",
+        required=True,
+        help="Exact review cohort as LABEL=PORTRAIT[,PORTRAIT]",
+    )
+    missing_voice_reuse.add_argument(
+        "--candidate-voice",
+        action="append",
+        required=True,
+        help="Existing immutable manifest voice to compare; repeat at least twice",
+    )
+    missing_voice_reuse.add_argument("--output", type=Path, required=True)
+    missing_voice_candidate_workspace = subparsers.add_parser(
+        "missing-voice-reuse-candidate-workspace",
+        help="Create one isolated candidate workspace from a reuse plan",
+    )
+    missing_voice_candidate_workspace.add_argument("plan", type=Path)
+    missing_voice_candidate_workspace.add_argument("candidate_id")
+    missing_voice_candidate_workspace.add_argument("import_directory", type=Path)
+    missing_voice_candidate_workspace.add_argument(
+        "--inputs-root", type=Path, required=True
+    )
+    missing_voice_candidate_workspace.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    missing_voice_candidate_command = subparsers.add_parser(
+        "missing-voice-reuse-candidate-command",
+        help="Validate and print an exact reuse sample generation command",
+    )
+    missing_voice_candidate_command.add_argument("plan", type=Path)
+    missing_voice_candidate_command.add_argument("candidate_id")
+    missing_voice_candidate_command.add_argument("workspace", type=Path)
+    missing_voice_review = subparsers.add_parser(
+        "missing-voice-reuse-review",
+        help="Publish a blind candidate-by-sample reuse review",
+    )
+    missing_voice_review.add_argument("plan", type=Path)
+    missing_voice_review.add_argument(
+        "--candidate-evidence",
+        action="append",
+        required=True,
+        help="CANDIDATE_ID=WORKSPACE; repeat for base and repair workspaces",
+    )
+    missing_voice_review.add_argument("--output", type=Path, required=True)
+    missing_voice_review.add_argument("--seed", type=int, default=0)
+    missing_voice_review_status = subparsers.add_parser(
+        "missing-voice-reuse-review-status",
+        help="Validate and summarize a blind missing-voice review",
+    )
+    missing_voice_review_status.add_argument("session", type=Path)
+    missing_voice_review_ui = subparsers.add_parser(
+        "missing-voice-reuse-review-ui",
+        help="Open the blind missing-voice reuse review UI",
+    )
+    missing_voice_review_ui.add_argument("session", type=Path)
+    missing_voice_binding = subparsers.add_parser(
+        "missing-voice-reuse-binding",
+        help="Import a completed blind review into a full-cohort manifest overlay",
+    )
+    missing_voice_binding.add_argument("plan", type=Path)
+    missing_voice_binding.add_argument("session", type=Path)
+    missing_voice_binding.add_argument("--output", type=Path, required=True)
     portrait_alias_plan = subparsers.add_parser(
         "portrait-alias-plan",
         help="Suggest checksum-bound same-character portrait expression aliases",
@@ -1892,6 +1981,92 @@ def main(argv=None):
             )
             print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
             return 0
+        if arguments.command == "missing-voice-reuse-plan":
+            plan = build_missing_voice_reuse_plan(
+                arguments.workspace,
+                arguments.character,
+                cohorts=parse_cohort_arguments(arguments.cohort),
+                candidate_voice_characters=tuple(arguments.candidate_voice),
+            )
+            write_missing_voice_reuse_plan(plan, arguments.output)
+            print(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            )
+            return 0
+        if arguments.command == "missing-voice-reuse-candidate-workspace":
+            result = prepare_missing_voice_reuse_candidate_workspace(
+                load_missing_voice_reuse_plan(arguments.plan),
+                arguments.candidate_id,
+                arguments.import_directory,
+                arguments.inputs_root,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if arguments.command == "missing-voice-reuse-candidate-command":
+            command = build_missing_voice_reuse_candidate_command(
+                load_missing_voice_reuse_plan(arguments.plan),
+                arguments.candidate_id,
+                arguments.workspace,
+            )
+            print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "missing-voice-reuse-review":
+            session = build_missing_voice_reuse_review(
+                arguments.plan,
+                parse_missing_voice_reuse_evidence(arguments.candidate_evidence),
+                arguments.output,
+                seed=arguments.seed,
+            )
+            bundle, progress = load_missing_voice_reuse_review(session)
+            print(
+                json.dumps(
+                    {
+                        "session": str(session),
+                        "bundle_id": bundle["bundle_id"],
+                        "candidate_count": bundle["candidate_count"],
+                        "cohort_count": bundle["cohort_count"],
+                        "completed_count": missing_voice_reuse_review_progress(
+                            bundle, progress
+                        )[0],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "missing-voice-reuse-review-status":
+            bundle, session = load_missing_voice_reuse_review(arguments.session)
+            completed, total = missing_voice_reuse_review_progress(bundle, session)
+            print(
+                json.dumps(
+                    {
+                        "bundle_id": bundle["bundle_id"],
+                        "completed_count": completed,
+                        "total_count": total,
+                        "remaining_count": total - completed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "missing-voice-reuse-review-ui":
+            from vntts.authoring.missing_voice_reuse_review_ui import (
+                launch_missing_voice_reuse_review,
+            )
+
+            return launch_missing_voice_reuse_review(arguments.session)
+        if arguments.command == "missing-voice-reuse-binding":
+            result = publish_missing_voice_reuse_binding(
+                arguments.plan, arguments.session, arguments.output
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "portrait-alias-plan":
             plan = build_portrait_alias_plan(
                 arguments.quality_review,
@@ -2283,6 +2458,9 @@ def main(argv=None):
         FailureReferenceBindingError,
         LegacyAuthoringImportError,
         ListeningImportError,
+        MissingVoiceReuseError,
+        MissingVoiceReuseBindingError,
+        MissingVoiceReuseReviewError,
         PortraitAliasError,
         ReferenceSelectionError,
         ReferenceRenderComparisonError,

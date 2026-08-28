@@ -96,6 +96,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             target_directory, target_document, target_workspace_sha256 = (
                 load_workspace_authority(target_directory)
             )
+            audio_event_composition = _rebase_audio_event_composition(
+                source_document, target_document
+            )
             source_state_path = source_output / "generation-state.json"
             target_state_path = target_output / "generation-state.json"
             source_state_payload = _read_file_bytes(
@@ -141,6 +144,13 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 for voice in target_registry.unique_voices()
                 for reference in voice.references
             }
+            if audio_event_composition is not None:
+                target_reference_sha256s.add(
+                    _require_sha256(
+                        audio_event_composition.get("final_audio_sha256"),
+                        "Config rebase audio-event composition WAV SHA-256",
+                    )
+                )
             target_policy = _workspace_missing_voice_policy(target_document)
             source_policy = _workspace_missing_voice_policy(source_document)
             target_voice = _selected_voice_manifest(target_directory, target_document)
@@ -235,7 +245,10 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     raise AuthoringWorkbenchError(
                         f"Config rebase source WAV changed for {queue_id!r}"
                     )
-                projected = _project_source_item(result)
+                source_live_fallback = result.get("live_fallback")
+                projected = _project_source_item(
+                    result, exclude_live_fallback=source_live_fallback is not None
+                )
                 record = {
                     "queue_id": queue_id,
                     "source_item_sha256": _canonical_sha256(result),
@@ -252,6 +265,8 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 projected["config_rebase"] = {
                     key: value for key, value in record.items() if key != "queue_id"
                 }
+                if source_live_fallback is not None:
+                    projected["live_fallback"] = copy.deepcopy(source_live_fallback)
                 projected_state["items"][queue_id] = projected
                 records.append(record)
             if not records:
@@ -285,7 +300,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 target_document.get("failure_reference_binding"),
                 target_document.get("terminal_conflict_merge"),
                 config_rebase=rebase,
-                audio_event_composition=target_document.get("audio_event_composition"),
+                audio_event_composition=audio_event_composition,
             )
             workspace_id = (
                 "resume-"
@@ -307,6 +322,16 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 )
             )
             _copy_tree(target_directory / "inputs", staging / "inputs", snapshots)
+            if (
+                audio_event_composition is not None
+                and target_document.get("audio_event_composition") is None
+            ):
+                _copy_audio_event_composition_inputs(
+                    source_directory,
+                    staging,
+                    audio_event_composition,
+                    snapshots,
+                )
             _copy_tree(
                 target_directory / "provenance", staging / "provenance", snapshots
             )
@@ -381,6 +406,10 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 "failure_reference_binding",
             ):
                 workspace.pop(field, None)
+            if audio_event_composition is not None:
+                workspace["audio_event_composition"] = copy.deepcopy(
+                    audio_event_composition
+                )
             workspace.update(
                 {
                     "workspace_id": workspace_id,
@@ -394,6 +423,14 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 projected_state, output, output / "manifest.json"
             )
             validate_config_rebase_workspace(staging, workspace, projected_state)
+            # The focused projection validator accepts an in-memory state to
+            # avoid re-reading a concurrently changing source. Before
+            # publication, also load the complete state from disk so
+            # workspace-level item authorities (notably audio-event
+            # composition) cannot be omitted from an otherwise valid state.
+            load_generation_state(
+                output / "generation-state.json", staging / "queue.jsonl"
+            )
             for path, digest in snapshots:
                 if not path.is_file() or sha256_file(path) != digest:
                     raise AuthoringWorkbenchError(
@@ -516,6 +553,14 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         for voice in target_registry.unique_voices()
         for reference in voice.references
     }
+    audio_event_composition = workspace.get("audio_event_composition")
+    if isinstance(audio_event_composition, dict):
+        target_reference_sha256s.add(
+            _require_sha256(
+                audio_event_composition.get("final_audio_sha256"),
+                "Config rebase audio-event composition WAV SHA-256",
+            )
+        )
     source_state = _load_json(source_state_path, "config rebase source state")
     if not isinstance(source_state.get("items"), dict):
         raise AuthoringWorkbenchError(
@@ -618,7 +663,10 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError(
                 f"Config rebase source item changed for {queue_id!r}"
             )
-        projected = _project_source_item(source_item)
+        source_live_fallback = source_item.get("live_fallback")
+        projected = _project_source_item(
+            source_item, exclude_live_fallback=source_live_fallback is not None
+        )
         if _canonical_sha256(projected) != record["projected_item_sha256"]:
             raise AuthoringWorkbenchError(
                 f"Config rebase projected source changed for {queue_id!r}"
@@ -632,6 +680,24 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 f"Config rebase state item changed for {queue_id!r}"
             )
         live_fallback = current.get("live_fallback")
+        if source_live_fallback is not None:
+            expected = copy.deepcopy(projected)
+            expected["config_rebase"] = expected_extension
+            expected["live_fallback"] = copy.deepcopy(source_live_fallback)
+            if current != expected:
+                raise AuthoringWorkbenchError(
+                    f"Config rebase carried live fallback changed for {queue_id!r}"
+                )
+            audio = _within(
+                directory / "generated-audio",
+                _safe_relative(current.get("path"), "Config rebase WAV"),
+                "Config rebase WAV",
+            )
+            if not audio.is_file() or sha256_file(audio) != record["audio_sha256"]:
+                raise AuthoringWorkbenchError(
+                    f"Config rebase WAV changed for {queue_id!r}"
+                )
+            continue
         if live_fallback is not None:
             expected_base = copy.deepcopy(projected)
             expected_base["config_rebase"] = expected_extension
@@ -765,10 +831,12 @@ def validate_config_rebase_publication_authority(state_path, state):
         raise BulkGenerationError(str(error)) from error
 
 
-def _project_source_item(result):
+def _project_source_item(result, *, exclude_live_fallback=False):
     projected = copy.deepcopy(result)
     for field in _WORKFLOW_FIELDS:
         projected.pop(field, None)
+    if exclude_live_fallback:
+        projected.pop("live_fallback", None)
     return projected
 
 
@@ -817,6 +885,23 @@ def _route_reference_identity(
     failure_reference_binding=None,
     allow_missing=False,
 ):
+    audio_event_result = result if result is not None else source_result
+    if (
+        isinstance(audio_event_result, dict)
+        and audio_event_result.get("provider") == "original-game-audio-event"
+        and isinstance(audio_event_result.get("audio_event_composition"), dict)
+    ):
+        return (
+            "Audio Event",
+            (
+                _require_sha256(
+                    audio_event_result["audio_event_composition"].get(
+                        "final_audio_sha256"
+                    ),
+                    "Config rebase audio-event result WAV SHA-256",
+                ),
+            ),
+        )
     failure_route = _failure_reference_route(
         failure_reference_binding,
         queue_item,
@@ -979,6 +1064,95 @@ def _prior_config_rebase_target_route(result):
         for value in values
     )
     return character, digests
+
+
+def _rebase_audio_event_composition(source_workspace, target_workspace):
+    source = source_workspace.get("audio_event_composition")
+    target = target_workspace.get("audio_event_composition")
+    if source is not None and not isinstance(source, dict):
+        raise AuthoringWorkbenchError(
+            "Config rebase source audio-event composition is malformed"
+        )
+    if target is not None and not isinstance(target, dict):
+        raise AuthoringWorkbenchError(
+            "Config rebase target audio-event composition is malformed"
+        )
+    if source is not None and target is not None and source != target:
+        raise AuthoringWorkbenchError(
+            "Config rebase audio-event composition authorities conflict"
+        )
+    return copy.deepcopy(target if target is not None else source)
+
+
+def _copy_audio_event_composition_inputs(
+    source_directory, staging, composition, snapshots
+):
+    paths = sorted(
+        {
+            value
+            for key, value in composition.items()
+            if (key == "path" or key.endswith("_path"))
+            and isinstance(value, str)
+            and value
+        }
+    )
+    if not paths:
+        raise AuthoringWorkbenchError(
+            "Config rebase audio-event composition has no input paths"
+        )
+    roots = set()
+    for value in paths:
+        relative = _safe_relative(value, "Config rebase audio-event composition input")
+        if len(relative.parts) < 3 or relative.parts[0] != "inputs":
+            raise AuthoringWorkbenchError(
+                "Config rebase audio-event composition input leaves inputs"
+            )
+        source_file = _within(
+            source_directory,
+            relative,
+            "Config rebase audio-event composition source",
+        )
+        if source_file.is_symlink() or not source_file.is_file():
+            raise AuthoringWorkbenchError(
+                f"Config rebase audio-event composition input is missing: {value}"
+            )
+        roots.add(Path(*relative.parts[:2]))
+    for relative_root in sorted(roots):
+        source_root = _within(
+            source_directory,
+            relative_root,
+            "Config rebase audio-event composition source root",
+        )
+        if source_root.is_symlink() or not source_root.is_dir():
+            raise AuthoringWorkbenchError(
+                "Config rebase audio-event composition source root is invalid"
+            )
+        for source in sorted(source_root.rglob("*")):
+            if source.is_symlink():
+                raise AuthoringWorkbenchError(
+                    "Config rebase audio-event composition contains a symlink"
+                )
+            if source.is_dir():
+                continue
+            relative = relative_root / source.relative_to(source_root)
+            payload = _read_file_bytes(source, "config rebase audio-event composition")
+            digest = hashlib.sha256(payload).hexdigest()
+            destination = _within(
+                staging, relative, "Config rebase audio-event composition target"
+            )
+            if destination.exists():
+                if destination.is_symlink() or not destination.is_file():
+                    raise AuthoringWorkbenchError(
+                        "Config rebase audio-event composition target is unsafe"
+                    )
+                if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+                    raise AuthoringWorkbenchError(
+                        "Config rebase audio-event composition input conflicts"
+                    )
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(payload)
+            snapshots.append((source, digest))
 
 
 def _copy_tree(source, destination, snapshots):
