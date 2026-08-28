@@ -742,7 +742,7 @@ class MainTest(unittest.TestCase):
             live._get_live_configuration()["tracker_options"]["complete_dialogue_only"]
         )
 
-    def test_generated_audio_policy_enables_unique_prefix_routing(self):
+    def test_artifact_policy_expands_unique_indexed_prefix_before_routing(self):
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
@@ -775,8 +775,23 @@ class MainTest(unittest.TestCase):
         controller.chapter_voice_preloader.resolve_unique_prefix.assert_called_once_with(
             "Rhiannon",
             "The complete generated",
-            candidate_filter=wrapper.has_generated_line,
         )
+
+    def test_unique_story_text_recovers_ocr_lost_speaker_before_routing(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.chapter_voice_preloader.canonical_speaker = Mock(
+            return_value="Narrator"
+        )
+        controller.chapter_voice_preloader.resolve_unique_prefix_by_text = Mock(
+            return_value=SimpleNamespace(speaker="Hotelier")
+        )
+
+        character = controller._canonical_observed_character(
+            "Narrator",
+            "You know, we once had a guest who insisted on bringing his horse",
+        )
+
+        self.assertEqual(character, "Hotelier")
 
     def test_controller_passes_initialized_tts_to_dialog_scheduler(self):
         tts = object()

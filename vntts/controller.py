@@ -530,7 +530,7 @@ class AppController:
         )
         if is_empty(text):
             return False
-        character = self._canonical_observed_character(character)
+        character = self._canonical_observed_character(character, text)
         if self.chapter_voice_preloader.resolve_exact(character, text) is None:
             return False
         self.dialog_handler(character, text)
@@ -1108,20 +1108,17 @@ class AppController:
             and self.speech_backend.library is not None
         ):
             tracker_options["early_dialogue_resolver"] = (
-                self._resolve_early_generated_dialogue
+                self._resolve_early_indexed_dialogue
             )
         return {**configuration, "tracker_options": tracker_options}
 
-    def _resolve_early_generated_dialogue(self, character, text):
+    def _resolve_early_indexed_dialogue(self, character, text):
         backend = self.speech_backend
         if not isinstance(backend, GeneratedAudioFallbackBackend):
-            return None
-        if self._has_manual_voice_override(character):
             return None
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
             text,
-            candidate_filter=backend.has_generated_line,
         )
         return line.text if line is not None else None
 
@@ -1228,7 +1225,7 @@ class AppController:
             self.settings.ocr_language,
             self.correction_dictionary,
         )
-        return self._canonical_observed_character(character), text
+        return self._canonical_observed_character(character, text), text
 
     def _preview_voice(self, character, text):
         try:
@@ -1318,7 +1315,7 @@ class AppController:
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return True
-        character = self._canonical_observed_character(character)
+        character = self._canonical_observed_character(character, text)
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
@@ -1327,7 +1324,7 @@ class AppController:
         self.dialog_handler(character or "Narrator", preview)
         return not speech_deferred
 
-    def _canonical_observed_character(self, character):
+    def _canonical_observed_character(self, character, text=None):
         original = str(character or "Narrator").strip() or "Narrator"
         canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
         if callable(canonicalize):
@@ -1335,7 +1332,18 @@ class AppController:
             if isinstance(canonical, str) and normalize_character_name(
                 canonical
             ) != normalize_character_name(original):
-                return canonical
+                original = canonical
+
+        if text:
+            resolve_by_text = getattr(
+                self.chapter_voice_preloader,
+                "resolve_unique_prefix_by_text",
+                None,
+            )
+            if callable(resolve_by_text):
+                line = resolve_by_text(text)
+                if line is not None and isinstance(line.speaker, str):
+                    return line.speaker
 
         registry = getattr(self.voice_router, "registry", None)
         if registry is not None:
@@ -1465,6 +1473,10 @@ class AppController:
             self.error_handler(error)
 
     def _enqueue_dialog(self, character, text):
+        character = self._canonical_observed_character(character, text)
+        resolved_text = self._resolve_early_indexed_dialogue(character, text)
+        if resolved_text is not None:
+            text = resolved_text
         self._dialog_observed(character, text)
         return self.live_reader.enqueue(character, text)
 

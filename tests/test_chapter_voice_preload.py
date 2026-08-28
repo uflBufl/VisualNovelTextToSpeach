@@ -213,6 +213,84 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertEqual(line, fallback)
 
+    def test_unique_text_prefix_recovers_speaker_lost_by_ocr(self):
+        hotelier = ChapterDialogue(
+            "chapter-1:20",
+            "chapter-1",
+            20,
+            "Hotelier",
+            "You know, we once had a guest who brought a water horse inside.",
+            "b" * 64,
+        )
+        narrator = ChapterDialogue(
+            "chapter-1:19",
+            "chapter-1",
+            19,
+            "Narrator",
+            "An unrelated line establishes the current chapter.",
+            "a" * 64,
+        )
+        preloader = ChapterVoicePreloader((narrator, hotelier))
+        preloader.current_match = ChapterMatch("chapter-1", 19, 1.0)
+
+        line = preloader.resolve_unique_prefix_by_text(
+            "You know, we once had a guest who brought"
+        )
+
+        self.assertEqual(line, hotelier)
+        self.assertEqual(preloader.current_match.sequence, 20)
+
+    def test_unique_text_prefix_rejects_ambiguous_current_chapter(self):
+        first = ChapterDialogue(
+            "chapter-1:1",
+            "chapter-1",
+            1,
+            "Hotelier",
+            "The shared long opening ends one way.",
+            "a" * 64,
+        )
+        second = ChapterDialogue(
+            "chapter-1:2",
+            "chapter-1",
+            2,
+            "Rhiannon",
+            "The shared long opening ends another way.",
+            "b" * 64,
+        )
+        preloader = ChapterVoicePreloader((first, second))
+        preloader.current_match = ChapterMatch("chapter-1", 0, 1.0)
+
+        line = preloader.resolve_unique_prefix_by_text("The shared long opening")
+
+        self.assertIsNone(line)
+        self.assertEqual(preloader.current_match.sequence, 0)
+
+    def test_unique_text_prefix_does_not_escape_established_chapter(self):
+        current = ChapterDialogue(
+            "chapter-1:1",
+            "chapter-1",
+            1,
+            "Narrator",
+            "The current chapter line.",
+            "a" * 64,
+        )
+        elsewhere = ChapterDialogue(
+            "chapter-2:1",
+            "chapter-2",
+            1,
+            "Hotelier",
+            "The globally unique dialogue belongs elsewhere.",
+            "b" * 64,
+        )
+        preloader = ChapterVoicePreloader((current, elsewhere))
+        preloader.current_match = ChapterMatch("chapter-1", 1, 1.0)
+
+        line = preloader.resolve_unique_prefix_by_text(
+            "The globally unique dialogue belongs"
+        )
+
+        self.assertIsNone(line)
+
     def test_short_or_ambiguous_prefix_does_not_guess_dialogue(self):
         document = story_index_document()
         extra = {

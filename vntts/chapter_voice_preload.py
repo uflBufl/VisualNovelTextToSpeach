@@ -222,6 +222,40 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected
 
+    def resolve_unique_prefix_by_text(self, text, *, minimum_characters=20):
+        """Resolve one indexed line when OCR lost or corrupted its nameplate."""
+        prefix = _normalize(text)
+        if len(prefix) < minimum_characters:
+            return None
+
+        def matches(rows):
+            return [
+                row
+                for row in rows
+                if row.line_id
+                and row.text_sha256
+                and self.normalized_text[row].startswith(prefix)
+            ]
+
+        if self.current_match is not None:
+            nearby = matches(self.by_chapter.get(self.current_match.chapter, ()))
+            if len(nearby) == 1:
+                selected = nearby[0]
+                self.current_match = ChapterMatch(
+                    selected.chapter,
+                    selected.sequence,
+                    1.0,
+                )
+                return selected
+            return None
+
+        candidates = matches(self.dialogue)
+        if len(candidates) != 1:
+            return None
+        selected = candidates[0]
+        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        return selected
+
     def is_unique_incomplete_prefix(
         self,
         character,

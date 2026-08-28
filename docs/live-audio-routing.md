@@ -22,10 +22,29 @@ The selector keeps the established precedence:
    cases use live TTS with an explicit fallback reason.
 
 Generated WAV verification reads bytes once, hashes those exact bytes, and
-decodes the same snapshot. Early-prefix expansion reserves that verified PCM;
-if the artifact is missing or invalid before reservation, expansion is not
-eligible, and a reserved canonical line never falls through to live synthesis
-after a later file mutation.
+decodes the same snapshot. A sufficiently long unique indexed prefix expands to
+the full canonical line before routing, even when that line has no generated
+artifact. This keeps a missing-WAV fallback to one complete live synthesis
+instead of successive typewriter fragments. When OCR loses or corrupts the
+nameplate, a unique text prefix may also restore its canonical speaker, but only
+inside the already established chapter; short, ambiguous, cross-chapter, and
+non-prefix observations remain unmatched. A matching generated artifact is
+reserved as verified PCM, and that reserved canonical line never falls through
+to live synthesis after a later file mutation.
+
+The 2026-08-29 Character Story trace exposed both sides of this boundary.
+`reverse1999:314601:16` was spoken as two live Rhiannon chunks of 99 and 33
+characters because no generated manifest entry exists. The next long Hotelier
+line, `reverse1999:314601:20`, does have an approved generated entry, but a lost
+nameplate made its first 91 characters look like unmatched Narrator text. The
+speaker-aware canonical-prefix gate now turns the first case into one complete
+live line and the second into the approved generated route.
+
+An OCR body consisting exactly of `...` or `…` is an intentional silent
+dialogue, not background noise and not pronounceable text. OCR cleanup preserves
+it, the incremental tracker commits it without scheduling speech, and the same
+focus-checked auto-advance gate used after audio may continue. Other
+punctuation-only glyphs remain filtered.
 
 Playback outcomes are `completed`, `interrupted`, `failed`, or
 `passthrough-unobserved`. Generated playback alone owns the local output device.

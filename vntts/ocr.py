@@ -542,11 +542,17 @@ def clean_dialog_lines(text):
     for line in (text or "").splitlines():
         line = _strip_trailing_ocr_glyphs(line.strip())
         alphanumeric_characters = sum(character.isalnum() for character in line)
-        if alphanumeric_characters >= 3 or (
-            alphanumeric_characters >= 2 and len(line.split()) == 1
+        if (
+            _is_silent_ellipsis(line)
+            or alphanumeric_characters >= 3
+            or (alphanumeric_characters >= 2 and len(line.split()) == 1)
         ):
             lines.append(line)
     return lines
+
+
+def _is_silent_ellipsis(text):
+    return "".join(str(text).split()) in {"...", "…"}
 
 
 def clean_dialog_lines_from_data(data, fallback_lines):

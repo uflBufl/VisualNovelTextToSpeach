@@ -504,6 +504,38 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         self.assertEqual(chunks, [SpeechChunk(1, "Kamuta", full_text)])
         resolver.assert_called_once_with("Kamuta", "These old ones are enough")
 
+    def test_exact_route_mode_expands_missing_wav_line_once_before_live_fallback(self):
+        full_text = (
+            "T-Two?! No, that's too much! Oh, how about this! I'll clean the "
+            "room before I go. You won't find so much as a single feather—promise!"
+        )
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+            early_dialogue_resolver=lambda _character, _text: full_text,
+        )
+        partial = full_text[:99]
+
+        tracker.observe("Rhiannon", partial)
+        chunks = tracker.observe("Rhiannon", partial)
+
+        self.assertEqual(chunks, [SpeechChunk(1, "Rhiannon", full_text)])
+        self.clock.advance(0.8)
+        self.assertEqual(tracker.observe("Rhiannon", full_text), [])
+
+    def test_punctuation_only_ellipsis_completes_without_speech(self):
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7,
+            complete_dialogue_only=True,
+        )
+
+        tracker.observe("Rhiannon", "...")
+        tracker.observe("Rhiannon", "...")
+        self.clock.advance(0.8)
+
+        self.assertEqual(tracker.observe("Rhiannon", "..."), [])
+        self.assertTrue(tracker.is_idle_complete())
+
     def test_exact_route_mode_does_not_emit_unresolved_prefix(self):
         resolver = Mock(return_value=None)
         tracker = self.create_tracker(

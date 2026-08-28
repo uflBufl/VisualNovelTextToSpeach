@@ -116,6 +116,15 @@ class RecognizedDialogTest(unittest.TestCase):
             "Protocols, are you?",
         )
 
+    def test_punctuation_only_ellipsis_is_preserved_as_silent_dialogue(self):
+        character, text = parse_recognized_dialog(
+            "Rhiannon\n...\n",
+            self.registry,
+        )
+
+        self.assertEqual(character, "Rhiannon")
+        self.assertEqual(text, "...")
+
     def test_numbered_npc_is_detected_from_text_line_structure(self):
         character, text = parse_recognized_dialog(
             "Policeman 2\nYou need to leave this area now.\n",
@@ -255,6 +264,8 @@ class RecognizedDialogTest(unittest.TestCase):
     def test_dialog_cleanup_removes_only_trailing_non_speech_glyphs(self):
         self.assertEqual(clean_dialog_lines("Kamuta ... _\n"), ["Kamuta ..."])
         self.assertEqual(clean_dialog_lines("Wait!\n"), ["Wait!"])
+        self.assertEqual(clean_dialog_lines("...\n…\n"), ["...", "…"])
+        self.assertEqual(clean_dialog_lines("___\n"), [])
 
     def test_dialog_cleanup_removes_low_confidence_background_suffix(self):
         data = {
@@ -280,6 +291,32 @@ class RecognizedDialogTest(unittest.TestCase):
             clean_dialog_lines_from_data(data, ["Hello. How are you?"]),
             ["Hello. How are you?"],
         )
+
+    def test_recognition_keeps_ellipsis_below_a_known_nameplate(self):
+        frame_data = {
+            "text": ["Marcus", "..."],
+            "conf": [96, 94],
+            "block_num": [1, 1],
+            "par_num": [1, 2],
+            "line_num": [1, 1],
+            "left": [50, 50],
+            "top": [30, 150],
+            "width": [160, 60],
+            "height": [45, 40],
+        }
+        dialog_data = {"text": ["..."], "conf": [94]}
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (1000, 300), "black"),
+            self.registry,
+            recognize_text=Mock(return_value="...\n"),
+            recognize_data=Mock(side_effect=[frame_data, dialog_data]),
+            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
+        )
+
+        self.assertEqual(result.character, "Marcus")
+        self.assertEqual(result.text, "...")
+        self.assertGreaterEqual(result.confidence, 90)
 
     def test_recognition_removes_background_suffix_from_dialog_result(self):
         frame_data = {
