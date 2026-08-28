@@ -1103,6 +1103,27 @@ class MainTest(unittest.TestCase):
         controller.toggle_live.assert_called_once_with()
         controller.shutdown.assert_called_once_with()
 
+    def test_main_handles_keyboard_interrupt_without_traceback(self):
+        settings = AppSettings()
+        controller = Mock()
+        controller.start.return_value = True
+        errors = io.StringIO()
+
+        with (
+            redirect_stderr(errors),
+            patch("vntts.main.load_app_settings", return_value=settings),
+            patch("vntts.main.AppController", return_value=controller),
+            patch(
+                "vntts.main.listen_for_hotkeys",
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            result = main()
+
+        self.assertEqual(result, 130)
+        self.assertEqual(errors.getvalue(), "")
+        controller.shutdown.assert_called_once_with()
+
     def test_controller_applies_window_capture_settings_without_restart(self):
         capture_target = Mock()
         capture_target_factory = Mock(return_value=capture_target)

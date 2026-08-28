@@ -137,6 +137,8 @@ def main(tts_factory=TTSEngine):
             controller.clear_speech_queue,
             controller.emergency_stop,
         )
+    except KeyboardInterrupt:
+        return 130
     finally:
         controller.shutdown()
 
