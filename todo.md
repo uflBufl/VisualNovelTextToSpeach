@@ -131,6 +131,53 @@ while one-sentence controls remained below 0.25 seconds.
 
 ## Live mode
 
+### P0 - Replace OCR-driven playback with a sequence-first story cursor
+
+Follow the architecture and rollout gates in
+[`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
+The current story index is ordered but is not a control-flow graph: Character
+Story chapter `314601` has 89 indexed lines across sequences 4-101, seven
+missing ranges and no successor/choice metadata. Do not infer key presses from
+numeric gaps and do not let OCR text remain authoritative while a cursor is
+locked.
+
+- [ ] Extend the extractor/game-pack contract with a checksum-bound
+      `live_sequence_plan`. Include every advanceable dialogue box, including
+      silent `...`, typed events and intentional omissions; bind speakable
+      events to exact story-index line IDs; encode explicit successors, entry
+      and terminal events, choices and manual-only waits. Publication must reject
+      dangling or ambiguous control flow and unexplained visible-event gaps.
+- [ ] Add a validated session `StoryCursor` with unsynchronized, anchoring,
+      locked, playing, waiting-transition, desynchronized and manual states.
+      Bootstrap from one exact/unique OCR anchor or an explicit chapter/event
+      choice, then route expected canonical line IDs directly. Missing approved
+      WAVs use one full canonical live fallback; OCR text and OCR speaker names
+      must never enter speech routing while locked.
+- [ ] Replace full-frame recognition in ordinary locked transitions with a
+      dialogue-presence/fingerprint/render-settled gate. Advance only after
+      audio (or a silent event) completes, rendering settles, the game is
+      focused and the same cursor event still owns the generation. Confirm one
+      linear successor from a visual transition without full OCR.
+- [ ] Implement branches, repeated lines and manual advancement with an
+      expected-candidate recognizer over explicit successors and a bounded
+      monotonic lookahead. On conflict, stop auto advance and recover through
+      lightweight anchors, then bounded current-chapter OCR, then explicit
+      manual resync. Never speak or advance an unmatched OCR guess.
+- [ ] Add one consistent live-session UI card showing chapter/event progress,
+      canonical speaker/text preview, event/line ID, expected and actual audio
+      route, cursor state, next-candidate count, OCR activity and desync recovery
+      actions. Add cursor/transition/recovery fields to privacy-safe timelines.
+- [ ] Roll out behind a feature flag: shadow event/route prediction first,
+      sequence-first audio with manual advancement second, and automatic
+      advancement last. Cover long typewriter text, lost nameplates, `...`,
+      source/generated/missing-WAV routes, identical lines, choices, manual
+      skips, focus loss and stale work in deterministic replay.
+- [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
+      to recovery-only after a reviewed replay and 100-event real-game run show
+      zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every
+      eligible visited WAV is used; ordinary linear transitions run no full
+      OCR; and exactly one automatic key is sent per cursor event.
+
 ### P0 - Accept Narrator fallback role cues in real gameplay
 
 - [ ] Enable the distinct `Narrator fallback roles only` setting for one real
@@ -141,26 +188,12 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P0 - Repair failures observed in the latest Character Story run
 
-- [ ] Re-run the chapter opening and verify that indexed incomplete prefixes
-      are never spoken or auto-advanced. The 2026-08-16 run spoke only 43, 13,
-      and 44 characters of the first three 94, 24, and 69-character lines;
-      each fragment now resolves as one unique incomplete story prefix and must
-      remain pending until the full line or a verified generated route is ready.
 - [ ] Validate the split Narrator controls in a real Character Story run:
       approved pregenerated Centurion tracks take precedence, while Pocket uses
       Centurion only as the missing/failed live fallback. Retain Paper Heron as
       an ordinary character voice. The current approved-only manifest has 77
       entries; the 128 current-provenance pending WAVs need the risk-based
       three-cohort review plan rather than another unconditional listen-all gate.
-- [ ] Validate unique-prefix generated-audio routing in the next Character Story
-      run. The 2026-08-16 baseline delayed generation start by as much as 11 s
-      even though Pocket itself reached first PCM roughly 6-143 ms later; the
-      new route must start the verified WAV during the typewriter animation and
-      fall back safely for short, ambiguous, or OCR-corrupted prefixes.
-- [ ] Repeat the Character Story run after connecting the approved generated
-      manifest. The 2026-08-16 run reduced route-level `story-line-no-match` to
-      2 of 9 observations, but still produced a partial suffix and the bogus
-      speaker `Oe`; verify that generated Rhiannon lines route to local WAVs.
 - [ ] Validate the 250 ms Pocket TTS stream prefill on real audio output. The
       2026-08-16 run still recorded 3 underruns with the previous 120 ms lead;
       retain the new underrun count as acceptance evidence.
