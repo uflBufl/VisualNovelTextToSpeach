@@ -154,8 +154,37 @@ class LiveTTSRoute:
     cache_source: str | None = None
 
 
+@dataclass(frozen=True)
+class AudioEventOmissionDecision:
+    schema: str
+    schema_version: int
+    reason: str
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    speaker: str
+    plan_sha256: str
+    spoken_text_sha256: str
+    decided_at: str
+    authority: dict
+    decision_sha256: str
+
+
+@dataclass(frozen=True)
+class AudioEventOmissionRoute:
+    decision: AudioEventOmissionDecision
+    trace: AudioRouteTrace
+    synthesis_ms: float = 0.0
+    first_audio_ms: float | None = None
+    cache_source: str | None = "audio-event-omission"
+
+
 RouteDecision = (
-    SourceAudioRoute | GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute
+    SourceAudioRoute
+    | GeneratedAudioRoute
+    | LiveFallbackRoute
+    | LiveTTSRoute
+    | AudioEventOmissionRoute
 )
 
 
@@ -179,6 +208,14 @@ class GeneratedAudioLibrary:
         self.cache = BoundedCache(cache_size)
         self.warned_entries = set()
         self.live_fallbacks = _live_fallback_index(index.metadata)
+        self.audio_event_omissions = _audio_event_omission_index(index.metadata)
+        generated_identities = {
+            (entry.line_id, entry.text_sha256) for entry in index.entries
+        }
+        if generated_identities.intersection(self.audio_event_omissions):
+            raise GeneratedAudioManifestError(
+                "Generated audio conflicts with an audio-event omission"
+            )
         self.narrator_fallback_roles = {
             (entry.line_id, entry.text_sha256): role
             for entry in index.entries
@@ -252,6 +289,9 @@ class GeneratedAudioLibrary:
 
     def find_live_fallback(self, line_id, text_sha256):
         return self.live_fallbacks.get((line_id, text_sha256))
+
+    def find_audio_event_omission(self, line_id, text_sha256):
+        return self.audio_event_omissions.get((line_id, text_sha256))
 
     def _warn_once(self, entry, message):
         identity = entry.line_id, entry.text_sha256
@@ -411,6 +451,9 @@ class GeneratedAudioFallbackBackend:
             character
         )
         line, match_result = self._resolve_line(character, text, voice_overridden)
+        omission_line = line
+        if omission_line is None and voice_overridden:
+            omission_line = self._resolve_without_advancing(character, text)
         fallback_reasons = []
         artifact_preflight_state = "not-applicable"
         if voice_overridden:
@@ -464,6 +507,24 @@ class GeneratedAudioFallbackBackend:
                 source_status = getattr(line, "source_audio_status", "unknown")
                 fallback_reasons.append(f"source-audio-{source_status}")
                 artifact_preflight_state = f"source-audio-{source_status}"
+        omission = (
+            None
+            if omission_line is None or self.library is None
+            else self.library.find_audio_event_omission(
+                omission_line.line_id, omission_line.text_sha256
+            )
+        )
+        if omission is not None:
+            trace = AudioRouteTrace(
+                None,
+                "audio-event-omission",
+                "exact",
+                f"authorized:{omission.reason}",
+                None,
+                omission.line_id,
+                "audio-event-omission-authorized",
+            )
+            return AudioEventOmissionRoute(omission, trace)
         if (
             line is not None
             and line.line_id
@@ -566,6 +627,18 @@ class GeneratedAudioFallbackBackend:
         line = self.line_resolver.resolve_exact(character, text)
         return line, "exact" if line is not None else "no-match"
 
+    def _resolve_without_advancing(self, character, text):
+        current_match = getattr(self.line_resolver, "current_match", None)
+        try:
+            resolve = getattr(self.line_resolver, "resolve_exact_with_result", None)
+            if callable(resolve):
+                line, _result = resolve(character, text)
+                return line
+            return self.line_resolver.resolve_exact(character, text)
+        finally:
+            if hasattr(self.line_resolver, "current_match"):
+                self.line_resolver.current_match = current_match
+
     def play_route(self, route, *, playback_guard=None):
         """Play one immutable route and return metrics bound to that route."""
         if isinstance(route, SourceAudioRoute):
@@ -576,6 +649,13 @@ class GeneratedAudioFallbackBackend:
             return self._play_live_route(route, playback_guard)
         if isinstance(route, LiveTTSRoute):
             return self._play_live_route(route, playback_guard)
+        if isinstance(route, AudioEventOmissionRoute):
+            status = (
+                PlaybackStatus.COMPLETED
+                if playback_guard is None or playback_guard()
+                else PlaybackStatus.INTERRUPTED
+            )
+            return _route_outcome(route, status, 0.0)
         raise TypeError(f"Unsupported audio route: {type(route).__name__}")
 
     def _play_source_route(self, route, playback_guard):
@@ -852,6 +932,99 @@ def _live_fallback_index(metadata):
         identity = decision.line_id, decision.text_sha256
         if identity in indexed:
             raise ValueError("Generated-audio live fallback identity is duplicated")
+        indexed[identity] = decision
+    return indexed
+
+
+def _audio_event_omission_index(metadata):
+    value = metadata.get("vntts.authoring.audio_event_omission")
+    if value is None:
+        return {}
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "mode", "entries"}
+        or value.get("schema_version") != 1
+        or value.get("mode") != "explicit"
+        or not isinstance(value.get("entries"), list)
+    ):
+        raise ValueError("Generated-audio audio-event omission ledger is malformed")
+    fields = {
+        "schema",
+        "schema_version",
+        "reason",
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "plan_sha256",
+        "spoken_text_sha256",
+        "decided_at",
+        "authority",
+        "decision_sha256",
+    }
+    authority_fields = {
+        "batch_id",
+        "base_workspace_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+    }
+    indexed = {}
+    for raw in value["entries"]:
+        authority = raw.get("authority") if isinstance(raw, dict) else None
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != fields
+            or raw.get("schema") != "vntts.authoring-audio-event-omission"
+            or raw.get("schema_version") != 1
+            or raw.get("reason") != "no_validated_source_or_supported_generator"
+            or not isinstance(authority, dict)
+            or set(authority) != authority_fields
+        ):
+            raise ValueError("Generated-audio audio-event omission entry is malformed")
+        if any(
+            not isinstance(raw.get(field), str) or not raw[field].strip()
+            for field in ("queue_id", "line_id", "speaker", "decided_at")
+        ) or (
+            not isinstance(authority.get("base_workspace_id"), str)
+            or not authority["base_workspace_id"].strip()
+        ):
+            raise ValueError(
+                "Generated-audio audio-event omission text fields are malformed"
+            )
+        if any(
+            not _lowercase_sha256(raw.get(field))
+            for field in (
+                "text_sha256",
+                "plan_sha256",
+                "spoken_text_sha256",
+                "decision_sha256",
+            )
+        ) or any(
+            not _lowercase_sha256(authority.get(field))
+            for field in (
+                "batch_id",
+                "base_workspace_sha256",
+                "base_state_sha256",
+                "queue_sha256",
+            )
+        ):
+            raise ValueError(
+                "Generated-audio audio-event omission hashes are malformed"
+            )
+        decision_document = {
+            key: field_value
+            for key, field_value in raw.items()
+            if key != "decision_sha256"
+        }
+        if _canonical_sha256(decision_document) != raw["decision_sha256"]:
+            raise ValueError(
+                "Generated-audio audio-event omission decision checksum changed"
+            )
+        decision = AudioEventOmissionDecision(**raw)
+        identity = decision.line_id, decision.text_sha256
+        if identity in indexed:
+            raise ValueError("Generated-audio audio-event omission is duplicated")
         indexed[identity] = decision
     return indexed
 

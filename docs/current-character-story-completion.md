@@ -1565,3 +1565,30 @@ and `04a59cc5baf0884abe102489fda8a794db9bb334ac0f950631af440d21548434`.
 This checkpoint still has 21 absent Aderyn speech items and seven typed
 non-verbal events. It is not a publishable complete pack until those exact
 identities receive supported terminal authorities.
+
+### Routed Aderyn fallback checkpoint
+
+The 20 Aderyn speech items without a completed candidate were then resolved by
+the schema-v5 known-role live-fallback boundary. Every queue ID was paired with
+its exact inactive failed source: five exhausted Pocket outcomes from
+`...-8cb0f74eaca6cf10`, inline-pause failures from `...-80c3fbbc77a13741`
+and `...-cdeaaf20a0f9849f`, and the 13 alternative-reference outcomes from
+`...-40a7a5a24af271d0`, `...-706e025553318f5f`,
+`...-cbecf377c313d430` and `...-d96c8e798db08e17`. The batch embeds every
+failed item and binds its workspace/config/state/item hashes to the current
+known-role manifest and combined queue-override digest.
+
+The immutable successor is
+`resume-395a5e5eec0327a3a793b66d-1caa7918f07cf59a`, with workspace SHA-256
+`3477295cad98dedb7a086c1f7f5aec28c284a63fac5b0138cbbd28c6b858f3f2`
+and state SHA-256
+`1cc2db4e172a827a03fdd6bcc5ee60ee2a69c1fe1947490531a60f4d1efe0bc3`.
+It has 471 approved WAVs, 88 rejected WAVs, 28 explicit live fallbacks, one
+pending Aderyn WAV, zero failed records and no active generation. A real repeat
+returned the same directory with `created=false`. Runtime validation loaded all
+20 new decisions with `speaker=Aderyn` and requested Pocket voice `Rhiannon`;
+none uses Narrator or Centurion.
+
+Only `reverse1999:314606:65:1664f7ace785d5c3` remains as Aderyn speech work.
+Its selected hypothesis must still cross the separate terminal audio-quality
+gate because hypothesis preference is not approval.

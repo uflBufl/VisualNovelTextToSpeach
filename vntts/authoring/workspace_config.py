@@ -84,6 +84,7 @@ def workspace_config_fingerprint(
     audio_event_composition=None,
     explicit_fallback_merge=None,
     known_role_live_fallback=None,
+    audio_event_omission=None,
 ):
     """Return the canonical SHA-256 identity of one workspace configuration."""
     fingerprint = {
@@ -109,6 +110,8 @@ def workspace_config_fingerprint(
         fingerprint["explicit_fallback_merge"] = explicit_fallback_merge
     if known_role_live_fallback is not None:
         fingerprint["known_role_live_fallback"] = known_role_live_fallback
+    if audio_event_omission is not None:
+        fingerprint["audio_event_omission"] = audio_event_omission
     payload = json.dumps(
         fingerprint,
         ensure_ascii=False,

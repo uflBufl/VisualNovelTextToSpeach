@@ -78,6 +78,7 @@ class FinalGamePackResult:
     approved_count: int
     rejected_count: int
     live_fallback_count: int
+    omitted_count: int
     source_queue_sha256: str
     source_state_sha256: str
 
@@ -249,8 +250,10 @@ def publish_final_game_pack(
                     raise FinalGamePackError(str(error)) from error
                 generated_records = approved_manifest_entries(state, state_path.parent)
                 live_fallback_records = _live_fallback_records(state, queue)
+                omission_records = _audio_event_omission_records(state, queue)
                 _validate_generated_story_records(generated_records, story)
                 _validate_live_fallback_story_records(live_fallback_records, story)
+                _validate_audio_event_omission_story_records(omission_records, story)
                 for record in generated_records:
                     relative = _safe_relative(
                         record["audio"], "Generated-audio state path"
@@ -278,6 +281,11 @@ def publish_final_game_pack(
                                 "schema_version": 1,
                                 "mode": "explicit",
                                 "entries": live_fallback_records,
+                            },
+                            "vntts.authoring.audio_event_omission": {
+                                "schema_version": 1,
+                                "mode": "explicit",
+                                "entries": omission_records,
                             },
                         },
                         generated_records,
@@ -363,6 +371,7 @@ def publish_final_game_pack(
         approved_count=counts["approved_count"],
         rejected_count=counts["rejected_count"],
         live_fallback_count=counts["live_fallback_count"],
+        omitted_count=counts["omitted_count"],
         source_queue_sha256=queue_sha256,
         source_state_sha256=state_sha256,
     )
@@ -553,6 +562,10 @@ def _review_counts(state):
             isinstance(item.get("live_fallback"), dict)
             for item in state["items"].values()
         ),
+        "omitted_count": sum(
+            isinstance(item.get("audio_event_omission"), dict)
+            for item in state["items"].values()
+        ),
         "state_item_count": len(state["items"]),
     }
 
@@ -567,6 +580,26 @@ def _live_fallback_records(state, queue):
         if queue_id not in queue_ids:
             raise FinalGamePackError(
                 f"Live fallback item {queue_id!r} is missing from the queue"
+            )
+        records.append(
+            {
+                **copy.deepcopy(decision),
+                "decision_sha256": canonical_document_sha256(decision),
+            }
+        )
+    return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
+
+
+def _audio_event_omission_records(state, queue):
+    queue_ids = {item.queue_id for item in queue.items}
+    records = []
+    for queue_id, item in state["items"].items():
+        decision = item.get("audio_event_omission")
+        if not isinstance(decision, dict):
+            continue
+        if queue_id not in queue_ids:
+            raise FinalGamePackError(
+                f"Audio-event omission {queue_id!r} is missing from the queue"
             )
         records.append(
             {
@@ -769,9 +802,14 @@ def _verify_voice_control_provenance(
 ):
     registry = state.get("synthesis_controls")
     if not isinstance(registry, dict):
-        raise FinalGamePackError(
-            "Generation state lacks per-control synthesis provenance; regenerate or migrate it first"
-        )
+        if any(
+            result.get("status") not in {"live_fallback", "omitted"}
+            for result in state["items"].values()
+        ):
+            raise FinalGamePackError(
+                "Generation state lacks per-control synthesis provenance; regenerate or migrate it first"
+            )
+        registry = {}
     required_paths = {
         voice_manifest_path.resolve(): (
             _source_sha256(voice_manifest_path, "voice manifest"),
@@ -842,7 +880,7 @@ def _verify_voice_control_provenance(
             )
     narrator_selections = set()
     for queue_id, result in state["items"].items():
-        if result.get("status") == "live_fallback":
+        if result.get("status") in {"live_fallback", "omitted"}:
             continue
         provenance = result.get("synthesis_provenance_sha256")
         controls = registry.get(provenance)
@@ -985,6 +1023,16 @@ def _validate_live_fallback_story_records(records, story):
         if line is None or line.text_sha256 != fallback["text_sha256"]:
             raise FinalGamePackError(
                 f"Live fallback item {fallback['line_id']!r} does not match the story index"
+            )
+
+
+def _validate_audio_event_omission_story_records(records, story):
+    lines = {record.line_id: record for record in story.records}
+    for omission in records:
+        line = lines.get(omission["line_id"])
+        if line is None or line.text_sha256 != omission["text_sha256"]:
+            raise FinalGamePackError(
+                f"Audio-event omission {omission['line_id']!r} does not match the story index"
             )
 
 

@@ -16,6 +16,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
@@ -67,6 +68,9 @@ MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
 KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-known-role-live-fallback-evidence"
 )
+AUDIO_EVENT_OMISSION_SCHEMA = "vntts.authoring-audio-event-omission"
+AUDIO_EVENT_OMISSION_VERSION = 1
+AUDIO_EVENT_OMISSION_REASON = "no_validated_source_or_supported_generator"
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
     {
@@ -316,6 +320,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             "generated": {"pending_review", "rejected"},
             "approved": {"approved"},
             "live_fallback": {"live_fallback"},
+            "omitted": {"omitted"},
         }
         if status not in valid or review not in valid[status]:
             raise BulkGenerationError(
@@ -330,6 +335,13 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             queue_id,
             None if queue_by_id is None else queue_by_id[queue_id],
         )
+        if status == "omitted":
+            _validate_audio_event_omission(
+                result,
+                queue_id,
+                None if queue_by_id is None else queue_by_id[queue_id],
+            )
+            continue
         if status == "failed":
             if "failure" in result:
                 _validate_failure_record(result["failure"], queue_id, result=result)
@@ -626,6 +638,97 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
     }:
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback has an invalid terminal state"
+        )
+
+
+def _validate_audio_event_omission(result, queue_id, queue_item):
+    result_fields = {
+        "status",
+        "review_status",
+        "attempts",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "audio_event_omission",
+        "updated_at",
+    }
+    decision = result.get("audio_event_omission")
+    fields = {
+        "schema",
+        "schema_version",
+        "reason",
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "plan_sha256",
+        "spoken_text_sha256",
+        "decided_at",
+        "authority",
+    }
+    authority_fields = {
+        "batch_id",
+        "base_workspace_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+    }
+    authority = decision.get("authority") if isinstance(decision, dict) else None
+    if (
+        set(result) != result_fields
+        or result.get("status") != "omitted"
+        or result.get("review_status") != "omitted"
+        or result.get("attempts") != 0
+        or not isinstance(decision, dict)
+        or set(decision) != fields
+        or decision.get("schema") != AUDIO_EVENT_OMISSION_SCHEMA
+        or decision.get("schema_version") != AUDIO_EVENT_OMISSION_VERSION
+        or decision.get("reason") != AUDIO_EVENT_OMISSION_REASON
+        or decision.get("queue_id") != queue_id
+        or not isinstance(authority, dict)
+        or set(authority) != authority_fields
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} audio-event omission is malformed"
+        )
+    for field in ("plan_sha256", "spoken_text_sha256"):
+        _required_sha256(
+            decision.get(field), f"State item {queue_id!r} omission {field}"
+        )
+    for field in (
+        "batch_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+    ):
+        _required_sha256(
+            authority.get(field), f"State item {queue_id!r} omission {field}"
+        )
+    for field in ("line_id", "text_sha256", "speaker", "decided_at"):
+        _required_text(decision.get(field), f"State item {queue_id!r} omission {field}")
+    _required_text(result.get("updated_at"), f"State item {queue_id!r} updated_at")
+    _required_text(
+        authority.get("base_workspace_id"),
+        f"State item {queue_id!r} omission base workspace",
+    )
+    if queue_item is None:
+        return
+    try:
+        plan = audio_event_plan_for_record(queue_item)
+    except ValueError as error:
+        raise BulkGenerationError(str(error)) from error
+    if (
+        not isinstance(plan, dict)
+        or not plan.get("requires_composition")
+        or plan.get("spoken_text") != ""
+        or decision.get("line_id") != queue_item.line_id
+        or decision.get("text_sha256") != queue_item.text_sha256
+        or decision.get("speaker") != queue_item.speaker
+        or decision.get("plan_sha256") != plan.get("plan_sha256")
+        or decision.get("spoken_text_sha256") != plan.get("spoken_text_sha256")
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} omission is not bound to a pure audio event"
         )
 
 
@@ -1662,6 +1765,9 @@ def validate_generation_state_document(document, output_directory, queue, queue_
 
 
 __all__ = [
+    "AUDIO_EVENT_OMISSION_REASON",
+    "AUDIO_EVENT_OMISSION_SCHEMA",
+    "AUDIO_EVENT_OMISSION_VERSION",
     "FAILURE_KINDS",
     "LEGACY_STATE_SCHEMA",
     "LEGACY_STATE_VERSION",

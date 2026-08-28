@@ -609,6 +609,31 @@ the selected synthesis voice. Thus an `Aderyn -> Rhiannon` policy announces
 through Narrator/Centurion. Publication copies only existing base WAVs, is
 atomic no-replace and is idempotent for identical inputs.
 
+## Omitting unsupported pure audio events
+
+Pure non-verbal lines must not fall through to ordinary TTS when no validated
+effect exists. Create an exact terminal omission successor with:
+
+```sh
+uv run --no-sync vntts-pregenerate audio-event-omission BASE_WORKSPACE \
+  --queue-id QUEUE_ID \
+  --workspaces-root AUTHORING_WORKSPACES_ROOT
+```
+
+The command accepts only absent `generate` items whose checksum-bound typed
+event plan has an empty spoken projection. It rejects ordinary dialogue, mixed
+speech/event lines, duplicate IDs and any base outcome. The successor snapshots
+the base workspace and state, preserves every existing WAV, writes no new WAV,
+and records the exact queue/line/text/speaker/plan hashes under the sole reason
+`no_validated_source_or_supported_generator`. Publication is atomic,
+no-replace and idempotent.
+
+The resulting `omitted/omitted` state is terminal but distinct from approval,
+rejection and live fallback. Final packs expose it through a separate generated
+manifest ledger. Runtime exact matching reports `audio-event-omission`, skips
+both generated and live synthesis, and returns immediate successful completion;
+an installed original game-audio route remains preferred when available.
+
 When source/reference discovery and the bounded offline fallback are both
 exhausted, authoring can record an explicit terminal Pocket live-fallback
 decision for one exact queue identity. This does not create or approve a WAV:

@@ -361,6 +361,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 known_role_live_fallback=target_document.get(
                     "known_role_live_fallback"
                 ),
+                audio_event_omission=target_document.get("audio_event_omission"),
             )
             workspace_id = (
                 "resume-"

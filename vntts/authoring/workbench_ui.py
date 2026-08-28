@@ -1266,6 +1266,7 @@ class AuthoringWorkbenchDialog(QDialog):
                     f"Failed: {self.summary.failed}",
                     f"Missing references: {self.summary.missing_voice if self.summary.missing_voice is not None else 'unknown'}",
                     f"Live fallback: {self.summary.live_fallback}",
+                    f"Omitted events: {self.summary.omitted}",
                 )
             )
             + "<br><b>Selection</b>: "

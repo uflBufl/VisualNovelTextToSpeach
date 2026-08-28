@@ -20,6 +20,9 @@ from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
     record_audio_event_composition_decision,
 )
+from vntts.authoring.audio_event_omission import (
+    create_audio_event_omission_workspace,
+)
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
     load_audio_event_review,
@@ -560,6 +563,17 @@ def create_parser():
         required=True,
     )
     known_role_fallback.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    event_omission = subparsers.add_parser(
+        "audio-event-omission",
+        help="Omit exact pure events with no validated audio source",
+    )
+    event_omission.add_argument("base_workspace", type=Path)
+    event_omission.add_argument(
+        "--queue-id", action="append", dest="queue_ids", required=True
+    )
+    event_omission.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1528,6 +1542,24 @@ def main(argv=None):
                 )
             )
             return 0
+        if arguments.command == "audio-event-omission":
+            result = create_audio_event_omission_workspace(
+                arguments.base_workspace,
+                arguments.queue_ids,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if arguments.command == "rebase-workspace-config":
             result = rebase_workspace_config(
                 arguments.source_workspace,
@@ -1881,6 +1913,7 @@ def main(argv=None):
                 "failed": 0,
                 "generated": 0,
                 "approved": 0,
+                "omitted": 0,
             }
             for item in state["items"].values():
                 if item["status"] != "live_fallback":

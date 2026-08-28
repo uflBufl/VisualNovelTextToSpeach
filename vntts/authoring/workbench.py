@@ -202,6 +202,7 @@ class WorkspaceSummary:
     approved: int
     rejected: int
     live_fallback: int
+    omitted: int
     failed: int
     skipped_actions: int
     skipped_sound_effects: int
@@ -807,6 +808,7 @@ def create_failure_reference_workspace(
             base_document.get("audio_event_composition"),
             base_document.get("explicit_fallback_merge"),
             base_document.get("known_role_live_fallback"),
+            base_document.get("audio_event_omission"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1007,6 +1009,7 @@ def create_audio_event_composition_workspace(
             composition_config,
             base_document.get("explicit_fallback_merge"),
             base_document.get("known_role_live_fallback"),
+            base_document.get("audio_event_omission"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1428,6 +1431,7 @@ def _merge_workspace_outcomes(
         base_document.get("audio_event_composition"),
         base_document.get("explicit_fallback_merge"),
         base_document.get("known_role_live_fallback"),
+        base_document.get("audio_event_omission"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1635,6 +1639,15 @@ def inspect_workspace(
         if isinstance(audio_event_config, dict)
         else set()
     )
+    omission_config = workspace.get("audio_event_omission")
+    if isinstance(omission_config, dict) and isinstance(
+        omission_config.get("items"), list
+    ):
+        audio_event_ids.update(
+            item["queue_id"]
+            for item in omission_config["items"]
+            if isinstance(item, dict) and isinstance(item.get("queue_id"), str)
+        )
     candidates = [item for item in queue.items if item.action == "generate"]
     recoverable_source_audio = sum(
         item.action == "prefer_source_audio" and item.queue_id not in audio_event_ids
@@ -1684,8 +1697,18 @@ def inspect_workspace(
         for queue_id, value in relevant.items()
         if isinstance(value.get("live_fallback"), dict)
     }
+    omitted_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if isinstance(value.get("audio_event_omission"), dict)
+    }
     completed_ids = (
-        approved_ids | rejected_ids | generated_ids | failed_ids | live_fallback_ids
+        approved_ids
+        | rejected_ids
+        | generated_ids
+        | failed_ids
+        | live_fallback_ids
+        | omitted_ids
     )
     selected_voice_manifest = _selected_voice_manifest(
         directory, workspace, voice_manifest
@@ -1733,6 +1756,7 @@ def inspect_workspace(
         approved=len(approved_ids),
         rejected=len(rejected_ids),
         live_fallback=len(live_fallback_ids),
+        omitted=len(omitted_ids),
         failed=len(failed_ids),
         skipped_actions=(
             len(queue.items)
@@ -3560,6 +3584,10 @@ def _load_workspace(workspace_directory):
     if known_role_live_fallback is not None:
         module = importlib.import_module("vntts.authoring.known_role_live_fallback")
         module.validate_known_role_live_fallback_workspace(directory, workspace)
+    audio_event_omission = workspace.get("audio_event_omission")
+    if audio_event_omission is not None:
+        module = importlib.import_module("vntts.authoring.audio_event_omission")
+        module.validate_audio_event_omission_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3574,6 +3602,7 @@ def _load_workspace(workspace_directory):
         workspace.get("audio_event_composition"),
         explicit_fallback_merge,
         known_role_live_fallback,
+        audio_event_omission,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3811,6 +3840,9 @@ def validate_workspace_provenance_extensions(directory, workspace, import_snapsh
     if workspace.get("known_role_live_fallback") is not None:
         module = importlib.import_module("vntts.authoring.known_role_live_fallback")
         module.validate_known_role_live_fallback_workspace(directory, workspace)
+    if workspace.get("audio_event_omission") is not None:
+        module = importlib.import_module("vntts.authoring.audio_event_omission")
+        module.validate_audio_event_omission_workspace(directory, workspace)
 
 
 def _validate_workspace_carry_forward(directory, workspace):

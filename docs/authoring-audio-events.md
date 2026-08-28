@@ -244,5 +244,33 @@ A future accepted mixed WAV must bind all of the following:
 - explicit human review of the final mixed result.
 
 Unsupported events or failed effect generation remain unresolved or use an
-explicit reviewed omission. Neither path may silently publish speech-only audio
-as though the event had been rendered.
+explicit checksum-bound authored omission. Neither path may silently publish
+speech-only audio as though the event had been rendered.
+
+## Explicit pure-event omission
+
+When an exact pure event has no semantically validated source and no supported
+generator is available, authoring may terminalize the absence without inventing
+speech or silent WAV data:
+
+```bash
+uv run --no-sync vntts-pregenerate audio-event-omission BASE_WORKSPACE \
+  --queue-id QUEUE_ID \
+  --workspaces-root WORKSPACES_ROOT
+```
+
+Every selected queue item must have a current typed audio-event plan, a
+non-empty event list and an empty spoken-text projection. Mixed speech/event
+lines are rejected because omitting the complete line would lose dialogue. The
+base item must still be absent, and the command writes no provider, attempt or
+WAV. Its immutable batch binds the base workspace/state, exact queue bytes,
+line/text/speaker identity and plan/spoken-text hashes under the constrained
+reason `no_validated_source_or_supported_generator`.
+
+Final-pack publication copies each exact decision into
+`vntts.authoring.audio_event_omission` metadata with its decision SHA-256. At
+runtime the ledger is fail-closed: malformed hashes, duplicate identities or a
+generated WAV for the same identity disable the generated-audio library. A
+valid exact match produces an `audio-event-omission` route, calls no live TTS
+and completes immediately. Original installed game audio still has precedence
+when the configured source-audio policy can prove that route.

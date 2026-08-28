@@ -35,30 +35,28 @@ and Dobharchú results but only nine Aderyn approvals, while
 `...-af9b4fb0bb4a451c` contains the reviewed Aderyn history. Do not regenerate
 or repeat cohort review merely to combine them.
 
-- [ ] Terminalize the 21 carried Aderyn failures from their deeper branch
-      authorities, never from the merged successor's generic projection. Carry
-      the already selected checksum-bound `314606:65` inline-pause result
-      without rerendering it. For every still unavailable line, publish an
-      explicit live Pocket fallback whose requested synthesis voice is
-      `Rhiannon` and whose audible role announcement is `Aderyn`;
-      Centurion/Narrator is forbidden. Preserve the five exhausted Pocket
-      failures, two failed inline-pause hypotheses and 13 rejected/blocked
-      alternative-reference hypotheses as immutable negative evidence. Add an
-      exact known-role fallback successor command for the 20 unavailable lines:
-      validate the current `Aderyn -> Rhiannon` binding and combined override
-      digest, require one explicitly paired inactive failed-evidence workspace
-      per queue ID with the same import and byte-identical queue, embed every
-      source workspace/state/item hash and failed item, publish no WAV, retain
-      `speaker=Aderyn` with effective `voice_character=Rhiannon`, and prove
-      no-replace idempotence plus route/evidence tamper rejection. Keep
-      `314606:65` outside this batch because its heard hypothesis selection is
-      not yet terminal audio approval.
+- [ ] Terminalize the one remaining Aderyn speech item
+      `reverse1999:314606:65:1664f7ace785d5c3`. Its checksum-bound 180 ms
+      inline-pause WAV was heard and selected as the preferred hypothesis, but
+      that selection explicitly is not audio approval. Present this one exact
+      WAV through the terminal quality-review gate, then compose an approval or
+      route it to the existing `Aderyn -> Rhiannon` Pocket fallback without
+      rerendering. Do not infer the decision from old chat or TODO text.
 - [ ] Resolve the seven remaining non-verbal events without pronouncing their
       literal markup: Aderyn `*whimper*` and `*yelp*`, Narrator `*pop*`, three
       `*bang*` lines and `*buzzzzz*`. Prefer a checksum-bound installed or
       generated effect only after semantic and perceptual validation; without
       such evidence retain an explicit omission authority. This event policy
-      is independent of character voice fallback.
+      is independent of character voice fallback. Implement that authority as
+      an immutable exact-ID workspace successor: validate a pure-event typed
+      plan with an empty spoken projection, bind the queue/plan/base hashes and
+      a constrained omission reason, write no WAV, and reject speech or mixed
+      speech/event inputs. Carry the terminal omission ledger into the final
+      generated manifest. At runtime, an exact line/text match must bypass both
+      generated and live TTS, report an explicit omission route and complete
+      immediately so story advance remains deterministic. Cover state,
+      workspace, manifest, pack and runtime tamper/idempotence behavior with
+      tests before applying the command to the seven current IDs.
 - [ ] Rebuild the approved-only manifest from the composed terminal state and
       require all 592 queue items to have approved audio, an explicit supported
       live fallback or an explicit non-verbal omission. Verify zero pending

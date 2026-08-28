@@ -229,6 +229,7 @@ def create_known_role_live_fallback_workspace(
         base_document.get("audio_event_composition"),
         base_document.get("explicit_fallback_merge"),
         batch,
+        base_document.get("audio_event_omission"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
