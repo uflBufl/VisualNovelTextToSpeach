@@ -413,6 +413,52 @@ class GeneratedAudioFallbackBackend:
             if hasattr(self.line_resolver, "current_match"):
                 self.line_resolver.current_match = current_match
 
+    def has_resolved_route_in_live_mode(self, character, text):
+        """Return whether an exact line has a non-generic authorized live route."""
+        current_match = getattr(self.line_resolver, "current_match", None)
+        try:
+            if self.voice_override is not None and self.voice_override(character):
+                return False
+            line = self.line_resolver.resolve_exact(character, text)
+            if line is None or not line.line_id or not line.text_sha256:
+                return False
+            if self._will_use_source_audio(character, text):
+                return True
+            if self.library is None:
+                return False
+            if (
+                self.library.find_audio_event_omission(
+                    line.line_id,
+                    line.text_sha256,
+                )
+                is not None
+            ):
+                return True
+            if (
+                self.audio_source_policy in {"prefer-generated", "prefer-game-audio"}
+                and self.speed == 1.0
+            ):
+                prepared, _state = self.library.find_with_preflight(
+                    line.line_id,
+                    line.text_sha256,
+                )
+                if prepared is not None:
+                    return True
+            live_fallback = self.library.find_live_fallback(
+                line.line_id,
+                line.text_sha256,
+            )
+            if live_fallback is None:
+                return False
+            try:
+                _validate_live_fallback_backend(self.live_backend, live_fallback)
+            except ValueError:
+                return False
+            return True
+        finally:
+            if hasattr(self.line_resolver, "current_match"):
+                self.line_resolver.current_match = current_match
+
     def _will_use_source_audio(self, character, text):
         if self.audio_source_policy != "prefer-game-audio":
             return False

@@ -5,9 +5,16 @@ starts. The preflight scope is the current inferred chapter beginning at the
 current matched line and is capped by the configured chapter lookahead. It does
 not scan unrelated chapters or claim whole-story coverage.
 
-If the story index is loaded but the current chapter is not known, live reading
-does not start. The prompt asks for one `Read current dialog` pass; after that
-line establishes the chapter, starting live reading runs the scoped preflight.
+If the story index is loaded but the current chapter is not known, one Start
+request performs a silent OCR bootstrap in the background. The visible line
+must resolve to one exact checksum-bound story identity. That match establishes
+the chapter and position, after which the same request reruns the scoped
+preflight and starts live reading. The bootstrap updates the visible dialogue
+preview but does not synthesize, enqueue, store in history, or advance the line.
+Uncertain, empty, unmatched, or ambiguous captures fail visibly without
+starting. Repeated Start requests are coalesced while capture is active, and a
+completion made stale by emergency stop, reconfiguration, or shutdown is
+ignored.
 
 For each line in scope, no decision is needed when one of these routes is
 already authoritative:
@@ -15,7 +22,10 @@ already authoritative:
 - the exact source speaker is `???`, which synthesizes as Narrator;
 - Narrator is the source speaker;
 - a configured or confidently resolved character voice exists;
-- the exact line will use verified original game audio.
+- the exact line will use verified original game audio;
+- the exact line has a verified generated WAV, an authorized audio-event
+  omission, or an explicit live-fallback decision compatible with the loaded
+  backend.
 
 Every remaining named speaker is shown before live reading. The user can open
 voice assignment, explicitly approve Narrator for all listed speakers for this

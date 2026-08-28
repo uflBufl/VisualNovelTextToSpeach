@@ -993,6 +993,9 @@ class TrayApplication(QObject):
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
         self._initial_start_generation = None
+        self.live_scope_runner = LatestTaskRunner(self)
+        self.live_scope_runner.finished.connect(self._live_scope_finished)
+        self._live_scope_generation = None
         self._pending_profile_name = None
         self._profile_restart_generation = None
         self._lifecycle_generation = 0
@@ -1018,7 +1021,6 @@ class TrayApplication(QObject):
         self.live_voice_preflight_prompt = None
         self.live_voice_preflight_assign_button = None
         self.live_voice_preflight_narrator_button = None
-        self.live_voice_preflight_read_button = None
         self.live_voice_preflight_cancel_button = None
         self.pending_live_voice_preflight_speakers = ()
         self.restore_compact_after_calibration = False
@@ -1273,13 +1275,24 @@ class TrayApplication(QObject):
         self.signals.live_changed.emit(running)
         return running
 
-    def _start_live_with_preflight(self, *, narrator_approval=None):
+    def _start_live_with_preflight(
+        self,
+        *,
+        narrator_approval=None,
+        allow_scope_bootstrap=True,
+    ):
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
         if result is None:
             self.pending_live_voice_preflight_speakers = ()
-            self._show_live_voice_scope_required()
             self.signals.live_changed.emit(False)
+            if allow_scope_bootstrap:
+                self._identify_live_scope_then_start()
+            else:
+                self.set_status(
+                    "Live reading could not start: the current story line was "
+                    "not identified"
+                )
             return False
         speakers = tuple(result)
         if narrator_approval is not None:
@@ -1300,6 +1313,40 @@ class TrayApplication(QObject):
             self.signals.live_changed.emit(False)
             return False
         return self._toggle_controller_live()
+
+    def _identify_live_scope_then_start(self):
+        if self.live_scope_runner.active or self._live_scope_generation is not None:
+            self.set_status("Identifying the current story chapter...")
+            return False
+        identify = getattr(self.controller, "identify_live_scope", None)
+        if not callable(identify):
+            self.set_status(
+                "Live reading could not start: automatic story identification "
+                "is unavailable"
+            )
+            return False
+        self._live_scope_generation = self._lifecycle_generation
+        self.set_status("Identifying the current story chapter...")
+        self.live_scope_runner.start(identify)
+        return False
+
+    def _live_scope_finished(self, identified, error):
+        generation = self._live_scope_generation
+        self._live_scope_generation = None
+        if not self._lifecycle_is_current(generation):
+            return
+        if error is not None:
+            self.show_error(f"Unable to identify the current story chapter: {error}")
+            self.signals.live_changed.emit(False)
+            return
+        if identified is not True:
+            self.set_status(
+                "Live reading could not start: keep a complete dialog line visible "
+                "and try again"
+            )
+            self.signals.live_changed.emit(False)
+            return
+        self._start_live_with_preflight(allow_scope_bootstrap=False)
 
     def _show_live_voice_preflight(self, speakers):
         if self.live_voice_preflight_prompt is not None:
@@ -1347,57 +1394,13 @@ class TrayApplication(QObject):
         prompt.open()
         QTimer.singleShot(0, lambda: configure_floating_window(prompt))
 
-    def _show_live_voice_scope_required(self):
-        if self.live_voice_preflight_prompt is not None:
-            self.live_voice_preflight_prompt.setProperty(
-                "vntts_live_voice_preflight_handled",
-                True,
-            )
-            self.live_voice_preflight_prompt.close()
-        prompt = QMessageBox()
-        prompt.setWindowModality(Qt.WindowModality.NonModal)
-        prompt.setWindowFlag(Qt.WindowType.Tool, True)
-        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        if sys.platform == "darwin":
-            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
-        prompt.setIcon(QMessageBox.Icon.Information)
-        prompt.setWindowTitle("Identify the current story chapter")
-        prompt.setText("VNTTS cannot preflight upcoming character voices yet.")
-        prompt.setInformativeText(
-            "Read the current dialog once to identify the story chapter, then "
-            "start live reading again. VNTTS will check the current chapter "
-            "lookahead instead of claiming that the entire story was checked."
-        )
-        read = prompt.addButton(
-            "Read current dialog",
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        cancel = prompt.addButton(
-            "Cancel live reading",
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        prompt.setEscapeButton(cancel)
-        self.live_voice_preflight_prompt = prompt
-        self.live_voice_preflight_read_button = read
-        self.live_voice_preflight_cancel_button = cancel
-        prompt.buttonClicked.connect(self._live_voice_preflight_clicked)
-        prompt.finished.connect(self._live_voice_preflight_finished)
-        prompt.open()
-        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
-
     def _live_voice_preflight_clicked(self, button):
         prompt = self.sender()
         if not isinstance(prompt, QMessageBox):
             return
         prompt.setProperty("vntts_live_voice_preflight_handled", True)
         speakers = self.pending_live_voice_preflight_speakers
-        if button is self.live_voice_preflight_read_button:
-            prompt.close()
-            self.controller.read_once()
-            self.set_status(
-                "Current dialog requested; start live reading again after it is read"
-            )
-        elif button is self.live_voice_preflight_assign_button:
+        if button is self.live_voice_preflight_assign_button:
             prompt.close()
             QTimer.singleShot(0, self._review_live_voice_preflight)
         elif button is self.live_voice_preflight_narrator_button:
@@ -1425,7 +1428,6 @@ class TrayApplication(QObject):
             self.live_voice_preflight_prompt = None
             self.live_voice_preflight_assign_button = None
             self.live_voice_preflight_narrator_button = None
-            self.live_voice_preflight_read_button = None
             self.live_voice_preflight_cancel_button = None
 
     def toggle_auto_advance(self, enabled):
@@ -1446,6 +1448,8 @@ class TrayApplication(QObject):
         self.controller.clear_speech_queue()
 
     def emergency_stop(self):
+        self._live_scope_generation = None
+        self.live_scope_runner.cancel()
         self.controller.emergency_stop()
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
@@ -2285,6 +2289,8 @@ class TrayApplication(QObject):
         self.history_action.setEnabled(available)
 
     def _begin_controller_lifecycle(self):
+        self._live_scope_generation = None
+        self.live_scope_runner.cancel()
         self._lifecycle_generation += 1
         self._controller_busy = True
         self._apply_controller_action_state()
@@ -2342,6 +2348,8 @@ class TrayApplication(QObject):
         self._live_stop_continuation = None
         self._live_stop_generation = None
         self.live_stop_runner.cancel()
+        self._live_scope_generation = None
+        self.live_scope_runner.cancel()
         initial_shutdown_owned = self.initial_start_runner.active
         self.initial_start_runner.cancel()
         profile_shutdown_owned = self.profile_restart_runner.active
@@ -2359,7 +2367,6 @@ class TrayApplication(QObject):
             self.live_voice_preflight_prompt = None
             self.live_voice_preflight_assign_button = None
             self.live_voice_preflight_narrator_button = None
-            self.live_voice_preflight_read_button = None
             self.live_voice_preflight_cancel_button = None
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()

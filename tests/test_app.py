@@ -321,7 +321,32 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("changed", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
-    def test_live_preflight_requires_current_scope_before_claiming_coverage(self):
+    def test_live_preflight_identifies_current_scope_silently_then_starts(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [None, ()]
+        controller.identify_live_scope.return_value = True
+        controller.toggle_live.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        runner = Mock(active=False)
+        tray_application.live_scope_runner = runner
+
+        self.assertFalse(tray_application.toggle_live())
+
+        runner.start.assert_called_once_with(controller.identify_live_scope)
+        self.assertIsNone(tray_application.live_voice_preflight_prompt)
+        controller.toggle_live.assert_not_called()
+
+        tray_application._live_scope_finished(True, None)
+
+        controller.toggle_live.assert_called_once_with()
+        controller.read_once.assert_not_called()
+        tray_application.shutdown()
+
+    def test_live_scope_identification_failure_does_not_start(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.return_value = None
         tray_application = TrayApplication(
@@ -329,21 +354,89 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.live_scope_runner = Mock(active=False)
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._live_scope_finished(False, None)
+
+        controller.toggle_live.assert_not_called()
+        self.assertIn("complete dialog line", tray_application.dashboard.status.text())
+        tray_application.shutdown()
+
+    def test_live_scope_identification_still_prompts_for_unresolved_speakers(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [None, ("Hotelier",)]
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.live_scope_runner = Mock(active=False)
 
         with patch("vntts.app.configure_floating_window"):
             self.assertFalse(tray_application.toggle_live())
+            tray_application._live_scope_finished(True, None)
             self.application.processEvents()
 
-        self.assertIn(
-            "cannot preflight",
-            tray_application.live_voice_preflight_prompt.text(),
-        )
         controller.toggle_live.assert_not_called()
+        self.assertIn(
+            "Hotelier",
+            tray_application.live_voice_preflight_prompt.informativeText(),
+        )
+        tray_application.shutdown()
 
-        tray_application.live_voice_preflight_read_button.click()
-        self.application.processEvents()
+    def test_repeated_live_start_coalesces_scope_identification(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        runner = Mock(active=False)
+        tray_application.live_scope_runner = runner
 
-        controller.read_once.assert_called_once_with()
+        self.assertFalse(tray_application.toggle_live())
+        self.assertFalse(tray_application.toggle_live())
+
+        runner.start.assert_called_once_with(controller.identify_live_scope)
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
+
+    def test_stale_live_scope_identification_cannot_start_live_mode(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.live_scope_runner = Mock(active=False)
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._lifecycle_generation += 1
+        tray_application._live_scope_finished(True, None)
+
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
+
+    def test_emergency_stop_cancels_pending_live_scope_identification(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        runner = Mock(active=False)
+        tray_application.live_scope_runner = runner
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application.emergency_stop()
+        tray_application._live_scope_finished(True, None)
+
+        runner.cancel.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 

@@ -512,6 +512,30 @@ class AppController:
             self.status_handler("Reading current dialog")
         return accepted
 
+    def identify_live_scope(self):
+        """Identify the visible story position without speaking or advancing it."""
+        if not self.is_ready or self.is_live_running:
+            return False
+        character, text = read_live_snapshot(
+            get_screenshot_directory(self.settings),
+            self.voice_router.registry,
+            self.capture_target,
+            self.settings.ocr_minimum_confidence,
+            self._ocr_uncertain,
+            self.uncertain_frame_recorder,
+            self._publish_diagnostic,
+            self._resolve_voice_label,
+            self.settings.ocr_language,
+            self.correction_dictionary,
+        )
+        if is_empty(text):
+            return False
+        character = self._canonical_observed_character(character)
+        if self.chapter_voice_preloader.resolve_exact(character, text) is None:
+            return False
+        self.dialog_handler(character, text)
+        return True
+
     def toggle_live(self):
         if not self.is_ready:
             return False
@@ -1368,6 +1392,18 @@ class AppController:
         if self.voice_router.registry.resolve(character) is not None:
             return False
         if key in self.narrator_fallback_speakers and not live_preflight:
+            return False
+        resolved_route_check = getattr(
+            self.speech_backend,
+            "has_resolved_route_in_live_mode",
+            None,
+        )
+        if (
+            text
+            and (live_preflight or self.is_live_running)
+            and callable(resolved_route_check)
+            and resolved_route_check(character, text) is True
+        ):
             return False
         source_audio_check = getattr(
             self.speech_backend,

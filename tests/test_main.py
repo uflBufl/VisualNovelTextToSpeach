@@ -1367,6 +1367,77 @@ class MainTest(unittest.TestCase):
             "A line visible in the tray",
         )
 
+    def test_controller_identifies_live_scope_without_speaking_or_history(self):
+        dialogs = []
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": "A line visible in the game.",
+                        "text_sha256": text_sha256("A line visible in the game."),
+                    }
+                ]
+            }
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            dialog_handler=lambda character, text: dialogs.append((character, text)),
+            chapter_voice_preloader=preloader,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        with patch(
+            "vntts.controller.read_live_snapshot",
+            return_value=("Rhiannon", "A line visible in the game."),
+        ) as read_snapshot:
+            identified = controller.identify_live_scope()
+
+        self.assertTrue(identified)
+        self.assertEqual(preloader.current_match.chapter, "1")
+        self.assertEqual(preloader.current_match.sequence, 1)
+        self.assertEqual(dialogs, [("Rhiannon", "A line visible in the game.")])
+        self.assertEqual(controller.history.snapshot(), [])
+        controller.voice_router.speak.assert_not_called()
+        read_snapshot.assert_called_once()
+
+    def test_controller_does_not_claim_scope_for_an_unmatched_dialog(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": "Known line.",
+                        "text_sha256": text_sha256("Known line."),
+                    }
+                ]
+            }
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        with patch(
+            "vntts.controller.read_live_snapshot",
+            return_value=("Someone", "An unrelated line."),
+        ):
+            identified = controller.identify_live_scope()
+
+        self.assertFalse(identified)
+        self.assertIsNone(preloader.current_match)
+
     def test_controller_offers_each_confident_unknown_speaker_once(self):
         offered = []
         statuses = []
@@ -1593,6 +1664,37 @@ class MainTest(unittest.TestCase):
         self.assertEqual(
             controller.unresolved_live_speakers(),
             ("Selone", "Hotelier"),
+        )
+
+    def test_live_voice_preflight_accepts_an_authorized_exact_audio_route(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Hotelier",
+                        "text": "Welcome.",
+                    }
+                ]
+            }
+        )
+        preloader.recommend("Hotelier", "Welcome.")
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.return_value = None
+        controller.speech_backend = Mock()
+        controller.speech_backend.has_resolved_route_in_live_mode.return_value = True
+
+        self.assertEqual(controller.unresolved_live_speakers(), ())
+        controller.speech_backend.has_resolved_route_in_live_mode.assert_called_once_with(
+            "Hotelier",
+            "Welcome.",
         )
 
     def test_live_voice_preflight_narrator_approval_is_one_session_only(self):

@@ -384,6 +384,45 @@ class GeneratedAudioTest(unittest.TestCase):
             "generated-audio-entry-verified",
         )
 
+    def test_verified_generation_resolves_live_voice_preflight(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            resolver = self.create_resolver()
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                resolver,
+                audio_output=FakeAudioOutput(),
+            )
+
+            resolved = backend.has_resolved_route_in_live_mode("Ada", "Hello.")
+
+        self.assertTrue(resolved)
+        self.assertIsNone(resolver.current_match)
+
+    def test_explicit_live_fallback_resolves_live_voice_preflight(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = self.create_live_fallback_library(root)
+            live = self.create_live_backend()
+            live.name = "pocket-tts"
+            live.model_identity = None
+            live.model_name = "pocket-tts"
+            live.generation_profile = "default"
+            resolver = self.create_resolver()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                resolver,
+                audio_output=FakeAudioOutput(),
+            )
+
+            resolved = backend.has_resolved_route_in_live_mode("Ada", "Hello.")
+
+        self.assertTrue(resolved)
+        self.assertIsNone(resolver.current_match)
+
     def test_generated_manifest_declares_line_for_early_prefix_routing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
