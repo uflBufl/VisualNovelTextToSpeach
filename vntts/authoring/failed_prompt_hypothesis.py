@@ -108,6 +108,9 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
                 {
                     "cohort_id": cohort_id,
                     "decision": "keep_unresolved",
+                    "review_decision_origin": record.get(
+                        "decision_origin", "human_review"
+                    ),
                     "queue_ids": [target["queue_id"] for target in targets],
                     "source_state_item_sha256s": {
                         target["queue_id"]: target["source_state_item_sha256"]
@@ -144,6 +147,7 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
                 },
                 "candidate_id": candidate["candidate_id"],
                 "voice_character": candidate["voice_character"],
+                "review_decision_origin": record.get("decision_origin", "human_review"),
                 "reference_sha256s": [
                     reference["sha256"] for reference in candidate["ordered_references"]
                 ],
@@ -161,8 +165,10 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
         "blind_key_sha256": bundle["blind_key_sha256"],
         "decisions": decisions,
         "authority": (
-            "Human selection of an exact render hypothesis only. This artifact "
-            "does not bind a voice, mutate generation state, or approve speech."
+            "Exact render-hypothesis selection only. Candidate choices require "
+            "human review; cohorts with no selectable candidate are deterministically "
+            "unresolved. This artifact does not bind a voice, mutate generation "
+            "state, or approve speech."
         ),
     }
     selection = {**body, "selection_id": _canonical_sha256(body)}

@@ -1468,3 +1468,14 @@ The no-replace output records the selected hypothesis or `keep_unresolved`,
 source failed-item hashes, review/key hashes and exact reference hashes. Its
 authority explicitly cannot mutate a manifest or generation state and cannot
 approve speech; any later audio approval remains a separate human gate.
+
+A cohort with no complete candidate is not a human decision. Review construction
+records `neither` with origin `automatic_no_complete_candidate`; loading an older
+checksum-bound session projects the same outcome from its immutable bundle even
+when the stored session still says pending. Such a cohort is terminal without
+playing surviving diagnostic WAVs or pressing a confirmation button. Candidate
+selection remains human-only whenever at least one complete candidate exists.
+Both binding importers retain the automatic origin, and failed-control voice
+bindings retain every exact source failed-item hash even when their override map
+is empty. Validation compares only the reuse layer against the combined routing
+map, so unrelated pre-existing source-reference overrides remain valid.

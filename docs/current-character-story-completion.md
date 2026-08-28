@@ -1098,3 +1098,23 @@ bundles `eac5c068a97aad54a06e29af1d24483f23d6f2e6210684ad8d011a0d18fab8d9`
 and `0cc87c5ff53b3395e3f3a5ac1d6c42017e38e7a459b11e7d8630df0ff61faa9b`
 retain those typed failures and expose only `Keep unresolved`. These results
 close the bounded marker hypotheses; they do not authorize another MOSS seed.
+
+On 2026-08-28 the zero-choice gate was corrected: a cohort with no complete
+selectable candidate is now deterministically unresolved and requires no human
+playback or acknowledgement. The four exact failed-voice reviews were imported
+as zero-override bindings with automatic origin and complete failed-state hash
+authority. Their decision IDs are:
+
+- Mrs. Owen b971: `e6472e1852125a3fa3e59e1eeb00902624425d5b87c45a730b57aef245246a5b`;
+- Mrs. Owen f24: `12d7a2638f98dbddbf8b3bcb3bf0fa2f607c0a77dd016478706596fcdbbc851f`;
+- Mrs. Owen a2: `c64cf89cb03aea5086cbaf5514060b5c2be4aa40df4114fe9ec42230ca18ea65`;
+- Hotelier exact-bank: `3341721416d5b6f9e50eb2b8a502037fac50bf39ab188c9c431c368e2294d4ea`.
+
+The two failed inline-pause hypotheses were likewise imported as unresolved.
+Hotelier selection ID is
+`cbf652b3f95ad0e94d129613bcf73a44b2985b6f0c508fa2441e8b1dc47af759`;
+Mrs. Owen selection ID is
+`0e20bb4cb7ab927e4a4668c9e569edd389cbbcc7928d51273854390c2b602334`.
+These six artifacts close the bounded MOSS experiments but publish no audio and
+authorize no voice route. The exact lines still need an explicit non-MOSS
+offline fallback before final coverage can be terminal.

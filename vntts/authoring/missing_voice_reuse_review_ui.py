@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.missing_voice_reuse_review import (
+    AUTOMATIC_UNRESOLVED_ORIGIN,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
     record_missing_voice_reuse_decision,
@@ -226,9 +227,26 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.sample_selector.blockSignals(True)
         self.sample_selector.clear()
         if self._cohort is None:
+            automatic_count = sum(
+                value.get("decision_origin") == AUTOMATIC_UNRESOLVED_ORIGIN
+                for value in self.session["decisions"]
+            )
             self.cohort_heading.setText("Review complete")
-            self.sample_text.setText("All exact families have a recorded decision.")
-            self.status.setText("The blind key remains private until decision import.")
+            if automatic_count:
+                self.sample_text.setText(
+                    f"{automatic_count} cohort(s) had no complete selectable candidate "
+                    "and were kept unresolved automatically. No listening or human "
+                    "confirmation is required."
+                )
+                self.status.setText(
+                    "Any surviving WAV is optional diagnostic evidence only. "
+                    "The automatic unresolved outcome is ready for decision import."
+                )
+            else:
+                self.sample_text.setText("All exact families have a recorded decision.")
+                self.status.setText(
+                    "The blind key remains private until decision import."
+                )
             self.sample_selector.blockSignals(False)
             self._set_all_actions(False)
             return

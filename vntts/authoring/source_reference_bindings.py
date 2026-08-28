@@ -54,7 +54,7 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         if (
             reuse.get("target_mode") != "failed"
             or not isinstance(controls, dict)
-            or set(controls) != set(reuse_overrides)
+            or not set(reuse_overrides).issubset(controls)
             or any(not _is_sha256(value) for value in controls.values())
         ):
             raise SourceReferenceBindingError(
@@ -338,13 +338,20 @@ def _missing_voice_reuse_overrides_from_manifest(
             "Missing-voice reuse override checksum is inconsistent"
         )
     authority = value.get("authority")
-    expected_authority = (
-        "Comparison-only exact sample bindings. This authority does not bind the "
-        "remaining cohort or approve generated audio."
+    expected_authorities = (
+        {
+            "Comparison-only exact sample bindings. This authority does not bind the "
+            "remaining cohort or approve generated audio."
+        }
         if mode == "comparison_sample_only"
-        else "Human-reviewed exact cohort reuse binding. Neither decisions bind no voice."
+        else {
+            "Human-reviewed exact cohort reuse binding. Neither decisions bind no voice.",
+            "Exact cohort reuse binding. Candidate choices require human review; "
+            "cohorts with no selectable candidate are deterministically unresolved. "
+            "Neither decisions bind no voice.",
+        }
     )
-    if authority != expected_authority:
+    if authority not in expected_authorities:
         raise SourceReferenceBindingError(
             "Missing-voice reuse authority statement is invalid"
         )
@@ -435,19 +442,39 @@ def _validate_approved_reuse_authority(value):
             )
         observed_queue_ids.update(queue_ids)
         outcome = decision.get("decision")
+        origin = decision.get("review_decision_origin", "human_review")
+        if origin not in {"human_review", "automatic_no_complete_candidate"}:
+            raise SourceReferenceBindingError(
+                "Missing-voice review decision origin is unsupported"
+            )
+        origin_field = (
+            {"review_decision_origin"}
+            if "review_decision_origin" in decision
+            else set()
+        )
         if outcome == "neither":
-            if set(decision) != {"cohort_id", "decision", "queue_ids"}:
+            if set(decision) != {
+                "cohort_id",
+                "decision",
+                "queue_ids",
+                *origin_field,
+            }:
                 raise SourceReferenceBindingError(
                     "Neither missing-voice decision is malformed"
                 )
         elif outcome == "candidate":
-            if set(decision) != {
-                "cohort_id",
-                "decision",
-                "candidate_id",
-                "voice_character",
-                "queue_ids",
-            }:
+            if (
+                set(decision)
+                != {
+                    "cohort_id",
+                    "decision",
+                    "candidate_id",
+                    "voice_character",
+                    "queue_ids",
+                    *origin_field,
+                }
+                or origin != "human_review"
+            ):
                 raise SourceReferenceBindingError(
                     "Selected missing-voice decision is malformed"
                 )
@@ -475,6 +502,21 @@ def _validate_approved_reuse_authority(value):
     if observed_cohorts != value.get("cohort_ids"):
         raise SourceReferenceBindingError(
             "Approved missing-voice decisions disagree with declared cohorts"
+        )
+    target_mode = value.get("target_mode")
+    controls = value.get("source_failed_state_item_sha256s")
+    if target_mode == "failed":
+        if (
+            not isinstance(controls, dict)
+            or set(controls) != observed_queue_ids
+            or any(not _is_sha256(digest) for digest in controls.values())
+        ):
+            raise SourceReferenceBindingError(
+                "Failed missing-voice decisions lack exact source-item authority"
+            )
+    elif target_mode is not None or controls is not None:
+        raise SourceReferenceBindingError(
+            "Missing-voice target-mode authority is invalid"
         )
     if used_candidate_ids != set(selected_by_id):
         raise SourceReferenceBindingError(

@@ -46,9 +46,9 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             time.sleep(0.01)
         self.fail("Timed out waiting for missing-voice review UI")
 
-    def create_review(self, root):
+    def create_review(self, root, *, statuses=("generated", "failed")):
         plan_path, evidence, snapshots, queue_id = (
-            AuthoringMissingVoiceReuseReviewTest().fixture(root)
+            AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
         )
         with patch(
             "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
@@ -58,6 +58,23 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
                 plan_path, evidence, root / "review", seed=7
             )
         return session, queue_id
+
+    def test_zero_choice_cohort_needs_no_human_action(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(
+                Path(directory), statuses=("failed", "failed")
+            )
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+
+            self.assertIn("Completed 1 of 1", dialog.progress.text())
+            self.assertIn("Review complete", dialog.cohort_heading.text())
+            self.assertIn("automatically", dialog.sample_text.text())
+            self.assertIn("No listening", dialog.sample_text.text())
+            self.assertFalse(dialog.neither.isEnabled())
+            self.assertTrue(
+                all(not button.isEnabled() for button in dialog.play_buttons.values())
+            )
+            dialog.deleteLater()
 
     def finish_current_audio(self, dialog):
         dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)

@@ -128,6 +128,9 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
                 {
                     "cohort_id": cohort_id,
                     "decision": "neither",
+                    "review_decision_origin": record.get(
+                        "decision_origin", "human_review"
+                    ),
                     "queue_ids": queue_ids,
                 }
             )
@@ -158,6 +161,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
                 "decision": "candidate",
                 "candidate_id": candidate["candidate_id"],
                 "voice_character": candidate["voice_character"],
+                "review_decision_origin": record.get("decision_origin", "human_review"),
                 "queue_ids": queue_ids,
             }
         )
@@ -220,7 +224,9 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         "queue_voice_overrides": dict(sorted(overrides.items())),
         "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
         "authority": (
-            "Human-reviewed exact cohort reuse binding. Neither decisions bind no voice."
+            "Exact cohort reuse binding. Candidate choices require human review; "
+            "cohorts with no selectable candidate are deterministically unresolved. "
+            "Neither decisions bind no voice."
         ),
     }
     if document.get("target_mode", "missing") == "failed":
@@ -230,7 +236,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
                 "target_mode": "failed",
                 "source_failed_state_item_sha256s": {
                     queue_id: target_by_id[queue_id]["source_state_item_sha256"]
-                    for queue_id in sorted(overrides)
+                    for queue_id in sorted(target_by_id)
                 },
             }
         )
@@ -391,7 +397,7 @@ def _validate_binding_bundle(directory, plan, expected_binding):
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-        overrides = queue_voice_overrides_from_manifest(
+        combined_overrides = queue_voice_overrides_from_manifest(
             manifest,
             voices=voices,
         )
@@ -405,7 +411,10 @@ def _validate_binding_bundle(directory, plan, expected_binding):
         raise MissingVoiceReuseBindingError(str(error)) from error
     if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != expected_binding:
         raise MissingVoiceReuseBindingError("Missing-voice binding manifest changed")
-    if overrides != expected_binding["queue_voice_overrides"]:
+    expected_overrides = expected_binding["queue_voice_overrides"]
+    if {
+        queue_id: combined_overrides.get(queue_id) for queue_id in expected_overrides
+    } != expected_overrides:
         raise MissingVoiceReuseBindingError("Missing-voice binding overrides changed")
 
 

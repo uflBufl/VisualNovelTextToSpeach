@@ -1,3 +1,4 @@
+import json
 import unittest
 import wave
 from pathlib import Path
@@ -9,6 +10,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from tests.test_authoring_missing_voice_reuse import AuthoringMissingVoiceReuseTest
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_review import (
+    AUTOMATIC_UNRESOLVED_ORIGIN,
     MissingVoiceReuseReviewError,
     build_missing_voice_reuse_review,
     load_missing_voice_reuse_review,
@@ -143,7 +145,7 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 generated["label"],
             )
 
-    def test_all_failed_cohort_allows_only_explicit_neither(self):
+    def test_all_failed_cohort_is_automatically_unresolved(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan_path, evidence, snapshots, _queue_id = self.fixture(
@@ -158,15 +160,58 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 session_path = build_missing_voice_reuse_review(
                     plan_path, evidence, root / "review"
                 )
-            bundle, _session = load_missing_voice_reuse_review(session_path)
+            bundle, session = load_missing_voice_reuse_review(session_path)
             cohort = bundle["cohorts"][0]
 
             self.assertEqual(cohort["complete_candidate_labels"], [])
             self.assertEqual(cohort["decision_options"], ["neither"])
-            session = record_missing_voice_reuse_decision(
-                session_path, cohort["cohort_id"], "neither"
+            self.assertEqual(
+                session["decisions"][0],
+                {
+                    "cohort_id": cohort["cohort_id"],
+                    "decision": "neither",
+                    "decided_at": session["created_at"],
+                    "decision_origin": AUTOMATIC_UNRESOLVED_ORIGIN,
+                },
             )
-            self.assertEqual(session["decisions"][0]["decision"], "neither")
+            self.assertEqual(
+                missing_voice_reuse_review_progress(bundle, session), (1, 1)
+            )
+            with self.assertRaisesRegex(
+                MissingVoiceReuseReviewError, "already has a decision"
+            ):
+                record_missing_voice_reuse_decision(
+                    session_path, cohort["cohort_id"], "neither"
+                )
+
+    def test_legacy_pending_zero_choice_cohort_is_projected_as_unresolved(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, evidence, snapshots, _queue_id = self.fixture(
+                root, statuses=("failed", "failed")
+            )
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+                side_effect=lambda _plan, _candidate, path: snapshots[
+                    Path(path).resolve()
+                ],
+            ):
+                session_path = build_missing_voice_reuse_review(
+                    plan_path, evidence, root / "review"
+                )
+            raw = json.loads(session_path.read_text(encoding="utf-8"))
+            cohort_id = raw["decisions"][0]["cohort_id"]
+            raw["decisions"] = [{"cohort_id": cohort_id, "decision": None}]
+            session_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+
+            bundle, session = load_missing_voice_reuse_review(session_path)
+
+        self.assertEqual(session["decisions"][0]["decision"], "neither")
+        self.assertEqual(
+            session["decisions"][0]["decision_origin"],
+            AUTOMATIC_UNRESOLVED_ORIGIN,
+        )
+        self.assertEqual(missing_voice_reuse_review_progress(bundle, session), (1, 1))
 
     def test_exact_failed_control_can_review_one_complete_alternative(self):
         with TemporaryDirectory() as directory:

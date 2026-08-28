@@ -35,18 +35,15 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
 - [ ] Keep all eight newly exhausted Mrs. Owen/Hotelier lines out of automatic
-      production repair. No further MOSS seed is authorized for them. Complete
-      six explicit negative-evidence decisions: hear the one available WAV in
-      `current-character-story-mrs-owen-b971-failed-voice-v1-review` and choose
-      `Keep unresolved`; choose `Keep unresolved` in the f24 and a2 Mrs. Owen
-      reviews, the Hotelier exact-composite review, and the Hotelier and Mrs.
-      Owen inline-pause reviews (the latter five have no published WAV to
-      hear). Import the first four with `missing-voice-reuse-binding` as
-      auditable zero-override authorities and import the two marker decisions
-      with `failed-prompt-hypothesis-selection`. Then choose an explicit
-      non-MOSS offline fallback for these exact queue IDs before final coverage;
-      do not reinterpret `needs_sample`, a failed control, or an unpublished
-      render as production audio.
+      production repair. The six exhausted MOSS/reference hypotheses are closed
+      by the automatic unresolved artifacts recorded in
+      [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md);
+      no further MOSS seed is authorized for them. Choose an explicit non-MOSS
+      offline fallback for these exact queue IDs before final coverage. Bind its
+      provider, voice/speaker policy and exact text identities, generate and run
+      technical validation without reinterpreting `needs_sample`, a failed
+      control or an unpublished render as production audio, then require a
+      checksum-bound perceptual approval before publishing the fallback route.
 - [ ] Resolve the remaining missing-voice boundary without silently widening a
       reference: 93 spoken Aderyn lines have no age/portrait-safe route after
       the child variant's real-story rejection, and Dobharchú `314608:95` and

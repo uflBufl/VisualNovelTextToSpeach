@@ -4,9 +4,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.test_authoring_missing_voice_reuse import AuthoringMissingVoiceReuseTest
 from tests.test_authoring_missing_voice_reuse_review import (
     AuthoringMissingVoiceReuseReviewTest,
 )
+from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_binding import (
     MissingVoiceReuseBindingError,
     publish_missing_voice_reuse_binding,
@@ -34,6 +36,52 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
         ):
             session_path = build_missing_voice_reuse_review(
                 plan_path, evidence, root / "review", seed=7
+            )
+        return plan_path, session_path, queue_id
+
+    def create_failed_review(self, root):
+        helper = AuthoringMissingVoiceReuseTest()
+        fixture, _imported, workspace = helper.create_workspace(root)
+        plan = helper.build_failed_plan(fixture, workspace)
+        plan_path = root / "failed-plan.json"
+        write_missing_voice_reuse_plan(plan, plan_path)
+        candidate = plan.document["candidates"][0]
+        candidate_root = (root / "failed-candidate").resolve()
+        candidate_root.mkdir()
+        queue_id = fixture["queue_id"]
+        snapshot = {
+            "directory": candidate_root,
+            "workspace": {"workspace_id": "failed-candidate-workspace"},
+            "state": {
+                "items": {
+                    queue_id: {
+                        "status": "failed",
+                        "attempts": 1,
+                        "failure": {"kind": "missed_eos_audio_limit"},
+                        "last_error": "Typed limited render",
+                        "source_reference_binding": {
+                            "queue_id": queue_id,
+                            "synthesis_voice_character": candidate["voice_character"],
+                        },
+                    }
+                }
+            },
+            "authority": {
+                "path": str(candidate_root),
+                "workspace_id": "failed-candidate-workspace",
+                "workspace_sha256": "1" * 64,
+                "state_sha256": "2" * 64,
+                "voice_manifest_sha256": "3" * 64,
+            },
+        }
+        with patch(
+            "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+            return_value=snapshot,
+        ):
+            session_path = build_missing_voice_reuse_review(
+                plan_path,
+                {candidate["candidate_id"]: (candidate_root,)},
+                root / "failed-review",
             )
         return plan_path, session_path, queue_id
 
@@ -76,14 +124,7 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
     def test_neither_publishes_auditable_zero_override_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, _queue_id = self.create_review(
-                root, statuses=("failed", "failed")
-            )
-            bundle, _session = load_missing_voice_reuse_review(session_path)
-            cohort = bundle["cohorts"][0]
-            record_missing_voice_reuse_decision(
-                session_path, cohort["cohort_id"], "neither"
-            )
+            plan_path, session_path, queue_id = self.create_failed_review(root)
 
             result = publish_missing_voice_reuse_binding(
                 plan_path, session_path, root / "binding"
@@ -92,12 +133,23 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 (result.directory / "manifest.json").read_text(encoding="utf-8")
             )
             binding = manifest[MISSING_VOICE_REUSE_BINDING_FIELD]
+            source_state_item_sha256 = json.loads(
+                plan_path.read_text(encoding="utf-8")
+            )["targets"][0]["source_state_item_sha256"]
 
         self.assertEqual(result.selected_cohort_count, 0)
         self.assertEqual(result.neither_cohort_count, 1)
         self.assertEqual(result.bound_queue_count, 0)
         self.assertEqual(binding["queue_voice_overrides"], {})
         self.assertEqual(queue_voice_overrides_from_manifest(manifest), {})
+        self.assertEqual(
+            binding["decisions"][0]["review_decision_origin"],
+            "automatic_no_complete_candidate",
+        )
+        self.assertEqual(
+            binding["source_failed_state_item_sha256s"],
+            {queue_id: source_state_item_sha256},
+        )
 
     def test_incomplete_review_and_tampered_bundle_fail_closed(self):
         with TemporaryDirectory() as directory:

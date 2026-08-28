@@ -38,6 +38,7 @@ REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
 REVIEW_KEY_SCHEMA = "vntts.authoring-missing-voice-reuse-review-key"
 REVIEW_VERSION = 1
+AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
 
 
 class MissingVoiceReuseReviewError(RuntimeError):
@@ -258,16 +259,21 @@ def build_missing_voice_reuse_review(
         bundle_id = _canonical_sha256(body)
         bundle = {**body, "bundle_id": bundle_id}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
+        created_at = _utc_now()
         session = {
             "schema": REVIEW_SESSION_SCHEMA,
             "schema_version": REVIEW_VERSION,
             "bundle_id": bundle_id,
             "bundle_sha256": sha256_file(staging / "bundle.json"),
-            "created_at": _utc_now(),
-            "updated_at": _utc_now(),
+            "created_at": created_at,
+            "updated_at": created_at,
             "heard": [],
             "decisions": [
-                {"cohort_id": cohort["cohort_id"], "decision": None}
+                (
+                    {"cohort_id": cohort["cohort_id"], "decision": None}
+                    if cohort["complete_candidate_labels"]
+                    else _automatic_unresolved_decision(cohort["cohort_id"], created_at)
+                )
                 for cohort in cohorts
             ],
         }
@@ -328,6 +334,7 @@ def load_missing_voice_reuse_review(session_path):
     ):
         raise MissingVoiceReuseReviewError("Missing-voice blind key is invalid")
     _validate_public_matrix(root, bundle, key)
+    _derive_automatic_unresolved_decisions(session, bundle)
     _validate_review_session(session, bundle)
     return copy.deepcopy(bundle), copy.deepcopy(session)
 
@@ -362,6 +369,11 @@ def record_missing_voice_reuse_decision(session_path, cohort_id, decision):
     cohort = _cohort(bundle, cohort_id)
     if decision not in cohort["decision_options"]:
         raise MissingVoiceReuseReviewError("Review decision is not available")
+    record = next(
+        value for value in session["decisions"] if value["cohort_id"] == cohort_id
+    )
+    if record["decision"] is not None:
+        raise MissingVoiceReuseReviewError("Review cohort already has a decision")
     required_heard = _available_heard_keys(bundle, cohort)
     observed = {
         (value["queue_id"], value["label"])
@@ -372,11 +384,6 @@ def record_missing_voice_reuse_decision(session_path, cohort_id, decision):
         raise MissingVoiceReuseReviewError(
             "Every available cohort sample must be heard before deciding"
         )
-    record = next(
-        value for value in session["decisions"] if value["cohort_id"] == cohort_id
-    )
-    if record["decision"] is not None:
-        raise MissingVoiceReuseReviewError("Review cohort already has a decision")
     record["decision"] = decision
     record["decided_at"] = _utc_now()
     session["updated_at"] = _utc_now()
@@ -694,6 +701,16 @@ def _validate_review_session(session, bundle):
         cohort = _cohort(bundle, value["cohort_id"])
         if decision not in cohort["decision_options"] or not value.get("decided_at"):
             raise MissingVoiceReuseReviewError("Completed review decision is invalid")
+        if value.get("decision_origin") == AUTOMATIC_UNRESOLVED_ORIGIN:
+            if (
+                set(value) != {"cohort_id", "decision", "decided_at", "decision_origin"}
+                or decision != "neither"
+                or cohort["complete_candidate_labels"]
+            ):
+                raise MissingVoiceReuseReviewError(
+                    "Automatic unresolved review decision is invalid"
+                )
+            continue
         observed = {
             (record["queue_id"], record["label"])
             for record in heard
@@ -701,6 +718,39 @@ def _validate_review_session(session, bundle):
         }
         if observed != _available_heard_keys(bundle, cohort):
             raise MissingVoiceReuseReviewError("Decision lacks complete heard evidence")
+
+
+def _automatic_unresolved_decision(cohort_id, decided_at):
+    return {
+        "cohort_id": cohort_id,
+        "decision": "neither",
+        "decided_at": decided_at,
+        "decision_origin": AUTOMATIC_UNRESOLVED_ORIGIN,
+    }
+
+
+def _derive_automatic_unresolved_decisions(session, bundle):
+    """Project legacy pending sessions through the immutable zero-choice rule."""
+    decisions = session.get("decisions")
+    if not isinstance(decisions, list):
+        return
+    cohorts = {
+        cohort.get("cohort_id"): cohort
+        for cohort in bundle.get("cohorts", [])
+        if isinstance(cohort, dict)
+    }
+    for index, value in enumerate(decisions):
+        if (
+            not isinstance(value, dict)
+            or value.get("decision") is not None
+            or set(value) != {"cohort_id", "decision"}
+        ):
+            continue
+        cohort = cohorts.get(value.get("cohort_id"))
+        if isinstance(cohort, dict) and not cohort.get("complete_candidate_labels"):
+            decisions[index] = _automatic_unresolved_decision(
+                value["cohort_id"], session.get("created_at")
+            )
 
 
 def _available_heard_keys(bundle, cohort):
@@ -777,6 +827,7 @@ def _queue_digest(queue_id):
 
 
 __all__ = [
+    "AUTOMATIC_UNRESOLVED_ORIGIN",
     "MissingVoiceReuseReviewError",
     "build_missing_voice_reuse_review",
     "load_missing_voice_reuse_review",
