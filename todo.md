@@ -306,12 +306,6 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Reduce dependency magnets without weakening safety invariants
 
-- [ ] Replace the eager `vntts.authoring` compatibility facade with a small or
-      lazy public surface. Preserve every documented external import during the
-      migration, but stop a direct leaf-module import from loading unrelated
-      authoring workflows or PySide. Add an import-side-effect regression test
-      and document the supported public API before removing any compatibility
-      export.
 - [ ] Split `vntts.authoring.cli.create_parser()` and `main()` into command-family
       parser builders and handlers behind one thin dispatcher. Preserve command
       names, arguments, exit codes, JSON output and headless `-h/--help`

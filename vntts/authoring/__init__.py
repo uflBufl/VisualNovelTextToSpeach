@@ -1,534 +1,1577 @@
-"""Offline VNTTS authoring and non-destructive legacy-work import."""
+"""Lazy public compatibility facade for offline authoring APIs."""
 
-from vntts.authoring.audio_event_composition import (
-    AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA,
-    AUDIO_EVENT_COMPOSITION_DECISION_VERSION,
-    AUDIO_EVENT_COMPOSITION_DECISIONS,
-    AUDIO_EVENT_COMPOSITION_SCHEMA,
-    AUDIO_EVENT_COMPOSITION_VERSION,
-    AudioEventComposition,
-    AudioEventCompositionError,
-    load_audio_event_composition,
-    publish_audio_event_composition,
-    record_audio_event_composition_decision,
-)
-from vntts.authoring.audio_event_review import (
-    AUDIO_EVENT_DECISION_SCHEMA,
-    AUDIO_EVENT_DECISION_VERSION,
-    AUDIO_EVENT_DECISIONS,
-    AUDIO_EVENT_REVIEW_SCHEMA,
-    AUDIO_EVENT_REVIEW_VERSION,
-    AudioEventReview,
-    AudioEventReviewError,
-    load_audio_event_review,
-    publish_source_audio_event_review,
-    record_audio_event_review_decision,
-)
-from vntts.authoring.audio_events import (
-    AUDIO_EVENT_PLAN_FIELD,
-    AUDIO_EVENT_PLAN_SCHEMA,
-    AUDIO_EVENT_PLAN_VERSION,
-    STORY_AUDIO_CUES_FIELD,
-    AudioEventPlan,
-    audio_event_plan_document,
-    audio_event_plan_for_record,
-    plan_inline_audio_events,
-    requires_audio_event_composition,
-    validate_story_audio_cues,
-)
-from vntts.authoring.authority import (
-    AuthoringAuthorityError,
-    AuthoritySnapshot,
-    assert_authority_snapshot,
-    canonical_document_sha256,
-    capture_authority_file,
-    write_json_document_no_replace,
-)
-from vntts.authoring.bulk_generation import (
-    AudioQuality,
-    BulkGenerationError,
-    BulkGenerationResult,
-    authorize_live_fallback,
-    generation_failure_repair_plan,
-    generation_failure_report,
-    inspect_generated_speech,
-    inspect_generated_wav,
-    is_spoken_queue_item,
-    load_generation_state,
-    normalize_short_trailing_ellipsis,
-    publish_generated_manifest,
-    review_generation_item,
-    run_bulk_generation,
-    sha256_control_path,
-)
-from vntts.authoring.cohort_bundle import (
-    COHORT_REVIEW_BUNDLE_SCHEMA,
-    COHORT_REVIEW_BUNDLE_VERSION,
-    CohortBundleProjection,
-    CohortBundleSample,
-    CohortReviewBundle,
-    build_cohort_review_bundle,
-    execute_cohort_bundle_decision,
-    load_cohort_review_bundle,
-    load_cohort_review_bundle_samples,
-    refresh_cohort_review_bundle,
-    validate_cohort_review_bundle_document,
-    validate_cohort_review_progress_document,
-    write_cohort_review_bundle,
-)
-from vntts.authoring.cohort_review import (
-    COHORT_REVIEW_DECISION_SCHEMA,
-    COHORT_REVIEW_DECISION_VERSION,
-    COHORT_REVIEW_DEFECT_REASONS,
-    COHORT_REVIEW_PLAN_SCHEMA,
-    COHORT_REVIEW_PLAN_VERSION,
-    CohortReviewDecision,
-    CohortReviewError,
-    CohortReviewPlan,
-    CohortReviewProjection,
-    apply_cohort_review_decision,
-    build_cohort_review_decision,
-    build_cohort_review_plan,
-    execute_cohort_review_decision,
-    load_cohort_review_decision,
-    load_cohort_review_plan,
-    write_cohort_review_decision,
-    write_cohort_review_plan,
-)
-from vntts.authoring.config_rebase import (
-    CONFIG_REBASE_SCHEMA,
-    CONFIG_REBASE_VERSION,
-    rebase_workspace_config,
-    validate_config_rebase_workspace,
-)
-from vntts.authoring.delivery import (
-    DELIVERY_ANNOTATION_VERSION,
-    LEGACY_ENGLISH_POLICY,
-    PRESERVE_DELIVERY_POLICY,
-    DeliveryAnnotationError,
-    DeliveryPolicyApplication,
-    annotate_delivery,
-    apply_delivery_policy,
-)
-from vntts.authoring.failure_reference_audit import (
-    FAILURE_REFERENCE_AUDIT_KEY_SCHEMA,
-    FAILURE_REFERENCE_AUDIT_SCHEMA,
-    FAILURE_REFERENCE_AUDIT_VERSION,
-    FAILURE_REFERENCE_DECISIONS_VERSION,
-    FailureReferenceAudio,
-    FailureReferenceAudit,
-    FailureReferenceAuditError,
-    load_failure_reference_audit,
-    load_failure_reference_decisions,
-    prepare_failure_reference_audio,
-    publish_failure_reference_audit,
-    record_failure_reference_decision,
-)
-from vntts.authoring.failure_reference_binding import (
-    FAILURE_REFERENCE_BINDING_SCHEMA,
-    FAILURE_REFERENCE_BINDING_VERSION,
-    FailureReferenceBinding,
-    FailureReferenceBindingError,
-    load_failure_reference_binding,
-    load_failure_reference_binding_document,
-    publish_failure_reference_binding,
-)
-from vntts.authoring.failure_reference_preview import (
-    FailureReferencePreview,
-    FailureReferencePreviewCancelled,
-    FailureReferencePreviewError,
-    FailureReferencePreviewIncomplete,
-    FailureReferencePreviewService,
-)
-from vntts.authoring.failure_regeneration import (
-    FAILURE_REGENERATION_PLAN_SCHEMA,
-    FAILURE_REGENERATION_PLAN_VERSION,
-    FailureRegenerationCommand,
-    FailureRegenerationError,
-    FailureRegenerationPlan,
-    build_failure_regeneration_command,
-    build_failure_regeneration_plan,
-    load_failure_regeneration_plan,
-    write_failure_regeneration_plan,
-)
-from vntts.authoring.failure_repair import (
-    BOUNDED_SEED_RETRY,
-    EDGE_SILENCE_TRIM,
-    INLINE_PAUSE_MARKER,
-    OFFLINE_FALLBACK_BACKEND,
-    SENTENCE_BOUNDARY_SEGMENTATION,
-    EdgeSilenceTrim,
-    FailureRepairPolicy,
-    FailureRepairPolicyError,
-    InternalSilenceCompression,
-    compress_single_sentence_boundary_silence,
-    inline_sentence_pause_prompt,
-    render_sentence_segments,
-    safe_sentence_segments,
-    trim_excess_edge_silence,
-)
-from vntts.authoring.game_pack import (
-    FinalGamePackError,
-    FinalGamePackResult,
-    publish_final_game_pack,
-)
-from vntts.authoring.generation_state import validate_generation_state_document
-from vntts.authoring.known_role_reuse import (
-    KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
-    KNOWN_ROLE_REUSE_BUNDLE_VERSION,
-    KNOWN_ROLE_REUSE_DECISION_SCHEMA,
-    KNOWN_ROLE_REUSE_DECISION_VERSION,
-    KnownRoleReuseError,
-    KnownRoleReuseResult,
-    publish_known_role_reuse_binding,
-)
-from vntts.authoring.legacy_import import (
-    LegacyAuthoringImportError,
-    LegacyImportCandidate,
-    LegacyImportResult,
-    StandaloneImportInspection,
-    discover_legacy_jobs,
-    import_legacy_job,
-    import_standalone_generation,
-    inspect_standalone_generation,
-)
-from vntts.authoring.listening import (
-    ModelListeningError,
-    aggregate_listening_report,
-    create_listening_session,
-    create_listening_session_from_reports,
-    ensure_listening_report,
-    listening_progress,
-    load_listening_session,
-    next_pending_trial,
-    record_trial_preference,
-)
-from vntts.authoring.listening_import import (
-    ListeningImportError,
-    ListeningImportInspection,
-    ListeningImportResult,
-    import_listening_session,
-    inspect_listening_session,
-)
-from vntts.authoring.missing_voice_live_fallback import (
-    MissingVoiceLiveFallbackError,
-    MissingVoiceLiveFallbackResult,
-    authorize_missing_voice_live_fallback,
-)
-from vntts.authoring.missing_voice_policy import (
-    BLOCK_MISSING_VOICE,
-    MISSING_VOICE_POLICY_VERSION,
-    NARRATOR_ALL_UNRESOLVED,
-    NARRATOR_ROLES,
-    MissingVoicePolicy,
-    MissingVoicePolicyError,
-)
-from vntts.authoring.missing_voice_reuse import (
-    MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA,
-    MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION,
-    MISSING_VOICE_REUSE_PLAN_SCHEMA,
-    MISSING_VOICE_REUSE_PLAN_VERSION,
-    MissingVoiceReuseCandidateWorkspace,
-    MissingVoiceReuseError,
-    MissingVoiceReusePlan,
-    build_missing_voice_reuse_candidate_command,
-    build_missing_voice_reuse_plan,
-    load_missing_voice_reuse_plan,
-    parse_cohort_arguments,
-    prepare_missing_voice_reuse_candidate_workspace,
-    write_missing_voice_reuse_plan,
-)
-from vntts.authoring.missing_voice_reuse_binding import (
-    MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA,
-    MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION,
-    MISSING_VOICE_REUSE_DECISION_SCHEMA,
-    MISSING_VOICE_REUSE_DECISION_VERSION,
-    MissingVoiceReuseBindingError,
-    MissingVoiceReuseBindingResult,
-    publish_missing_voice_reuse_binding,
-)
-from vntts.authoring.missing_voice_reuse_review import (
-    REVIEW_BUNDLE_SCHEMA,
-    REVIEW_KEY_SCHEMA,
-    REVIEW_SESSION_SCHEMA,
-    REVIEW_VERSION,
-    MissingVoiceReuseReviewError,
-    build_missing_voice_reuse_review,
-    load_missing_voice_reuse_review,
-    missing_voice_reuse_review_progress,
-    parse_missing_voice_reuse_evidence,
-    record_missing_voice_reuse_decision,
-    record_missing_voice_reuse_heard,
-)
-from vntts.authoring.model_benchmark import (
-    ModelBenchmarkError,
-    ModelVariant,
-    benchmark_model_variants,
-    benchmark_renderer,
-    build_benchmark_corpus,
-    select_representative_items,
-)
-from vntts.authoring.pending_resolution import (
-    PENDING_RESOLUTION_PLAN_SCHEMA,
-    PENDING_RESOLUTION_PLAN_VERSION,
-    RECOVER_OR_REGENERATE,
-    PendingRegenerationCommand,
-    PendingResolutionError,
-    PendingResolutionPlan,
-    build_pending_regeneration_command,
-    build_pending_resolution_plan,
-    load_pending_resolution_plan,
-    write_pending_resolution_plan,
-)
-from vntts.authoring.portrait_aliases import (
-    DEFAULT_MAX_DHASH_DISTANCE,
-    PORTRAIT_ALIAS_DECISION_SCHEMA,
-    PORTRAIT_ALIAS_DECISION_VERSION,
-    PORTRAIT_ALIAS_PLAN_SCHEMA,
-    PORTRAIT_ALIAS_PLAN_VERSION,
-    PortraitAliasDecision,
-    PortraitAliasError,
-    PortraitAliasPlan,
-    build_portrait_alias_decision,
-    build_portrait_alias_plan,
-    load_portrait_alias_decision,
-    load_portrait_alias_plan,
-    portrait_identity_by_variant,
-    write_portrait_alias_decision,
-    write_portrait_alias_plan,
-)
-from vntts.authoring.queue_builder import (
-    GenerationQueueBuildError,
-    GenerationQueuePlan,
-    GenerationQueueSummary,
-    inspect_generation_queue,
-    plan_generation_queue,
-    publish_generation_queue,
-)
-from vntts.authoring.reconciliation import (
-    AUTHORING_RECONCILIATION_SCHEMA,
-    AUTHORING_RECONCILIATION_VERSION,
-    AuthoringReconciliation,
-    AuthoringReconciliationError,
-    build_authoring_reconciliation,
-    load_authoring_reconciliation,
-    write_authoring_reconciliation,
-)
-from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
-from vntts.authoring.reference_composite import (
-    COMPOSITE_SCHEMA,
-    COMPOSITE_VERSION,
-    ReferenceCompositeError,
-    ReferenceCompositeResult,
-    publish_composite_quality_review,
-    publish_exact_bank_reference_composite,
-)
-from vntts.authoring.reference_render_comparison import (
-    REFERENCE_RENDER_INPUT_SCHEMA,
-    REFERENCE_RENDER_INPUT_VERSION,
-    ReferenceRenderComparison,
-    ReferenceRenderComparisonError,
-    ReferenceRenderPlan,
-    ReferenceRenderSelection,
-    create_reference_render_listening,
-    import_reference_render_preference,
-    load_reference_render_comparison_document,
-    load_reference_render_plan,
-    publish_reference_render_comparison,
-)
-from vntts.authoring.reference_selection import (
-    ReferenceSelectionError,
-    ReferenceSelectionResult,
-    inspect_voice_reference_candidates,
-    select_voice_reference,
-    validate_reference_selection_provenance,
-)
-from vntts.authoring.render_hypothesis_review import (
-    RENDER_HYPOTHESIS_DECISION_SCHEMA,
-    RENDER_HYPOTHESIS_DECISION_VERSION,
-    RENDER_HYPOTHESIS_DECISIONS,
-    RENDER_HYPOTHESIS_REVIEW_SCHEMA,
-    RENDER_HYPOTHESIS_REVIEW_VERSION,
-    RenderHypothesisReview,
-    RenderHypothesisReviewError,
-    RenderHypothesisSelection,
-    import_accepted_render_hypothesis,
-    load_render_hypothesis_review,
-    publish_render_hypothesis_review,
-    record_render_hypothesis_decision,
-)
-from vntts.authoring.robustness_asr import (
-    SPEECH_ROBUSTNESS_ASR_SCHEMA,
-    SPEECH_ROBUSTNESS_ASR_VERSION,
-    SpeechRobustnessAsrError,
-    SpeechRobustnessAsrReport,
-    build_speech_robustness_asr_report,
-    compare_speech_transcript,
-    write_speech_robustness_asr_report,
-)
-from vntts.authoring.robustness_corpus import (
-    SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
-    SPEECH_ROBUSTNESS_CORPUS_SCHEMA,
-    SPEECH_ROBUSTNESS_CORPUS_VERSION,
-    SpeechRobustnessCorpus,
-    SpeechRobustnessCorpusError,
-    SpeechRobustnessCorpusResult,
-    analyze_speech_robustness_bytes,
-    load_speech_robustness_corpus,
-    publish_speech_robustness_corpus,
-)
-from vntts.authoring.silence_comparison import (
-    SILENCE_COMPARISON_INPUT_SCHEMA,
-    SILENCE_COMPARISON_INPUT_VERSION,
-    SILENCE_COMPARISON_SCHEMA,
-    SILENCE_COMPARISON_VERSION,
-    SilenceComparisonError,
-    SilenceComparisonInputPlan,
-    SilenceComparisonResult,
-    SilenceComparisonSample,
-    create_silence_comparison_session,
-    load_silence_comparison,
-    load_silence_comparison_input_plan,
-    publish_silence_comparison,
-)
-from vntts.authoring.silence_evidence import (
-    SILENCE_FAILURE_EVIDENCE_SCHEMA,
-    SILENCE_FAILURE_EVIDENCE_VERSION,
-    SilenceFailureEvidenceError,
-    load_silence_failure_evidence,
-    publish_silence_failure_evidence,
-)
-from vntts.authoring.source_reference_quality import (
-    QUALITY_DECISIONS,
-    QUALITY_REVIEW_SCHEMA,
-    QUALITY_REVIEW_VERSION,
-    SourceReferenceQualityError,
-    SourceReferenceQualityResult,
-    accepted_source_reference_variants,
-    load_source_reference_quality_review,
-    next_pending_quality_variant,
-    publish_source_reference_quality_review,
-    quality_review_progress,
-    record_source_reference_quality_decision,
-    validate_source_reference_quality_review_document,
-)
-from vntts.authoring.source_reference_review import (
-    SourceReferenceBindingsResult,
-    SourceReferenceEvaluationResult,
-    SourceReferenceListeningReportsResult,
-    SourceReferencePlanResult,
-    SourceReferenceReviewError,
-    import_source_reference_review,
-    load_source_reference_plan,
-    publish_source_reference_binding_retirement,
-    publish_source_reference_binding_successor,
-    publish_source_reference_bindings,
-    publish_source_reference_evaluation,
-    publish_source_reference_listening_reports,
-)
-from vntts.authoring.specialist_failure_plan import (
-    REFERENCE_OR_LIVE,
-    SPECIALIST_FAILURE_PLAN_SCHEMA,
-    SPECIALIST_FAILURE_PLAN_VERSION,
-    SpecialistFailurePlan,
-    build_specialist_failure_plan,
-    load_specialist_failure_plan,
-    write_specialist_failure_plan,
-)
-from vntts.authoring.speech_quality import SpeechQuality
-from vntts.authoring.terminal_conflict_resolution import (
-    TERMINAL_CONFLICT_RESOLUTION_SCHEMA,
-    TERMINAL_CONFLICT_RESOLUTION_VERSION,
-    TerminalConflictResolution,
-    TerminalConflictResolutionError,
-    assert_terminal_conflict_resolution_source_authorities,
-    load_terminal_conflict_resolution,
-    load_terminal_conflict_resolution_document,
-    publish_terminal_conflict_resolution,
-    validate_terminal_conflict_resolution_document,
-)
-from vntts.authoring.terminal_conflict_review import (
-    NEITHER_ACCEPTABLE,
-    TERMINAL_CONFLICT_PROGRESS_SCHEMA,
-    TERMINAL_CONFLICT_PROGRESS_VERSION,
-    TERMINAL_CONFLICT_REVIEW_SCHEMA,
-    TERMINAL_CONFLICT_REVIEW_VERSION,
-    TerminalConflictReview,
-    TerminalConflictReviewError,
-    assert_terminal_conflict_progress_carry_forward,
-    assert_terminal_conflict_review_source_authorities,
-    carry_approved_cohort_terminal_conflict_decisions,
-    carry_terminal_conflict_decisions,
-    load_terminal_conflict_candidate_audio,
-    load_terminal_conflict_review,
-    load_terminal_conflict_review_document,
-    load_terminal_conflict_review_progress,
-    publish_terminal_conflict_review,
-    record_terminal_conflict_decision,
-    validate_terminal_conflict_review_document,
-    validate_terminal_conflict_review_progress_document,
-)
-from vntts.authoring.terminal_conflict_successor import (
-    APPLY_APPROVED_OUTCOME,
-    NEW_REPAIR_HYPOTHESIS,
-    RETAIN_EXPLICIT_REJECTION,
-    SUCCESSOR_ACTIONS,
-    TERMINAL_CONFLICT_SUCCESSOR_SCHEMA,
-    TERMINAL_CONFLICT_SUCCESSOR_VERSION,
-    TerminalConflictSuccessor,
-    TerminalConflictSuccessorError,
-    load_terminal_conflict_successor,
-    load_terminal_conflict_successor_document,
-    publish_terminal_conflict_successor,
-    validate_terminal_conflict_successor_document,
-)
-from vntts.authoring.terminal_conflict_workspace import (
-    merge_terminal_conflict_resolution,
-)
-from vntts.authoring.voice_quality_gate import (
-    VOICE_QUALITY_GATE_SCHEMA,
-    VOICE_QUALITY_GATE_VERSION,
-    VoiceQualityCohortCompatibility,
-    VoiceQualityCompatibility,
-    VoiceQualityGate,
-    VoiceQualityGateError,
-    build_voice_quality_gate,
-    inspect_voice_quality_cohort,
-    inspect_voice_quality_gate,
-    load_voice_quality_gate,
-    write_voice_quality_gate,
-)
-from vntts.authoring.voice_repair_comparison import (
-    VOICE_REPAIR_COMPARISON_SCHEMA,
-    VOICE_REPAIR_COMPARISON_VERSION,
-    VoiceRepairCandidateWorkspace,
-    VoiceRepairComparisonError,
-    VoiceRepairComparisonPlan,
-    build_voice_repair_candidate_command,
-    build_voice_repair_comparison_plan,
-    load_voice_repair_comparison_plan,
-    prepare_voice_repair_candidate_workspace,
-    write_voice_repair_comparison_plan,
-)
-from vntts.authoring.workbench import (
-    CollectionSelection,
-    FailureReferenceRuntimeBinding,
-    ImmutableHistoryTimestamp,
-    WorkspaceCollection,
-    WorkspaceVoice,
-    contained_workspace_path,
-    create_audio_event_composition_workspace,
-    create_failure_reference_workspace,
-    failure_reference_runtime_binding,
-    immutable_history_timestamps,
-    inspect_collection_selection,
-    inspect_voice_readiness,
-    list_workspace_collections,
-    load_workspace_authority,
-    merge_workspace_outcomes,
-    safe_workspace_relative_path,
-    workspace_voice_snapshot,
-)
+from __future__ import annotations
+
+import importlib
+
+_EXPORTS = {
+    "AUDIO_EVENT_PLAN_FIELD": (
+        "vntts.authoring.audio_events",
+        "AUDIO_EVENT_PLAN_FIELD",
+    ),
+    "AUDIO_EVENT_PLAN_SCHEMA": (
+        "vntts.authoring.audio_events",
+        "AUDIO_EVENT_PLAN_SCHEMA",
+    ),
+    "AUDIO_EVENT_PLAN_VERSION": (
+        "vntts.authoring.audio_events",
+        "AUDIO_EVENT_PLAN_VERSION",
+    ),
+    "AUDIO_EVENT_DECISIONS": (
+        "vntts.authoring.audio_event_review",
+        "AUDIO_EVENT_DECISIONS",
+    ),
+    "AUDIO_EVENT_DECISION_SCHEMA": (
+        "vntts.authoring.audio_event_review",
+        "AUDIO_EVENT_DECISION_SCHEMA",
+    ),
+    "AUDIO_EVENT_DECISION_VERSION": (
+        "vntts.authoring.audio_event_review",
+        "AUDIO_EVENT_DECISION_VERSION",
+    ),
+    "AUDIO_EVENT_REVIEW_SCHEMA": (
+        "vntts.authoring.audio_event_review",
+        "AUDIO_EVENT_REVIEW_SCHEMA",
+    ),
+    "AUDIO_EVENT_REVIEW_VERSION": (
+        "vntts.authoring.audio_event_review",
+        "AUDIO_EVENT_REVIEW_VERSION",
+    ),
+    "AUDIO_EVENT_COMPOSITION_DECISIONS": (
+        "vntts.authoring.audio_event_composition",
+        "AUDIO_EVENT_COMPOSITION_DECISIONS",
+    ),
+    "AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA": (
+        "vntts.authoring.audio_event_composition",
+        "AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA",
+    ),
+    "AUDIO_EVENT_COMPOSITION_DECISION_VERSION": (
+        "vntts.authoring.audio_event_composition",
+        "AUDIO_EVENT_COMPOSITION_DECISION_VERSION",
+    ),
+    "AUDIO_EVENT_COMPOSITION_SCHEMA": (
+        "vntts.authoring.audio_event_composition",
+        "AUDIO_EVENT_COMPOSITION_SCHEMA",
+    ),
+    "AUDIO_EVENT_COMPOSITION_VERSION": (
+        "vntts.authoring.audio_event_composition",
+        "AUDIO_EVENT_COMPOSITION_VERSION",
+    ),
+    "STORY_AUDIO_CUES_FIELD": (
+        "vntts.authoring.audio_events",
+        "STORY_AUDIO_CUES_FIELD",
+    ),
+    "AudioEventPlan": ("vntts.authoring.audio_events", "AudioEventPlan"),
+    "AudioEventReview": ("vntts.authoring.audio_event_review", "AudioEventReview"),
+    "AudioEventReviewError": (
+        "vntts.authoring.audio_event_review",
+        "AudioEventReviewError",
+    ),
+    "AudioEventComposition": (
+        "vntts.authoring.audio_event_composition",
+        "AudioEventComposition",
+    ),
+    "AudioEventCompositionError": (
+        "vntts.authoring.audio_event_composition",
+        "AudioEventCompositionError",
+    ),
+    "SPEECH_ROBUSTNESS_ASR_SCHEMA": (
+        "vntts.authoring.robustness_asr",
+        "SPEECH_ROBUSTNESS_ASR_SCHEMA",
+    ),
+    "SPEECH_ROBUSTNESS_ASR_VERSION": (
+        "vntts.authoring.robustness_asr",
+        "SPEECH_ROBUSTNESS_ASR_VERSION",
+    ),
+    "SpeechRobustnessAsrError": (
+        "vntts.authoring.robustness_asr",
+        "SpeechRobustnessAsrError",
+    ),
+    "SpeechRobustnessAsrReport": (
+        "vntts.authoring.robustness_asr",
+        "SpeechRobustnessAsrReport",
+    ),
+    "SPEECH_ROBUSTNESS_ANALYSIS_VERSION": (
+        "vntts.authoring.robustness_corpus",
+        "SPEECH_ROBUSTNESS_ANALYSIS_VERSION",
+    ),
+    "SPEECH_ROBUSTNESS_CORPUS_SCHEMA": (
+        "vntts.authoring.robustness_corpus",
+        "SPEECH_ROBUSTNESS_CORPUS_SCHEMA",
+    ),
+    "SPEECH_ROBUSTNESS_CORPUS_VERSION": (
+        "vntts.authoring.robustness_corpus",
+        "SPEECH_ROBUSTNESS_CORPUS_VERSION",
+    ),
+    "SpeechRobustnessCorpus": (
+        "vntts.authoring.robustness_corpus",
+        "SpeechRobustnessCorpus",
+    ),
+    "SpeechRobustnessCorpusError": (
+        "vntts.authoring.robustness_corpus",
+        "SpeechRobustnessCorpusError",
+    ),
+    "SpeechRobustnessCorpusResult": (
+        "vntts.authoring.robustness_corpus",
+        "SpeechRobustnessCorpusResult",
+    ),
+    "APPLY_APPROVED_OUTCOME": (
+        "vntts.authoring.terminal_conflict_successor",
+        "APPLY_APPROVED_OUTCOME",
+    ),
+    "AUTHORING_RECONCILIATION_SCHEMA": (
+        "vntts.authoring.reconciliation",
+        "AUTHORING_RECONCILIATION_SCHEMA",
+    ),
+    "AUTHORING_RECONCILIATION_VERSION": (
+        "vntts.authoring.reconciliation",
+        "AUTHORING_RECONCILIATION_VERSION",
+    ),
+    "AudioQuality": ("vntts.authoring.bulk_generation", "AudioQuality"),
+    "AuthoritySnapshot": ("vntts.authoring.authority", "AuthoritySnapshot"),
+    "AuthoringAuthorityError": ("vntts.authoring.authority", "AuthoringAuthorityError"),
+    "AuthoringReconciliation": (
+        "vntts.authoring.reconciliation",
+        "AuthoringReconciliation",
+    ),
+    "AuthoringReconciliationError": (
+        "vntts.authoring.reconciliation",
+        "AuthoringReconciliationError",
+    ),
+    "BOUNDED_SEED_RETRY": ("vntts.authoring.failure_repair", "BOUNDED_SEED_RETRY"),
+    "BulkGenerationError": ("vntts.authoring.bulk_generation", "BulkGenerationError"),
+    "BulkGenerationResult": ("vntts.authoring.bulk_generation", "BulkGenerationResult"),
+    "COHORT_REVIEW_DECISION_SCHEMA": (
+        "vntts.authoring.cohort_review",
+        "COHORT_REVIEW_DECISION_SCHEMA",
+    ),
+    "COHORT_REVIEW_DECISION_VERSION": (
+        "vntts.authoring.cohort_review",
+        "COHORT_REVIEW_DECISION_VERSION",
+    ),
+    "COHORT_REVIEW_DEFECT_REASONS": (
+        "vntts.authoring.cohort_review",
+        "COHORT_REVIEW_DEFECT_REASONS",
+    ),
+    "COHORT_REVIEW_PLAN_SCHEMA": (
+        "vntts.authoring.cohort_review",
+        "COHORT_REVIEW_PLAN_SCHEMA",
+    ),
+    "COHORT_REVIEW_PLAN_VERSION": (
+        "vntts.authoring.cohort_review",
+        "COHORT_REVIEW_PLAN_VERSION",
+    ),
+    "BLOCK_MISSING_VOICE": (
+        "vntts.authoring.missing_voice_policy",
+        "BLOCK_MISSING_VOICE",
+    ),
+    "CollectionSelection": ("vntts.authoring.workbench", "CollectionSelection"),
+    "CohortReviewDecision": ("vntts.authoring.cohort_review", "CohortReviewDecision"),
+    "CohortReviewError": ("vntts.authoring.cohort_review", "CohortReviewError"),
+    "CohortReviewPlan": ("vntts.authoring.cohort_review", "CohortReviewPlan"),
+    "CohortReviewProjection": (
+        "vntts.authoring.cohort_review",
+        "CohortReviewProjection",
+    ),
+    "CONFIG_REBASE_SCHEMA": ("vntts.authoring.config_rebase", "CONFIG_REBASE_SCHEMA"),
+    "CONFIG_REBASE_VERSION": ("vntts.authoring.config_rebase", "CONFIG_REBASE_VERSION"),
+    "DEFAULT_MAX_DHASH_DISTANCE": (
+        "vntts.authoring.portrait_aliases",
+        "DEFAULT_MAX_DHASH_DISTANCE",
+    ),
+    "DELIVERY_ANNOTATION_VERSION": (
+        "vntts.authoring.delivery",
+        "DELIVERY_ANNOTATION_VERSION",
+    ),
+    "LEGACY_ENGLISH_POLICY": ("vntts.authoring.delivery", "LEGACY_ENGLISH_POLICY"),
+    "PRESERVE_DELIVERY_POLICY": (
+        "vntts.authoring.delivery",
+        "PRESERVE_DELIVERY_POLICY",
+    ),
+    "PENDING_RESOLUTION_PLAN_SCHEMA": (
+        "vntts.authoring.pending_resolution",
+        "PENDING_RESOLUTION_PLAN_SCHEMA",
+    ),
+    "PENDING_RESOLUTION_PLAN_VERSION": (
+        "vntts.authoring.pending_resolution",
+        "PENDING_RESOLUTION_PLAN_VERSION",
+    ),
+    "PORTRAIT_ALIAS_DECISION_SCHEMA": (
+        "vntts.authoring.portrait_aliases",
+        "PORTRAIT_ALIAS_DECISION_SCHEMA",
+    ),
+    "PORTRAIT_ALIAS_DECISION_VERSION": (
+        "vntts.authoring.portrait_aliases",
+        "PORTRAIT_ALIAS_DECISION_VERSION",
+    ),
+    "PORTRAIT_ALIAS_PLAN_SCHEMA": (
+        "vntts.authoring.portrait_aliases",
+        "PORTRAIT_ALIAS_PLAN_SCHEMA",
+    ),
+    "PORTRAIT_ALIAS_PLAN_VERSION": (
+        "vntts.authoring.portrait_aliases",
+        "PORTRAIT_ALIAS_PLAN_VERSION",
+    ),
+    "PendingResolutionError": (
+        "vntts.authoring.pending_resolution",
+        "PendingResolutionError",
+    ),
+    "PendingResolutionPlan": (
+        "vntts.authoring.pending_resolution",
+        "PendingResolutionPlan",
+    ),
+    "PendingRegenerationCommand": (
+        "vntts.authoring.pending_resolution",
+        "PendingRegenerationCommand",
+    ),
+    "RECOVER_OR_REGENERATE": (
+        "vntts.authoring.pending_resolution",
+        "RECOVER_OR_REGENERATE",
+    ),
+    "RETAIN_EXPLICIT_REJECTION": (
+        "vntts.authoring.terminal_conflict_successor",
+        "RETAIN_EXPLICIT_REJECTION",
+    ),
+    "DeliveryAnnotationError": ("vntts.authoring.delivery", "DeliveryAnnotationError"),
+    "DeliveryPolicyApplication": (
+        "vntts.authoring.delivery",
+        "DeliveryPolicyApplication",
+    ),
+    "EdgeSilenceTrim": ("vntts.authoring.failure_repair", "EdgeSilenceTrim"),
+    "FailureRepairPolicy": ("vntts.authoring.failure_repair", "FailureRepairPolicy"),
+    "FailureRepairPolicyError": (
+        "vntts.authoring.failure_repair",
+        "FailureRepairPolicyError",
+    ),
+    "InternalSilenceCompression": (
+        "vntts.authoring.failure_repair",
+        "InternalSilenceCompression",
+    ),
+    "FAILURE_REGENERATION_PLAN_SCHEMA": (
+        "vntts.authoring.failure_regeneration",
+        "FAILURE_REGENERATION_PLAN_SCHEMA",
+    ),
+    "FAILURE_REGENERATION_PLAN_VERSION": (
+        "vntts.authoring.failure_regeneration",
+        "FAILURE_REGENERATION_PLAN_VERSION",
+    ),
+    "FailureRegenerationCommand": (
+        "vntts.authoring.failure_regeneration",
+        "FailureRegenerationCommand",
+    ),
+    "FailureRegenerationError": (
+        "vntts.authoring.failure_regeneration",
+        "FailureRegenerationError",
+    ),
+    "FailureRegenerationPlan": (
+        "vntts.authoring.failure_regeneration",
+        "FailureRegenerationPlan",
+    ),
+    "FAILURE_REFERENCE_AUDIT_KEY_SCHEMA": (
+        "vntts.authoring.failure_reference_audit",
+        "FAILURE_REFERENCE_AUDIT_KEY_SCHEMA",
+    ),
+    "FAILURE_REFERENCE_AUDIT_SCHEMA": (
+        "vntts.authoring.failure_reference_audit",
+        "FAILURE_REFERENCE_AUDIT_SCHEMA",
+    ),
+    "FAILURE_REFERENCE_AUDIT_VERSION": (
+        "vntts.authoring.failure_reference_audit",
+        "FAILURE_REFERENCE_AUDIT_VERSION",
+    ),
+    "FAILURE_REFERENCE_DECISIONS_VERSION": (
+        "vntts.authoring.failure_reference_audit",
+        "FAILURE_REFERENCE_DECISIONS_VERSION",
+    ),
+    "FailureReferenceAudit": (
+        "vntts.authoring.failure_reference_audit",
+        "FailureReferenceAudit",
+    ),
+    "FailureReferenceAudio": (
+        "vntts.authoring.failure_reference_audit",
+        "FailureReferenceAudio",
+    ),
+    "FailureReferenceAuditError": (
+        "vntts.authoring.failure_reference_audit",
+        "FailureReferenceAuditError",
+    ),
+    "FAILURE_REFERENCE_BINDING_SCHEMA": (
+        "vntts.authoring.failure_reference_binding",
+        "FAILURE_REFERENCE_BINDING_SCHEMA",
+    ),
+    "FAILURE_REFERENCE_BINDING_VERSION": (
+        "vntts.authoring.failure_reference_binding",
+        "FAILURE_REFERENCE_BINDING_VERSION",
+    ),
+    "FailureReferenceBinding": (
+        "vntts.authoring.failure_reference_binding",
+        "FailureReferenceBinding",
+    ),
+    "FailureReferenceBindingError": (
+        "vntts.authoring.failure_reference_binding",
+        "FailureReferenceBindingError",
+    ),
+    "FailureReferenceRuntimeBinding": (
+        "vntts.authoring.workbench",
+        "FailureReferenceRuntimeBinding",
+    ),
+    "FailureReferencePreview": (
+        "vntts.authoring.failure_reference_preview",
+        "FailureReferencePreview",
+    ),
+    "FailureReferencePreviewCancelled": (
+        "vntts.authoring.failure_reference_preview",
+        "FailureReferencePreviewCancelled",
+    ),
+    "FailureReferencePreviewError": (
+        "vntts.authoring.failure_reference_preview",
+        "FailureReferencePreviewError",
+    ),
+    "FailureReferencePreviewIncomplete": (
+        "vntts.authoring.failure_reference_preview",
+        "FailureReferencePreviewIncomplete",
+    ),
+    "FailureReferencePreviewService": (
+        "vntts.authoring.failure_reference_preview",
+        "FailureReferencePreviewService",
+    ),
+    "FinalGamePackError": ("vntts.authoring.game_pack", "FinalGamePackError"),
+    "FinalGamePackResult": ("vntts.authoring.game_pack", "FinalGamePackResult"),
+    "SpeechQuality": ("vntts.authoring.speech_quality", "SpeechQuality"),
+    "authorize_live_fallback": (
+        "vntts.authoring.bulk_generation",
+        "authorize_live_fallback",
+    ),
+    "audio_event_plan_document": (
+        "vntts.authoring.audio_events",
+        "audio_event_plan_document",
+    ),
+    "audio_event_plan_for_record": (
+        "vntts.authoring.audio_events",
+        "audio_event_plan_for_record",
+    ),
+    "LegacyAuthoringImportError": (
+        "vntts.authoring.legacy_import",
+        "LegacyAuthoringImportError",
+    ),
+    "LegacyImportCandidate": ("vntts.authoring.legacy_import", "LegacyImportCandidate"),
+    "LegacyImportResult": ("vntts.authoring.legacy_import", "LegacyImportResult"),
+    "ListeningImportError": (
+        "vntts.authoring.listening_import",
+        "ListeningImportError",
+    ),
+    "ListeningImportInspection": (
+        "vntts.authoring.listening_import",
+        "ListeningImportInspection",
+    ),
+    "ListeningImportResult": (
+        "vntts.authoring.listening_import",
+        "ListeningImportResult",
+    ),
+    "ImmutableHistoryTimestamp": (
+        "vntts.authoring.workbench",
+        "ImmutableHistoryTimestamp",
+    ),
+    "ModelBenchmarkError": ("vntts.authoring.model_benchmark", "ModelBenchmarkError"),
+    "ModelListeningError": ("vntts.authoring.listening", "ModelListeningError"),
+    "ModelVariant": ("vntts.authoring.model_benchmark", "ModelVariant"),
+    "OFFLINE_FALLBACK_BACKEND": (
+        "vntts.authoring.failure_repair",
+        "OFFLINE_FALLBACK_BACKEND",
+    ),
+    "PortraitAliasDecision": (
+        "vntts.authoring.portrait_aliases",
+        "PortraitAliasDecision",
+    ),
+    "PortraitAliasError": ("vntts.authoring.portrait_aliases", "PortraitAliasError"),
+    "PortraitAliasPlan": ("vntts.authoring.portrait_aliases", "PortraitAliasPlan"),
+    "COHORT_REVIEW_BUNDLE_SCHEMA": (
+        "vntts.authoring.cohort_bundle",
+        "COHORT_REVIEW_BUNDLE_SCHEMA",
+    ),
+    "COHORT_REVIEW_BUNDLE_VERSION": (
+        "vntts.authoring.cohort_bundle",
+        "COHORT_REVIEW_BUNDLE_VERSION",
+    ),
+    "COMPOSITE_SCHEMA": ("vntts.authoring.reference_composite", "COMPOSITE_SCHEMA"),
+    "COMPOSITE_VERSION": ("vntts.authoring.reference_composite", "COMPOSITE_VERSION"),
+    "CohortBundleProjection": (
+        "vntts.authoring.cohort_bundle",
+        "CohortBundleProjection",
+    ),
+    "CohortBundleSample": ("vntts.authoring.cohort_bundle", "CohortBundleSample"),
+    "CohortReviewBundle": ("vntts.authoring.cohort_bundle", "CohortReviewBundle"),
+    "MISSING_VOICE_POLICY_VERSION": (
+        "vntts.authoring.missing_voice_policy",
+        "MISSING_VOICE_POLICY_VERSION",
+    ),
+    "MissingVoicePolicy": (
+        "vntts.authoring.missing_voice_policy",
+        "MissingVoicePolicy",
+    ),
+    "MissingVoicePolicyError": (
+        "vntts.authoring.missing_voice_policy",
+        "MissingVoicePolicyError",
+    ),
+    "NARRATOR_ALL_UNRESOLVED": (
+        "vntts.authoring.missing_voice_policy",
+        "NARRATOR_ALL_UNRESOLVED",
+    ),
+    "NARRATOR_ROLES": ("vntts.authoring.missing_voice_policy", "NARRATOR_ROLES"),
+    "ReferenceSelectionError": (
+        "vntts.authoring.reference_selection",
+        "ReferenceSelectionError",
+    ),
+    "ReferenceSelectionResult": (
+        "vntts.authoring.reference_selection",
+        "ReferenceSelectionResult",
+    ),
+    "ReferenceCompositeError": (
+        "vntts.authoring.reference_composite",
+        "ReferenceCompositeError",
+    ),
+    "RENDER_HYPOTHESIS_DECISION_SCHEMA": (
+        "vntts.authoring.render_hypothesis_review",
+        "RENDER_HYPOTHESIS_DECISION_SCHEMA",
+    ),
+    "RENDER_HYPOTHESIS_DECISION_VERSION": (
+        "vntts.authoring.render_hypothesis_review",
+        "RENDER_HYPOTHESIS_DECISION_VERSION",
+    ),
+    "RENDER_HYPOTHESIS_DECISIONS": (
+        "vntts.authoring.render_hypothesis_review",
+        "RENDER_HYPOTHESIS_DECISIONS",
+    ),
+    "RENDER_HYPOTHESIS_REVIEW_SCHEMA": (
+        "vntts.authoring.render_hypothesis_review",
+        "RENDER_HYPOTHESIS_REVIEW_SCHEMA",
+    ),
+    "RENDER_HYPOTHESIS_REVIEW_VERSION": (
+        "vntts.authoring.render_hypothesis_review",
+        "RENDER_HYPOTHESIS_REVIEW_VERSION",
+    ),
+    "RenderHypothesisReview": (
+        "vntts.authoring.render_hypothesis_review",
+        "RenderHypothesisReview",
+    ),
+    "RenderHypothesisReviewError": (
+        "vntts.authoring.render_hypothesis_review",
+        "RenderHypothesisReviewError",
+    ),
+    "RenderHypothesisSelection": (
+        "vntts.authoring.render_hypothesis_review",
+        "RenderHypothesisSelection",
+    ),
+    "ReferenceCompositeResult": (
+        "vntts.authoring.reference_composite",
+        "ReferenceCompositeResult",
+    ),
+    "REFERENCE_RENDER_INPUT_SCHEMA": (
+        "vntts.authoring.reference_render_comparison",
+        "REFERENCE_RENDER_INPUT_SCHEMA",
+    ),
+    "REFERENCE_RENDER_INPUT_VERSION": (
+        "vntts.authoring.reference_render_comparison",
+        "REFERENCE_RENDER_INPUT_VERSION",
+    ),
+    "ReferenceRenderComparison": (
+        "vntts.authoring.reference_render_comparison",
+        "ReferenceRenderComparison",
+    ),
+    "ReferenceRenderComparisonError": (
+        "vntts.authoring.reference_render_comparison",
+        "ReferenceRenderComparisonError",
+    ),
+    "ReferenceRenderPlan": (
+        "vntts.authoring.reference_render_comparison",
+        "ReferenceRenderPlan",
+    ),
+    "ReferenceRenderSelection": (
+        "vntts.authoring.reference_render_comparison",
+        "ReferenceRenderSelection",
+    ),
+    "REFERENCE_OR_LIVE": (
+        "vntts.authoring.specialist_failure_plan",
+        "REFERENCE_OR_LIVE",
+    ),
+    "SPECIALIST_FAILURE_PLAN_SCHEMA": (
+        "vntts.authoring.specialist_failure_plan",
+        "SPECIALIST_FAILURE_PLAN_SCHEMA",
+    ),
+    "SPECIALIST_FAILURE_PLAN_VERSION": (
+        "vntts.authoring.specialist_failure_plan",
+        "SPECIALIST_FAILURE_PLAN_VERSION",
+    ),
+    "SpecialistFailurePlan": (
+        "vntts.authoring.specialist_failure_plan",
+        "SpecialistFailurePlan",
+    ),
+    "QUALITY_DECISIONS": (
+        "vntts.authoring.source_reference_quality",
+        "QUALITY_DECISIONS",
+    ),
+    "QUALITY_REVIEW_SCHEMA": (
+        "vntts.authoring.source_reference_quality",
+        "QUALITY_REVIEW_SCHEMA",
+    ),
+    "QUALITY_REVIEW_VERSION": (
+        "vntts.authoring.source_reference_quality",
+        "QUALITY_REVIEW_VERSION",
+    ),
+    "EDGE_SILENCE_TRIM": ("vntts.authoring.failure_repair", "EDGE_SILENCE_TRIM"),
+    "INLINE_PAUSE_MARKER": ("vntts.authoring.failure_repair", "INLINE_PAUSE_MARKER"),
+    "SENTENCE_BOUNDARY_SEGMENTATION": (
+        "vntts.authoring.failure_repair",
+        "SENTENCE_BOUNDARY_SEGMENTATION",
+    ),
+    "SILENCE_COMPARISON_INPUT_SCHEMA": (
+        "vntts.authoring.silence_comparison",
+        "SILENCE_COMPARISON_INPUT_SCHEMA",
+    ),
+    "SILENCE_COMPARISON_INPUT_VERSION": (
+        "vntts.authoring.silence_comparison",
+        "SILENCE_COMPARISON_INPUT_VERSION",
+    ),
+    "SILENCE_COMPARISON_SCHEMA": (
+        "vntts.authoring.silence_comparison",
+        "SILENCE_COMPARISON_SCHEMA",
+    ),
+    "SILENCE_COMPARISON_VERSION": (
+        "vntts.authoring.silence_comparison",
+        "SILENCE_COMPARISON_VERSION",
+    ),
+    "SilenceComparisonError": (
+        "vntts.authoring.silence_comparison",
+        "SilenceComparisonError",
+    ),
+    "SilenceComparisonInputPlan": (
+        "vntts.authoring.silence_comparison",
+        "SilenceComparisonInputPlan",
+    ),
+    "SilenceComparisonResult": (
+        "vntts.authoring.silence_comparison",
+        "SilenceComparisonResult",
+    ),
+    "SilenceComparisonSample": (
+        "vntts.authoring.silence_comparison",
+        "SilenceComparisonSample",
+    ),
+    "SILENCE_FAILURE_EVIDENCE_SCHEMA": (
+        "vntts.authoring.silence_evidence",
+        "SILENCE_FAILURE_EVIDENCE_SCHEMA",
+    ),
+    "SILENCE_FAILURE_EVIDENCE_VERSION": (
+        "vntts.authoring.silence_evidence",
+        "SILENCE_FAILURE_EVIDENCE_VERSION",
+    ),
+    "SilenceFailureEvidenceError": (
+        "vntts.authoring.silence_evidence",
+        "SilenceFailureEvidenceError",
+    ),
+    "GenerationQueueBuildError": (
+        "vntts.authoring.queue_builder",
+        "GenerationQueueBuildError",
+    ),
+    "GenerationQueuePlan": ("vntts.authoring.queue_builder", "GenerationQueuePlan"),
+    "GenerationQueueSummary": (
+        "vntts.authoring.queue_builder",
+        "GenerationQueueSummary",
+    ),
+    "StandaloneImportInspection": (
+        "vntts.authoring.legacy_import",
+        "StandaloneImportInspection",
+    ),
+    "WorkspaceCollection": ("vntts.authoring.workbench", "WorkspaceCollection"),
+    "WorkspaceVoice": ("vntts.authoring.workbench", "WorkspaceVoice"),
+    "VOICE_QUALITY_GATE_SCHEMA": (
+        "vntts.authoring.voice_quality_gate",
+        "VOICE_QUALITY_GATE_SCHEMA",
+    ),
+    "VOICE_QUALITY_GATE_VERSION": (
+        "vntts.authoring.voice_quality_gate",
+        "VOICE_QUALITY_GATE_VERSION",
+    ),
+    "VOICE_REPAIR_COMPARISON_SCHEMA": (
+        "vntts.authoring.voice_repair_comparison",
+        "VOICE_REPAIR_COMPARISON_SCHEMA",
+    ),
+    "VOICE_REPAIR_COMPARISON_VERSION": (
+        "vntts.authoring.voice_repair_comparison",
+        "VOICE_REPAIR_COMPARISON_VERSION",
+    ),
+    "MISSING_VOICE_REUSE_PLAN_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse",
+        "MISSING_VOICE_REUSE_PLAN_SCHEMA",
+    ),
+    "MISSING_VOICE_REUSE_PLAN_VERSION": (
+        "vntts.authoring.missing_voice_reuse",
+        "MISSING_VOICE_REUSE_PLAN_VERSION",
+    ),
+    "MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse",
+        "MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA",
+    ),
+    "MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION": (
+        "vntts.authoring.missing_voice_reuse",
+        "MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION",
+    ),
+    "MissingVoiceReuseCandidateWorkspace": (
+        "vntts.authoring.missing_voice_reuse",
+        "MissingVoiceReuseCandidateWorkspace",
+    ),
+    "MissingVoiceReuseError": (
+        "vntts.authoring.missing_voice_reuse",
+        "MissingVoiceReuseError",
+    ),
+    "MissingVoiceReusePlan": (
+        "vntts.authoring.missing_voice_reuse",
+        "MissingVoiceReusePlan",
+    ),
+    "MissingVoiceReuseReviewError": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "MissingVoiceReuseReviewError",
+    ),
+    "MissingVoiceReuseBindingError": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MissingVoiceReuseBindingError",
+    ),
+    "MissingVoiceReuseBindingResult": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MissingVoiceReuseBindingResult",
+    ),
+    "MissingVoiceLiveFallbackError": (
+        "vntts.authoring.missing_voice_live_fallback",
+        "MissingVoiceLiveFallbackError",
+    ),
+    "MissingVoiceLiveFallbackResult": (
+        "vntts.authoring.missing_voice_live_fallback",
+        "MissingVoiceLiveFallbackResult",
+    ),
+    "KnownRoleReuseError": ("vntts.authoring.known_role_reuse", "KnownRoleReuseError"),
+    "KnownRoleReuseResult": (
+        "vntts.authoring.known_role_reuse",
+        "KnownRoleReuseResult",
+    ),
+    "KNOWN_ROLE_REUSE_BUNDLE_SCHEMA": (
+        "vntts.authoring.known_role_reuse",
+        "KNOWN_ROLE_REUSE_BUNDLE_SCHEMA",
+    ),
+    "KNOWN_ROLE_REUSE_BUNDLE_VERSION": (
+        "vntts.authoring.known_role_reuse",
+        "KNOWN_ROLE_REUSE_BUNDLE_VERSION",
+    ),
+    "KNOWN_ROLE_REUSE_DECISION_SCHEMA": (
+        "vntts.authoring.known_role_reuse",
+        "KNOWN_ROLE_REUSE_DECISION_SCHEMA",
+    ),
+    "KNOWN_ROLE_REUSE_DECISION_VERSION": (
+        "vntts.authoring.known_role_reuse",
+        "KNOWN_ROLE_REUSE_DECISION_VERSION",
+    ),
+    "MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA",
+    ),
+    "MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION",
+    ),
+    "MISSING_VOICE_REUSE_DECISION_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MISSING_VOICE_REUSE_DECISION_SCHEMA",
+    ),
+    "MISSING_VOICE_REUSE_DECISION_VERSION": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "MISSING_VOICE_REUSE_DECISION_VERSION",
+    ),
+    "authorize_missing_voice_live_fallback": (
+        "vntts.authoring.missing_voice_live_fallback",
+        "authorize_missing_voice_live_fallback",
+    ),
+    "REVIEW_BUNDLE_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "REVIEW_BUNDLE_SCHEMA",
+    ),
+    "REVIEW_KEY_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "REVIEW_KEY_SCHEMA",
+    ),
+    "REVIEW_SESSION_SCHEMA": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "REVIEW_SESSION_SCHEMA",
+    ),
+    "REVIEW_VERSION": ("vntts.authoring.missing_voice_reuse_review", "REVIEW_VERSION"),
+    "VoiceRepairCandidateWorkspace": (
+        "vntts.authoring.voice_repair_comparison",
+        "VoiceRepairCandidateWorkspace",
+    ),
+    "VoiceQualityCohortCompatibility": (
+        "vntts.authoring.voice_quality_gate",
+        "VoiceQualityCohortCompatibility",
+    ),
+    "VoiceQualityCompatibility": (
+        "vntts.authoring.voice_quality_gate",
+        "VoiceQualityCompatibility",
+    ),
+    "VoiceQualityGate": ("vntts.authoring.voice_quality_gate", "VoiceQualityGate"),
+    "VoiceQualityGateError": (
+        "vntts.authoring.voice_quality_gate",
+        "VoiceQualityGateError",
+    ),
+    "VoiceRepairComparisonError": (
+        "vntts.authoring.voice_repair_comparison",
+        "VoiceRepairComparisonError",
+    ),
+    "VoiceRepairComparisonPlan": (
+        "vntts.authoring.voice_repair_comparison",
+        "VoiceRepairComparisonPlan",
+    ),
+    "aggregate_listening_report": (
+        "vntts.authoring.listening",
+        "aggregate_listening_report",
+    ),
+    "analyze_speech_robustness_bytes": (
+        "vntts.authoring.robustness_corpus",
+        "analyze_speech_robustness_bytes",
+    ),
+    "annotate_delivery": ("vntts.authoring.delivery", "annotate_delivery"),
+    "apply_cohort_review_decision": (
+        "vntts.authoring.cohort_review",
+        "apply_cohort_review_decision",
+    ),
+    "apply_delivery_policy": ("vntts.authoring.delivery", "apply_delivery_policy"),
+    "benchmark_model_variants": (
+        "vntts.authoring.model_benchmark",
+        "benchmark_model_variants",
+    ),
+    "benchmark_renderer": ("vntts.authoring.model_benchmark", "benchmark_renderer"),
+    "build_benchmark_corpus": (
+        "vntts.authoring.model_benchmark",
+        "build_benchmark_corpus",
+    ),
+    "build_speech_robustness_asr_report": (
+        "vntts.authoring.robustness_asr",
+        "build_speech_robustness_asr_report",
+    ),
+    "build_authoring_reconciliation": (
+        "vntts.authoring.reconciliation",
+        "build_authoring_reconciliation",
+    ),
+    "build_cohort_review_decision": (
+        "vntts.authoring.cohort_review",
+        "build_cohort_review_decision",
+    ),
+    "build_cohort_review_bundle": (
+        "vntts.authoring.cohort_bundle",
+        "build_cohort_review_bundle",
+    ),
+    "build_cohort_review_plan": (
+        "vntts.authoring.cohort_review",
+        "build_cohort_review_plan",
+    ),
+    "build_failure_regeneration_command": (
+        "vntts.authoring.failure_regeneration",
+        "build_failure_regeneration_command",
+    ),
+    "build_failure_regeneration_plan": (
+        "vntts.authoring.failure_regeneration",
+        "build_failure_regeneration_plan",
+    ),
+    "build_specialist_failure_plan": (
+        "vntts.authoring.specialist_failure_plan",
+        "build_specialist_failure_plan",
+    ),
+    "build_voice_quality_gate": (
+        "vntts.authoring.voice_quality_gate",
+        "build_voice_quality_gate",
+    ),
+    "build_voice_repair_candidate_command": (
+        "vntts.authoring.voice_repair_comparison",
+        "build_voice_repair_candidate_command",
+    ),
+    "build_voice_repair_comparison_plan": (
+        "vntts.authoring.voice_repair_comparison",
+        "build_voice_repair_comparison_plan",
+    ),
+    "build_missing_voice_reuse_plan": (
+        "vntts.authoring.missing_voice_reuse",
+        "build_missing_voice_reuse_plan",
+    ),
+    "build_missing_voice_reuse_candidate_command": (
+        "vntts.authoring.missing_voice_reuse",
+        "build_missing_voice_reuse_candidate_command",
+    ),
+    "build_missing_voice_reuse_review": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "build_missing_voice_reuse_review",
+    ),
+    "build_pending_resolution_plan": (
+        "vntts.authoring.pending_resolution",
+        "build_pending_resolution_plan",
+    ),
+    "build_pending_regeneration_command": (
+        "vntts.authoring.pending_resolution",
+        "build_pending_regeneration_command",
+    ),
+    "build_portrait_alias_decision": (
+        "vntts.authoring.portrait_aliases",
+        "build_portrait_alias_decision",
+    ),
+    "build_portrait_alias_plan": (
+        "vntts.authoring.portrait_aliases",
+        "build_portrait_alias_plan",
+    ),
+    "execute_cohort_review_decision": (
+        "vntts.authoring.cohort_review",
+        "execute_cohort_review_decision",
+    ),
+    "execute_cohort_bundle_decision": (
+        "vntts.authoring.cohort_bundle",
+        "execute_cohort_bundle_decision",
+    ),
+    "create_listening_session": (
+        "vntts.authoring.listening",
+        "create_listening_session",
+    ),
+    "create_listening_session_from_reports": (
+        "vntts.authoring.listening",
+        "create_listening_session_from_reports",
+    ),
+    "create_silence_comparison_session": (
+        "vntts.authoring.silence_comparison",
+        "create_silence_comparison_session",
+    ),
+    "create_reference_render_listening": (
+        "vntts.authoring.reference_render_comparison",
+        "create_reference_render_listening",
+    ),
+    "import_reference_render_preference": (
+        "vntts.authoring.reference_render_comparison",
+        "import_reference_render_preference",
+    ),
+    "discover_legacy_jobs": ("vntts.authoring.legacy_import", "discover_legacy_jobs"),
+    "ensure_listening_report": ("vntts.authoring.listening", "ensure_listening_report"),
+    "generation_failure_report": (
+        "vntts.authoring.bulk_generation",
+        "generation_failure_report",
+    ),
+    "generation_failure_repair_plan": (
+        "vntts.authoring.bulk_generation",
+        "generation_failure_repair_plan",
+    ),
+    "import_legacy_job": ("vntts.authoring.legacy_import", "import_legacy_job"),
+    "import_listening_session": (
+        "vntts.authoring.listening_import",
+        "import_listening_session",
+    ),
+    "import_standalone_generation": (
+        "vntts.authoring.legacy_import",
+        "import_standalone_generation",
+    ),
+    "inspect_listening_session": (
+        "vntts.authoring.listening_import",
+        "inspect_listening_session",
+    ),
+    "inspect_collection_selection": (
+        "vntts.authoring.workbench",
+        "inspect_collection_selection",
+    ),
+    "inspect_generation_queue": (
+        "vntts.authoring.queue_builder",
+        "inspect_generation_queue",
+    ),
+    "inspect_voice_reference_candidates": (
+        "vntts.authoring.reference_selection",
+        "inspect_voice_reference_candidates",
+    ),
+    "import_accepted_render_hypothesis": (
+        "vntts.authoring.render_hypothesis_review",
+        "import_accepted_render_hypothesis",
+    ),
+    "inspect_voice_quality_cohort": (
+        "vntts.authoring.voice_quality_gate",
+        "inspect_voice_quality_cohort",
+    ),
+    "inspect_voice_quality_gate": (
+        "vntts.authoring.voice_quality_gate",
+        "inspect_voice_quality_gate",
+    ),
+    "import_source_reference_review": (
+        "vntts.authoring.source_reference_review",
+        "import_source_reference_review",
+    ),
+    "inspect_generated_wav": (
+        "vntts.authoring.bulk_generation",
+        "inspect_generated_wav",
+    ),
+    "inspect_generated_speech": (
+        "vntts.authoring.bulk_generation",
+        "inspect_generated_speech",
+    ),
+    "inspect_standalone_generation": (
+        "vntts.authoring.legacy_import",
+        "inspect_standalone_generation",
+    ),
+    "listening_progress": ("vntts.authoring.listening", "listening_progress"),
+    "list_workspace_collections": (
+        "vntts.authoring.workbench",
+        "list_workspace_collections",
+    ),
+    "merge_reconciled_terminal_outcomes": (
+        "vntts.authoring.reconciliation_merge",
+        "merge_reconciled_terminal_outcomes",
+    ),
+    "merge_workspace_outcomes": (
+        "vntts.authoring.workbench",
+        "merge_workspace_outcomes",
+    ),
+    "merge_terminal_conflict_resolution": (
+        "vntts.authoring.terminal_conflict_workspace",
+        "merge_terminal_conflict_resolution",
+    ),
+    "load_listening_session": ("vntts.authoring.listening", "load_listening_session"),
+    "load_cohort_review_decision": (
+        "vntts.authoring.cohort_review",
+        "load_cohort_review_decision",
+    ),
+    "load_cohort_review_plan": (
+        "vntts.authoring.cohort_review",
+        "load_cohort_review_plan",
+    ),
+    "load_cohort_review_bundle": (
+        "vntts.authoring.cohort_bundle",
+        "load_cohort_review_bundle",
+    ),
+    "load_cohort_review_bundle_samples": (
+        "vntts.authoring.cohort_bundle",
+        "load_cohort_review_bundle_samples",
+    ),
+    "load_pending_resolution_plan": (
+        "vntts.authoring.pending_resolution",
+        "load_pending_resolution_plan",
+    ),
+    "load_portrait_alias_decision": (
+        "vntts.authoring.portrait_aliases",
+        "load_portrait_alias_decision",
+    ),
+    "load_portrait_alias_plan": (
+        "vntts.authoring.portrait_aliases",
+        "load_portrait_alias_plan",
+    ),
+    "load_generation_state": (
+        "vntts.authoring.bulk_generation",
+        "load_generation_state",
+    ),
+    "load_audio_event_review": (
+        "vntts.authoring.audio_event_review",
+        "load_audio_event_review",
+    ),
+    "load_audio_event_composition": (
+        "vntts.authoring.audio_event_composition",
+        "load_audio_event_composition",
+    ),
+    "load_speech_robustness_corpus": (
+        "vntts.authoring.robustness_corpus",
+        "load_speech_robustness_corpus",
+    ),
+    "load_failure_regeneration_plan": (
+        "vntts.authoring.failure_regeneration",
+        "load_failure_regeneration_plan",
+    ),
+    "load_failure_reference_audit": (
+        "vntts.authoring.failure_reference_audit",
+        "load_failure_reference_audit",
+    ),
+    "load_failure_reference_binding": (
+        "vntts.authoring.failure_reference_binding",
+        "load_failure_reference_binding",
+    ),
+    "load_failure_reference_binding_document": (
+        "vntts.authoring.failure_reference_binding",
+        "load_failure_reference_binding_document",
+    ),
+    "load_failure_reference_decisions": (
+        "vntts.authoring.failure_reference_audit",
+        "load_failure_reference_decisions",
+    ),
+    "load_silence_comparison": (
+        "vntts.authoring.silence_comparison",
+        "load_silence_comparison",
+    ),
+    "load_silence_comparison_input_plan": (
+        "vntts.authoring.silence_comparison",
+        "load_silence_comparison_input_plan",
+    ),
+    "load_reference_render_plan": (
+        "vntts.authoring.reference_render_comparison",
+        "load_reference_render_plan",
+    ),
+    "load_authoring_reconciliation": (
+        "vntts.authoring.reconciliation",
+        "load_authoring_reconciliation",
+    ),
+    "load_silence_failure_evidence": (
+        "vntts.authoring.silence_evidence",
+        "load_silence_failure_evidence",
+    ),
+    "load_source_reference_plan": (
+        "vntts.authoring.source_reference_review",
+        "load_source_reference_plan",
+    ),
+    "load_terminal_conflict_candidate_audio": (
+        "vntts.authoring.terminal_conflict_review",
+        "load_terminal_conflict_candidate_audio",
+    ),
+    "load_terminal_conflict_review": (
+        "vntts.authoring.terminal_conflict_review",
+        "load_terminal_conflict_review",
+    ),
+    "load_terminal_conflict_review_document": (
+        "vntts.authoring.terminal_conflict_review",
+        "load_terminal_conflict_review_document",
+    ),
+    "load_terminal_conflict_review_progress": (
+        "vntts.authoring.terminal_conflict_review",
+        "load_terminal_conflict_review_progress",
+    ),
+    "load_terminal_conflict_resolution": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "load_terminal_conflict_resolution",
+    ),
+    "load_terminal_conflict_resolution_document": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "load_terminal_conflict_resolution_document",
+    ),
+    "load_terminal_conflict_successor": (
+        "vntts.authoring.terminal_conflict_successor",
+        "load_terminal_conflict_successor",
+    ),
+    "load_terminal_conflict_successor_document": (
+        "vntts.authoring.terminal_conflict_successor",
+        "load_terminal_conflict_successor_document",
+    ),
+    "load_specialist_failure_plan": (
+        "vntts.authoring.specialist_failure_plan",
+        "load_specialist_failure_plan",
+    ),
+    "load_voice_quality_gate": (
+        "vntts.authoring.voice_quality_gate",
+        "load_voice_quality_gate",
+    ),
+    "load_voice_repair_comparison_plan": (
+        "vntts.authoring.voice_repair_comparison",
+        "load_voice_repair_comparison_plan",
+    ),
+    "is_spoken_queue_item": ("vntts.authoring.bulk_generation", "is_spoken_queue_item"),
+    "inline_sentence_pause_prompt": (
+        "vntts.authoring.failure_repair",
+        "inline_sentence_pause_prompt",
+    ),
+    "compress_single_sentence_boundary_silence": (
+        "vntts.authoring.failure_repair",
+        "compress_single_sentence_boundary_silence",
+    ),
+    "compare_speech_transcript": (
+        "vntts.authoring.robustness_asr",
+        "compare_speech_transcript",
+    ),
+    "next_pending_trial": ("vntts.authoring.listening", "next_pending_trial"),
+    "plan_generation_queue": ("vntts.authoring.queue_builder", "plan_generation_queue"),
+    "portrait_identity_by_variant": (
+        "vntts.authoring.portrait_aliases",
+        "portrait_identity_by_variant",
+    ),
+    "publish_generation_queue": (
+        "vntts.authoring.queue_builder",
+        "publish_generation_queue",
+    ),
+    "publish_speech_robustness_corpus": (
+        "vntts.authoring.robustness_corpus",
+        "publish_speech_robustness_corpus",
+    ),
+    "publish_silence_comparison": (
+        "vntts.authoring.silence_comparison",
+        "publish_silence_comparison",
+    ),
+    "publish_reference_render_comparison": (
+        "vntts.authoring.reference_render_comparison",
+        "publish_reference_render_comparison",
+    ),
+    "publish_exact_bank_reference_composite": (
+        "vntts.authoring.reference_composite",
+        "publish_exact_bank_reference_composite",
+    ),
+    "publish_composite_quality_review": (
+        "vntts.authoring.reference_composite",
+        "publish_composite_quality_review",
+    ),
+    "publish_silence_failure_evidence": (
+        "vntts.authoring.silence_evidence",
+        "publish_silence_failure_evidence",
+    ),
+    "publish_generated_manifest": (
+        "vntts.authoring.bulk_generation",
+        "publish_generated_manifest",
+    ),
+    "publish_source_audio_event_review": (
+        "vntts.authoring.audio_event_review",
+        "publish_source_audio_event_review",
+    ),
+    "publish_missing_voice_reuse_binding": (
+        "vntts.authoring.missing_voice_reuse_binding",
+        "publish_missing_voice_reuse_binding",
+    ),
+    "publish_known_role_reuse_binding": (
+        "vntts.authoring.known_role_reuse",
+        "publish_known_role_reuse_binding",
+    ),
+    "publish_audio_event_composition": (
+        "vntts.authoring.audio_event_composition",
+        "publish_audio_event_composition",
+    ),
+    "publish_final_game_pack": ("vntts.authoring.game_pack", "publish_final_game_pack"),
+    "publish_failure_reference_audit": (
+        "vntts.authoring.failure_reference_audit",
+        "publish_failure_reference_audit",
+    ),
+    "publish_failure_reference_binding": (
+        "vntts.authoring.failure_reference_binding",
+        "publish_failure_reference_binding",
+    ),
+    "publish_render_hypothesis_review": (
+        "vntts.authoring.render_hypothesis_review",
+        "publish_render_hypothesis_review",
+    ),
+    "publish_terminal_conflict_review": (
+        "vntts.authoring.terminal_conflict_review",
+        "publish_terminal_conflict_review",
+    ),
+    "publish_terminal_conflict_resolution": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "publish_terminal_conflict_resolution",
+    ),
+    "publish_terminal_conflict_successor": (
+        "vntts.authoring.terminal_conflict_successor",
+        "publish_terminal_conflict_successor",
+    ),
+    "prepare_voice_repair_candidate_workspace": (
+        "vntts.authoring.voice_repair_comparison",
+        "prepare_voice_repair_candidate_workspace",
+    ),
+    "prepare_failure_reference_audio": (
+        "vntts.authoring.failure_reference_audit",
+        "prepare_failure_reference_audio",
+    ),
+    "normalize_short_trailing_ellipsis": (
+        "vntts.authoring.bulk_generation",
+        "normalize_short_trailing_ellipsis",
+    ),
+    "record_trial_preference": ("vntts.authoring.listening", "record_trial_preference"),
+    "record_failure_reference_decision": (
+        "vntts.authoring.failure_reference_audit",
+        "record_failure_reference_decision",
+    ),
+    "record_audio_event_review_decision": (
+        "vntts.authoring.audio_event_review",
+        "record_audio_event_review_decision",
+    ),
+    "record_audio_event_composition_decision": (
+        "vntts.authoring.audio_event_composition",
+        "record_audio_event_composition_decision",
+    ),
+    "record_render_hypothesis_decision": (
+        "vntts.authoring.render_hypothesis_review",
+        "record_render_hypothesis_decision",
+    ),
+    "refresh_cohort_review_bundle": (
+        "vntts.authoring.cohort_bundle",
+        "refresh_cohort_review_bundle",
+    ),
+    "rebase_workspace_config": (
+        "vntts.authoring.config_rebase",
+        "rebase_workspace_config",
+    ),
+    "review_generation_item": (
+        "vntts.authoring.bulk_generation",
+        "review_generation_item",
+    ),
+    "validate_config_rebase_workspace": (
+        "vntts.authoring.config_rebase",
+        "validate_config_rebase_workspace",
+    ),
+    "render_sentence_segments": (
+        "vntts.authoring.failure_repair",
+        "render_sentence_segments",
+    ),
+    "run_bulk_generation": ("vntts.authoring.bulk_generation", "run_bulk_generation"),
+    "safe_sentence_segments": (
+        "vntts.authoring.failure_repair",
+        "safe_sentence_segments",
+    ),
+    "plan_inline_audio_events": (
+        "vntts.authoring.audio_events",
+        "plan_inline_audio_events",
+    ),
+    "requires_audio_event_composition": (
+        "vntts.authoring.audio_events",
+        "requires_audio_event_composition",
+    ),
+    "validate_story_audio_cues": (
+        "vntts.authoring.audio_events",
+        "validate_story_audio_cues",
+    ),
+    "immutable_history_timestamps": (
+        "vntts.authoring.workbench",
+        "immutable_history_timestamps",
+    ),
+    "create_failure_reference_workspace": (
+        "vntts.authoring.workbench",
+        "create_failure_reference_workspace",
+    ),
+    "create_audio_event_composition_workspace": (
+        "vntts.authoring.workbench",
+        "create_audio_event_composition_workspace",
+    ),
+    "failure_reference_runtime_binding": (
+        "vntts.authoring.workbench",
+        "failure_reference_runtime_binding",
+    ),
+    "sha256_control_path": ("vntts.authoring.bulk_generation", "sha256_control_path"),
+    "select_representative_items": (
+        "vntts.authoring.model_benchmark",
+        "select_representative_items",
+    ),
+    "select_voice_reference": (
+        "vntts.authoring.reference_selection",
+        "select_voice_reference",
+    ),
+    "SourceReferencePlanResult": (
+        "vntts.authoring.source_reference_review",
+        "SourceReferencePlanResult",
+    ),
+    "SourceReferenceEvaluationResult": (
+        "vntts.authoring.source_reference_review",
+        "SourceReferenceEvaluationResult",
+    ),
+    "SourceReferenceBindingsResult": (
+        "vntts.authoring.source_reference_review",
+        "SourceReferenceBindingsResult",
+    ),
+    "SourceReferenceListeningReportsResult": (
+        "vntts.authoring.source_reference_review",
+        "SourceReferenceListeningReportsResult",
+    ),
+    "SourceReferenceReviewError": (
+        "vntts.authoring.source_reference_review",
+        "SourceReferenceReviewError",
+    ),
+    "SourceReferenceQualityError": (
+        "vntts.authoring.source_reference_quality",
+        "SourceReferenceQualityError",
+    ),
+    "SourceReferenceQualityResult": (
+        "vntts.authoring.source_reference_quality",
+        "SourceReferenceQualityResult",
+    ),
+    "TerminalConflictReview": (
+        "vntts.authoring.terminal_conflict_review",
+        "TerminalConflictReview",
+    ),
+    "TerminalConflictReviewError": (
+        "vntts.authoring.terminal_conflict_review",
+        "TerminalConflictReviewError",
+    ),
+    "TerminalConflictResolution": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "TerminalConflictResolution",
+    ),
+    "TerminalConflictResolutionError": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "TerminalConflictResolutionError",
+    ),
+    "TerminalConflictSuccessor": (
+        "vntts.authoring.terminal_conflict_successor",
+        "TerminalConflictSuccessor",
+    ),
+    "TerminalConflictSuccessorError": (
+        "vntts.authoring.terminal_conflict_successor",
+        "TerminalConflictSuccessorError",
+    ),
+    "TERMINAL_CONFLICT_PROGRESS_SCHEMA": (
+        "vntts.authoring.terminal_conflict_review",
+        "TERMINAL_CONFLICT_PROGRESS_SCHEMA",
+    ),
+    "TERMINAL_CONFLICT_PROGRESS_VERSION": (
+        "vntts.authoring.terminal_conflict_review",
+        "TERMINAL_CONFLICT_PROGRESS_VERSION",
+    ),
+    "TERMINAL_CONFLICT_REVIEW_SCHEMA": (
+        "vntts.authoring.terminal_conflict_review",
+        "TERMINAL_CONFLICT_REVIEW_SCHEMA",
+    ),
+    "TERMINAL_CONFLICT_REVIEW_VERSION": (
+        "vntts.authoring.terminal_conflict_review",
+        "TERMINAL_CONFLICT_REVIEW_VERSION",
+    ),
+    "TERMINAL_CONFLICT_RESOLUTION_SCHEMA": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "TERMINAL_CONFLICT_RESOLUTION_SCHEMA",
+    ),
+    "TERMINAL_CONFLICT_RESOLUTION_VERSION": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "TERMINAL_CONFLICT_RESOLUTION_VERSION",
+    ),
+    "TERMINAL_CONFLICT_SUCCESSOR_SCHEMA": (
+        "vntts.authoring.terminal_conflict_successor",
+        "TERMINAL_CONFLICT_SUCCESSOR_SCHEMA",
+    ),
+    "TERMINAL_CONFLICT_SUCCESSOR_VERSION": (
+        "vntts.authoring.terminal_conflict_successor",
+        "TERMINAL_CONFLICT_SUCCESSOR_VERSION",
+    ),
+    "NEITHER_ACCEPTABLE": (
+        "vntts.authoring.terminal_conflict_review",
+        "NEITHER_ACCEPTABLE",
+    ),
+    "NEW_REPAIR_HYPOTHESIS": (
+        "vntts.authoring.terminal_conflict_successor",
+        "NEW_REPAIR_HYPOTHESIS",
+    ),
+    "SUCCESSOR_ACTIONS": (
+        "vntts.authoring.terminal_conflict_successor",
+        "SUCCESSOR_ACTIONS",
+    ),
+    "accepted_source_reference_variants": (
+        "vntts.authoring.source_reference_quality",
+        "accepted_source_reference_variants",
+    ),
+    "assert_terminal_conflict_progress_carry_forward": (
+        "vntts.authoring.terminal_conflict_review",
+        "assert_terminal_conflict_progress_carry_forward",
+    ),
+    "assert_terminal_conflict_review_source_authorities": (
+        "vntts.authoring.terminal_conflict_review",
+        "assert_terminal_conflict_review_source_authorities",
+    ),
+    "assert_terminal_conflict_resolution_source_authorities": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "assert_terminal_conflict_resolution_source_authorities",
+    ),
+    "carry_approved_cohort_terminal_conflict_decisions": (
+        "vntts.authoring.terminal_conflict_review",
+        "carry_approved_cohort_terminal_conflict_decisions",
+    ),
+    "load_source_reference_quality_review": (
+        "vntts.authoring.source_reference_quality",
+        "load_source_reference_quality_review",
+    ),
+    "load_render_hypothesis_review": (
+        "vntts.authoring.render_hypothesis_review",
+        "load_render_hypothesis_review",
+    ),
+    "load_reference_render_comparison_document": (
+        "vntts.authoring.reference_render_comparison",
+        "load_reference_render_comparison_document",
+    ),
+    "next_pending_quality_variant": (
+        "vntts.authoring.source_reference_quality",
+        "next_pending_quality_variant",
+    ),
+    "publish_source_reference_quality_review": (
+        "vntts.authoring.source_reference_quality",
+        "publish_source_reference_quality_review",
+    ),
+    "quality_review_progress": (
+        "vntts.authoring.source_reference_quality",
+        "quality_review_progress",
+    ),
+    "record_source_reference_quality_decision": (
+        "vntts.authoring.source_reference_quality",
+        "record_source_reference_quality_decision",
+    ),
+    "carry_terminal_conflict_decisions": (
+        "vntts.authoring.terminal_conflict_review",
+        "carry_terminal_conflict_decisions",
+    ),
+    "record_terminal_conflict_decision": (
+        "vntts.authoring.terminal_conflict_review",
+        "record_terminal_conflict_decision",
+    ),
+    "publish_source_reference_evaluation": (
+        "vntts.authoring.source_reference_review",
+        "publish_source_reference_evaluation",
+    ),
+    "publish_source_reference_binding_successor": (
+        "vntts.authoring.source_reference_review",
+        "publish_source_reference_binding_successor",
+    ),
+    "publish_source_reference_binding_retirement": (
+        "vntts.authoring.source_reference_review",
+        "publish_source_reference_binding_retirement",
+    ),
+    "publish_source_reference_bindings": (
+        "vntts.authoring.source_reference_review",
+        "publish_source_reference_bindings",
+    ),
+    "publish_source_reference_listening_reports": (
+        "vntts.authoring.source_reference_review",
+        "publish_source_reference_listening_reports",
+    ),
+    "workspace_voice_snapshot": (
+        "vntts.authoring.workbench",
+        "workspace_voice_snapshot",
+    ),
+    "trim_excess_edge_silence": (
+        "vntts.authoring.failure_repair",
+        "trim_excess_edge_silence",
+    ),
+    "validate_reference_selection_provenance": (
+        "vntts.authoring.reference_selection",
+        "validate_reference_selection_provenance",
+    ),
+    "write_cohort_review_decision": (
+        "vntts.authoring.cohort_review",
+        "write_cohort_review_decision",
+    ),
+    "write_cohort_review_plan": (
+        "vntts.authoring.cohort_review",
+        "write_cohort_review_plan",
+    ),
+    "write_authoring_reconciliation": (
+        "vntts.authoring.reconciliation",
+        "write_authoring_reconciliation",
+    ),
+    "write_cohort_review_bundle": (
+        "vntts.authoring.cohort_bundle",
+        "write_cohort_review_bundle",
+    ),
+    "write_failure_regeneration_plan": (
+        "vntts.authoring.failure_regeneration",
+        "write_failure_regeneration_plan",
+    ),
+    "write_pending_resolution_plan": (
+        "vntts.authoring.pending_resolution",
+        "write_pending_resolution_plan",
+    ),
+    "write_portrait_alias_decision": (
+        "vntts.authoring.portrait_aliases",
+        "write_portrait_alias_decision",
+    ),
+    "write_portrait_alias_plan": (
+        "vntts.authoring.portrait_aliases",
+        "write_portrait_alias_plan",
+    ),
+    "write_specialist_failure_plan": (
+        "vntts.authoring.specialist_failure_plan",
+        "write_specialist_failure_plan",
+    ),
+    "write_speech_robustness_asr_report": (
+        "vntts.authoring.robustness_asr",
+        "write_speech_robustness_asr_report",
+    ),
+    "write_voice_quality_gate": (
+        "vntts.authoring.voice_quality_gate",
+        "write_voice_quality_gate",
+    ),
+    "write_voice_repair_comparison_plan": (
+        "vntts.authoring.voice_repair_comparison",
+        "write_voice_repair_comparison_plan",
+    ),
+    "write_missing_voice_reuse_plan": (
+        "vntts.authoring.missing_voice_reuse",
+        "write_missing_voice_reuse_plan",
+    ),
+    "assert_authority_snapshot": (
+        "vntts.authoring.authority",
+        "assert_authority_snapshot",
+    ),
+    "canonical_document_sha256": (
+        "vntts.authoring.authority",
+        "canonical_document_sha256",
+    ),
+    "capture_authority_file": ("vntts.authoring.authority", "capture_authority_file"),
+    "contained_workspace_path": (
+        "vntts.authoring.workbench",
+        "contained_workspace_path",
+    ),
+    "inspect_voice_readiness": ("vntts.authoring.workbench", "inspect_voice_readiness"),
+    "load_workspace_authority": (
+        "vntts.authoring.workbench",
+        "load_workspace_authority",
+    ),
+    "load_missing_voice_reuse_plan": (
+        "vntts.authoring.missing_voice_reuse",
+        "load_missing_voice_reuse_plan",
+    ),
+    "load_missing_voice_reuse_review": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "load_missing_voice_reuse_review",
+    ),
+    "missing_voice_reuse_review_progress": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "missing_voice_reuse_review_progress",
+    ),
+    "parse_cohort_arguments": (
+        "vntts.authoring.missing_voice_reuse",
+        "parse_cohort_arguments",
+    ),
+    "parse_missing_voice_reuse_evidence": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "parse_missing_voice_reuse_evidence",
+    ),
+    "prepare_missing_voice_reuse_candidate_workspace": (
+        "vntts.authoring.missing_voice_reuse",
+        "prepare_missing_voice_reuse_candidate_workspace",
+    ),
+    "record_missing_voice_reuse_decision": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "record_missing_voice_reuse_decision",
+    ),
+    "record_missing_voice_reuse_heard": (
+        "vntts.authoring.missing_voice_reuse_review",
+        "record_missing_voice_reuse_heard",
+    ),
+    "safe_workspace_relative_path": (
+        "vntts.authoring.workbench",
+        "safe_workspace_relative_path",
+    ),
+    "validate_cohort_review_bundle_document": (
+        "vntts.authoring.cohort_bundle",
+        "validate_cohort_review_bundle_document",
+    ),
+    "validate_cohort_review_progress_document": (
+        "vntts.authoring.cohort_bundle",
+        "validate_cohort_review_progress_document",
+    ),
+    "validate_generation_state_document": (
+        "vntts.authoring.generation_state",
+        "validate_generation_state_document",
+    ),
+    "validate_source_reference_quality_review_document": (
+        "vntts.authoring.source_reference_quality",
+        "validate_source_reference_quality_review_document",
+    ),
+    "validate_terminal_conflict_review_document": (
+        "vntts.authoring.terminal_conflict_review",
+        "validate_terminal_conflict_review_document",
+    ),
+    "validate_terminal_conflict_review_progress_document": (
+        "vntts.authoring.terminal_conflict_review",
+        "validate_terminal_conflict_review_progress_document",
+    ),
+    "validate_terminal_conflict_resolution_document": (
+        "vntts.authoring.terminal_conflict_resolution",
+        "validate_terminal_conflict_resolution_document",
+    ),
+    "validate_terminal_conflict_successor_document": (
+        "vntts.authoring.terminal_conflict_successor",
+        "validate_terminal_conflict_successor_document",
+    ),
+    "write_json_document_no_replace": (
+        "vntts.authoring.authority",
+        "write_json_document_no_replace",
+    ),
+}
 
 __all__ = [
     "AUDIO_EVENT_PLAN_FIELD",
@@ -967,3 +2010,17 @@ __all__ = [
     "validate_terminal_conflict_successor_document",
     "write_json_document_no_replace",
 ]
+
+
+def __getattr__(name):
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = target
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted({*globals(), *__all__})

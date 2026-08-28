@@ -140,6 +140,15 @@ workbench, model benchmarking and robustness reporting consume the foundation
 module directly. The exported dataclasses and validation exception retain
 their historical bulk-generation pickle and introspection identity.
 
+## Public compatibility facade
+
+`vntts.authoring` preserves its 435-name public `__all__`, but resolves each
+name lazily from a static owning-module table and caches the result. Importing
+the package or a leaf such as `generation_state` no longer imports workbench or
+PySide. Normal Python submodule imports remain available, and a fresh-process
+regression binds the exact ordered export inventory by SHA-256 while checking
+that UI modules stay unloaded.
+
 ## Generation state foundation
 
 `generation_state` owns immutable queue loading: it
