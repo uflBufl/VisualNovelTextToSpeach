@@ -1155,3 +1155,28 @@ pace` attention and three are deterministic clean samples; listening remains
 the decision authority. The older `v1` path is stale against predecessor state
 and must not be used. Final coverage remains gated on this v2 review and an
 exact approved/rejected outcome merge.
+
+The operator completed v2 with all six cohorts and all eight exact WAVs
+explicitly approved. `merge-workspace-outcomes` now accepts both schema-v3 and
+schema-v4 repair sources; schema-v4 sources still pass the full copied
+automatic-unresolved authority validation before any reviewed item can be
+selected. A positive merge regression and a tampered copied-authority
+regression preserve that boundary.
+
+The isolated preflight and real no-replace publication both resolved to
+successor `resume-395a5e5eec0327a3a793b66d-fefe4656d7d30e02`; exact repeats
+returned `created=false`. The real successor has 592 queue items and 490 state
+outcomes: 409 approved, 77 generated/rejected, one failed and three standalone
+live-fallback items. Public status counts eight explicit fallback ledgers in
+total because five are attached to rejected WAVs. It has no pending review or
+active attempt. The remaining absent scope is exactly 95 missing-voice lines
+and seven unresolved non-verbal events; the only failed item remains Poacher II
+`314606:62`.
+
+The real workspace, state and approved-only manifest SHA-256 values are
+`bce23126f919b79992edc963b3d36d67fd88fd42a57df7e861c27004e7e7dfee`,
+`e5983ad3a2b648214758ffa2f03fbaf3ff93deb24be6c23edaa06bf56bc7e07d`
+and
+`20832d94d0c145e3954dd4d34ac360430ea3f508171ce4f8112861ce03541a6b`.
+All six source workspace and state hashes matched their preflight snapshots
+after both real publication calls; no source review authority was mutated.

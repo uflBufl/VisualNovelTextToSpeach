@@ -34,17 +34,6 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Merge the eight explicitly approved Pocket fallback WAVs from terminal
-      bundle `current-character-story-pocket-fallback-v2.json` into the current
-      Character Story authority. First extend `merge-workspace-outcomes` to
-      accept schema-v4 repair workspaces only when their copied automatic-
-      unresolved authority, exact failed item and selected queue set validate;
-      retain the existing schema-v3 behavior and add positive/tamper tests.
-      Then run an isolated no-replace preflight from composed base
-      `resume-395a5e5eec0327a3a793b66d-a2b299862a4c4483`, publish the exact
-      idempotent successor, verify all six source workspaces stayed unchanged,
-      and re-run the full 592-item coverage census. Do not use stale bundle v1
-      or spend another MOSS/Pocket attempt.
 - [ ] Resolve the remaining missing-voice boundary without silently widening a
       reference: 93 spoken Aderyn lines have no age/portrait-safe route after
       the child variant's real-story rejection, and Dobharchú `314608:95` and
