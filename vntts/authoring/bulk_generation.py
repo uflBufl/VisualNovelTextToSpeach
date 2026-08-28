@@ -5,13 +5,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
-import io
 import json
 import os
 import re
 import secrets
 import stat
-import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -19,11 +17,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import (
-    Pcm16MonoWavError,
-    read_pcm16_mono_wav,
-    write_pcm16_wav,
-)
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_generation_queue import (
@@ -75,6 +69,46 @@ from vntts.authoring.missing_voice_policy import (
 )
 from vntts.authoring.silence_evidence import publish_silence_failure_evidence
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.authoring.speech_quality import (
+    LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION as LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+)
+from vntts.authoring.speech_quality import (
+    MAX_INTERNAL_SILENCE_SECONDS,
+    MAX_LEADING_SILENCE_SECONDS,
+    MAX_TRAILING_SILENCE_SECONDS,
+    NOTABLE_SILENCE_SPAN_SECONDS,
+    PAUSE_DIAGNOSIS_VERSION,
+    SpeechSilenceValidationError,
+    inspect_generated_speech,
+    measure_generated_speech_bytes,
+)
+from vntts.authoring.speech_quality import (
+    MAX_SILENCE_RATIO as MAX_SILENCE_RATIO,
+)
+from vntts.authoring.speech_quality import (
+    SILENCE_DBFS as SILENCE_DBFS,
+)
+from vntts.authoring.speech_quality import (
+    SILENCE_FRAME_MS as SILENCE_FRAME_MS,
+)
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION as SPEECH_QUALITY_ANALYSIS_VERSION,
+)
+from vntts.authoring.speech_quality import (
+    SpeechPauseDiagnosis as SpeechPauseDiagnosis,
+)
+from vntts.authoring.speech_quality import (
+    SpeechQuality as SpeechQuality,
+)
+from vntts.authoring.speech_quality import (
+    SpeechSilenceSpan as SpeechSilenceSpan,
+)
+from vntts.authoring.speech_quality import (
+    measure_generated_speech as measure_generated_speech,
+)
+from vntts.authoring.speech_quality import (
+    text_failure_features as _text_failure_features,
+)
 from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_item_provenance,
@@ -92,16 +126,6 @@ STATE_VERSION = 1
 LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
 LEGACY_STATE_VERSION = 1
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
-SILENCE_DBFS = -45.0
-SILENCE_FRAME_MS = 80
-MAX_LEADING_SILENCE_SECONDS = 0.8
-MAX_TRAILING_SILENCE_SECONDS = 0.8
-MAX_INTERNAL_SILENCE_SECONDS = 1.2
-MAX_SILENCE_RATIO = 0.5
-NOTABLE_SILENCE_SPAN_SECONDS = 0.5
-PAUSE_DIAGNOSIS_VERSION = 1
-LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION = 1
-SPEECH_QUALITY_ANALYSIS_VERSION = 2
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
 SHORT_TRAILING_ELLIPSIS_PATTERN = re.compile(
     r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
@@ -147,47 +171,6 @@ class IncompleteSynthesisError(BulkGenerationError):
             f"max_audio_seconds={result.limits.max_audio_seconds}, "
             f"max_tokens={result.limits.max_tokens}); WAV was not published"
         )
-
-
-class SpeechSilenceValidationError(BulkGenerationError):
-    """Generated speech contains unsafe silence spans."""
-
-    def __init__(self, quality, failures, diagnosis=None):
-        self.quality = quality
-        self.failures = tuple(failures)
-        self.diagnosis = diagnosis
-        super().__init__(
-            "Generated WAV failed speech-silence validation: "
-            + ", ".join(self.failures)
-        )
-
-
-@dataclass(frozen=True)
-class SpeechQuality:
-    silence_ratio: float
-    leading_silence_seconds: float
-    trailing_silence_seconds: float
-    longest_internal_silence_seconds: float
-    analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION
-
-
-@dataclass(frozen=True)
-class SpeechSilenceSpan:
-    kind: str
-    start_seconds: float
-    end_seconds: float
-    duration_seconds: float
-
-
-@dataclass(frozen=True)
-class SpeechPauseDiagnosis:
-    schema_version: int
-    analysis_version: int
-    classification: str
-    threshold_seconds: float
-    sentence_boundary_count: int
-    repairable_by_safe_segmentation: bool
-    spans: tuple[SpeechSilenceSpan, ...]
 
 
 @dataclass(frozen=True)
@@ -476,224 +459,6 @@ def sha256_control_path(path):
         ) from error
 
 
-def measure_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION):
-    """Measure speech pauses with an explicitly versioned PCM interpretation."""
-    if analysis_version not in {
-        LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
-        SPEECH_QUALITY_ANALYSIS_VERSION,
-    }:
-        raise BulkGenerationError(
-            f"Unsupported speech-quality analysis version: {analysis_version!r}"
-        )
-    try:
-        samples, info = read_pcm16_mono_wav(path)
-    except (OSError, Pcm16MonoWavError) as error:
-        raise BulkGenerationError(
-            f"Unable to analyze generated speech: {error}"
-        ) from error
-    quality, _spans = _analyze_generated_speech_samples(
-        samples,
-        sample_rate=info.sample_rate,
-        duration_seconds=info.duration_seconds,
-        analysis_version=analysis_version,
-    )
-    return quality
-
-
-def measure_generated_speech_bytes(
-    content, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION
-):
-    """Measure one already-captured PCM16 WAV payload without reopening a path."""
-    if not isinstance(content, bytes):
-        raise BulkGenerationError("Generated speech payload must be bytes")
-    try:
-        with wave.open(io.BytesIO(content), "rb") as source:
-            if source.getcomptype() != "NONE":
-                raise Pcm16MonoWavError("compressed WAV is not supported")
-            if source.getnchannels() != 1 or source.getsampwidth() != 2:
-                raise Pcm16MonoWavError("expected mono 16-bit PCM WAV")
-            sample_rate = source.getframerate()
-            sample_count = source.getnframes()
-            samples = np.frombuffer(source.readframes(sample_count), dtype="<i2")
-    except (EOFError, OSError, ValueError, wave.Error, Pcm16MonoWavError) as error:
-        raise BulkGenerationError(
-            f"Unable to analyze generated speech: {error}"
-        ) from error
-    if sample_rate < 1 or len(samples) != sample_count:
-        raise BulkGenerationError(
-            "Unable to analyze generated speech: invalid WAV data"
-        )
-    quality, _spans = _analyze_generated_speech_samples(
-        samples,
-        sample_rate=sample_rate,
-        duration_seconds=sample_count / sample_rate,
-        analysis_version=analysis_version,
-    )
-    return quality
-
-
-def _measure_generated_speech_samples(
-    samples, *, sample_rate, duration_seconds, analysis_version
-):
-    quality, _spans = _analyze_generated_speech_samples(
-        samples,
-        sample_rate=sample_rate,
-        duration_seconds=duration_seconds,
-        analysis_version=analysis_version,
-    )
-    return quality
-
-
-def _analyze_generated_speech_samples(
-    samples, *, sample_rate, duration_seconds, analysis_version
-):
-    if analysis_version not in {
-        LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
-        SPEECH_QUALITY_ANALYSIS_VERSION,
-    }:
-        raise BulkGenerationError(
-            f"Unsupported speech-quality analysis version: {analysis_version!r}"
-        )
-    samples = np.asarray(samples, dtype=np.float32)
-    if analysis_version == SPEECH_QUALITY_ANALYSIS_VERSION:
-        # read_pcm16_mono_wav returns signed PCM16 sample values. Silence
-        # thresholds are expressed in dBFS and therefore require [-1, 1]
-        # amplitude units. Version 1 accidentally compared raw int16 units;
-        # it remains available only to validate already-published state.
-        samples /= 32768.0
-    frame_samples = max(1, round(sample_rate * SILENCE_FRAME_MS / 1000))
-    frame_rms = np.asarray(
-        [
-            np.sqrt(np.mean(samples[start : start + frame_samples] ** 2))
-            for start in range(0, len(samples), frame_samples)
-        ]
-    )
-    silent = frame_rms <= 10 ** (SILENCE_DBFS / 20.0)
-    active_indices = np.flatnonzero(~silent)
-    if not len(active_indices):
-        quality = SpeechQuality(
-            1.0,
-            duration_seconds,
-            duration_seconds,
-            0.0,
-            analysis_version,
-        )
-    else:
-        first_active = int(active_indices[0])
-        last_active = int(active_indices[-1])
-        longest_internal = 0
-        current_internal = 0
-        for is_silent in silent[first_active + 1 : last_active]:
-            if is_silent:
-                current_internal += 1
-                longest_internal = max(longest_internal, current_internal)
-            else:
-                current_internal = 0
-        frame_seconds = frame_samples / sample_rate
-        quality = SpeechQuality(
-            silence_ratio=round(float(np.mean(silent)), 4),
-            leading_silence_seconds=round(first_active * frame_seconds, 3),
-            trailing_silence_seconds=round(
-                (len(silent) - last_active - 1) * frame_seconds, 3
-            ),
-            longest_internal_silence_seconds=round(longest_internal * frame_seconds, 3),
-            analysis_version=analysis_version,
-        )
-    frame_seconds = frame_samples / sample_rate
-    spans = []
-    start = None
-    for index, is_silent in enumerate(silent):
-        if is_silent and start is None:
-            start = index
-        if start is None or (is_silent and index + 1 < len(silent)):
-            continue
-        end = index if is_silent else index - 1
-        start_seconds = start * frame_seconds
-        end_seconds = min((end + 1) * frame_seconds, duration_seconds)
-        span_duration = end_seconds - start_seconds
-        if span_duration >= NOTABLE_SILENCE_SPAN_SECONDS:
-            if not len(active_indices):
-                kind = "all_silent"
-            elif end < int(active_indices[0]):
-                kind = "leading"
-            elif start > int(active_indices[-1]):
-                kind = "trailing"
-            else:
-                kind = "internal"
-            spans.append(
-                SpeechSilenceSpan(
-                    kind=kind,
-                    start_seconds=round(start_seconds, 3),
-                    end_seconds=round(end_seconds, 3),
-                    duration_seconds=round(span_duration, 3),
-                )
-            )
-        start = None
-    return quality, tuple(spans)
-
-
-def _speech_pause_diagnosis(text, quality, spans):
-    features = _text_failure_features(text)
-    sentence_boundary_count = features["sentence_boundary_count"]
-    internal_exceeded = (
-        quality.longest_internal_silence_seconds > MAX_INTERNAL_SILENCE_SECONDS
-    )
-    classification = (
-        "sentence_boundary_pause_candidate"
-        if internal_exceeded and sentence_boundary_count >= 2
-        else "speech_silence"
-    )
-    try:
-        repairable = len(safe_sentence_segments(text)) >= 2
-    except ValueError:
-        repairable = False
-    return SpeechPauseDiagnosis(
-        schema_version=PAUSE_DIAGNOSIS_VERSION,
-        analysis_version=quality.analysis_version,
-        classification=classification,
-        threshold_seconds=NOTABLE_SILENCE_SPAN_SECONDS,
-        sentence_boundary_count=sentence_boundary_count,
-        repairable_by_safe_segmentation=repairable,
-        spans=tuple(spans),
-    )
-
-
-def inspect_generated_speech(
-    path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION, text=""
-):
-    """Reject long silence spans that pass basic peak/duration validation."""
-    try:
-        samples, info = read_pcm16_mono_wav(path)
-    except (OSError, Pcm16MonoWavError) as error:
-        raise BulkGenerationError(
-            f"Unable to analyze generated speech: {error}"
-        ) from error
-    quality, spans = _analyze_generated_speech_samples(
-        samples,
-        sample_rate=info.sample_rate,
-        duration_seconds=info.duration_seconds,
-        analysis_version=analysis_version,
-    )
-    failures = []
-    if quality.leading_silence_seconds > MAX_LEADING_SILENCE_SECONDS:
-        failures.append(f"{quality.leading_silence_seconds:.2f}s leading silence")
-    if quality.trailing_silence_seconds > MAX_TRAILING_SILENCE_SECONDS:
-        failures.append(f"{quality.trailing_silence_seconds:.2f}s trailing silence")
-    if quality.longest_internal_silence_seconds > MAX_INTERNAL_SILENCE_SECONDS:
-        failures.append(
-            f"{quality.longest_internal_silence_seconds:.2f}s internal silence"
-        )
-    if quality.silence_ratio > MAX_SILENCE_RATIO:
-        failures.append(f"{quality.silence_ratio:.0%} silent frames")
-    if failures:
-        raise SpeechSilenceValidationError(
-            quality,
-            failures,
-            _speech_pause_diagnosis(text, quality, spans),
-        )
-    return quality
-
-
 def is_spoken_queue_item(item):
     """Skip pure or inline audio events until a typed composition is approved."""
     document = item.document if hasattr(item, "document") else item
@@ -713,17 +478,6 @@ def normalize_short_trailing_ellipsis(text):
     """Give one/two-word ellipses an audible terminal boundary for MOSS."""
     match = SHORT_TRAILING_ELLIPSIS_PATTERN.fullmatch(str(text or ""))
     return str(text) if match is None else match.group("spoken") + "."
-
-
-def _text_failure_features(text):
-    value = str(text or "")
-    return {
-        "character_count": len(value),
-        "word_count": len(re.findall(r"\b[\w'’]+\b", value)),
-        "comma_count": value.count(","),
-        "ellipsis_count": value.count("...") + value.count("…"),
-        "sentence_boundary_count": sum(value.count(mark) for mark in ".!?"),
-    }
 
 
 def _failure_kind(error, completion=None):

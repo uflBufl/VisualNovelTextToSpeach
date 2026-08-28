@@ -23,8 +23,8 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, validate_voice_ma
 
 from vntts.authoring.bulk_generation import (
     load_generation_state,
-    measure_generated_speech_bytes,
 )
+from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.cli import cli_error, cli_messages
 from vntts.settings import get_local_data_directory
 from vntts.synthesis import (

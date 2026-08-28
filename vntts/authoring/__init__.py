@@ -48,7 +48,6 @@ from vntts.authoring.bulk_generation import (
     AudioQuality,
     BulkGenerationError,
     BulkGenerationResult,
-    SpeechQuality,
     authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
@@ -436,6 +435,7 @@ from vntts.authoring.specialist_failure_plan import (
     load_specialist_failure_plan,
     write_specialist_failure_plan,
 )
+from vntts.authoring.speech_quality import SpeechQuality
 from vntts.authoring.terminal_conflict_resolution import (
     TERMINAL_CONFLICT_RESOLUTION_SCHEMA,
     TERMINAL_CONFLICT_RESOLUTION_VERSION,

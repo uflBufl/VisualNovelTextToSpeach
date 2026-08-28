@@ -129,6 +129,17 @@ checksum/quality checks, contained POSIX paths and the existing atomic manifest
 schema. The import-graph regression forbids production callers from importing
 the historical private projection names.
 
+## Speech-quality foundation
+
+`speech_quality` owns versioned PCM16 silence measurement, pause-span
+diagnosis and the immutable result/error types used by generation-state
+validation. It depends on audio primitives and sentence-repair parsing, but
+cannot reach bulk orchestration. Bulk generation retains the established
+constants, classes and measurement functions as compatibility exports;
+workbench, model benchmarking and robustness reporting consume the foundation
+module directly. The exported dataclasses and validation exception retain
+their historical bulk-generation pickle and introspection identity.
+
 ## Generation state foundation
 
 `generation_state` begins the state boundary with immutable queue loading: it

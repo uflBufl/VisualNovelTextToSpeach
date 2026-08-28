@@ -5,6 +5,9 @@ from pathlib import Path
 import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 from vntts.authoring.bulk_generation import (
+    SpeechQuality as BulkSpeechQuality,
+)
+from vntts.authoring.bulk_generation import (
     _approved_manifest_entries,
     _generated_mono_pcm,
     _GenerationLease,
@@ -40,6 +43,7 @@ from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     SourceReferenceQualityResult,
 )
+from vntts.authoring.speech_quality import SpeechQuality
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
@@ -111,6 +115,16 @@ def _production_importers(module, imported_name):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_speech_quality_is_independent_from_bulk_orchestration(self):
+        self.assertIs(BulkSpeechQuality, SpeechQuality)
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.speech_quality",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+
     def test_workspace_config_and_voice_runtime_preserve_caller_error_type(self):
         class DomainError(RuntimeError):
             pass

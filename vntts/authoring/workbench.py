@@ -51,7 +51,6 @@ from vntts.authoring.audio_event_workspace import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     NO_PROMPT_SHA256,
-    SPEECH_QUALITY_ANALYSIS_VERSION,
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
@@ -60,7 +59,6 @@ from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
     load_generation_state,
     load_review_audio_bytes,
-    measure_generated_speech_bytes,
     normalize_short_trailing_ellipsis,
     normalized_failure_record,
     publish_generated_manifest,
@@ -114,6 +112,10 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
+)
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_bytes,
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workspace_config import (

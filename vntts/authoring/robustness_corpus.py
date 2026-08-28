@@ -28,7 +28,6 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    measure_generated_speech_bytes,
     normalized_failure_record,
 )
 from vntts.authoring.cohort_review import (
@@ -40,6 +39,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
 )
+from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     contained_workspace_path,
