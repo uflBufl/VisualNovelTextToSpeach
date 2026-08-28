@@ -1213,7 +1213,7 @@ def _merge_workspace_outcomes(
         selected_records = None
         if reconciliation_selection is None:
             carry = source_document.get("carry_forward")
-            if not isinstance(carry, dict) or carry.get("schema_version") != 3:
+            if not isinstance(carry, dict) or carry.get("schema_version") not in {3, 4}:
                 raise AuthoringWorkbenchError(
                     "Outcome merge source must be a current failure-repair workspace"
                 )

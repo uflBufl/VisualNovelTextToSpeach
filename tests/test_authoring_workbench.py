@@ -877,6 +877,37 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 fallback.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]["carry_forward"]
             inspect_workspace(fallback.directory)
+            pocket = SyntheticRenderer(diagnostics_backend="pocket-tts")
+            pocket.name = "pocket-tts"
+            pocket.model_name = "pocket-tts"
+            run_bulk_generation(
+                fallback.directory / "queue.jsonl",
+                fallback.directory / "generated-audio",
+                pocket,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+                seed=0,
+                include_queue_ids=(fixture["queue_id"],),
+                failure_repair_policy=policy,
+            )
+            review_workspace_item(fallback.directory, fixture["queue_id"], "approved")
+            source_state_before_merge = source_state_path.read_bytes()
+            fallback_state_path = (
+                fallback.directory / "generated-audio/generation-state.json"
+            )
+            fallback_state_before_merge = fallback_state_path.read_bytes()
+            merged = merge_workspace_outcomes(
+                source.directory, (fallback.directory,), root / "merged"
+            )
+            repeated = merge_workspace_outcomes(
+                source.directory, (fallback.directory,), root / "merged"
+            )
+            merged_item = load_generation_state(
+                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "queue.jsonl",
+            )["items"][fixture["queue_id"]]
             snapshot = (
                 fallback.directory
                 / workspace["carry_forward"]["offline_fallback_authorities"][0]["path"]
@@ -885,8 +916,20 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             snapshot.write_text("{}", encoding="utf-8")
             with self.assertRaises(AuthoringWorkbenchError):
                 inspect_workspace(fallback.directory)
+            with self.assertRaises(AuthoringWorkbenchError):
+                merge_workspace_outcomes(
+                    source.directory,
+                    (fallback.directory,),
+                    root / "tampered-merge",
+                )
             snapshot.write_bytes(snapshot_bytes)
             inspect_workspace(fallback.directory)
+            source_unchanged = (
+                source_state_path.read_bytes() == source_state_before_merge
+            )
+            fallback_unchanged = (
+                fallback_state_path.read_bytes() == fallback_state_before_merge
+            )
 
         self.assertEqual(workspace["carry_forward"]["schema_version"], 4)
         self.assertEqual(
@@ -896,6 +939,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             carried["source_unresolved_authority"]["source_item_sha256"],
             bulk_generation_module._canonical_sha256(source_item),
         )
+        self.assertTrue(merged.created)
+        self.assertFalse(repeated.created)
+        self.assertEqual(merged_item["status"], "approved")
+        self.assertEqual(merged_item["review_status"], "approved")
+        self.assertTrue(source_unchanged)
+        self.assertTrue(fallback_unchanged)
 
     def test_sentence_repair_carries_exact_current_failure_between_workspaces(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
