@@ -55,9 +55,7 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
-    _inline_pause_matches_failure,
-    _sentence_repair_matches_failure,
-    _snapshot_control_files,
+    inline_pause_matches_failure,
     inspect_generated_wav,
     is_spoken_queue_item,
     load_generation_state,
@@ -67,7 +65,9 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
     publish_generated_manifest,
     review_generation_item,
+    sentence_repair_matches_failure,
     sha256_control_path,
+    snapshot_generation_control_files,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -258,7 +258,7 @@ def generation_failure_category(error, *, text=""):
         if (
             kind == "speech_silence"
             and text
-            and _sentence_repair_matches_failure(failure, text)
+            and sentence_repair_matches_failure(failure, text)
         ):
             return "Long sentence-boundary pause"
         return {
@@ -2973,10 +2973,10 @@ def _carry_forward_review_outcomes(
             source_repair.get("strategy") if isinstance(source_repair, dict) else None
         )
         sentence_mismatch = strategy == SENTENCE_BOUNDARY_SEGMENTATION and not (
-            _sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
+            sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
         )
         inline_pause_mismatch = strategy == INLINE_PAUSE_MARKER and not (
-            _inline_pause_matches_failure(failure, queue_by_id[queue_id].text)
+            inline_pause_matches_failure(failure, queue_by_id[queue_id].text)
         )
         if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
             failure_kind_mismatch = sentence_mismatch
@@ -3000,7 +3000,7 @@ def _carry_forward_review_outcomes(
                         in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
                         and (
                             fallback_authority is not None
-                            or _inline_pause_matches_failure(
+                            or inline_pause_matches_failure(
                                 failure, queue_by_id[queue_id].text
                             )
                         )
@@ -3298,7 +3298,7 @@ def _workspace_generation_provenance(directory, workspace):
             sha256_control_path(reference),
         )
     try:
-        snapshots = _snapshot_control_files(controls)
+        snapshots = snapshot_generation_control_files(controls)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     synthesis_configuration = {

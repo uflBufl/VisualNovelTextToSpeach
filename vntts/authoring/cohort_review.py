@@ -14,7 +14,7 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
-    _review_generation_cohort,
+    review_generation_cohort,
 )
 from vntts.authoring.workbench import (
     REVIEW_ATTENTION_POLICY_VERSION,
@@ -621,7 +621,7 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     }
     projection_status = decision_document["projection_review_status"]
     try:
-        commits = _review_generation_cohort(
+        commits = review_generation_cohort(
             state_path,
             queue_path,
             authorities,

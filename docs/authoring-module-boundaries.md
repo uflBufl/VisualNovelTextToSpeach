@@ -116,6 +116,21 @@ validates an isolated copy, and all production callers outside the orchestrator
 use that facade rather than importing `_validate_state_document`. This keeps the
 remaining extraction boundary explicit without exposing a mutable validator.
 
+## Bulk orchestration public boundary
+
+Production modules consume named bulk-generation APIs for checksum-bound cohort
+commits, typed PCM normalization, sentence and inline-pause repair eligibility,
+and immutable generation-control snapshots. The historical
+`_review_generation_cohort`, `_generated_mono_pcm`,
+`_sentence_repair_matches_failure`, `_inline_pause_matches_failure` and
+`_snapshot_control_files` names remain identity-preserving compatibility aliases
+for tests and external callers; they are not production dependencies.
+
+The import-graph regression inventories every production authoring import and
+fails if any underscore-prefixed compatibility helper is imported from
+`bulk_generation`. This ratchets the dependency magnet without changing cohort
+CAS authority, render validation, repair selection or source-change detection.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and

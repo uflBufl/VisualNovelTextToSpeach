@@ -1407,7 +1407,7 @@ def _validate_failure_repair_selection(
                 )
 
 
-def _sentence_repair_matches_failure(failure, text):
+def sentence_repair_matches_failure(failure, text):
     if len(safe_sentence_segments(text)) < 2:
         return False
     if failure.get("kind") == "missed_eos_audio_limit":
@@ -1440,7 +1440,10 @@ def _sentence_repair_matches_failure(failure, text):
     )
 
 
-def _inline_pause_matches_failure(failure, text):
+_sentence_repair_matches_failure = sentence_repair_matches_failure
+
+
+def inline_pause_matches_failure(failure, text):
     if failure.get("kind") != "speech_silence":
         return False
     try:
@@ -1471,6 +1474,9 @@ def _inline_pause_matches_failure(failure, text):
         and values["leading_silence_seconds"] <= MAX_LEADING_SILENCE_SECONDS
         and values["trailing_silence_seconds"] <= MAX_TRAILING_SILENCE_SECONDS
     )
+
+
+_inline_pause_matches_failure = inline_pause_matches_failure
 
 
 def _failure_repair_document(policy, queue_id, text, *, existing=None):
@@ -2382,7 +2388,7 @@ def review_generation_item(
         )
 
 
-def _review_generation_cohort(
+def review_generation_cohort(
     state_path,
     queue_path,
     authorities,
@@ -2609,6 +2615,9 @@ def _review_generation_cohort(
         for queue_id, authority in authorities.items()
         if decisions[queue_id] != "pending_review"
     )
+
+
+_review_generation_cohort = review_generation_cohort
 
 
 def authorize_live_fallback(
@@ -4796,7 +4805,7 @@ def _validate_render_result(result, request, provider):
         )
 
 
-def _generated_mono_pcm(pcm):
+def generated_mono_pcm(pcm):
     """Normalize typed renderer PCM without flattening channels into time."""
     samples = np.asarray(pcm, dtype=np.float32)
     if samples.ndim == 1:
@@ -4810,6 +4819,9 @@ def _generated_mono_pcm(pcm):
     if not np.isfinite(mono).all():
         raise BulkGenerationError("Typed render PCM contains non-finite samples")
     return mono
+
+
+_generated_mono_pcm = generated_mono_pcm
 
 
 def _guard_job_process(output_directory, process_checker):
@@ -4872,7 +4884,7 @@ def _within(root, relative, label):
 _load_stable_queue = load_stable_generation_queue
 
 
-def _snapshot_control_files(control_files):
+def snapshot_generation_control_files(control_files):
     if not isinstance(control_files, dict):
         raise BulkGenerationError(
             "Generation control files must be a role/path mapping"
@@ -4910,6 +4922,9 @@ def _snapshot_control_files(control_files):
             }
         )
     return tuple(snapshots)
+
+
+_snapshot_control_files = snapshot_generation_control_files
 
 
 def _control_directory_files(path):

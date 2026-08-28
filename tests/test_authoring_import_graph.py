@@ -6,10 +6,20 @@ import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 from vntts.authoring.bulk_generation import (
     _approved_manifest_entries,
+    _generated_mono_pcm,
     _GenerationLease,
+    _inline_pause_matches_failure,
     _load_stable_queue,
     _process_started_at,
+    _review_generation_cohort,
+    _sentence_repair_matches_failure,
+    _snapshot_control_files,
     _write_generated_manifest_from_state,
+    generated_mono_pcm,
+    inline_pause_matches_failure,
+    review_generation_cohort,
+    sentence_repair_matches_failure,
+    snapshot_generation_control_files,
 )
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
@@ -162,8 +172,17 @@ class AuthoringImportGraphTest(unittest.TestCase):
             )
         )
 
-    def test_generation_state_queue_loader_has_no_private_bulk_importers(self):
-        for imported_name in ("_load_stable_queue", "_validate_state_document"):
+    def test_bulk_generation_compatibility_helpers_have_no_private_importers(self):
+        compatibility_names = (
+            "_generated_mono_pcm",
+            "_inline_pause_matches_failure",
+            "_load_stable_queue",
+            "_review_generation_cohort",
+            "_sentence_repair_matches_failure",
+            "_snapshot_control_files",
+            "_validate_state_document",
+        )
+        for imported_name in compatibility_names:
             with self.subTest(imported_name=imported_name):
                 self.assertEqual(
                     _production_importers(
@@ -172,6 +191,11 @@ class AuthoringImportGraphTest(unittest.TestCase):
                     [],
                 )
         self.assertIs(_load_stable_queue, load_stable_generation_queue)
+        self.assertIs(_generated_mono_pcm, generated_mono_pcm)
+        self.assertIs(_inline_pause_matches_failure, inline_pause_matches_failure)
+        self.assertIs(_review_generation_cohort, review_generation_cohort)
+        self.assertIs(_sentence_repair_matches_failure, sentence_repair_matches_failure)
+        self.assertIs(_snapshot_control_files, snapshot_generation_control_files)
         graph = _authoring_import_graph()
         self.assertFalse(
             _reachable(

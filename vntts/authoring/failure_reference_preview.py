@@ -14,7 +14,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
-    _generated_mono_pcm,
+    generated_mono_pcm,
     normalize_short_trailing_ellipsis,
 )
 from vntts.authoring.failure_reference_audit import (
@@ -195,7 +195,7 @@ class FailureReferencePreviewService:
                 raise FailureReferencePreviewError(
                     "Preview render diagnostics differ from the requested controls"
                 )
-            pcm = _generated_mono_pcm(result.pcm)
+            pcm = generated_mono_pcm(result.pcm)
             if not len(pcm) or int(result.sample_rate) <= 0:
                 raise FailureReferencePreviewError("Preview render produced no audio")
             output = self._root / "preview.wav"
