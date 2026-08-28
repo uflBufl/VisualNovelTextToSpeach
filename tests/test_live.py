@@ -2,7 +2,7 @@ import unittest
 from concurrent.futures import Future
 from queue import Queue
 from threading import Event, Lock, Thread
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -1028,10 +1028,12 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIsNone(reader.last_auto_advance_dispatched_generation)
 
     def test_initial_auto_advance_waits_for_focus_without_consuming_the_press(self):
+        state_changed = Mock()
         auto_advance = Mock(return_value=True)
         reader = self.create_reader(
             auto_advance=auto_advance,
             focus_probe=Mock(return_value=False),
+            auto_advance_state_changed=state_changed,
         )
         reader.active_generation = 3
         reader.dialog_ready_generation = 3
@@ -1042,6 +1044,57 @@ class LiveDialogReaderTest(unittest.TestCase):
         auto_advance.assert_not_called()
         timer.assert_called_once()
         timer.return_value.start.assert_called_once_with()
+        state_changed.assert_called_once_with("focus-wait", 3, 0)
+
+    def test_focus_probe_failure_is_fail_closed_and_reported_once(self):
+        error = RuntimeError("focus unavailable")
+        report_error = Mock()
+        reader = self.create_reader(
+            focus_probe=Mock(side_effect=error),
+            report_error=report_error,
+        )
+
+        self.assertFalse(reader._is_focused())
+        self.assertFalse(reader._is_focused())
+
+        report_error.assert_called_once_with(error)
+
+    def test_focus_wait_notice_is_not_repeated_for_the_same_generation(self):
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=Mock(return_value=True),
+            focus_probe=Mock(return_value=False),
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            reader._run_auto_advance(3)
+
+        state_changed.assert_called_once_with("focus-wait", 3, 0)
+
+    def test_initial_auto_advance_dispatches_once_after_focus_returns(self):
+        auto_advance = Mock(return_value=True)
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            focus_probe=Mock(side_effect=[False, True]),
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            reader._run_auto_advance(3)
+
+        auto_advance.assert_called_once_with()
+        self.assertEqual(
+            state_changed.call_args_list,
+            [call("focus-wait", 3, 0), call("dispatched", 3, 1)],
+        )
 
     def test_auto_advance_confirmation_options_are_bounded(self):
         with self.assertRaisesRegex(ValueError, "timeout_seconds must be positive"):

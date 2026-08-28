@@ -155,7 +155,7 @@ class Win32WindowBackend:
 
 
 class MacOSWindowBackend:
-    def __init__(self, quartz=None):
+    def __init__(self, quartz=None, workspace=None):
         if sys.platform != "darwin" and quartz is None:
             raise WindowCaptureUnavailableError(
                 "macOS game-window capture is available only on macOS"
@@ -168,6 +168,7 @@ class MacOSWindowBackend:
                     "macOS window capture requires pyobjc-framework-Quartz"
                 ) from error
         self.quartz = quartz
+        self.workspace = workspace
 
     def _window_info(self, values):
         quartz = self.quartz
@@ -257,6 +258,25 @@ class MacOSWindowBackend:
             if window is not None:
                 return window.handle
         return 0
+
+    def get_foreground_process_id(self):
+        """Return the application that actually owns keyboard focus.
+
+        Quartz window ordering is not an application-focus authority on macOS:
+        a fullscreen window on another display or Space can remain first in the
+        returned Z-order. NSWorkspace reports the process that receives an
+        unaddressed keyboard event, which is the identity auto advance needs.
+        """
+        workspace = self.workspace
+        if workspace is None:
+            from AppKit import NSWorkspace
+
+            workspace = NSWorkspace.sharedWorkspace()
+            self.workspace = workspace
+        application = workspace.frontmostApplication()
+        if application is None:
+            return 0
+        return int(application.processIdentifier())
 
 
 class LinuxX11WindowBackend:
@@ -460,6 +480,13 @@ class WindowCaptureTarget:
 
     def is_focused(self):
         window = self._resolve_window()
+        process_probe = getattr(
+            type(self.backend),
+            "get_foreground_process_id",
+            None,
+        )
+        if process_probe is not None:
+            return int(process_probe(self.backend)) == int(window.process_id)
         return int(self.backend.get_foreground_handle()) == int(window.handle)
 
     def _resolve_window(self):

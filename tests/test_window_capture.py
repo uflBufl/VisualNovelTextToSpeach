@@ -244,6 +244,36 @@ class MacOSWindowBackendTest(unittest.TestCase):
 
         self.assertEqual(MacOSWindowBackend(quartz).get_foreground_handle(), 20)
 
+    def test_frontmost_application_pid_is_the_keyboard_focus_authority(self):
+        application = SimpleNamespace(processIdentifier=lambda: 84)
+        workspace = SimpleNamespace(frontmostApplication=lambda: application)
+        backend = MacOSWindowBackend(
+            FakeQuartz(
+                [
+                    self.window(20, "Fullscreen game"),
+                    self.window(10, "Actually focused app"),
+                ]
+            ),
+            workspace=workspace,
+        )
+
+        self.assertEqual(backend.get_foreground_process_id(), 84)
+
+    def test_target_compares_macos_active_process_not_quartz_z_order(self):
+        game = self.window(20, "Reverse: 1999")
+        game["pid"] = 84
+        application = SimpleNamespace(processIdentifier=lambda: 91)
+        workspace = SimpleNamespace(frontmostApplication=lambda: application)
+        target = WindowCaptureTarget(
+            "Reverse: 1999",
+            MacOSWindowBackend(FakeQuartz([game]), workspace=workspace),
+        )
+
+        self.assertFalse(target.is_focused())
+
+        application.processIdentifier = lambda: 84
+        self.assertTrue(target.is_focused())
+
     def test_reports_window_that_disappeared(self):
         backend = MacOSWindowBackend(FakeQuartz([]))
 

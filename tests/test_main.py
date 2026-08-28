@@ -2533,6 +2533,17 @@ class MainTest(unittest.TestCase):
         self.assertIn("no second key was sent", statuses[2])
         self.assertEqual(statuses[3], "Auto advance confirmed by new dialogue")
 
+    def test_auto_advance_reports_that_it_is_waiting_for_game_focus(self):
+        statuses = []
+        controller = AppController(AppSettings(), status_handler=statuses.append)
+
+        controller._auto_advance_state_changed("focus-wait", 4, 0)
+
+        self.assertEqual(
+            statuses,
+            ["Auto advance is waiting; focus the selected game window"],
+        )
+
     def test_disabling_auto_advance_cancels_reader_state_machine(self):
         controller = AppController(AppSettings(auto_advance_enabled=True))
         controller.live_reader = Mock()

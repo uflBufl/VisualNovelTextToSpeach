@@ -543,7 +543,9 @@ class LiveDialogReader:
         self.auto_advance_attempts = 0
         self.auto_advance_blocked_generation = None
         self.auto_advance_block_reason = None
+        self.auto_advance_focus_wait_generation = None
         self.auto_advance_timer = None
+        self.focus_probe_failed = False
         self.latest_frame = None
         self.latest_frame_fingerprint = None
         self.frame_version = 0
@@ -590,6 +592,8 @@ class LiveDialogReader:
             self.auto_advance_attempts = 0
             self.auto_advance_blocked_generation = None
             self.auto_advance_block_reason = None
+            self.auto_advance_focus_wait_generation = None
+            self.focus_probe_failed = False
             self._cancel_auto_advance_locked()
             self.latest_frame = None
             self.latest_frame_fingerprint = None
@@ -621,6 +625,7 @@ class LiveDialogReader:
             self._cancel_auto_advance_locked()
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
+            self.auto_advance_focus_wait_generation = None
             self.pause_condition.notify_all()
         return True
 
@@ -633,6 +638,7 @@ class LiveDialogReader:
                 self.failed_auto_advance_generation = None
                 self.last_auto_advance_dispatched_generation = None
                 self.auto_advance_attempts = 0
+                self.auto_advance_focus_wait_generation = None
                 return False
         self._maybe_auto_advance()
         return True
@@ -728,6 +734,7 @@ class LiveDialogReader:
             self.auto_advance_attempts = 0
             self.auto_advance_blocked_generation = None
             self.auto_advance_block_reason = None
+            self.auto_advance_focus_wait_generation = None
         for future in futures:
             future.cancel()
         # A preparation future may already be running before it becomes
@@ -753,6 +760,7 @@ class LiveDialogReader:
             self._cancel_auto_advance_locked()
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
+            self.auto_advance_focus_wait_generation = None
             self.pause_condition.notify_all()
         cleared = self.clear_queue()
         self.release_waiters()
@@ -979,10 +987,17 @@ class LiveDialogReader:
 
     def _is_focused(self):
         try:
-            return bool(self.focus_probe())
+            focused = bool(self.focus_probe())
         except Exception as error:
-            self.report_error(error)
-            return True
+            with self.state_lock:
+                report_failure = not self.focus_probe_failed
+                self.focus_probe_failed = True
+            if report_failure:
+                self.report_error(error)
+            return False
+        with self.state_lock:
+            self.focus_probe_failed = False
+        return focused
 
     def _set_generation(self, generation):
         stale_futures = []
@@ -998,6 +1013,7 @@ class LiveDialogReader:
                 self.prepared_chunk_ids.clear()
                 self.sealed_generation = None
                 self.failed_auto_advance_generation = None
+                self.auto_advance_focus_wait_generation = None
                 if self.pending_auto_advance_generation == previous_generation:
                     confirmed_advance = (
                         previous_generation,
@@ -1352,6 +1368,13 @@ class LiveDialogReader:
             # A nonmodal voice prompt can own focus exactly when speech ends.
             # Keep a delayed attempt alive so returning to the game cannot
             # strand a ready dialogue forever.
+            with self.state_lock:
+                report_focus_wait = (
+                    self.auto_advance_focus_wait_generation != generation
+                )
+                self.auto_advance_focus_wait_generation = generation
+            if report_focus_wait:
+                self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
             return
         try:
@@ -1363,6 +1386,7 @@ class LiveDialogReader:
             dispatched = None
             with self.state_lock:
                 if generation == self.active_generation:
+                    self.auto_advance_focus_wait_generation = None
                     self.auto_advance_attempts = 1
                     attempt = 1
                     self.last_auto_advance_dispatched_generation = generation
@@ -1435,6 +1459,7 @@ class LiveDialogReader:
             self.failed_auto_advance_generation = generation
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
+            self.auto_advance_focus_wait_generation = None
         self._report_pipeline_event(
             "auto-advance-timeout",
             generation,

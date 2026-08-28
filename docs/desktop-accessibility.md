@@ -15,3 +15,22 @@ message box as part of its native button handling and may still call
 Decision handlers therefore disable the prompt immediately, retain it, and
 defer the application action; clearing the final reference synchronously can
 produce a native use-after-free rather than a catchable Python exception.
+
+## Auto-advance focus authority
+
+Auto advance posts a system-level key, so inability to prove that the selected
+game owns keyboard focus is a hard stop. Focus-probe exceptions are interpreted
+as `not focused`; they are never permission to dispatch input. A ready dialogue
+remains pending and is dispatched at most once after focus is proven again.
+
+On macOS, `CGWindowListCopyWindowInfo` Z-order is not keyboard-focus authority.
+A fullscreen game on another display or Space can remain first in that list
+while a different application receives keyboard input. The selected window's
+owner PID is therefore compared with `NSWorkspace.frontmostApplication()` at
+capture time and again immediately before dispatch.
+
+VNTTS deliberately does not activate the game automatically. Stealing focus
+while the user is typing in another application is disruptive and can make an
+otherwise safe pending action surprising. A future focus-restoration option
+must be explicit and disabled by default; after requesting activation it must
+recheck the active PID before posting the single advance key.

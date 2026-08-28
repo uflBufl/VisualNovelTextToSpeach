@@ -1492,7 +1492,11 @@ class AppController:
         return True
 
     def _auto_advance_state_changed(self, state, _generation, _attempt):
-        if state == "dispatched":
+        if state == "focus-wait":
+            self.status_handler(
+                "Auto advance is waiting; focus the selected game window"
+            )
+        elif state == "dispatched":
             self.status_handler("Auto advance key sent; waiting for dialogue change")
         elif state == "waiting":
             self.status_handler(
