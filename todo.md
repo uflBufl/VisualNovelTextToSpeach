@@ -25,39 +25,49 @@ The reconciled baseline and exact remaining identities are recorded in
 
 ## Offline authoring and application responsibility split
 
-### P0 - Complete the current Character Story in fail-closed order
+### P0 - Compose and terminalize the current Character Story
 
-Follow the checkpoint, dependencies and acceptance boundaries in
+Follow the authorities and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
+The work is split across immutable successors and must be composed before a
+pack can be published: `...-2624f64ea2773d6b` contains the terminal Poacher II
+and Dobharchú results but only nine Aderyn approvals, while
+`...-af9b4fb0bb4a451c` contains the reviewed Aderyn history. Do not regenerate
+or repeat cohort review merely to combine them.
 
-- [ ] After the detailed reference and quality tasks below are complete,
-      rebuild the approved-only manifest, require terminal coverage or an
-      explicit supported fallback for all 592 queue items, and run the real
-      Character Story routing and auto-advance acceptance.
-- [ ] Finish the remaining known-role boundary without silently widening a
-      reference. The explicit `Aderyn -> Rhiannon` authority and all 83 child
-      and adult review decisions are consolidated in successor
-      `resume-395a5e5eec0327a3a793b66d-af9b4fb0bb4a451c` and recorded in
-      [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
-      Preserve its 68 approved and 24 rejected Aderyn WAVs. Publish an exact
-      provenance plan for the remaining 21 failures before any more generation:
-      five are exhausted Pocket failures, three retain an inline-pause
-      comparison and 13 retain an alternative-reference comparison. Never
-      derive new authorization from the successor's generic failure projection,
-      which lacks the deeper branch attempt history. Reference 01 is accepted;
-      references 02 and 03 produced large pauses, so the 13 reference cases are
-      blocked until a new safe reference hypothesis exists. The five exhausted
-      Pocket failures have an immutable specialist plan. All three single-ID
-      inline-pause hypotheses are terminal: two typed limited results are
-      automatically unresolved, while the reviewed `314606:65` 4.72-second WAV
-      is selected by imported selection
-      `5f861cf2826928d173f08959c9f48fb33f6edcf940569d9d31920642a2bf92d6`.
-      Do not show or request acknowledgement for the two failed-only cases. Any
-      line still unavailable may receive only an explicit live Pocket fallback whose
-      requested synthesis voice is `Rhiannon` while its audible role
-      announcement remains `Aderyn`; Centurion/Narrator must never be the
-      Aderyn fallback. Refresh runtime routing tests after the remaining
-      decisions/import.
+- [ ] Publish one checksum-bound reconciliation over exact named authorities:
+      preserve all 68 approved and 24 rejected Aderyn WAVs from
+      `...-af9b4fb0bb4a451c`, the approved Poacher II and two approved
+      Dobharchú `534705` WAVs from `...-2624f64ea2773d6b`, and the three
+      standalone Narrator live-fallback decisions plus five rejected-Dobharchú
+      fallback ledgers from `...-a2b299862a4c4483`. The composition must report
+      zero conflicts, preserve every source hash, retain the exact queue hash
+      and be idempotent under no-replace publication.
+- [ ] Terminalize the 21 carried Aderyn failures from their deeper branch
+      authorities, never from the merged successor's generic projection. Carry
+      the already selected checksum-bound `314606:65` inline-pause result
+      without rerendering it. For every still unavailable line, publish an
+      explicit live Pocket fallback whose requested synthesis voice is
+      `Rhiannon` and whose audible role announcement is `Aderyn`;
+      Centurion/Narrator is forbidden. Preserve the five exhausted Pocket
+      failures, two failed inline-pause hypotheses and 13 rejected/blocked
+      alternative-reference hypotheses as immutable negative evidence.
+- [ ] Resolve the seven remaining non-verbal events without pronouncing their
+      literal markup: Aderyn `*whimper*` and `*yelp*`, Narrator `*pop*`, three
+      `*bang*` lines and `*buzzzzz*`. Prefer a checksum-bound installed or
+      generated effect only after semantic and perceptual validation; without
+      such evidence retain an explicit omission authority. This event policy
+      is independent of character voice fallback.
+- [ ] Rebuild the approved-only manifest from the composed terminal state and
+      require all 592 queue items to have approved audio, an explicit supported
+      live fallback or an explicit non-verbal omission. Verify zero pending
+      review, zero unowned failure, no active attempt/lease/partial WAV, exact
+      manifest subset equality and unchanged source workspaces before
+      publishing the final game pack.
+- [ ] Run the real Character Story acceptance with that pack: verify generated
+      routing, original-audio precedence, Centurion narration, `Aderyn` and
+      `Unknown` fallback announcements, no literal event markup, and no stale,
+      duplicate or early-advanced dialogue. This is the remaining human gate.
 
 ### P0 - Maximize pregenerated coverage without losing speaker identity
 
