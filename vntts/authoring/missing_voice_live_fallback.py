@@ -21,7 +21,7 @@ from vntts.authoring.bulk_generation import (
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     BulkGenerationError,
     BulkGenerationSourceChangedError,
-    _validate_state_document,
+    validate_generation_state_document,
 )
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.generation_manifest import (
@@ -91,7 +91,7 @@ def authorize_missing_voice_live_fallback(
     state_payload = state_path.read_bytes()
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     state = _decode_state(state_payload)
-    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback requires an inactive workspace"
@@ -227,7 +227,7 @@ def authorize_missing_voice_live_fallback(
             "live_fallback": decision,
             "updated_at": decided_at,
         }
-    _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
+    validate_generation_state_document(proposed, state_path.parent, queue, queue_sha256)
     entries = approved_manifest_entries(proposed, state_path.parent)
     transaction_id = secrets.token_hex(16)
     staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")

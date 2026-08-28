@@ -22,8 +22,8 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _validate_state_document,
     is_spoken_queue_item,
+    validate_generation_state_document,
 )
 from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.missing_voice_live_fallback import (
@@ -116,7 +116,7 @@ def publish_known_role_reuse_binding(
     state_payload = state_path.read_bytes()
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     state = _decode_state(state_payload)
-    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):
         raise KnownRoleReuseError("Known-role reuse requires an inactive workspace")
 

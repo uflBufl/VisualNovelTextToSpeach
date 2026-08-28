@@ -111,7 +111,10 @@ import-graph regression forbids production imports of that private name and
 ensures the state foundation cannot reach the bulk orchestrator. Semantic state
 document validation remains in `bulk_generation` until its complete validation
 closure can move without weakening typed failure, repair, provenance or audio
-event checks.
+event checks. Its current public `validate_generation_state_document()` facade
+validates an isolated copy, and all production callers outside the orchestrator
+use that facade rather than importing `_validate_state_document`. This keeps the
+remaining extraction boundary explicit without exposing a mutable validator.
 
 ## Regression gate
 

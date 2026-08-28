@@ -8,13 +8,14 @@ from vntts.authoring.bulk_generation import (
     _approved_manifest_entries,
     _GenerationLease,
     _load_stable_queue,
+    _process_started_at,
     _write_generated_manifest_from_state,
 )
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
     FailureReferenceBindingError,
 )
-from vntts.authoring.generation_lease import GenerationLease
+from vntts.authoring.generation_lease import GenerationLease, process_started_at
 from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     write_generated_manifest_from_state,
@@ -116,13 +117,16 @@ class AuthoringImportGraphTest(unittest.TestCase):
         )
 
     def test_generation_lease_has_no_private_bulk_generation_importers(self):
-        self.assertEqual(
-            _production_importers(
-                "vntts.authoring.bulk_generation", "_GenerationLease"
-            ),
-            [],
-        )
+        for imported_name in ("_GenerationLease", "_process_started_at"):
+            with self.subTest(imported_name=imported_name):
+                self.assertEqual(
+                    _production_importers(
+                        "vntts.authoring.bulk_generation", imported_name
+                    ),
+                    [],
+                )
         self.assertIs(_GenerationLease, GenerationLease)
+        self.assertIs(_process_started_at, process_started_at)
         graph = _authoring_import_graph()
         self.assertFalse(
             _reachable(
@@ -159,12 +163,14 @@ class AuthoringImportGraphTest(unittest.TestCase):
         )
 
     def test_generation_state_queue_loader_has_no_private_bulk_importers(self):
-        self.assertEqual(
-            _production_importers(
-                "vntts.authoring.bulk_generation", "_load_stable_queue"
-            ),
-            [],
-        )
+        for imported_name in ("_load_stable_queue", "_validate_state_document"):
+            with self.subTest(imported_name=imported_name):
+                self.assertEqual(
+                    _production_importers(
+                        "vntts.authoring.bulk_generation", imported_name
+                    ),
+                    [],
+                )
         self.assertIs(_load_stable_queue, load_stable_generation_queue)
         graph = _authoring_import_graph()
         self.assertFalse(

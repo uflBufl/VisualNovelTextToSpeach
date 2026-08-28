@@ -34,16 +34,16 @@ from vntts.authoring.advisory_lock import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _process_started_at,
-    _validate_state_document,
     load_generation_state,
     process_is_alive,
     validate_authoring_publication_authority,
+    validate_generation_state_document,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding_document,
 )
+from vntts.authoring.generation_lease import process_started_at
 from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.publication import (
@@ -381,7 +381,7 @@ class _PublicationLease:
             "owner": self.owner,
             "pid": os.getpid(),
             "hostname": socket.gethostname(),
-            "process_started_at": _process_started_at(os.getpid()),
+            "process_started_at": process_started_at(os.getpid()),
             "destination": str(self.destination),
             "created_at": _now(),
         }
@@ -479,7 +479,7 @@ class _PublicationLease:
         expected_start = document.get("process_started_at")
         if not expected_start:
             return True
-        return _process_started_at(pid) == expected_start
+        return process_started_at(pid) == expected_start
 
     def _archive_stale(self, expected_payload):
         try:
@@ -733,7 +733,9 @@ def _load_stable_state(state_path, queue, queue_sha256):
     if not isinstance(state, dict):
         raise FinalGamePackError("Generation state must be a JSON object")
     try:
-        _validate_state_document(state, state_path.parent, queue, queue_sha256)
+        validate_generation_state_document(
+            state, state_path.parent, queue, queue_sha256
+        )
     except BulkGenerationError as error:
         raise FinalGamePackError(str(error)) from error
     return state, hashlib.sha256(payload).hexdigest()

@@ -15,7 +15,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _validate_state_document,
+    validate_generation_state_document,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.source_reference_quality_records import (
@@ -115,7 +115,9 @@ def publish_source_reference_quality_review(
             queue_snapshot = Path(directory) / "queue.jsonl"
             queue_snapshot.write_bytes(queue_payload)
             queue = VoiceGenerationQueue.load(queue_snapshot)
-        _validate_state_document(state, state_path.parent, queue, queue_sha256)
+        validate_generation_state_document(
+            state, state_path.parent, queue, queue_sha256
+        )
     except (VoiceGenerationQueueError, BulkGenerationError) as error:
         raise SourceReferenceQualityError(str(error)) from error
     queue_by_id = {item.queue_id: item for item in queue.items}
