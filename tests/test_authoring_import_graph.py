@@ -4,10 +4,12 @@ from pathlib import Path
 
 import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
+from vntts.authoring.bulk_generation import _GenerationLease
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
     FailureReferenceBindingError,
 )
+from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
@@ -101,6 +103,23 @@ class AuthoringImportGraphTest(unittest.TestCase):
         self.assertEqual(
             _authoring_import_graph()["vntts.authoring.workspace_foundation"],
             set(),
+        )
+
+    def test_generation_lease_has_no_private_bulk_generation_importers(self):
+        self.assertEqual(
+            _production_importers(
+                "vntts.authoring.bulk_generation", "_GenerationLease"
+            ),
+            [],
+        )
+        self.assertIs(_GenerationLease, GenerationLease)
+        graph = _authoring_import_graph()
+        self.assertFalse(
+            _reachable(
+                graph,
+                "vntts.authoring.generation_lease",
+                "vntts.authoring.bulk_generation",
+            )
         )
 
     def test_authoring_module_graph_has_no_strongly_connected_components(self):

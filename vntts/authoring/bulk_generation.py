@@ -10,9 +10,7 @@ import json
 import os
 import re
 import secrets
-import socket
 import stat
-import subprocess
 import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -46,11 +44,8 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.advisory_lock import (
-    AdvisoryLockBusyError,
-    exclusive_advisory_lock,
-)
 from vntts.authoring.audio_events import requires_audio_event_composition
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
@@ -64,6 +59,15 @@ from vntts.authoring.failure_repair import (
     render_sentence_segments,
     safe_sentence_segments,
     trim_excess_edge_silence,
+)
+from vntts.authoring.generation_lease import LEASE_SCHEMA as LEASE_SCHEMA
+from vntts.authoring.generation_lease import LEASE_VERSION as LEASE_VERSION
+from vntts.authoring.generation_lease import (
+    BulkGenerationError,
+    GenerationLease,
+    archive_interrupted_artifact,
+    process_is_alive,
+    process_started_at,
 )
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
@@ -87,8 +91,6 @@ STATE_SCHEMA = "vntts.authoring-generation-state"
 STATE_VERSION = 1
 LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
 LEGACY_STATE_VERSION = 1
-LEASE_SCHEMA = "vntts.authoring-generation-lease"
-LEASE_VERSION = 1
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
 SILENCE_DBFS = -45.0
 SILENCE_FRAME_MS = 80
@@ -122,10 +124,6 @@ LIVE_FALLBACK_REASONS = frozenset(
         LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
     }
 )
-
-
-class BulkGenerationError(RuntimeError):
-    """A queue cannot be generated or resumed safely."""
 
 
 class BulkGenerationSourceChangedError(BulkGenerationError):
@@ -3555,148 +3553,8 @@ def _review_generation_item_locked(
     )
 
 
-def process_is_alive(pid):
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def process_started_at(pid):
-    """Return the operating-system process start identity when inspectable."""
-    try:
-        pid = int(pid)
-        completed = subprocess.run(
-            ("ps", "-o", "lstart=", "-p", str(pid)),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (TypeError, ValueError, OSError, subprocess.CalledProcessError):
-        return None
-    return completed.stdout.strip() or None
-
-
-# Private compatibility for the existing publication lease until its next schema bump.
+_GenerationLease = GenerationLease
 _process_started_at = process_started_at
-
-
-class _GenerationLease:
-    def __init__(self, output_directory, queue_sha256, *, process_checker):
-        self.output_directory = Path(output_directory)
-        self.path = self.output_directory / ".generation-lease.json"
-        self.queue_sha256 = queue_sha256
-        self.process_checker = process_checker
-        self.lease_id = secrets.token_hex(16)
-        self.committed = False
-        self.document = None
-
-    def __enter__(self):
-        try:
-            with exclusive_advisory_lock(self.path.with_suffix(".guard")):
-                if self.path.exists():
-                    try:
-                        lease_payload = self.path.read_bytes()
-                        existing = json.loads(lease_payload.decode("utf-8"))
-                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                        raise BulkGenerationError(
-                            f"Unable to read generation lease {self.path}: {error}"
-                        ) from error
-                    if (
-                        not isinstance(existing, dict)
-                        or existing.get("schema") != LEASE_SCHEMA
-                        or existing.get("schema_version") != LEASE_VERSION
-                        or not isinstance(existing.get("queue_sha256"), str)
-                    ):
-                        raise BulkGenerationError(
-                            f"Unrecognized generation lease blocks output: {self.path}"
-                        )
-                    same_host = existing.get("hostname") in {
-                        None,
-                        socket.gethostname(),
-                    }
-                    live = same_host and self.process_checker(existing.get("pid"))
-                    recorded_start = existing.get("process_started_at")
-                    if live and recorded_start is not None:
-                        actual_start = process_started_at(existing.get("pid"))
-                        if actual_start is not None:
-                            live = recorded_start == actual_start
-                    if not same_host or live:
-                        raise BulkGenerationError(
-                            "Another generation process is active with PID "
-                            f"{existing.get('pid')}"
-                        )
-                    _archive_interrupted_artifact(
-                        self.output_directory,
-                        self.path,
-                        expected_payload=lease_payload,
-                    )
-                lease = {
-                    "schema": LEASE_SCHEMA,
-                    "schema_version": LEASE_VERSION,
-                    "queue_sha256": self.queue_sha256,
-                    "pid": os.getpid(),
-                    "hostname": socket.gethostname(),
-                    "process_started_at": process_started_at(os.getpid()),
-                    "lease_id": self.lease_id,
-                    "started_at": _now(),
-                }
-                self.document = lease
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                try:
-                    descriptor = os.open(self.path, flags, 0o600)
-                except FileExistsError as error:
-                    raise BulkGenerationError(
-                        "Another generation process acquired the output"
-                    ) from error
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    json.dump(lease, stream, sort_keys=True)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-        except AdvisoryLockBusyError as error:
-            raise BulkGenerationError(
-                "Another generation process acquired the output"
-            ) from error
-        return self
-
-    def __exit__(self, _error_type, _error, _traceback):
-        ownership_error = None
-        try:
-            with exclusive_advisory_lock(
-                self.path.with_suffix(".guard"), blocking=True
-            ):
-                current = _load_json(self.path, "generation lease")
-                if current == self.document:
-                    self.path.unlink()
-                else:
-                    ownership_error = BulkGenerationError(
-                        "Generation lease ownership changed during the run"
-                    )
-        except (BulkGenerationError, AdvisoryLockBusyError) as error:
-            ownership_error = error
-        if ownership_error is not None and _error_type is None and not self.committed:
-            raise BulkGenerationError(str(ownership_error)) from ownership_error
-
-    def assert_owned(self):
-        current = _load_json(self.path, "generation lease")
-        if current != self.document:
-            raise BulkGenerationError(
-                "Generation lease ownership changed during the run"
-            )
-
-    def mark_committed(self):
-        """Do not report cleanup ambiguity as failure after an external commit."""
-        self.committed = True
 
 
 def _load_or_create_state(state_path, output_directory, queue, queue_sha256):
@@ -5146,42 +5004,7 @@ def _audio_relative_path(voice, queue_id):
     return Path("audio") / voice_slug / f"{digest}.wav"
 
 
-def _archive_interrupted_artifact(
-    output_directory,
-    source,
-    *,
-    expected_payload=None,
-):
-    source = Path(source)
-    payload = source.read_bytes()
-    if expected_payload is not None and payload != expected_payload:
-        raise BulkGenerationError(
-            f"Interrupted artifact changed before recovery: {source}"
-        )
-    digest = hashlib.sha256(payload).hexdigest()[:12]
-    archive_root = _within(
-        output_directory, Path("interrupted"), "Interrupted artifact directory"
-    )
-    archive_root.mkdir(parents=True, exist_ok=True)
-    stem = slugify(source.name) or "artifact"
-    candidate = archive_root / f"{stem}-{digest}{source.suffix}"
-    suffix = 2
-    while candidate.exists():
-        if candidate.read_bytes() == payload:
-            if expected_payload is not None and source.read_bytes() != expected_payload:
-                raise BulkGenerationError(
-                    f"Interrupted artifact changed before recovery: {source}"
-                )
-            source.unlink()
-            return candidate
-        candidate = archive_root / f"{stem}-{digest}-{suffix}{source.suffix}"
-        suffix += 1
-    if expected_payload is not None and source.read_bytes() != expected_payload:
-        raise BulkGenerationError(
-            f"Interrupted artifact changed before recovery: {source}"
-        )
-    os.replace(source, candidate)
-    return candidate
+_archive_interrupted_artifact = archive_interrupted_artifact
 
 
 def _safe_relative(value, label):
@@ -5371,11 +5194,7 @@ def _load_json(path, description):
     return value
 
 
-def _canonical_sha256(value):
-    payload = json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+_canonical_sha256 = canonical_document_sha256
 
 
 def _required_text(value, label):

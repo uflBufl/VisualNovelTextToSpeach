@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import os
+import socket
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -18,6 +19,8 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.bulk_generation as bulk_module
+import vntts.authoring.generation_lease as generation_lease_module
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
@@ -1315,7 +1318,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "schema_version": 1,
                 "queue_sha256": sha256_file(queue),
                 "pid": 999999,
-                "hostname": bulk_module.socket.gethostname(),
+                "hostname": socket.gethostname(),
                 "process_started_at": "stale-start",
                 "lease_id": "stale-owner",
             }
@@ -1326,7 +1329,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "lease_id": "live-replacement",
             }
             atomic_write_json(lease_path, stale)
-            archive = bulk_module._archive_interrupted_artifact
+            archive = generation_lease_module.archive_interrupted_artifact
 
             def replace_before_archive(*args, **kwargs):
                 atomic_write_json(lease_path, replacement)
@@ -1334,8 +1337,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
-                    "_archive_interrupted_artifact",
+                    generation_lease_module,
+                    "archive_interrupted_artifact",
                     side_effect=replace_before_archive,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "changed before recovery"),
@@ -1365,9 +1368,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             acquired = Event()
 
             def hold_guard():
-                with bulk_module.exclusive_advisory_lock(
-                    output / ".generation-lease.guard"
-                ):
+                with exclusive_advisory_lock(output / ".generation-lease.guard"):
                     acquired.set()
                     Event().wait(0.05)
 
@@ -1396,7 +1397,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "schema_version": 1,
                     "queue_sha256": sha256_file(queue),
                     "pid": 123,
-                    "hostname": bulk_module.socket.gethostname(),
+                    "hostname": socket.gethostname(),
                     "process_started_at": "known-start",
                     "lease_id": "live-unknown-start",
                 },
@@ -1404,7 +1405,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.bulk_generation.process_started_at",
+                    "vntts.authoring.generation_lease.process_started_at",
                     return_value=None,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "Another generation"),
@@ -1645,7 +1646,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "schema_version": 1,
                     "queue_sha256": sha256_file(queue),
                     "pid": os.getpid(),
-                    "hostname": bulk_module.socket.gethostname(),
+                    "hostname": socket.gethostname(),
                     "process_started_at": bulk_module._process_started_at(os.getpid()),
                     "lease_id": "live",
                 },

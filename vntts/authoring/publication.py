@@ -9,7 +9,7 @@ import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from vntts.authoring.bulk_generation import _GenerationLease
+from vntts.authoring.generation_lease import GenerationLease
 
 
 class AtomicPublicationError(RuntimeError):
@@ -26,7 +26,7 @@ def generation_publication_leases(sources, *, process_checker):
     with ExitStack() as stack:
         leases = tuple(
             stack.enter_context(
-                _GenerationLease(
+                GenerationLease(
                     output,
                     queue_sha256,
                     process_checker=process_checker,

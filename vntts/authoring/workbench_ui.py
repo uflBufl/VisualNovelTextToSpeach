@@ -61,12 +61,13 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
-from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.bulk_generation import ReviewCommit
 from vntts.authoring.cohort_bundle import (
     CohortReviewBundle,
     build_cohort_review_bundle,
 )
 from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
+from vntts.authoring.generation_lease import process_started_at
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,

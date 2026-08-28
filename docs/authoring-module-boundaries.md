@@ -66,11 +66,29 @@ The AST regression forbids importing the superseded private workbench names,
 while the workbench test suite verifies that compatibility behavior is
 unchanged.
 
+## Generation lease foundation
+
+`generation_lease` is the leaf owner of the generation lease schema, process
+identity checks, exclusive lease lifecycle and contained recovery of abandoned
+artifacts. `publication`, workbench and the missing-voice live-fallback writer
+consume its public `GenerationLease` and process helpers directly, so atomic
+publication no longer imports the private lease implementation from the bulk
+generation orchestrator.
+
+`bulk_generation` re-exports `BulkGenerationError`, the lease constants and
+process helpers and retains `_GenerationLease`, `_process_started_at` and
+`_archive_interrupted_artifact` aliases for compatibility. All compatibility
+imports resolve to the shared leaf objects, while the import-graph test forbids
+any production module from importing the historical private lease name.
+Lease payload fields, stale-owner PID/start-time checks, advisory guard locking,
+crash archive naming and post-commit cleanup behavior remain unchanged.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and
 asserts that neither extracted record module can reach its higher layers and
 that no pair in either former strongly connected component is mutually
-reachable. It also enforces the canonical-hash leaf boundary described above.
+reachable. It also enforces the canonical-hash and generation-lease leaf
+boundaries described above.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

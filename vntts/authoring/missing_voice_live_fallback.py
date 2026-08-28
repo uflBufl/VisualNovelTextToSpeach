@@ -22,12 +22,11 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     BulkGenerationSourceChangedError,
     _approved_manifest_entries,
-    _GenerationLease,
     _load_stable_queue,
     _validate_state_document,
     _write_generated_manifest_from_state,
-    process_is_alive,
 )
+from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.missing_voice_reuse import (
     _validate_plan,
     load_missing_voice_reuse_plan,
@@ -235,7 +234,7 @@ def authorize_missing_voice_live_fallback(
         f".{manifest_path.name}.{transaction_id}.tmp"
     )
     try:
-        with _GenerationLease(
+        with GenerationLease(
             state_path.parent,
             queue_sha256,
             process_checker=process_is_alive,

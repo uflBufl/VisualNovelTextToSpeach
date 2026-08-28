@@ -50,8 +50,6 @@ from vntts.authoring.audio_event_workspace import (
 )
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
-    LEASE_SCHEMA,
-    LEASE_VERSION,
     NO_PROMPT_SHA256,
     SPEECH_QUALITY_ANALYSIS_VERSION,
     BulkGenerationError,
@@ -68,8 +66,6 @@ from vntts.authoring.bulk_generation import (
     measure_generated_speech_bytes,
     normalize_short_trailing_ellipsis,
     normalized_failure_record,
-    process_is_alive,
-    process_started_at,
     publish_generated_manifest,
     review_generation_item,
     sha256_control_path,
@@ -91,6 +87,12 @@ from vntts.authoring.failure_repair import (
 from vntts.authoring.game_pack import (
     FinalGamePackError,
     _rename_directory_no_replace,
+)
+from vntts.authoring.generation_lease import (
+    LEASE_SCHEMA,
+    LEASE_VERSION,
+    process_is_alive,
+    process_started_at,
 )
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
