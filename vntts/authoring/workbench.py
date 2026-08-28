@@ -3779,6 +3779,15 @@ def _verify_selected_sources(selected_sources):
             )
 
 
+def validate_workspace_provenance_extensions(directory, workspace, import_snapshot):
+    """Validate the optional provenance layers attached to one workspace."""
+    _validate_workspace_carry_forward(directory, workspace)
+    _validate_workspace_input_config(directory, workspace, import_snapshot)
+    _validate_workspace_offline_fallback_state(directory, workspace)
+    _validate_workspace_outcome_merge(directory, workspace)
+    _validate_workspace_terminal_conflict_merge(directory, workspace)
+
+
 def _validate_workspace_carry_forward(directory, workspace):
     seed = workspace.get("seed_generation_state")
     carry = workspace.get("carry_forward")
@@ -5182,5 +5191,6 @@ __all__ = [
     "review_workspace_item",
     "safe_workspace_relative_path",
     "contained_workspace_path",
+    "validate_workspace_provenance_extensions",
     "workspace_voice_snapshot",
 ]

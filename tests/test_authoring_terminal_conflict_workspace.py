@@ -217,13 +217,13 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             )
             state_path = Path(candidate["source_authorities"][0]["state"])
             original_validator = (
-                terminal_workspace_module._validate_workspace_terminal_conflict_merge
+                terminal_workspace_module.validate_workspace_provenance_extensions
             )
             mutated = False
 
-            def validate_and_mutate(workspace, document):
+            def validate_and_mutate(workspace, document, import_snapshot):
                 nonlocal mutated
-                result = original_validator(workspace, document)
+                result = original_validator(workspace, document, import_snapshot)
                 if not mutated and Path(workspace).name.startswith(
                     ".conflict-merge-staging-"
                 ):
@@ -235,7 +235,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             before = set(workspaces.glob("resume-*"))
             with patch.object(
                 terminal_workspace_module,
-                "_validate_workspace_terminal_conflict_merge",
+                "validate_workspace_provenance_extensions",
                 side_effect=validate_and_mutate,
             ):
                 with self.assertRaisesRegex(AuthoringWorkbenchError, "source changed"):

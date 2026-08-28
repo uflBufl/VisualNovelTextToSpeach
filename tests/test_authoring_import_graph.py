@@ -154,6 +154,11 @@ class AuthoringImportGraphTest(unittest.TestCase):
             "_workspace_queue_voice_overrides",
             "_workspace_run_config_with_policy",
             "_workspace_voice_registry",
+            "_validate_workspace_carry_forward",
+            "_validate_workspace_input_config",
+            "_validate_workspace_offline_fallback_state",
+            "_validate_workspace_outcome_merge",
+            "_validate_workspace_terminal_conflict_merge",
         ):
             with self.subTest(imported_name=imported_name):
                 self.assertEqual(

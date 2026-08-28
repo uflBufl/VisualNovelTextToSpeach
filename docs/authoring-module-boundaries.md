@@ -187,6 +187,13 @@ workbench's historical private helpers delegate with
 `AuthoringWorkbenchError` semantics. The established public
 `FailureReferenceRuntimeBinding` import and pickle identity remain compatible.
 
+Optional workspace provenance layers are validated through
+`validate_workspace_provenance_extensions()`. Its ordered contract covers
+carry-forward, input configuration, offline fallback, outcome merge and
+terminal-conflict merge without exposing the five implementation validators.
+The terminal-conflict publisher uses this composite API; an AST inventory
+prevents production code from importing any of the private validators again.
+
 ## Workspace generation-state boundary
 
 `workspace_state.load_stable_workspace_generation_state()` owns immutable,

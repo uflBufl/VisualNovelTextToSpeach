@@ -55,11 +55,6 @@ from vntts.authoring.terminal_conflict_successor import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    _validate_workspace_carry_forward,
-    _validate_workspace_input_config,
-    _validate_workspace_offline_fallback_state,
-    _validate_workspace_outcome_merge,
-    _validate_workspace_terminal_conflict_merge,
     contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
@@ -67,6 +62,7 @@ from vntts.authoring.workbench import (
     read_workspace_file_bytes,
     require_workspace_sha256,
     safe_workspace_relative_path,
+    validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
 from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
@@ -523,11 +519,7 @@ def merge_terminal_conflict_resolution(
         import_snapshot = load_workspace_json(
             staging / "provenance/import.json", "conflict merge import snapshot"
         )
-        _validate_workspace_carry_forward(staging, workspace)
-        _validate_workspace_input_config(staging, workspace, import_snapshot)
-        _validate_workspace_offline_fallback_state(staging, workspace)
-        _validate_workspace_outcome_merge(staging, workspace)
-        _validate_workspace_terminal_conflict_merge(staging, workspace)
+        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
         try:
             source_lease_context = generation_publication_leases(
                 (
