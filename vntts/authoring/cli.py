@@ -27,7 +27,6 @@ from vntts.authoring.audio_event_review import (
     record_audio_event_review_decision,
 )
 from vntts.authoring.bulk_generation import (
-    LIVE_FALLBACK_REASONS,
     BulkGenerationError,
     authorize_live_fallback,
     generation_failure_repair_plan,
@@ -96,6 +95,7 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicyError,
 )
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.known_role_reuse import (
     KnownRoleReuseError,
     publish_known_role_reuse_binding,

@@ -8,11 +8,11 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
     validate_generation_state_document,
 )
-from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.workspace_foundation import read_regular_file, require_sha256
 
 

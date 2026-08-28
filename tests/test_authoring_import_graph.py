@@ -24,6 +24,9 @@ from vntts.authoring.bulk_generation import (
     sentence_repair_matches_failure,
     snapshot_generation_control_files,
 )
+from vntts.authoring.bulk_generation import (
+    validate_generation_state_document as bulk_validate_generation_state_document,
+)
 from vntts.authoring.failure_reference_binding import (
     FailureReferenceBinding,
     FailureReferenceBindingError,
@@ -33,7 +36,10 @@ from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     write_generated_manifest_from_state,
 )
-from vntts.authoring.generation_state import load_stable_generation_queue
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
+    validate_generation_state_document,
+)
 from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reconciliation import (
     AuthoringReconciliation,
@@ -124,6 +130,29 @@ class AuthoringImportGraphTest(unittest.TestCase):
                 "vntts.authoring.bulk_generation",
             )
         )
+
+    def test_generation_state_semantics_are_owned_by_the_foundation(self):
+        self.assertIs(
+            bulk_validate_generation_state_document,
+            validate_generation_state_document,
+        )
+        graph = _authoring_import_graph()
+        self.assertFalse(
+            _reachable(
+                graph,
+                "vntts.authoring.generation_state",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+        bulk_path = (
+            Path(__file__).parents[1] / "vntts" / "authoring" / "bulk_generation.py"
+        )
+        definitions = {
+            node.name
+            for node in ast.parse(bulk_path.read_text(encoding="utf-8")).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn("_validate_state_document", definitions)
 
     def test_workspace_config_and_voice_runtime_preserve_caller_error_type(self):
         class DomainError(RuntimeError):

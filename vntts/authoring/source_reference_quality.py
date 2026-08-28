@@ -15,9 +15,9 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    validate_generation_state_document,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.generation_state import validate_generation_state_document
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,

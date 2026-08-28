@@ -23,7 +23,6 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
-    validate_generation_state_document,
 )
 from vntts.authoring.cohort_bundle import (
     COHORT_REVIEW_BUNDLE_SCHEMA,
@@ -34,6 +33,7 @@ from vntts.authoring.cohort_bundle import (
     validate_cohort_review_bundle_document,
     validate_cohort_review_progress_document,
 )
+from vntts.authoring.generation_state import validate_generation_state_document
 from vntts.authoring.reconciliation_schema import (
     AUTHORING_RECONCILIATION_SCHEMA,
     AUTHORING_RECONCILIATION_VERSION,

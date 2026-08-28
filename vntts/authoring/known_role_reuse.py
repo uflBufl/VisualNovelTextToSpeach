@@ -23,9 +23,11 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     is_spoken_queue_item,
+)
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
     validate_generation_state_document,
 )
-from vntts.authoring.generation_state import load_stable_generation_queue
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
     _load_authority,

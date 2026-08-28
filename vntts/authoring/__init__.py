@@ -60,7 +60,6 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
     run_bulk_generation,
     sha256_control_path,
-    validate_generation_state_document,
 )
 from vntts.authoring.cohort_bundle import (
     COHORT_REVIEW_BUNDLE_SCHEMA,
@@ -173,6 +172,7 @@ from vntts.authoring.game_pack import (
     FinalGamePackResult,
     publish_final_game_pack,
 )
+from vntts.authoring.generation_state import validate_generation_state_document
 from vntts.authoring.known_role_reuse import (
     KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
     KNOWN_ROLE_REUSE_BUNDLE_VERSION,

@@ -37,7 +37,6 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     process_is_alive,
     validate_authoring_publication_authority,
-    validate_generation_state_document,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -45,7 +44,10 @@ from vntts.authoring.failure_reference_binding_records import (
 )
 from vntts.authoring.generation_lease import process_started_at
 from vntts.authoring.generation_manifest import approved_manifest_entries
-from vntts.authoring.generation_state import load_stable_generation_queue
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
+    validate_generation_state_document,
+)
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,

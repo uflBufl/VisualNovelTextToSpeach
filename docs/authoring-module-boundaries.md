@@ -142,20 +142,21 @@ their historical bulk-generation pickle and introspection identity.
 
 ## Generation state foundation
 
-`generation_state` begins the state boundary with immutable queue loading: it
+`generation_state` owns immutable queue loading: it
 reads queue bytes once, hashes that exact snapshot and parses only a temporary
 copy of those bytes. Bulk generation, live-fallback, known-role reuse and final
 pack publication therefore share one race-resistant public loader.
 
-`bulk_generation._load_stable_queue` remains a compatibility alias. The
-import-graph regression forbids production imports of that private name and
-ensures the state foundation cannot reach the bulk orchestrator. Semantic state
-document validation remains in `bulk_generation` until its complete validation
-closure can move without weakening typed failure, repair, provenance or audio
-event checks. Its current public `validate_generation_state_document()` facade
-validates an isolated copy, and all production callers outside the orchestrator
-use that facade rather than importing `_validate_state_document`. This keeps the
-remaining extraction boundary explicit without exposing a mutable validator.
+The same foundation now owns state schemas, live-fallback wire constants and
+the complete semantic validation closure for typed failures, repair records,
+synthesis provenance, active attempts, generated WAV identity, speech quality,
+audio-event results and terminal-conflict provenance. Validation operates on an
+isolated copy and returns that validated document. Production workflows import
+this API directly; bulk generation re-exports it and retains
+`_load_stable_queue` plus its internal helper aliases for compatibility.
+The import-graph regression proves that `generation_state` cannot reach the
+bulk orchestrator and that the old private validator definition cannot return
+to it.
 
 ## Bulk orchestration public boundary
 
