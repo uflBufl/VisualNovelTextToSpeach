@@ -28,11 +28,11 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _stable_workspace_state,
     contained_workspace_path,
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
@@ -520,8 +520,13 @@ def _load_candidate_workspace(plan, candidate, workspace_directory):
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
-        _queue, state, _state_payload, state_sha256 = _stable_workspace_state(
-            directory, workspace, "missing-voice candidate evidence"
+        _queue, state, _state_payload, state_sha256 = (
+            load_stable_workspace_generation_state(
+                directory,
+                workspace,
+                "missing-voice candidate evidence",
+                error_type=AuthoringWorkbenchError,
+            )
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseReviewError(str(error)) from error

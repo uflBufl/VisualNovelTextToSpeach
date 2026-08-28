@@ -165,6 +165,22 @@ forbids production imports of both historical private names and ensures
 ordering, SHA-256 identity, path containment, selected-path equality and copied
 reference verification are unchanged.
 
+## Workspace generation-state boundary
+
+`workspace_state.load_stable_workspace_generation_state()` owns immutable,
+inactive generation-state capture for workflows that consume an existing
+workspace. It binds the queue snapshot to `seed_inventory`, parses the exact
+state payload once, validates it against that queue through the public semantic
+validator, confirms the state path still has the same SHA-256 and rejects an
+active attempt, generation lease or partial WAV. The exact payload and digest
+are returned for downstream CAS bindings.
+
+Missing-voice reuse and review, voice-repair comparison and terminal-conflict
+publication use this domain API directly. Workbench retains
+`_stable_workspace_state` only as an `AuthoringWorkbenchError` compatibility
+wrapper. The AST regression forbids production imports of the private name and
+ensures `workspace_state` cannot reach workbench.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and

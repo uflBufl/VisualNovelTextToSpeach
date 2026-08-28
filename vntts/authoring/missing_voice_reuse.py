@@ -51,7 +51,6 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _stable_workspace_state,
     contained_workspace_path,
     create_resume_workspace,
     generation_command,
@@ -59,6 +58,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 MISSING_VOICE_REUSE_PLAN_SCHEMA = "vntts.authoring-missing-voice-reuse-plan"
 MISSING_VOICE_REUSE_PLAN_VERSION = 1
@@ -135,8 +135,13 @@ def build_missing_voice_reuse_plan(
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
-        queue, state, _state_payload, state_sha256 = _stable_workspace_state(
-            directory, workspace, "missing-voice reuse plan"
+        queue, state, _state_payload, state_sha256 = (
+            load_stable_workspace_generation_state(
+                directory,
+                workspace,
+                "missing-voice reuse plan",
+                error_type=AuthoringWorkbenchError,
+            )
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
@@ -395,10 +400,11 @@ def prepare_missing_voice_reuse_candidate_workspace(
             load_workspace_authority(source_directory)
         )
         _source_queue, source_state, _source_payload, _source_state_sha256 = (
-            _stable_workspace_state(
+            load_stable_workspace_generation_state(
                 source_directory,
                 source_workspace,
                 "missing-voice reuse source state",
+                error_type=AuthoringWorkbenchError,
             )
         )
         run_config = source_workspace.get("run_config")

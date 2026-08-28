@@ -127,6 +127,7 @@ class AuthoringImportGraphTest(unittest.TestCase):
             "_require_sha256",
             "_safe_relative",
             "_selected_voice_manifest",
+            "_stable_workspace_state",
             "_terminal_review_outcome",
             "_within",
             "_workspace_config_fingerprint",
@@ -151,6 +152,13 @@ class AuthoringImportGraphTest(unittest.TestCase):
             _reachable(
                 _authoring_import_graph(),
                 "vntts.authoring.workspace_config",
+                "vntts.authoring.workbench",
+            )
+        )
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.workspace_state",
                 "vntts.authoring.workbench",
             )
         )

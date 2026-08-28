@@ -34,7 +34,6 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _stable_workspace_state,
     contained_workspace_path,
     create_resume_workspace,
     generation_command,
@@ -43,6 +42,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.speech_backend import get_moss_tts_generation_profile
 
 VOICE_REPAIR_COMPARISON_SCHEMA = "vntts.authoring-voice-repair-comparison-plan"
@@ -105,8 +105,13 @@ def build_voice_repair_comparison_plan(
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
-        queue, state, state_payload, state_sha256 = _stable_workspace_state(
-            directory, workspace, "voice repair comparison"
+        queue, state, state_payload, state_sha256 = (
+            load_stable_workspace_generation_state(
+                directory,
+                workspace,
+                "voice repair comparison",
+                error_type=AuthoringWorkbenchError,
+            )
         )
     except AuthoringWorkbenchError as error:
         raise VoiceRepairComparisonError(str(error)) from error

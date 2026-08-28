@@ -128,6 +128,7 @@ from vntts.authoring.workspace_foundation import (
     require_sha256,
     safe_relative_path,
 )
+from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -4425,33 +4426,12 @@ def _validate_workspace_failure_reference_binding(directory, workspace):
 
 
 def _stable_workspace_state(directory, workspace, label):
-    queue = _load_bound_workspace_queue(directory, workspace)
-    output = directory / "generated-audio"
-    state_path = output / "generation-state.json"
-    payload = _read_file_bytes(state_path, f"{label} generation state")
-    digest = hashlib.sha256(payload).hexdigest()
-    try:
-        parsed = json.loads(payload.decode("utf-8"))
-        validated = load_generation_state(state_path, directory / "queue.jsonl")
-    except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
-        raise AuthoringWorkbenchError(
-            f"Outcome merge {label} state is invalid: {error}"
-        ) from error
-    if parsed != validated or sha256_file(state_path) != digest:
-        raise AuthoringWorkbenchError(
-            f"Outcome merge {label} state changed while it was loaded"
-        )
-    if parsed.get("active") is not None:
-        raise AuthoringWorkbenchError(
-            f"Outcome merge {label} has an active generation attempt"
-        )
-    if (output / ".generation-lease.json").exists():
-        raise AuthoringWorkbenchError(f"Outcome merge {label} has a generation lease")
-    if any(output.rglob("*.partial.wav")):
-        raise AuthoringWorkbenchError(
-            f"Outcome merge {label} has a partial generation artifact"
-        )
-    return queue, parsed, payload, digest
+    return load_stable_workspace_generation_state(
+        directory,
+        workspace,
+        label,
+        error_type=AuthoringWorkbenchError,
+    )
 
 
 def _load_workspace_snapshot(workspace_directory, label):
