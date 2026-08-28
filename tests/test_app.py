@@ -266,12 +266,48 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         tray_application.live_voice_preflight_narrator_button.click()
-        self.application.processEvents()
+        controller.approve_live_narrator_fallbacks.assert_not_called()
+        self.wait_until(lambda: controller.toggle_live.called)
 
         controller.approve_live_narrator_fallbacks.assert_called_once_with(
             ("Selone", "Hotelier")
         )
         self.assertEqual(controller.unresolved_live_speakers.call_count, 2)
+        controller.toggle_live.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_live_preflight_defers_close_until_native_button_event_unwinds(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [
+            ("Mrs. Owen",),
+            ("Mrs. Owen",),
+        ]
+        controller.toggle_live.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.configure_floating_window"):
+            self.assertFalse(tray_application.toggle_live())
+            self.application.processEvents()
+
+        prompt = tray_application.live_voice_preflight_prompt
+        narrator = tray_application.live_voice_preflight_narrator_button
+        QTest.mouseClick(narrator, Qt.MouseButton.LeftButton)
+
+        self.assertIsNone(tray_application.live_voice_preflight_prompt)
+        self.assertIs(tray_application.live_voice_preflight_action_prompt, prompt)
+        self.assertFalse(prompt.isEnabled())
+        controller.approve_live_narrator_fallbacks.assert_not_called()
+        controller.toggle_live.assert_not_called()
+
+        self.wait_until(lambda: controller.approve_live_narrator_fallbacks.called)
+
+        controller.approve_live_narrator_fallbacks.assert_called_once_with(
+            ("Mrs. Owen",)
+        )
         controller.toggle_live.assert_called_once_with()
         tray_application.shutdown()
 
@@ -291,7 +327,9 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray_application.toggle_live())
             self.application.processEvents()
             tray_application.live_voice_preflight_narrator_button.click()
-            self.application.processEvents()
+            self.wait_until(
+                lambda: tray_application.live_voice_preflight_prompt is not None
+            )
 
         controller.approve_live_narrator_fallbacks.assert_not_called()
         controller.toggle_live.assert_not_called()
@@ -314,7 +352,9 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray_application.toggle_live())
             self.application.processEvents()
             tray_application.live_voice_preflight_narrator_button.click()
-            self.application.processEvents()
+            self.wait_until(
+                lambda: "changed" in tray_application.dashboard.status.text()
+            )
 
         controller.approve_live_narrator_fallbacks.assert_not_called()
         controller.toggle_live.assert_not_called()
@@ -477,7 +517,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray_application.toggle_live())
             self.application.processEvents()
             tray_application.live_voice_preflight_assign_button.click()
-            self.application.processEvents()
+            self.wait_until(lambda: open_mapping.called)
 
         open_mapping.assert_called_once_with()
         self.assertEqual(controller.unresolved_live_speakers.call_count, 2)
@@ -503,7 +543,9 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray_application.toggle_live())
             self.application.processEvents()
             tray_application.live_voice_preflight_assign_button.click()
-            self.application.processEvents()
+            self.wait_until(
+                lambda: tray_application.live_voice_preflight_prompt is not None
+            )
 
         open_mapping.assert_called_once_with()
         controller.toggle_live.assert_not_called()

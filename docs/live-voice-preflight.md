@@ -33,6 +33,13 @@ live session, or cancel. Assignment is followed by a fresh scope check; live
 reading starts only after it passes. Narrator approvals expire when that live
 session ends, so a later session must make a new decision.
 
+The list is speaker-level but the gate is line-level: one speaker appears when
+at least one upcoming exact line lacks an assigned voice and every eligible
+source, generated, omission, and backend-compatible explicit-fallback route.
+Other lines for that speaker may already be covered. The decision dialog states
+this explicitly so a mostly pregenerated character does not look wholly
+unconfigured.
+
 The controller enforces the same preflight for every start, including the
 historical command-line hotkey and restarts after modal voice/history windows.
 The tray is the richer decision UI, but direct callers cannot bypass the

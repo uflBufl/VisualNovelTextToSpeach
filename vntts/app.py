@@ -1022,6 +1022,7 @@ class TrayApplication(QObject):
         self.live_voice_preflight_assign_button = None
         self.live_voice_preflight_narrator_button = None
         self.live_voice_preflight_cancel_button = None
+        self.live_voice_preflight_action_prompt = None
         self.pending_live_voice_preflight_speakers = ()
         self.restore_compact_after_calibration = False
         self.dashboard = ControlDashboard(self.settings)
@@ -1368,9 +1369,14 @@ class TrayApplication(QObject):
         if len(speakers) > 8:
             preview = f"{preview}, and {len(speakers) - 8} more"
         prompt.setInformativeText(
-            f"{preview}\n\nAssign distinct voices, explicitly approve the narrator "
-            "for this live session, or cancel. Live reading will not start "
-            "until you decide."
+            f"{preview}\n\nThese upcoming named speakers have at least one line "
+            "with no assigned voice and no eligible original game-audio, "
+            "verified generated, omission, or compatible live-fallback route. "
+            "A speaker may be "
+            "listed even when some of their other lines are already covered.\n\n"
+            "Assign distinct voices, explicitly approve the narrator for this "
+            "live session, or cancel. Live reading will not start until you "
+            "decide."
         )
         assign = prompt.addButton(
             "Assign voices...",
@@ -1400,14 +1406,39 @@ class TrayApplication(QObject):
             return
         prompt.setProperty("vntts_live_voice_preflight_handled", True)
         speakers = self.pending_live_voice_preflight_speakers
+        prompt.setEnabled(False)
+        self.live_voice_preflight_action_prompt = prompt
         if button is self.live_voice_preflight_assign_button:
-            prompt.close()
-            QTimer.singleShot(0, self._review_live_voice_preflight)
+            action = "assign"
         elif button is self.live_voice_preflight_narrator_button:
+            action = "narrator"
+        else:
+            action = "cancel"
+        # QDialogButtonBox continues native mouse-release handling after
+        # emitting clicked(). On macOS, synchronously destroying the last-owned
+        # non-modal dialog here can leave standardButton() with a stale pointer.
+        QTimer.singleShot(
+            0,
+            lambda active_prompt=prompt, selected_action=action, scope=speakers: (
+                self._complete_live_voice_preflight_action(
+                    active_prompt,
+                    selected_action,
+                    scope,
+                )
+            ),
+        )
+
+    def _complete_live_voice_preflight_action(self, prompt, action, speakers):
+        if self._shutting_down or prompt is not self.live_voice_preflight_action_prompt:
+            return
+        self.live_voice_preflight_action_prompt = None
+        if prompt.isVisible():
             prompt.close()
+        if action == "assign":
+            self._review_live_voice_preflight()
+        elif action == "narrator":
             self._start_live_with_preflight(narrator_approval=speakers)
         else:
-            prompt.close()
             self.set_status("Live reading cancelled: character voices need a decision")
 
     def _review_live_voice_preflight(self):
@@ -2358,6 +2389,7 @@ class TrayApplication(QObject):
         self.onboarding_cancel_event.set()
         self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
+        self.live_voice_preflight_action_prompt = None
         if self.live_voice_preflight_prompt is not None:
             self.live_voice_preflight_prompt.setProperty(
                 "vntts_live_voice_preflight_handled",
