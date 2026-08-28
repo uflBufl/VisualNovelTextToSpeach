@@ -28,9 +28,9 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _load_workspace_snapshot,
     _stable_workspace_state,
     contained_workspace_path,
+    load_workspace_authority,
     safe_workspace_relative_path,
 )
 
@@ -517,8 +517,8 @@ def parse_missing_voice_reuse_evidence(values):
 
 def _load_candidate_workspace(plan, candidate, workspace_directory):
     try:
-        directory, workspace, workspace_sha256 = _load_workspace_snapshot(
-            workspace_directory, "missing-voice candidate evidence"
+        directory, workspace, workspace_sha256 = load_workspace_authority(
+            workspace_directory
         )
         _queue, state, _state_payload, state_sha256 = _stable_workspace_state(
             directory, workspace, "missing-voice candidate evidence"

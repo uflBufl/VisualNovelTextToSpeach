@@ -56,7 +56,6 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _copy_workspace_tree_snapshot,
-    _load_workspace_snapshot,
     _stable_workspace_state,
     _validate_workspace_carry_forward,
     _validate_workspace_input_config,
@@ -163,8 +162,8 @@ def merge_terminal_conflict_resolution(
         raise AuthoringWorkbenchError(
             "A neither-acceptable conflict requires a new repair hypothesis"
         )
-    base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
-        base_workspace, "terminal conflict base"
+    base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
+        base_workspace
     )
     if base_document["workspace_id"] != report["primary_workspace_id"]:
         raise AuthoringWorkbenchError(
@@ -246,9 +245,7 @@ def merge_terminal_conflict_resolution(
                 f"Terminal conflict source workspace is unavailable: {queue_id}"
             )
         source_directory, source_document, source_workspace_sha256 = (
-            _load_workspace_snapshot(
-                source_record["workspace"], "terminal conflict source"
-            )
+            load_workspace_authority(source_record["workspace"])
         )
         source_directories.add(source_directory)
         state_path = Path(source["state"]).resolve()

@@ -34,13 +34,13 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _load_workspace_snapshot,
     _stable_workspace_state,
     contained_workspace_path,
     create_resume_workspace,
     generation_command,
     generation_failure_category,
     list_review_items,
+    load_workspace_authority,
     safe_workspace_relative_path,
 )
 from vntts.speech_backend import get_moss_tts_generation_profile
@@ -102,8 +102,8 @@ def build_voice_repair_comparison_plan(
             "Repair comparison requires token-level duration control to stay disabled"
         )
     try:
-        directory, workspace, workspace_sha256 = _load_workspace_snapshot(
-            workspace_directory, "voice repair comparison"
+        directory, workspace, workspace_sha256 = load_workspace_authority(
+            workspace_directory
         )
         queue, state, state_payload, state_sha256 = _stable_workspace_state(
             directory, workspace, "voice repair comparison"
@@ -329,7 +329,7 @@ def prepare_voice_repair_candidate_workspace(
     _require_fresh_plan(document)
     try:
         source_directory, source_workspace, _workspace_sha256 = (
-            _load_workspace_snapshot(source_directory, "voice repair source")
+            load_workspace_authority(source_directory)
         )
         created = create_resume_workspace(
             import_directory,
@@ -371,8 +371,8 @@ def build_voice_repair_candidate_command(
     candidate = _candidate(document, candidate_id)
     _require_fresh_plan(document)
     try:
-        directory, workspace, _workspace_sha256 = _load_workspace_snapshot(
-            workspace_directory, "voice repair candidate"
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
         )
     except AuthoringWorkbenchError as error:
         raise VoiceRepairComparisonError(str(error)) from error

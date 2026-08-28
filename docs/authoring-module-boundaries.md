@@ -74,9 +74,12 @@ public wrappers for path, file, JSON and digest operations; atomic directory
 publication callers use `publication.rename_directory_no_replace` directly.
 All read-only production consumers load complete workspaces through
 `load_workspace_authority()`, which binds the validated document to the exact
-workspace-file SHA-256 snapshot; `_load_workspace` is now workbench-internal
-compatibility only. Callers that need only the directory and document discard
-the returned digest after validation rather than reopening a weaker snapshot.
+workspace-file SHA-256 snapshot; `_load_workspace` and
+`_load_workspace_snapshot` are now workbench-internal compatibility only.
+Callers that need only the directory and document discard the returned digest
+after validation rather than reopening a weaker snapshot. Missing-voice reuse,
+reuse review, voice-repair comparison and terminal-conflict publication retain
+their exact workspace digest bindings through the same public API.
 The AST regression forbids importing the superseded private workbench names,
 while the workbench test suite verifies that compatibility behavior is
 unchanged.

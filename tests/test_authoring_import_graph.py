@@ -121,6 +121,7 @@ class AuthoringImportGraphTest(unittest.TestCase):
         for imported_name in (
             "_load_json",
             "_load_workspace",
+            "_load_workspace_snapshot",
             "_read_file_bytes",
             "_rename_directory_no_replace",
             "_require_sha256",

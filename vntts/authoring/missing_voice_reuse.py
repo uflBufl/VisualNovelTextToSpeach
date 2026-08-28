@@ -51,12 +51,12 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _load_workspace_snapshot,
     _stable_workspace_state,
     contained_workspace_path,
     create_resume_workspace,
     generation_command,
     generation_failure_category,
+    load_workspace_authority,
     safe_workspace_relative_path,
 )
 
@@ -132,8 +132,8 @@ def build_missing_voice_reuse_plan(
         candidate_voice_characters, minimum=1 if target_mode == "failed" else 2
     )
     try:
-        directory, workspace, workspace_sha256 = _load_workspace_snapshot(
-            workspace_directory, "missing-voice reuse plan"
+        directory, workspace, workspace_sha256 = load_workspace_authority(
+            workspace_directory
         )
         queue, state, _state_payload, state_sha256 = _stable_workspace_state(
             directory, workspace, "missing-voice reuse plan"
@@ -392,7 +392,7 @@ def prepare_missing_voice_reuse_candidate_workspace(
     _require_fresh_plan(document)
     try:
         source_directory, source_workspace, _workspace_sha256 = (
-            _load_workspace_snapshot(source_directory, "missing-voice reuse source")
+            load_workspace_authority(source_directory)
         )
         _source_queue, source_state, _source_payload, _source_state_sha256 = (
             _stable_workspace_state(
@@ -457,15 +457,15 @@ def build_missing_voice_reuse_candidate_command(
     candidate = _candidate(document, candidate_id)
     _require_fresh_plan(document)
     try:
-        directory, workspace, _workspace_sha256 = _load_workspace_snapshot(
-            workspace_directory, "missing-voice reuse candidate"
+        directory, workspace, _workspace_sha256 = load_workspace_authority(
+            workspace_directory
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
     source_workspace = Path(document["source"]["workspace"])
     try:
-        _source_directory, source, _source_sha256 = _load_workspace_snapshot(
-            source_workspace, "missing-voice reuse source command"
+        _source_directory, source, _source_sha256 = load_workspace_authority(
+            source_workspace
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
