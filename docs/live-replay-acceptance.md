@@ -102,3 +102,23 @@ controller/UI routing gates covered by focused tests. They do
 not compare Centurion/Paper Heron perceptually. Exact generated-manifest lookup,
 manual-override bypass, corrupt/missing/checksum/metadata fallback and reserved
 prefix behavior are covered by generated-audio tests and the replay matrix.
+
+## Pregenerated playback latency boundary
+
+A 2026-08-29 trace of the current Character Story pack showed that local WAV
+preparation was not the reported post-text delay. Three generated routes reached
+first PCM within 0.8-2.2 ms after their route decision, while five repeated OCR
+runs on the retained 738x128 dialogue crop took 0.33-0.42 s each. The removable
+latency was before routing: after a static dialogue the split capture loop could
+observe a changed fingerprint and still sleep once more on the previous 600 ms
+idle interval before capturing the stability-confirming frame.
+
+The capture loop now caps the next interval at the fast interval immediately
+when the dialogue fingerprint changes. It still requires two stable
+observations, so the optimization does not turn one transient OCR frame into
+speech. Unfocused mode performs no OCR and probes focus at most 500 ms apart,
+instead of allowing the former 1.6 s focus-return delay. Generated-prefix
+resolution searches the current chapter first; a global same-speaker scan is
+retained only when the current chapter has no matching candidate. On the same
+real index this reduced a warm Narrator-prefix lookup from 90-96 ms to
+0.14-0.18 ms (0.9 ms on its first verified-WAV lookup).

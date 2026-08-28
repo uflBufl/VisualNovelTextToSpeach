@@ -756,6 +756,11 @@ class AdaptiveCapturePolicyTest(unittest.TestCase):
         self.assertEqual(policy.observe(None, None, focused=False), 1.8)
         self.assertEqual(policy.observe("Alice", "Welcome", focused=True), 0.1)
 
+    def test_default_unfocused_probe_is_bounded_for_fast_focus_return(self):
+        policy = AdaptiveCapturePolicy(base_interval=0.2)
+
+        self.assertEqual(policy.observe(None, None, focused=False), 0.5)
+
 
 class LiveDialogReaderTest(unittest.TestCase):
     def create_reader(self, **overrides):
@@ -1504,8 +1509,8 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader._run(stop_event)
 
         reader.read_snapshot.assert_not_called()
-        capture_state_changed.assert_called_once_with(False, 0.008)
-        stop_event.wait.assert_called_once_with(0.008)
+        capture_state_changed.assert_called_once_with(False, 0.0025)
+        stop_event.wait.assert_called_once_with(0.0025)
 
     def test_capture_continues_while_speech_is_active(self):
         stop_event = Mock()
@@ -1541,6 +1546,44 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(metrics.captured_frames, 3)
         self.assertEqual(metrics.replaced_frames, 2)
         self.assertEqual(reader.latest_frame, 3)
+
+    def test_changed_fingerprint_bypasses_stale_idle_capture_interval(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, False, True]
+        capture_frame = Mock(side_effect=["same frame", "changed frame"])
+        reader = self.create_reader(
+            interval_seconds=0.2,
+            ocr_executor=Mock(),
+            capture_frame=capture_frame,
+            recognize_frame=Mock(),
+            frame_fingerprint=lambda frame: frame,
+        )
+        reader.latest_frame_fingerprint = "same frame"
+        reader.next_capture_interval = 0.6
+
+        reader._run_capture(stop_event)
+
+        self.assertEqual(
+            stop_event.wait.call_args_list,
+            [call(0.6), call(0.1)],
+        )
+
+    def test_unchanged_fingerprint_preserves_adaptive_idle_interval(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
+        reader = self.create_reader(
+            interval_seconds=0.2,
+            ocr_executor=Mock(),
+            capture_frame=Mock(return_value="same frame"),
+            recognize_frame=Mock(),
+            frame_fingerprint=lambda frame: frame,
+        )
+        reader.latest_frame_fingerprint = "same frame"
+        reader.next_capture_interval = 0.6
+
+        reader._run_capture(stop_event)
+
+        stop_event.wait.assert_called_once_with(0.6)
 
     def test_split_ocr_reuses_unchanged_frame_until_auto_advance(self):
         stop_event = Event()

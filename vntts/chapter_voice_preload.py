@@ -45,14 +45,18 @@ class ChapterVoicePreloader:
         self.lookahead_rows = max(1, int(lookahead_rows))
         self.by_speaker = defaultdict(list)
         self.by_chapter = defaultdict(list)
+        self.by_chapter_speaker = defaultdict(list)
         self.by_exact_dialogue = defaultdict(list)
         self.by_normalized_dialogue = defaultdict(list)
+        self.normalized_text = {}
         self.speaker_names = {}
         for row in self.dialogue:
             speaker_key = _normalize(row.speaker)
             self.by_speaker[speaker_key].append(row)
             self.speaker_names.setdefault(speaker_key, row.speaker)
             self.by_chapter[row.chapter].append(row)
+            self.by_chapter_speaker[(row.chapter, speaker_key)].append(row)
+            self.normalized_text[row] = _normalize(row.text)
             self.by_exact_dialogue[
                 (speaker_key, _normalize_exact_text(row.text))
             ].append(row)
@@ -207,20 +211,11 @@ class ChapterVoicePreloader:
         prefix = _normalize(text)
         if len(prefix) < minimum_characters:
             return None
-        candidates = [
-            row
-            for row in self.by_speaker.get(speaker_key, ())
-            if row.line_id
-            and row.text_sha256
-            and _normalize(row.text).startswith(prefix)
-            and (candidate_filter is None or candidate_filter(row))
-        ]
-        if self.current_match is not None:
-            nearby = [
-                row for row in candidates if row.chapter == self.current_match.chapter
-            ]
-            if nearby:
-                candidates = nearby
+        candidates = self._prefix_candidates(
+            speaker_key,
+            prefix,
+            candidate_filter=candidate_filter,
+        )
         if len(candidates) != 1:
             return None
         selected = candidates[0]
@@ -239,21 +234,42 @@ class ChapterVoicePreloader:
         prefix = _normalize(text)
         if len(prefix) < minimum_characters:
             return False
-        candidates = [
-            row
-            for row in self.by_speaker.get(speaker_key, ())
-            if row.line_id
-            and row.text_sha256
-            and _normalize(row.text).startswith(prefix)
-            and _normalize(row.text) != prefix
-        ]
-        if self.current_match is not None:
-            nearby = [
-                row for row in candidates if row.chapter == self.current_match.chapter
-            ]
-            if nearby:
-                candidates = nearby
+        candidates = self._prefix_candidates(
+            speaker_key,
+            prefix,
+            incomplete_only=True,
+        )
         return len(candidates) == 1
+
+    def _prefix_candidates(
+        self,
+        speaker_key,
+        prefix,
+        *,
+        incomplete_only=False,
+        candidate_filter=None,
+    ):
+        def matches(rows):
+            return [
+                row
+                for row in rows
+                if row.line_id
+                and row.text_sha256
+                and self.normalized_text[row].startswith(prefix)
+                and (not incomplete_only or self.normalized_text[row] != prefix)
+                and (candidate_filter is None or candidate_filter(row))
+            ]
+
+        if self.current_match is not None:
+            nearby = matches(
+                self.by_chapter_speaker.get(
+                    (self.current_match.chapter, speaker_key),
+                    (),
+                )
+            )
+            if nearby:
+                return nearby
+        return matches(self.by_speaker.get(speaker_key, ()))
 
     def canonical_speaker(self, character, *, minimum_similarity=0.86, margin=0.08):
         """Correct a unique, high-confidence OCR drift to a story speaker name."""

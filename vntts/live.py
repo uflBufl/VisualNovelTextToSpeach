@@ -100,7 +100,7 @@ class AdaptiveCapturePolicy:
         self.base_interval = base_interval
         self.fast_interval = fast_interval or max(0.05, base_interval / 2)
         self.idle_interval = idle_interval or min(1.5, base_interval * 3)
-        self.unfocused_interval = unfocused_interval or min(2.5, base_interval * 8)
+        self.unfocused_interval = unfocused_interval or min(0.5, base_interval * 2.5)
         self.unchanged_frames = unchanged_frames
         self.last_observation = None
         self.unchanged_count = 0
@@ -853,6 +853,7 @@ class LiveDialogReader:
                 frame = self.capture_frame()
                 fingerprint = self.frame_fingerprint(frame)
                 with self.pause_condition:
+                    fingerprint_changed = fingerprint != self.latest_frame_fingerprint
                     replaced = self.frame_version > self.processed_frame_version
                     self.latest_frame = frame
                     self.latest_frame_fingerprint = fingerprint
@@ -865,6 +866,12 @@ class LiveDialogReader:
                         last_capture_at=monotonic(),
                     )
                     interval = self.next_capture_interval
+                    if fingerprint_changed:
+                        # The OCR worker updates the adaptive interval after it
+                        # consumes this frame. Do not sleep once more on the
+                        # previous static-dialogue interval before giving the
+                        # stability gate its confirming frame.
+                        interval = min(interval, policy.fast_interval)
                     self.pause_condition.notify_all()
             except Exception as error:
                 self.report_error(error)

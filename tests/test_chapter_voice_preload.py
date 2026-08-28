@@ -6,7 +6,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.chapter_voice_preload import (
+    ChapterDialogue,
+    ChapterMatch,
+    ChapterVoicePreloader,
+)
 
 
 def dialogue_document():
@@ -151,6 +155,63 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertEqual(line.line_id, "test:0")
         self.assertEqual(line.text, "These old ones are enough to carry everyone.")
+
+    def test_unique_prefix_checks_current_chapter_before_global_corpus(self):
+        first = ChapterDialogue(
+            "chapter-1:1",
+            "chapter-1",
+            1,
+            "Narrator",
+            "The shared opening phrase continues here.",
+            "a" * 64,
+        )
+        second = ChapterDialogue(
+            "chapter-2:1",
+            "chapter-2",
+            1,
+            "Narrator",
+            "The shared opening phrase ends differently.",
+            "b" * 64,
+        )
+        preloader = ChapterVoicePreloader((first, second))
+        preloader.current_match = ChapterMatch("chapter-2", 0, 1.0)
+        inspected = []
+
+        line = preloader.resolve_unique_prefix(
+            "Narrator",
+            "The shared opening phrase",
+            candidate_filter=lambda candidate: inspected.append(candidate) or True,
+        )
+
+        self.assertEqual(line, second)
+        self.assertEqual(inspected, [second])
+
+    def test_unique_prefix_keeps_global_fallback_outside_current_chapter(self):
+        current = ChapterDialogue(
+            "chapter-1:1",
+            "chapter-1",
+            1,
+            "Narrator",
+            "An unrelated current line.",
+            "a" * 64,
+        )
+        fallback = ChapterDialogue(
+            "chapter-2:1",
+            "chapter-2",
+            1,
+            "Narrator",
+            "The globally unique fallback line.",
+            "b" * 64,
+        )
+        preloader = ChapterVoicePreloader((current, fallback))
+        preloader.current_match = ChapterMatch("chapter-1", 0, 1.0)
+
+        line = preloader.resolve_unique_prefix(
+            "Narrator",
+            "The globally unique fallback",
+        )
+
+        self.assertEqual(line, fallback)
 
     def test_short_or_ambiguous_prefix_does_not_guess_dialogue(self):
         document = story_index_document()
