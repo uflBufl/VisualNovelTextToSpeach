@@ -582,6 +582,33 @@ same inputs. The resulting `explicit_fallback_merge` ledger remains part of
 workspace identity and is revalidated by later workbench, rebase, cohort and
 terminal-conflict operations.
 
+## Routing exhausted known roles to live Pocket
+
+When a reviewed known-role binding maps a story role to another configured
+voice, unavailable pregeneration must preserve both identities. Publish an
+immutable successor with one exact failed-evidence workspace paired to every
+absent queue ID:
+
+```sh
+uv run vntts-pregenerate known-role-live-fallback BASE_WORKSPACE \
+  --evidence QUEUE_ID FAILED_WORKSPACE \
+  --workspaces-root AUTHORING_WORKSPACES_ROOT
+```
+
+The command validates the current known-role binding, the combined queue voice
+override digest, the immutable import and byte-identical queue. Every base item
+must still be absent; every explicitly paired source must be inactive and
+contain the exact routed failed item without a WAV. Unlisted lines are never
+changed.
+
+The successor embeds each complete failed result and binds the source
+workspace/config/state/item hashes. Its state retains the game speaker and
+declared role while `voice_character` and the schema-v5 runtime decision name
+the selected synthesis voice. Thus an `Aderyn -> Rhiannon` policy announces
+`Aderyn` in role-cue mode but asks live Pocket for `Rhiannon`; it never routes
+through Narrator/Centurion. Publication copies only existing base WAVs, is
+atomic no-replace and is idempotent for identical inputs.
+
 When source/reference discovery and the bounded offline fallback are both
 exhausted, authoring can record an explicit terminal Pocket live-fallback
 decision for one exact queue identity. This does not create or approve a WAV:

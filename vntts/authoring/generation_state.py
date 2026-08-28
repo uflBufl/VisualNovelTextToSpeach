@@ -59,9 +59,13 @@ LIVE_FALLBACK_VERSION = 1
 LIVE_FALLBACK_EVIDENCE_VERSION = 2
 LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION = 3
 LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION = 4
+LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION = 5
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
 MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-missing-voice-live-fallback-evidence"
+)
+KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
+    "vntts.authoring-known-role-live-fallback-evidence"
 )
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
@@ -532,6 +536,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_EVIDENCE_VERSION,
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
+            LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
         }
         else common_fields
     )
@@ -545,6 +550,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_EVIDENCE_VERSION,
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
+            LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
         }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
@@ -564,6 +570,18 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             decision.get("evidence"),
             queue_id,
             decision.get("requested_voice_character"),
+        )
+    elif version == LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION:
+        if decision.get("reason") != LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} known-role fallback reason is invalid"
+            )
+        _validate_known_role_live_fallback_evidence(
+            decision.get("evidence"),
+            queue_id,
+            result.get("requested_voice_character"),
+            decision.get("requested_voice_character"),
+            result.get("voice_character"),
         )
     elif version in {
         LIVE_FALLBACK_EVIDENCE_VERSION,
@@ -592,10 +610,11 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             "line_id": queue_item.line_id,
             "text_sha256": queue_item.text_sha256,
             "speaker": queue_item.speaker,
-            "requested_voice_character": synthesis_character_for_line(
-                queue_item.speaker, queue_item.voice_character
-            ),
         }
+        if version != LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION:
+            expected["requested_voice_character"] = synthesis_character_for_line(
+                queue_item.speaker, queue_item.voice_character
+            )
         if any(decision.get(field) != value for field, value in expected.items()):
             raise BulkGenerationError(
                 f"State item {queue_id!r} live fallback identity changed"
@@ -665,6 +684,70 @@ def _validate_missing_voice_live_fallback_evidence(
         _required_text(
             evidence.get(field),
             f"State item {queue_id!r} missing-voice fallback {field}",
+        )
+
+
+def _validate_known_role_live_fallback_evidence(
+    evidence,
+    queue_id,
+    source_character,
+    requested_synthesis_character,
+    effective_synthesis_character,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "batch_id",
+        "queue_id",
+        "voice_manifest_sha256",
+        "route_binding_sha256",
+        "queue_voice_overrides_sha256",
+        "source_character",
+        "synthesis_character",
+        "evidence_workspace_id",
+        "evidence_workspace_sha256",
+        "evidence_state_sha256",
+        "evidence_item_sha256",
+        "evidence_item",
+    }
+    item = evidence.get("evidence_item") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema") != KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("source_character") != source_character
+        or evidence.get("synthesis_character") != requested_synthesis_character
+        or evidence.get("synthesis_character") != effective_synthesis_character
+        or not isinstance(item, dict)
+        or item.get("status") != "failed"
+        or canonical_document_sha256(item) != evidence.get("evidence_item_sha256")
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} known-role fallback evidence is malformed"
+        )
+    for field in (
+        "batch_id",
+        "voice_manifest_sha256",
+        "route_binding_sha256",
+        "queue_voice_overrides_sha256",
+        "evidence_workspace_sha256",
+        "evidence_state_sha256",
+        "evidence_item_sha256",
+    ):
+        _required_sha256(
+            evidence.get(field),
+            f"State item {queue_id!r} known-role fallback {field}",
+        )
+    for field in (
+        "source_character",
+        "synthesis_character",
+        "evidence_workspace_id",
+    ):
+        _required_text(
+            evidence.get(field),
+            f"State item {queue_id!r} known-role fallback {field}",
         )
 
 
@@ -1584,6 +1667,7 @@ __all__ = [
     "LEGACY_STATE_VERSION",
     "LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "LIVE_FALLBACK_EVIDENCE_VERSION",
+    "LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION",
     "LIVE_FALLBACK_HYPOTHESES_EXHAUSTED",
     "LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION",
     "LIVE_FALLBACK_REASONS",
@@ -1591,6 +1675,7 @@ __all__ = [
     "LIVE_FALLBACK_SCHEMA",
     "LIVE_FALLBACK_VERSION",
     "MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA",
+    "KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "STATE_SCHEMA",
     "STATE_VERSION",
     "contained_state_path",

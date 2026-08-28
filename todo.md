@@ -35,21 +35,6 @@ and Dobharchú results but only nine Aderyn approvals, while
 `...-af9b4fb0bb4a451c` contains the reviewed Aderyn history. Do not regenerate
 or repeat cohort review merely to combine them.
 
-- [ ] Publish one checksum-bound reconciliation over exact named authorities:
-      preserve all 68 approved and 24 rejected Aderyn WAVs from
-      `...-af9b4fb0bb4a451c`, the approved Poacher II and two approved
-      Dobharchú `534705` WAVs from `...-2624f64ea2773d6b`, and the three
-      standalone Narrator live-fallback decisions plus five rejected-Dobharchú
-      fallback ledgers from `...-a2b299862a4c4483`. The composition must report
-      zero conflicts, preserve every source hash, retain the exact queue hash
-      and be idempotent under no-replace publication. Add the currently missing
-      dedicated fallback-composition boundary: it must accept only explicit
-      queue IDs, validate the complete source live-fallback item and its
-      embedded evidence, require a matching immutable import and byte-identical
-      queue, reject terminal/conflicting base items, copy no unrelated outcome,
-      bind base/source state and item hashes in a no-replace successor ledger,
-      rebuild the approved-only manifest and prove idempotence and tamper
-      rejection in focused tests.
 - [ ] Terminalize the 21 carried Aderyn failures from their deeper branch
       authorities, never from the merged successor's generic projection. Carry
       the already selected checksum-bound `314606:65` inline-pause result
@@ -58,7 +43,16 @@ or repeat cohort review merely to combine them.
       `Rhiannon` and whose audible role announcement is `Aderyn`;
       Centurion/Narrator is forbidden. Preserve the five exhausted Pocket
       failures, two failed inline-pause hypotheses and 13 rejected/blocked
-      alternative-reference hypotheses as immutable negative evidence.
+      alternative-reference hypotheses as immutable negative evidence. Add an
+      exact known-role fallback successor command for the 20 unavailable lines:
+      validate the current `Aderyn -> Rhiannon` binding and combined override
+      digest, require one explicitly paired inactive failed-evidence workspace
+      per queue ID with the same import and byte-identical queue, embed every
+      source workspace/state/item hash and failed item, publish no WAV, retain
+      `speaker=Aderyn` with effective `voice_character=Rhiannon`, and prove
+      no-replace idempotence plus route/evidence tamper rejection. Keep
+      `314606:65` outside this batch because its heard hypothesis selection is
+      not yet terminal audio approval.
 - [ ] Resolve the seven remaining non-verbal events without pronouncing their
       literal markup: Aderyn `*whimper*` and `*yelp*`, Narrator `*pop*`, three
       `*bang*` lines and `*buzzzzz*`. Prefer a checksum-bound installed or

@@ -806,6 +806,7 @@ def create_failure_reference_workspace(
             base_document.get("config_rebase"),
             base_document.get("audio_event_composition"),
             base_document.get("explicit_fallback_merge"),
+            base_document.get("known_role_live_fallback"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1005,6 +1006,7 @@ def create_audio_event_composition_workspace(
             base_document.get("config_rebase"),
             composition_config,
             base_document.get("explicit_fallback_merge"),
+            base_document.get("known_role_live_fallback"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1425,6 +1427,7 @@ def _merge_workspace_outcomes(
         base_document.get("config_rebase"),
         base_document.get("audio_event_composition"),
         base_document.get("explicit_fallback_merge"),
+        base_document.get("known_role_live_fallback"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -3553,6 +3556,10 @@ def _load_workspace(workspace_directory):
     if explicit_fallback_merge is not None:
         module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
         module.validate_explicit_fallback_merge_workspace(directory, workspace)
+    known_role_live_fallback = workspace.get("known_role_live_fallback")
+    if known_role_live_fallback is not None:
+        module = importlib.import_module("vntts.authoring.known_role_live_fallback")
+        module.validate_known_role_live_fallback_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3566,6 +3573,7 @@ def _load_workspace(workspace_directory):
         config_rebase,
         workspace.get("audio_event_composition"),
         explicit_fallback_merge,
+        known_role_live_fallback,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3800,6 +3808,9 @@ def validate_workspace_provenance_extensions(directory, workspace, import_snapsh
     if workspace.get("explicit_fallback_merge") is not None:
         module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
         module.validate_explicit_fallback_merge_workspace(directory, workspace)
+    if workspace.get("known_role_live_fallback") is not None:
+        module = importlib.import_module("vntts.authoring.known_role_live_fallback")
+        module.validate_known_role_live_fallback_workspace(directory, workspace)
 
 
 def _validate_workspace_carry_forward(directory, workspace):

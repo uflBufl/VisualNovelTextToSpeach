@@ -97,6 +97,9 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
+from vntts.authoring.known_role_live_fallback import (
+    create_known_role_live_fallback_workspace,
+)
 from vntts.authoring.known_role_reuse import (
     KnownRoleReuseError,
     publish_known_role_reuse_binding,
@@ -542,6 +545,21 @@ def create_parser():
         "--queue-id", action="append", dest="queue_ids", required=True
     )
     fallback_merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    known_role_fallback = subparsers.add_parser(
+        "known-role-live-fallback",
+        help="Route exact exhausted lines to a bound known-role Pocket voice",
+    )
+    known_role_fallback.add_argument("base_workspace", type=Path)
+    known_role_fallback.add_argument(
+        "--evidence",
+        action="append",
+        nargs=2,
+        metavar=("QUEUE_ID", "FAILED_WORKSPACE"),
+        required=True,
+    )
+    known_role_fallback.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1478,6 +1496,24 @@ def main(argv=None):
                 arguments.base_workspace,
                 arguments.source_workspace,
                 arguments.queue_ids,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "known-role-live-fallback":
+            result = create_known_role_live_fallback_workspace(
+                arguments.base_workspace,
+                arguments.evidence,
                 arguments.workspaces_root,
             )
             print(

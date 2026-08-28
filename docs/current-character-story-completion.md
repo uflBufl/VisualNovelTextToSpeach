@@ -1528,3 +1528,40 @@ with the WAV SHA-256 values above. Poacher II remains approved with WAV SHA-256
 `051889ddc892a41758b1cad9b2970e3c27b7d5c04a22f1dd3b43f2a113ab9337`,
 all other item documents are unchanged, no generation is active, and the
 approved-only manifest contains 412 entries.
+
+## Aderyn and explicit-fallback composition checkpoint, 2026-08-28
+
+Reconciliation
+`current-character-story-20260828-aderyn-terminal-composition-v1.json`, report
+ID `1713a4a2a84df9277a8aa86aca10cd7be8dc2a33ed236699aca179b029d6fee6`,
+was built with `...-2624f64ea2773d6b` as primary and only the contained adult
+and child Aderyn review bundles as secondary authority. It reported 83 exact
+terminal merges, 21 generation-ready but unselected Aderyn lines, three
+explicit-fallback actions and zero conflicts. The terminal merge successor is
+`resume-395a5e5eec0327a3a793b66d-f3c1d02acde8308b`.
+
+The three standalone Narrator decisions could not be passed through terminal
+WAV reconciliation because an explicit live fallback intentionally has no WAV.
+The dedicated `merge-explicit-fallbacks` boundary therefore composed only
+these exact queue IDs from `...-a2b299862a4c4483`:
+
+- `reverse1999:314606:43:09977e2b04515b66`;
+- `reverse1999:314606:6:3511125b2e41a19f`;
+- `reverse1999:314608:58:c3e23840e6ecc840`.
+
+The immutable successor is
+`resume-395a5e5eec0327a3a793b66d-2318390364c83cb8`. Its workspace SHA-256 is
+`e123bde4199f0597c2b09e48963fea348959a1eac55b567ee18efeae340fe838` and
+state SHA-256 is
+`cd0630881f5c37a39de18092e2852c607154f3a3551a3e9732293f7248491b8e`.
+It contains 471 approved WAVs, 90 rejected generated records, eight explicit
+live fallbacks, zero failed records and no active generation. The eight
+fallbacks are the five already composed Dobharchú decisions plus the three
+named Narrator decisions. Repeating the exact merge returned the same
+directory with `created=false`; the base and source state hashes remained
+`9b320f972106f9ac46f33133cb7b6142a2de603da53c204eaa0ed82cbedb4ff6`
+and `04a59cc5baf0884abe102489fda8a794db9bb334ac0f950631af440d21548434`.
+
+This checkpoint still has 21 absent Aderyn speech items and seven typed
+non-verbal events. It is not a publishable complete pack until those exact
+identities receive supported terminal authorities.
