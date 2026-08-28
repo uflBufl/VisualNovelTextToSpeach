@@ -42,7 +42,14 @@ or repeat cohort review merely to combine them.
       standalone Narrator live-fallback decisions plus five rejected-Dobharchú
       fallback ledgers from `...-a2b299862a4c4483`. The composition must report
       zero conflicts, preserve every source hash, retain the exact queue hash
-      and be idempotent under no-replace publication.
+      and be idempotent under no-replace publication. Add the currently missing
+      dedicated fallback-composition boundary: it must accept only explicit
+      queue IDs, validate the complete source live-fallback item and its
+      embedded evidence, require a matching immutable import and byte-identical
+      queue, reject terminal/conflicting base items, copy no unrelated outcome,
+      bind base/source state and item hashes in a no-replace successor ledger,
+      rebuild the approved-only manifest and prove idempotence and tamper
+      rejection in focused tests.
 - [ ] Terminalize the 21 carried Aderyn failures from their deeper branch
       authorities, never from the merged successor's generic projection. Carry
       the already selected checksum-bound `314606:65` inline-pause result

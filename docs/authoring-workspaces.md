@@ -554,6 +554,34 @@ publication is atomic no-replace, and repeating the same report is idempotent.
 Human review decisions must already be terminal before rebuilding a new report;
 the merge command never infers approval from observations or a prior TODO.
 
+## Merging explicit live-fallback decisions
+
+Explicit live fallbacks have no WAV and are deliberately excluded from
+`merge-reconciled-outcomes`. Compose only named standalone decisions with the
+separate exact-ID command:
+
+```sh
+uv run vntts-pregenerate merge-explicit-fallbacks BASE_WORKSPACE \
+  SOURCE_WORKSPACE \
+  --queue-id QUEUE_ID \
+  --workspaces-root AUTHORING_WORKSPACES_ROOT
+```
+
+The base and source must share the same immutable import and byte-identical
+queue. Every selected source item must validate as a complete standalone
+`live_fallback/live_fallback` decision, including its embedded evidence; an
+absent or failed base item may be replaced, but pending review, approved,
+rejected and existing fallback items fail closed. The command never sweeps
+unlisted source outcomes.
+
+The config-addressed successor binds the base and source workspace, config and
+state digests, the queue digest, each base/source item digest and each fallback
+decision digest. It preserves unrelated base items, rebuilds the approved-only
+manifest, publishes atomically with no replacement and is idempotent for the
+same inputs. The resulting `explicit_fallback_merge` ledger remains part of
+workspace identity and is revalidated by later workbench, rebase, cohort and
+terminal-conflict operations.
+
 When source/reference discovery and the bounded offline fallback are both
 exhausted, authoring can record an explicit terminal Pocket live-fallback
 decision for one exact queue identity. This does not create or approve a WAV:

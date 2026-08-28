@@ -66,6 +66,7 @@ from vntts.authoring.experimental_composite_voice import (
     ExperimentalCompositeVoiceError,
     publish_experimental_composite_voice_input,
 )
+from vntts.authoring.explicit_fallback_merge import merge_explicit_live_fallbacks
 from vntts.authoring.failed_control_carry import (
     FailedControlCarryError,
     carry_failed_controls,
@@ -529,6 +530,18 @@ def create_parser():
     reconciled_merge.add_argument("base_workspace", type=Path)
     reconciled_merge.add_argument("reconciliation", type=Path)
     reconciled_merge.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    fallback_merge = subparsers.add_parser(
+        "merge-explicit-fallbacks",
+        help="Compose exact standalone live-fallback decisions into a successor",
+    )
+    fallback_merge.add_argument("base_workspace", type=Path)
+    fallback_merge.add_argument("source_workspace", type=Path)
+    fallback_merge.add_argument(
+        "--queue-id", action="append", dest="queue_ids", required=True
+    )
+    fallback_merge.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1446,6 +1459,25 @@ def main(argv=None):
             result = merge_reconciled_terminal_outcomes(
                 arguments.base_workspace,
                 arguments.reconciliation,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "merge-explicit-fallbacks":
+            result = merge_explicit_live_fallbacks(
+                arguments.base_workspace,
+                arguments.source_workspace,
+                arguments.queue_ids,
                 arguments.workspaces_root,
             )
             print(

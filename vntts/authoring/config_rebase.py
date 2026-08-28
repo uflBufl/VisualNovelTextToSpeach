@@ -357,6 +357,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 target_document.get("terminal_conflict_merge"),
                 config_rebase=rebase,
                 audio_event_composition=audio_event_composition,
+                explicit_fallback_merge=target_document.get(
+                    "explicit_fallback_merge"
+                ),
             )
             workspace_id = (
                 "resume-"

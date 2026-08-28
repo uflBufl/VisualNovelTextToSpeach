@@ -392,6 +392,7 @@ def merge_terminal_conflict_resolution(
         merge,
         base_document.get("config_rebase"),
         base_document.get("audio_event_composition"),
+        base_document.get("explicit_fallback_merge"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

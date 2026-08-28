@@ -805,6 +805,7 @@ def create_failure_reference_workspace(
             base_document.get("terminal_conflict_merge"),
             base_document.get("config_rebase"),
             base_document.get("audio_event_composition"),
+            base_document.get("explicit_fallback_merge"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1003,6 +1004,7 @@ def create_audio_event_composition_workspace(
             base_document.get("terminal_conflict_merge"),
             base_document.get("config_rebase"),
             composition_config,
+            base_document.get("explicit_fallback_merge"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1422,6 +1424,7 @@ def _merge_workspace_outcomes(
         base_document.get("terminal_conflict_merge"),
         base_document.get("config_rebase"),
         base_document.get("audio_event_composition"),
+        base_document.get("explicit_fallback_merge"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1539,6 +1542,7 @@ def _merge_workspace_outcomes(
         if workspace.get("config_rebase") is not None:
             module = importlib.import_module("vntts.authoring.config_rebase")
             module.validate_config_rebase_workspace(staging, workspace, target_state)
+
         try:
             source_directories = (base_directory, *source_values)
             with generation_publication_leases(
@@ -3545,6 +3549,10 @@ def _load_workspace(workspace_directory):
     if config_rebase is not None:
         module = importlib.import_module("vntts.authoring.config_rebase")
         module.validate_config_rebase_workspace(directory, workspace)
+    explicit_fallback_merge = workspace.get("explicit_fallback_merge")
+    if explicit_fallback_merge is not None:
+        module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
+        module.validate_explicit_fallback_merge_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3557,6 +3565,7 @@ def _load_workspace(workspace_directory):
         workspace.get("terminal_conflict_merge"),
         config_rebase,
         workspace.get("audio_event_composition"),
+        explicit_fallback_merge,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3788,6 +3797,9 @@ def validate_workspace_provenance_extensions(directory, workspace, import_snapsh
     _validate_workspace_offline_fallback_state(directory, workspace)
     _validate_workspace_outcome_merge(directory, workspace)
     _validate_workspace_terminal_conflict_merge(directory, workspace)
+    if workspace.get("explicit_fallback_merge") is not None:
+        module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
+        module.validate_explicit_fallback_merge_workspace(directory, workspace)
 
 
 def _validate_workspace_carry_forward(directory, workspace):
