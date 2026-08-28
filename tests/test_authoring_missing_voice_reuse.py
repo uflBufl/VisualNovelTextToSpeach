@@ -33,13 +33,20 @@ from vntts.authoring.workbench import (
 
 
 class AuthoringMissingVoiceReuseTest(unittest.TestCase):
-    def create_workspace(self, root):
+    def create_workspace(self, root, *, text=None, missing_voice_policy=None):
         fixture = write_legacy_fixture(root / "legacy")
         queue = VoiceGenerationQueue.load(fixture["queue"])
         item = queue.items[0]
         record = item.to_record()
         record["speaker"] = "Aderyn"
         record["voice_character"] = "Aderyn"
+        if text is not None:
+            import hashlib
+
+            record["text"] = text
+            record["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            record["queue_id"] = f"{record['line_id']}:{record['text_sha256'][:16]}"
+            fixture["queue_id"] = record["queue_id"]
         write_voice_generation_queue(fixture["queue"], queue.metadata, [record])
         queue_sha256 = sha256_file(fixture["queue"])
 
@@ -77,8 +84,8 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                 {
                     "record_type": "line",
                     "line_id": item.line_id,
-                    "text_sha256": item.text_sha256,
-                    "text": item.text,
+                    "text_sha256": record["text_sha256"],
+                    "text": record["text"],
                     "speaker": "Aderyn",
                     "voice_character": "Aderyn",
                     "kind": "dialogue",
@@ -128,6 +135,7 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             model="model",
             generation_profile="stable",
             narrator_character="Centurion",
+            missing_voice_policy=missing_voice_policy,
         )
         return fixture, imported, workspace.directory
 
@@ -356,6 +364,64 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                     candidate_voice_characters=("Centurion",),
                     failed_queue_ids=("missing-queue-id",),
                 )
+
+    def test_inline_pause_candidate_binds_prompt_and_carries_exact_control(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, workspace = self.create_workspace(
+                root,
+                text="What happened? You're hurt.",
+                missing_voice_policy={
+                    "schema_version": 1,
+                    "mode": "narrator_roles",
+                    "roles": ["Aderyn"],
+                },
+            )
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            source_item = {
+                "status": "failed",
+                "attempts": 1,
+                "last_error": "Generated WAV failed speech-silence validation",
+            }
+            state["items"][fixture["queue_id"]] = source_item
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_missing_voice_reuse_plan(
+                workspace,
+                "Aderyn",
+                cohorts={"failed": ("314601.png",)},
+                candidate_voice_characters=("Centurion",),
+                failed_queue_ids=(fixture["queue_id"],),
+                inline_pause_ms=180,
+            )
+            candidate = plan.document["candidates"][0]
+            prepared = prepare_missing_voice_reuse_candidate_workspace(
+                plan,
+                candidate["candidate_id"],
+                imported,
+                root / "inputs",
+                root / "candidate-workspaces",
+            )
+            command = build_missing_voice_reuse_candidate_command(
+                plan, candidate["candidate_id"], prepared.workspace_directory
+            )
+            carried = json.loads(
+                (
+                    prepared.workspace_directory
+                    / "generated-audio/generation-state.json"
+                ).read_text(encoding="utf-8")
+            )["items"][fixture["queue_id"]]
+
+        hypothesis = candidate["render_hypothesis"]
+        self.assertEqual(plan.document["candidate_mode"], "inline_pause_marker")
+        self.assertEqual(hypothesis["pause_ms"], 180)
+        self.assertEqual(hypothesis["prompts"][0]["marker_count"], 1)
+        self.assertEqual(carried, source_item)
+        self.assertEqual(
+            command[command.index("--inline-pause-failed") + 1],
+            fixture["queue_id"],
+        )
+        self.assertEqual(command[command.index("--queue-id") + 1], fixture["queue_id"])
 
     def test_cli_publishes_single_candidate_failed_control_plan(self):
         with TemporaryDirectory() as directory:

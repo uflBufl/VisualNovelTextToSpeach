@@ -1429,3 +1429,42 @@ These decisions remain workspace authority, not a final game-pack publication.
 Changing Narrator configuration must preserve them only through an explicit
 per-item control-equivalence check; a new workspace may not silently discard or
 reinterpret the completed Rhiannon review.
+
+## Comparison-only composite voices and failed controls
+
+`vntts-pregenerate experimental-composite-voice-input` publishes a
+self-contained, no-route voice-manifest input for an exact-bank composite. The
+publisher validates the composite ledger, every component clip, the composite
+WAV, its evaluation and its self-contained quality review. It accepts this
+path only when the exact quality decision is `needs_sample`, records that fact
+as non-production authority, copies all predecessor references and proves that
+the queue-override checksum is unchanged. The new voice may be named as a
+candidate by an explicit comparison plan; it is not reachable during ordinary
+generation.
+
+`vntts-pregenerate carry-failed-controls SOURCE TARGET --queue-id ID` is the
+narrow bridge between an old failed route and an additive comparison config.
+It requires the same immutable import, byte-identical queues, inactive states,
+an exact failed source item without a published WAV and identical effective
+voice/reference hashes in both workspaces. It copies the source item byte for
+byte, publishes `generated-audio/failed-control-carry.json`, and adds neither a
+WAV nor an attempt. A different target item, changed route, source mutation or
+changed report fails closed. This command is separate from config rebase,
+which intentionally carries human-terminal audio outcomes only.
+
+An exact failed-control reuse plan may add `--inline-pause-ms N`. That option
+changes candidate identity from voice-only to an `inline_pause_marker` render
+hypothesis containing each source text SHA-256, canonical derived prompt
+SHA-256, marker count and pause duration. Candidate preparation carries the
+exact failed item into a fresh workspace and installs only the matching repair
+policy. Candidate command validation requires one exact queue ID and matching
+inline-pause ID, with no regeneration flag. Review evidence is accepted only
+when the generated or failed result repeats the bound prompt identity.
+
+Voice-binding import is forbidden for render-hypothesis plans. After a complete
+blind decision, use
+`vntts-pregenerate failed-prompt-hypothesis-selection PLAN SESSION OUTPUT`.
+The no-replace output records the selected hypothesis or `keep_unresolved`,
+source failed-item hashes, review/key hashes and exact reference hashes. Its
+authority explicitly cannot mutate a manifest or generation state and cannot
+approve speech; any later audio approval remains a separate human gate.

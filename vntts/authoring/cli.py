@@ -63,6 +63,18 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.authoring.experimental_composite_voice import (
+    ExperimentalCompositeVoiceError,
+    publish_experimental_composite_voice_input,
+)
+from vntts.authoring.failed_control_carry import (
+    FailedControlCarryError,
+    carry_failed_controls,
+)
+from vntts.authoring.failed_prompt_hypothesis import (
+    FailedPromptHypothesisError,
+    publish_failed_prompt_hypothesis_selection,
+)
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
     publish_failure_reference_audit,
@@ -510,6 +522,31 @@ def create_parser():
     config_rebase.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
+    experimental_composite = subparsers.add_parser(
+        "experimental-composite-voice-input",
+        help="Publish a comparison-only exact-bank composite manifest voice",
+    )
+    experimental_composite.add_argument("source_manifest", type=Path)
+    experimental_composite.add_argument("composite_directory", type=Path)
+    experimental_composite.add_argument("quality_review", type=Path)
+    experimental_composite.add_argument("voice_character")
+    experimental_composite.add_argument("output_directory", type=Path)
+    failed_control_carry = subparsers.add_parser(
+        "carry-failed-controls",
+        help="Carry exact non-playable failures onto an additive workspace config",
+    )
+    failed_control_carry.add_argument("source_workspace", type=Path)
+    failed_control_carry.add_argument("target_workspace", type=Path)
+    failed_control_carry.add_argument(
+        "--queue-id", action="append", required=True, dest="queue_ids"
+    )
+    failed_prompt_selection = subparsers.add_parser(
+        "failed-prompt-hypothesis-selection",
+        help="Import a completed prompt comparison without approving speech",
+    )
+    failed_prompt_selection.add_argument("plan", type=Path)
+    failed_prompt_selection.add_argument("session", type=Path)
+    failed_prompt_selection.add_argument("output", type=Path)
     terminal_resolution = subparsers.add_parser(
         "terminal-conflict-resolution",
         help="Publish immutable completed terminal-conflict decisions",
@@ -896,6 +933,14 @@ def create_parser():
         help=(
             "Switch to exact failed-control mode and name one failed queue ID; "
             "repeat for additional targets"
+        ),
+    )
+    missing_voice_reuse.add_argument(
+        "--inline-pause-ms",
+        type=int,
+        help=(
+            "Bind each failed-control candidate to the canonical MOSS inline-pause "
+            "prompt at this exact duration"
         ),
     )
     missing_voice_reuse.add_argument("--output", type=Path, required=True)
@@ -1366,6 +1411,34 @@ def main(argv=None):
                     sort_keys=True,
                 )
             )
+            return 0
+        if arguments.command == "experimental-composite-voice-input":
+            result = publish_experimental_composite_voice_input(
+                arguments.source_manifest,
+                arguments.composite_directory,
+                arguments.quality_review,
+                arguments.voice_character,
+                arguments.output_directory,
+            )
+            print(
+                json.dumps(
+                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if arguments.command == "carry-failed-controls":
+            result = carry_failed_controls(
+                arguments.source_workspace,
+                arguments.target_workspace,
+                arguments.queue_ids,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
+        if arguments.command == "failed-prompt-hypothesis-selection":
+            result = publish_failed_prompt_hypothesis_selection(
+                arguments.plan, arguments.session, arguments.output
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
         if arguments.command == "terminal-conflict-resolution":
             result = publish_terminal_conflict_resolution(
@@ -2000,6 +2073,7 @@ def main(argv=None):
                 cohorts=parse_cohort_arguments(arguments.cohort),
                 candidate_voice_characters=tuple(arguments.candidate_voice),
                 failed_queue_ids=arguments.failed_queue_id,
+                inline_pause_ms=arguments.inline_pause_ms,
             )
             write_missing_voice_reuse_plan(plan, arguments.output)
             print(
@@ -2465,10 +2539,13 @@ def main(argv=None):
         BulkGenerationError,
         CohortReviewError,
         DeliveryAnnotationError,
+        ExperimentalCompositeVoiceError,
         FinalGamePackError,
         FailureRegenerationError,
         FailureReferenceAuditError,
         FailureReferenceBindingError,
+        FailedControlCarryError,
+        FailedPromptHypothesisError,
         LegacyAuthoringImportError,
         ListeningImportError,
         MissingVoiceReuseError,

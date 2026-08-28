@@ -111,6 +111,7 @@ def build_missing_voice_reuse_review(
                 "voice_character": candidate["voice_character"],
                 "speaker": candidate["speaker"],
                 "ordered_references": copy.deepcopy(candidate["ordered_references"]),
+                "render_hypothesis": copy.deepcopy(candidate.get("render_hypothesis")),
                 "workspaces": [snapshot["authority"] for snapshot in snapshots],
             }
         )
@@ -430,6 +431,8 @@ def _load_candidate_workspace(plan, candidate, workspace_directory):
         or binding.get("plan_id") != plan["plan_id"]
         or binding.get("candidate_id") != candidate["candidate_id"]
         or binding.get("candidate_voice_character") != candidate["voice_character"]
+        or binding.get("candidate_render_hypothesis")
+        != candidate.get("render_hypothesis")
         or set(binding.get("queue_voice_overrides", {}))
         != set(plan["comparison_sample_queue_ids"])
     ):
@@ -471,6 +474,7 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 raise MissingVoiceReuseReviewError(
                     "Candidate outcome has changed synthesis voice authority"
                 )
+            _validate_render_hypothesis_outcome(candidate, queue_id, item)
             outcome = {
                 "status": item["status"],
                 "workspace": snapshot["authority"],
@@ -547,6 +551,27 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "outcomes": outcomes,
             }
     return evidence
+
+
+def _validate_render_hypothesis_outcome(candidate, queue_id, item):
+    hypothesis = candidate.get("render_hypothesis")
+    if hypothesis is None:
+        return
+    prompts = {prompt["queue_id"]: prompt for prompt in hypothesis.get("prompts", [])}
+    prompt = prompts.get(queue_id)
+    repair = item.get("failure_repair")
+    if (
+        prompt is None
+        or not isinstance(repair, dict)
+        or repair.get("strategy") != hypothesis.get("strategy")
+        or repair.get("pause_ms") != hypothesis.get("pause_ms")
+        or repair.get("marker_count") != prompt.get("marker_count")
+        or repair.get("derived_prompt_sha256") != prompt.get("derived_prompt_sha256")
+        or item.get("synthesis_text_sha256") != prompt.get("derived_prompt_sha256")
+    ):
+        raise MissingVoiceReuseReviewError(
+            "Candidate outcome changed the exact render hypothesis"
+        )
 
 
 def _validate_public_matrix(root, bundle, key):

@@ -28,6 +28,15 @@ from vntts.authoring.cohort_review import (
     _write_document_no_replace,
 )
 from vntts.authoring.config_rebase import rebase_workspace_config
+from vntts.authoring.failed_control_carry import (
+    FailedControlCarryError,
+    carry_failed_controls,
+)
+from vntts.authoring.failure_repair import (
+    INLINE_PAUSE_MARKER,
+    FailureRepairPolicy,
+    inline_sentence_pause_prompt,
+)
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
     MISSING_VOICE_REUSE_BINDING_SCHEMA,
@@ -100,6 +109,7 @@ def build_missing_voice_reuse_plan(
     cohorts,
     candidate_voice_characters,
     failed_queue_ids=None,
+    inline_pause_ms=None,
 ):
     """Plan a small representative comparison without binding or rendering lines.
 
@@ -111,6 +121,10 @@ def build_missing_voice_reuse_plan(
     character = _text(character, "Missing-voice character")
     cohort_rules = _cohort_rules(cohorts)
     target_mode = "failed" if failed_queue_ids is not None else "missing"
+    if inline_pause_ms is not None and target_mode != "failed":
+        raise MissingVoiceReuseError(
+            "Inline-pause hypotheses require exact failed-control mode"
+        )
     requested_failed_ids = _failed_queue_ids(failed_queue_ids)
     requested_candidates = _candidate_names(
         candidate_voice_characters, minimum=1 if target_mode == "failed" else 2
@@ -271,6 +285,10 @@ def build_missing_voice_reuse_plan(
             "Missing-voice cohort has no matching targets: " + ", ".join(unused)
         )
     samples = _comparison_samples(targets)
+    if inline_pause_ms is not None:
+        candidates = _inline_pause_candidates(
+            candidates, samples, targets, inline_pause_ms
+        )
     source = {
         "workspace": str(directory),
         "workspace_id": workspace["workspace_id"],
@@ -319,6 +337,8 @@ def build_missing_voice_reuse_plan(
     }
     if target_mode == "failed":
         body["target_mode"] = "failed"
+    if inline_pause_ms is not None:
+        body["candidate_mode"] = INLINE_PAUSE_MARKER
     plan_id = _canonical_sha256(body)
     plan = MissingVoiceReusePlan(plan_id, {**body, "plan_id": plan_id})
     _validate_plan(plan)
@@ -394,7 +414,7 @@ def prepare_missing_voice_reuse_candidate_workspace(
             model=run_config["model"],
             generation_profile=run_config["generation_profile"],
             missing_voice_policy=run_config.get("missing_voice_policy"),
-            failure_repair_policy=None,
+            failure_repair_policy=_candidate_failure_repair_policy(document),
         )
         created = target
         if document.get("target_mode", "missing") == "missing" and source_state.get(
@@ -403,7 +423,13 @@ def prepare_missing_voice_reuse_candidate_workspace(
             created = rebase_workspace_config(
                 source_directory, target.directory, workspaces_root
             )
-    except AuthoringWorkbenchError as error:
+        elif document.get("candidate_mode") == INLINE_PAUSE_MARKER:
+            carry_failed_controls(
+                source_directory,
+                target.directory,
+                tuple(document["comparison_sample_queue_ids"]),
+            )
+    except (AuthoringWorkbenchError, FailedControlCarryError) as error:
         raise MissingVoiceReuseError(str(error)) from error
     return MissingVoiceReuseCandidateWorkspace(
         document["plan_id"],
@@ -509,6 +535,11 @@ def _require_fresh_plan(document):
             if document.get("target_mode", "missing") == "failed"
             else None
         ),
+        inline_pause_ms=(
+            document["candidates"][0]["render_hypothesis"]["pause_ms"]
+            if document.get("candidate_mode") == INLINE_PAUSE_MARKER
+            else None
+        ),
     )
     if fresh.plan_id != document["plan_id"]:
         raise MissingVoiceReuseError(
@@ -542,6 +573,10 @@ def _candidate_binding(document, candidate):
             "the remaining cohort or approve generated audio."
         ),
     }
+    if "render_hypothesis" in candidate:
+        binding["candidate_render_hypothesis"] = copy.deepcopy(
+            candidate["render_hypothesis"]
+        )
     if document.get("target_mode", "missing") == "failed":
         target_by_id = {target["queue_id"]: target for target in document["targets"]}
         binding.update(
@@ -791,6 +826,64 @@ def _candidate_names(values, *, minimum=2):
     return names
 
 
+def _inline_pause_candidates(candidates, samples, targets, pause_ms):
+    if (
+        not isinstance(pause_ms, int)
+        or isinstance(pause_ms, bool)
+        or not 50 <= pause_ms <= 1000
+    ):
+        raise MissingVoiceReuseError(
+            "Inline-pause duration must be an integer from 50 to 1000 ms"
+        )
+    target_by_id = {target["queue_id"]: target for target in targets}
+    prompts = []
+    for sample in samples:
+        target = target_by_id[sample["queue_id"]]
+        try:
+            prompt, marker_count = inline_sentence_pause_prompt(
+                target["text"], pause_ms=pause_ms
+            )
+        except ValueError as error:
+            raise MissingVoiceReuseError(
+                f"Inline-pause hypothesis is invalid for {sample['queue_id']}: {error}"
+            ) from error
+        prompts.append(
+            {
+                "queue_id": sample["queue_id"],
+                "source_text_sha256": target["text_sha256"],
+                "derived_prompt_sha256": hashlib.sha256(
+                    prompt.encode("utf-8")
+                ).hexdigest(),
+                "marker_count": marker_count,
+            }
+        )
+    hypothesis = {
+        "strategy": INLINE_PAUSE_MARKER,
+        "pause_ms": pause_ms,
+        "prompts": prompts,
+    }
+    enriched = []
+    for candidate in candidates:
+        identity = {
+            key: copy.deepcopy(value)
+            for key, value in candidate.items()
+            if key != "candidate_id"
+        }
+        identity["render_hypothesis"] = copy.deepcopy(hypothesis)
+        enriched.append({**identity, "candidate_id": _canonical_sha256(identity)})
+    return enriched
+
+
+def _candidate_failure_repair_policy(document):
+    if document.get("candidate_mode") != INLINE_PAUSE_MARKER:
+        return None
+    hypothesis = document["candidates"][0]["render_hypothesis"]
+    return FailureRepairPolicy(
+        inline_pause_queue_ids=tuple(document["comparison_sample_queue_ids"]),
+        inline_pause_ms=hypothesis["pause_ms"],
+    )
+
+
 def _failed_queue_ids(values):
     if values is None:
         return set()
@@ -929,6 +1022,51 @@ def _validate_plan(plan):
         set(candidate_ids)
     ):
         raise MissingVoiceReuseError("Missing-voice candidates are invalid")
+    for candidate in candidates:
+        if candidate.get("candidate_id") != _canonical_sha256(
+            {key: value for key, value in candidate.items() if key != "candidate_id"}
+        ):
+            raise MissingVoiceReuseError("Missing-voice candidate identity changed")
+    candidate_mode = document.get("candidate_mode")
+    if candidate_mode is None:
+        if any("render_hypothesis" in candidate for candidate in candidates):
+            raise MissingVoiceReuseError(
+                "Missing-voice candidate hypothesis mode is absent"
+            )
+    elif candidate_mode == INLINE_PAUSE_MARKER and target_mode == "failed":
+        target_by_id = {target["queue_id"]: target for target in targets}
+        for candidate in candidates:
+            hypothesis = candidate.get("render_hypothesis")
+            prompts = (
+                hypothesis.get("prompts") if isinstance(hypothesis, dict) else None
+            )
+            if (
+                not isinstance(hypothesis, dict)
+                or hypothesis.get("strategy") != INLINE_PAUSE_MARKER
+                or not isinstance(hypothesis.get("pause_ms"), int)
+                or isinstance(hypothesis.get("pause_ms"), bool)
+                or not 50 <= hypothesis["pause_ms"] <= 1000
+                or not isinstance(prompts, list)
+                or [prompt.get("queue_id") for prompt in prompts] != sample_ids
+            ):
+                raise MissingVoiceReuseError(
+                    "Missing-voice inline-pause hypothesis is invalid"
+                )
+            for prompt in prompts:
+                target = target_by_id[prompt["queue_id"]]
+                if (
+                    prompt.get("source_text_sha256") != target["text_sha256"]
+                    or not isinstance(prompt.get("derived_prompt_sha256"), str)
+                    or len(prompt["derived_prompt_sha256"]) != 64
+                    or not isinstance(prompt.get("marker_count"), int)
+                    or isinstance(prompt.get("marker_count"), bool)
+                    or prompt["marker_count"] < 1
+                ):
+                    raise MissingVoiceReuseError(
+                        "Missing-voice inline-pause prompt identity is invalid"
+                    )
+    else:
+        raise MissingVoiceReuseError("Missing-voice candidate mode is invalid")
     return copy.deepcopy(document)
 
 

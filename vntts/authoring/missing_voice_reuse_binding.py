@@ -84,6 +84,10 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         bundle, session = load_missing_voice_reuse_review(session_path)
     except (MissingVoiceReuseError, MissingVoiceReuseReviewError) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
+    if document.get("candidate_mode") is not None:
+        raise MissingVoiceReuseBindingError(
+            "Render hypotheses require a selection artifact, not a voice binding"
+        )
     if bundle.get("plan", {}).get("plan_id") != document["plan_id"] or bundle[
         "plan"
     ].get("sha256") != sha256_file(plan_path):

@@ -1047,3 +1047,54 @@ and
 `274c6afb2e8cfb11e4a68b8427075278ac67a242a5ee0b3e5afa3ac1da23e50c`
 make that negative evidence explicit. They permit only an explicit unresolved
 decision; this result does not authorize another Mrs. Owen seed.
+
+### Hotelier composite and exact prompt-hypothesis evidence
+
+Hotelier's exact-bank composite is now available only through comparison input
+bundle `4a894f700555e44c1631ee05ec22cc095154f41326440d61de6c004f2cc37e42`.
+It binds composite WAV SHA-256
+`79c43a24a232d7ac853c13c93b553fa40cdd652b7dfa9926a988cff9a35b3293`,
+the composite/evaluation ledgers and the self-contained quality review whose
+decision remains `needs_sample`. The added voice is marked `experimental_only`;
+the bundle preserves the predecessor queue overrides exactly and adds no route
+or production binding.
+
+The normal config rebase correctly refused to treat a failed render as a
+terminal audio decision. Dedicated failed-control carry
+`83f1ca4c8137271d85ed2198f5efeab137c899b38ae2d0ca541a41a22d5a699d`
+therefore copied only Hotelier `314601:47`'s exact non-playable state item into
+workspace `resume-395a5e5eec0327a3a793b66d-d39dacd78d1abdce`. It required a
+byte-identical queue and identical Centurion reference hashes and copied no WAV
+or new attempt. Failed-control plan
+`f896d39501f41279d57c6c24c7e57dae5a82f8203faa1e4799416b12e505f514`
+then rendered exactly that one line in workspace
+`resume-395a5e5eec0327a3a793b66d-dc4eaa0b8aeaa213`. The composite candidate
+completed synthesis but failed with three 2.80-2.88-second internal pauses and
+58% silent frames, so no WAV was published. Review bundle
+`ead3879cc5ecd57ddc7eb201a13e4e57a0ae235c00d8d99e51b9080496d2d0e0`
+has no selectable candidate and permits only `Keep unresolved`.
+
+The same failed-control matrix now supports canonical inline-pause prompt
+hypotheses without misrepresenting them as voice changes. Candidate identity
+binds the original text hash, derived prompt hash, marker count and pause
+duration. Candidate preparation carries the exact failed control into a fresh
+workspace, and the generation command must contain matching single
+`--inline-pause-failed` and `--queue-id` values. A dedicated selection importer
+can publish only the human hypothesis choice; it is forbidden from creating a
+voice binding, changing generation state or approving speech.
+
+Hotelier plan
+`d8054c0028b6bb7deee16d223d40caee5f2325ab5c192a5e731d813bc8af5b3b`
+binds one 180 ms marker and derived prompt SHA-256
+`b25d0e3e924c2f037a04751cd6ff16e2ecdc2b199220c5e9e04f990736975ef4`.
+Its workspace `resume-395a5e5eec0327a3a793b66d-a8b3063e388147cd`
+reached the exact 12.5-second audio limit and published no WAV. Mrs. Owen plan
+`2a1b11de27e97a50fa5b32fc805028ad0e636185fbda2a425201f0aeaddb5538`
+binds two 180 ms markers and derived prompt SHA-256
+`ab39d152f44725b9d9a8effb48414c3d0fdc7dc1fff84bc244492dae83f5384c`.
+Its workspace `resume-395a5e5eec0327a3a793b66d-9d1cf3971c4701ac`
+reached the exact 17.1667-second limit and likewise published no WAV. Review
+bundles `eac5c068a97aad54a06e29af1d24483f23d6f2e6210684ad8d011a0d18fab8d9`
+and `0cc87c5ff53b3395e3f3a5ac1d6c42017e38e7a459b11e7d8630df0ff61faa9b`
+retain those typed failures and expose only `Keep unresolved`. These results
+close the bounded marker hypotheses; they do not authorize another MOSS seed.
