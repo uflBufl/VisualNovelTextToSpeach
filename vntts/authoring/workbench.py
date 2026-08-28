@@ -1159,6 +1159,21 @@ def merge_workspace_outcomes(
     )
 
 
+def merge_reconciled_workspace_outcomes(
+    base_workspace,
+    outcome_workspaces,
+    reconciliation_selection,
+    workspaces_root=None,
+):
+    """Merge only terminal outcomes selected by an immutable reconciliation."""
+    return _merge_workspace_outcomes(
+        base_workspace,
+        outcome_workspaces,
+        workspaces_root,
+        reconciliation_selection=reconciliation_selection,
+    )
+
+
 def _merge_workspace_outcomes(
     base_workspace,
     outcome_workspaces,
@@ -5158,6 +5173,7 @@ __all__ = [
     "load_workspace_json",
     "load_workspace_json_snapshot",
     "merge_terminal_conflict_resolution",
+    "merge_reconciled_workspace_outcomes",
     "merge_workspace_outcomes",
     "prepare_review_audio",
     "read_workspace_file_bytes",

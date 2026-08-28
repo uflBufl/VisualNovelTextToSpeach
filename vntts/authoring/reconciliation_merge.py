@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.authoring.reconciliation import load_authoring_reconciliation
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _merge_workspace_outcomes,
+    merge_reconciled_workspace_outcomes,
 )
 
 
@@ -57,11 +57,11 @@ def merge_reconciled_terminal_outcomes(
         "base": base_report,
         "sources": selected,
     }
-    return _merge_workspace_outcomes(
+    return merge_reconciled_workspace_outcomes(
         base_path,
         tuple(sorted(selected, key=str)),
+        selection,
         workspaces_root,
-        reconciliation_selection=selection,
     )
 
 

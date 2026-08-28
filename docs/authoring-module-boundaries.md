@@ -89,6 +89,13 @@ compatibility alias. The AST regression forbids importing the superseded
 private workbench names, while the workbench test suite verifies that
 compatibility behavior is unchanged.
 
+Outcome reconciliation enters workbench through
+`merge_reconciled_workspace_outcomes()`, which requires the caller's immutable
+reconciliation selection and keeps the unrestricted outcome merge API
+separate. The internal `_merge_workspace_outcomes` implementation remains a
+workbench detail and is protected from renewed production imports by the AST
+regression.
+
 ## Generation lease foundation
 
 `generation_lease` is the leaf owner of the generation lease schema, process
