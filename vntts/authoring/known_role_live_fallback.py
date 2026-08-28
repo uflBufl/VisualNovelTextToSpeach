@@ -232,6 +232,7 @@ def create_known_role_live_fallback_workspace(
         base_document.get("audio_event_omission"),
         base_document.get("audio_event_projection_fallback"),
         base_document.get("reviewed_waveform_publication"),
+        base_document.get("reviewed_rejection_live_fallback"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

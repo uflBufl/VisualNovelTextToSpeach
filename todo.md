@@ -33,24 +33,6 @@ The reviewed Aderyn, Poacher II and Dobharchú outcomes and all pure-event
 omissions are composed in immutable baseline `...-bc27ca69bfa40f01`. Do not
 regenerate or repeat review merely to combine them.
 
-- [ ] Publish an immutable explicit-rejected-fallback successor from
-      `...-c5a8b5a17cd5fce6`. Cover exactly the 83 `generated/rejected` items with no
-      existing fallback. Embed each unchanged rejected base result and bind its
-      current effective character: use the active config-rebase target for 59
-      records and the recorded `Rhiannon` synthesis character for the 24 older
-      Aderyn records. Route Narrator and unknown roles through Centurion, retain
-      Aderyn/Rhiannon as Rhiannon, and preserve the selected Dobharchú/Poacher/
-      Aderyn's Father voice characters. This authorizes Pocket live synthesis;
-      it does not approve the rejected WAV or claim that Pocket will reproduce
-      its reference-cloned timbre. Add exact-result, route, tamper, idempotence
-      and runtime tests. Then publish a new v2 pack; retain v1 as an immutable
-      verified checkpoint.
-- [ ] Rebuild the approved-only manifest from the composed terminal state and
-      require all 592 queue items to have approved audio, an explicit supported
-      live fallback or an explicit non-verbal omission. Verify zero pending
-      review, zero unowned failure, no active attempt/lease/partial WAV, exact
-      manifest subset equality and unchanged source workspaces before
-      publishing the final game pack.
 - [ ] Run the real Character Story acceptance with that pack: verify generated
       routing, original-audio precedence, Centurion narration, `Aderyn` and
       `Unknown` fallback announcements, no literal event markup, and no stale,

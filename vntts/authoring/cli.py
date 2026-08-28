@@ -193,6 +193,9 @@ from vntts.authoring.render_hypothesis_review import (
     publish_render_hypothesis_review,
     record_render_hypothesis_decision,
 )
+from vntts.authoring.reviewed_rejection_fallback import (
+    create_reviewed_rejection_fallback_workspace,
+)
 from vntts.authoring.reviewed_waveform_publication import (
     create_reviewed_waveform_publication_workspace,
 )
@@ -599,6 +602,14 @@ def create_parser():
     )
     reviewed_waveforms.add_argument("base_workspace", type=Path)
     reviewed_waveforms.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    reviewed_rejections = subparsers.add_parser(
+        "reviewed-rejection-live-fallback",
+        help="Route exact rejected WAV identities through Pocket live synthesis",
+    )
+    reviewed_rejections.add_argument("base_workspace", type=Path)
+    reviewed_rejections.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1605,6 +1616,23 @@ def main(argv=None):
             return 0
         if arguments.command == "reviewed-waveform-publication":
             result = create_reviewed_waveform_publication_workspace(
+                arguments.base_workspace,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "reviewed-rejection-live-fallback":
+            result = create_reviewed_rejection_fallback_workspace(
                 arguments.base_workspace,
                 arguments.workspaces_root,
             )

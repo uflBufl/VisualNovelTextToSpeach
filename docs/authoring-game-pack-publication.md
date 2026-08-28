@@ -53,6 +53,15 @@ non-reproducibility claim. Removing one approved identity from that ledger does
 not grant a partial bypass: an uncovered approved item must still have its exact
 synthesis-control inventory.
 
+A rejected generated result receives live-fallback authority only through an
+explicit immutable successor. Schema-v7 evidence embeds the complete unchanged
+rejected result and binds the exact queue, base workspace/state, current
+effective synthesis character, reference hashes and route authority. The
+operation never changes the rejected status, publishes the rejected WAV or
+claims that Pocket reproduces the rejected provider's timbre. Runtime validates
+the evidence before requesting the recorded Pocket voice and fails closed on
+route, result or reference tampering.
+
 When the migration covers every shipped approved WAV, it is the final
 publication authority for those payloads. The packager does not recursively
 reopen the historical config-rebase graph after acquiring its own generation
@@ -106,6 +115,21 @@ and empty migrations fail closed. Existing `config_rebase` routes are preserved;
 older approved records are labelled `historical_reviewed_waveform` with
 `not_reproducible` status and no invented references. Repeating the exact
 command returns the same successor with `created=false`.
+
+To authorize Pocket live synthesis for every rejected item that still lacks an
+explicit fallback, create the separate rejected-result successor:
+
+```sh
+uv run vntts-pregenerate reviewed-rejection-live-fallback \
+  /path/to/base-workspace \
+  --workspaces-root /path/to/workspaces
+```
+
+The command selects all and only `generated/rejected` items without an existing
+fallback. It derives the effective character from an active config-rebase route
+when present, otherwise from an explicit current voice-manifest binding. A
+missing or ambiguous route fails closed. Repeating the exact command is
+idempotent and never mutates the base workspace.
 
 ```sh
 uv run vntts-pregenerate publish-pack \

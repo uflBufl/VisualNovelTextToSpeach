@@ -62,6 +62,7 @@ LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION = 3
 LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION = 4
 LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION = 5
 LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION = 6
+LIVE_FALLBACK_REVIEWED_REJECTION_VERSION = 7
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
 MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-missing-voice-live-fallback-evidence"
@@ -71,6 +72,9 @@ KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
 )
 AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-audio-event-projection-live-fallback-evidence"
+)
+REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
+    "vntts.authoring-reviewed-rejection-live-fallback-evidence"
 )
 AUDIO_EVENT_OMISSION_SCHEMA = "vntts.authoring-audio-event-omission"
 AUDIO_EVENT_OMISSION_VERSION = 1
@@ -558,6 +562,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
             LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
+            LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
         }
         else common_fields
     )
@@ -573,6 +578,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
             LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
+            LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
         }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
@@ -617,6 +623,18 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             decision.get("requested_voice_character"),
             queue_item,
         )
+    elif version == LIVE_FALLBACK_REVIEWED_REJECTION_VERSION:
+        if decision.get("reason") != "generated_audio_rejected":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} reviewed-rejection fallback reason is invalid"
+            )
+        _validate_reviewed_rejection_live_fallback_evidence(
+            decision.get("evidence"),
+            queue_id,
+            decision.get("previous_result_sha256"),
+            decision.get("requested_voice_character"),
+            queue_item,
+        )
     elif version in {
         LIVE_FALLBACK_EVIDENCE_VERSION,
         LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
@@ -648,6 +666,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         if version not in {
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
             LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
+            LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
         }:
             expected["requested_voice_character"] = synthesis_character_for_line(
                 queue_item.speaker, queue_item.voice_character
@@ -972,6 +991,106 @@ def _validate_audio_event_projection_live_fallback_evidence(
     ):
         raise BulkGenerationError(
             f"State item {queue_id!r} fallback is not bound to a mixed audio event"
+        )
+
+
+def _validate_reviewed_rejection_live_fallback_evidence(
+    evidence,
+    queue_id,
+    previous_result_sha256,
+    requested_voice_character,
+    queue_item,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "batch_id",
+        "base_workspace_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "voice_manifest_sha256",
+        "queue_id",
+        "base_result_sha256",
+        "base_result",
+        "source_character",
+        "synthesis_character",
+        "route_source",
+        "route_reference_sha256s",
+    }
+    base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
+    references = (
+        evidence.get("route_reference_sha256s") if isinstance(evidence, dict) else None
+    )
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema") != REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or evidence.get("synthesis_character") != requested_voice_character
+        or not isinstance(base_result, dict)
+        or base_result.get("status") != "generated"
+        or base_result.get("review_status") != "rejected"
+        or isinstance(base_result.get("live_fallback"), dict)
+        or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
+        or evidence.get("route_source") not in {"config_rebase", "voice_manifest"}
+        or not isinstance(references, list)
+        or not references
+        or references != sorted(set(references))
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} reviewed-rejection evidence is malformed"
+        )
+    for field in (
+        "batch_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "voice_manifest_sha256",
+        "base_result_sha256",
+    ):
+        _required_sha256(
+            evidence.get(field),
+            f"State item {queue_id!r} reviewed-rejection {field}",
+        )
+    for field in (
+        "base_workspace_id",
+        "source_character",
+        "synthesis_character",
+    ):
+        _required_text(
+            evidence.get(field),
+            f"State item {queue_id!r} reviewed-rejection {field}",
+        )
+    for digest in references:
+        _required_sha256(
+            digest, f"State item {queue_id!r} reviewed-rejection reference"
+        )
+    if evidence["route_source"] == "config_rebase":
+        rebase = base_result.get("config_rebase")
+        if (
+            not isinstance(rebase, dict)
+            or rebase.get("target_route_status") != "active"
+            or rebase.get("target_effective_character")
+            != evidence["synthesis_character"]
+            or sorted(set(rebase.get("target_reference_sha256s", []))) != references
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} reviewed-rejection route changed"
+            )
+    elif base_result.get("voice_character") != evidence["synthesis_character"]:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} reviewed-rejection recorded voice changed"
+        )
+    if queue_item is not None and (
+        queue_item.speaker != evidence["source_character"]
+        or queue_item.line_id != base_result.get("line_id")
+        or queue_item.text_sha256 != base_result.get("text_sha256")
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} reviewed-rejection queue identity changed"
         )
 
 
@@ -2088,6 +2207,7 @@ __all__ = [
     "LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "LIVE_FALLBACK_EVIDENCE_VERSION",
     "LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION",
+    "LIVE_FALLBACK_REVIEWED_REJECTION_VERSION",
     "LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION",
     "LIVE_FALLBACK_HYPOTHESES_EXHAUSTED",
     "LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION",
@@ -2100,6 +2220,7 @@ __all__ = [
     "REVIEWED_WAVEFORM_PUBLICATION_REASON",
     "REVIEWED_WAVEFORM_PUBLICATION_SCHEMA",
     "REVIEWED_WAVEFORM_PUBLICATION_VERSION",
+    "REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "STATE_SCHEMA",
     "STATE_VERSION",
     "contained_state_path",

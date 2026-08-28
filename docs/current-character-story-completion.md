@@ -1712,3 +1712,40 @@ unknown/Centurion, six Dobharchú, four Poachers, five legacy Rhiannon records
 whose item speaker field predates normalization, and one Aderyn's Father. The
 next immutable successor must bind those already rejected results to their
 current effective live characters before publishing a v2 pack.
+
+### Explicit rejected-fallback successor and complete v2 pack
+
+The checksum-bound rejected-result boundary produced immutable successor
+`resume-395a5e5eec0327a3a793b66d-f551ea156868efb7`, workspace SHA-256
+`29990c0c56689907b10c13d0946cecdada5275f4f6fd8cb3b93a813c17aed271`
+and generation-state SHA-256
+`70c5e671479e898ce4ce29419b8e388b550c2da94f2ceb9e89dd405cb0b29afc`.
+Batch
+`bdf0ff5f2b2e8bbdc04852a859e435b78ad9da97a171fbe9c9fcd13db86cbd3a`
+contains exactly the 83 rejected items that had no existing live-fallback
+authority. Every schema-v7 decision embeds the unchanged rejected base result,
+queue identity, effective synthesis character and either its current active
+config-rebase route or its recorded voice-manifest route. An exact repeat
+returned the same directory with `created=false`.
+
+The 83 routes are 24 Aderyn to Rhiannon, 19 Rhiannon to Rhiannon, 22 Narrator
+and seven unknown roles to Centurion, four Poacher roles to Centurion, six
+Dobharchú records to their two selected source-reference characters, and one
+Aderyn's Father record to its selected source-reference character. These
+decisions authorize Pocket live generation only. The 90 rejected WAVs remain
+rejected historical evidence and are not shipped or reclassified as approved.
+Together with the earlier fallback authorities, the state now contains 113
+explicit live fallbacks while retaining 472 approved WAVs and seven omissions.
+
+Complete acceptance candidate
+`authoring/game-packs/current-character-story-3.7-v2` has game-pack SHA-256
+`298a1b4fdd1b939da72fbdc72a80f38fd22c8df7238e7cb248cdb504b8b552c3`
+and passed `vntts-preflight-game-pack`. Its exact terminal coverage is
+472 approved WAVs + 113 explicit live fallbacks + seven omissions = all 592
+queue identities. The fallback ledger contains 83 schema-v7, 20 schema-v5, two
+schema-v6, two schema-v2, five schema-v1 and one schema-v3 records. Runtime
+metadata selects Centurion as Narrator, routes the two mixed event lines as
+`Wh-What!` and `N-No!`, and preserves Aderyn to Rhiannon and unknown to
+Centurion routing. The v1 checkpoint and source migration remain unchanged at
+their recorded hashes. Real in-game listening is the remaining acceptance
+gate; static publication and completeness gates are closed.

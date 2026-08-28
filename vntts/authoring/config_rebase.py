@@ -368,6 +368,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 reviewed_waveform_publication=target_document.get(
                     "reviewed_waveform_publication"
                 ),
+                reviewed_rejection_live_fallback=target_document.get(
+                    "reviewed_rejection_live_fallback"
+                ),
             )
             workspace_id = (
                 "resume-"

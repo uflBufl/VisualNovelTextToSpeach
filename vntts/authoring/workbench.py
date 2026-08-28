@@ -811,6 +811,7 @@ def create_failure_reference_workspace(
             base_document.get("audio_event_omission"),
             base_document.get("audio_event_projection_fallback"),
             base_document.get("reviewed_waveform_publication"),
+            base_document.get("reviewed_rejection_live_fallback"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1014,6 +1015,7 @@ def create_audio_event_composition_workspace(
             base_document.get("audio_event_omission"),
             base_document.get("audio_event_projection_fallback"),
             base_document.get("reviewed_waveform_publication"),
+            base_document.get("reviewed_rejection_live_fallback"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1438,6 +1440,7 @@ def _merge_workspace_outcomes(
         base_document.get("audio_event_omission"),
         base_document.get("audio_event_projection_fallback"),
         base_document.get("reviewed_waveform_publication"),
+        base_document.get("reviewed_rejection_live_fallback"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -3606,6 +3609,10 @@ def _load_workspace(workspace_directory):
             "vntts.authoring.reviewed_waveform_publication"
         )
         module.validate_reviewed_waveform_publication_workspace(directory, workspace)
+    reviewed_rejection_live_fallback = workspace.get("reviewed_rejection_live_fallback")
+    if reviewed_rejection_live_fallback is not None:
+        module = importlib.import_module("vntts.authoring.reviewed_rejection_fallback")
+        module.validate_reviewed_rejection_fallback_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3623,6 +3630,7 @@ def _load_workspace(workspace_directory):
         audio_event_omission,
         audio_event_projection_fallback,
         reviewed_waveform_publication,
+        reviewed_rejection_live_fallback,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3873,6 +3881,9 @@ def validate_workspace_provenance_extensions(directory, workspace, import_snapsh
             "vntts.authoring.reviewed_waveform_publication"
         )
         module.validate_reviewed_waveform_publication_workspace(directory, workspace)
+    if workspace.get("reviewed_rejection_live_fallback") is not None:
+        module = importlib.import_module("vntts.authoring.reviewed_rejection_fallback")
+        module.validate_reviewed_rejection_fallback_workspace(directory, workspace)
 
 
 def _validate_workspace_carry_forward(directory, workspace):
