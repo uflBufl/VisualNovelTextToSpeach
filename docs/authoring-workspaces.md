@@ -575,6 +575,33 @@ binds the queue line/text/speaker and prior result hash, and rebuilds the
 approved-only manifest under the generation lease. Raw failed or pending-review
 items remain nonterminal until this explicit decision is recorded.
 
+A completed missing-role review whose every candidate arm failed does not
+justify 93 independent operator clicks. Its zero-override binding can instead
+preflight one exact known-role batch without changing state:
+
+```sh
+uv run vntts-pregenerate missing-voice-live-fallback \
+  WORKSPACE MISSING_VOICE_BINDING_DIRECTORY CHARACTER
+```
+
+The importer revalidates the immutable plan, session, bundle, inventory and
+canonical automatic `Neither` decisions; selected-candidate or human-`Neither`
+bindings are rejected. The current workspace must share the audited import and
+byte-identical queue, every target must still be absent speech for the exact
+declared role, and partial/conflicting terminal scope fails closed. Preflight
+reports the target/cohort counts, state hash and deterministic batch ID without
+writing a lease or state file.
+
+Applying the policy requires the deliberately verbose flag
+`--accept-known-role-narrator-fallback`. All exact items are written under one
+generation lease and one state/manifest transaction as Pocket/default live
+fallbacks with schema-v4 evidence. Each item retains its requested character,
+cohort, binding bundle/decision, plan, source workspace and common batch ID.
+An exact repeat is idempotent; the command never represents Pocket as a cloned
+narrator voice. The runtime's `narrator-fallback-roles` accessibility mode
+announces the retained character for these live routes and announces an exact
+unattributed `???` role as `Unknown`.
+
 An exact typed MOSS failure whose distinct repair hypothesis completed in a
 different workspace uses the stricter `generation_hypotheses_exhausted`
 decision. Supply each selected source with `--evidence-workspace`. Version 2 of

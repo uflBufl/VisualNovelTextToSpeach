@@ -1180,3 +1180,17 @@ and
 `20832d94d0c145e3954dd4d34ac360430ea3f508171ce4f8112861ce03541a6b`.
 All six source workspace and state hashes matched their preflight snapshots
 after both real publication calls; no source review authority was mutated.
+
+The terminal Aderyn zero-override authority now also has a safe atomic live
+fallback importer. A real read-only preflight against current successor
+`resume-395a5e5eec0327a3a793b66d-fefe4656d7d30e02` validated both automatic
+`Neither` cohorts and all 93 still-absent Aderyn queue identities. It reported
+authority decision
+`8239afefb72e57fcd112f7ff17ad1ad56877839f7dd4e6bc10285842dd008a07`,
+batch ID
+`67bd260baaceef5931b8ee2712da643559f62a565141d5c8deb87c179d7e8f11`
+and unchanged before/after state SHA-256
+`e5983ad3a2b648214758ffa2f03fbaf3ff93deb24be6c23edaa06bf56bc7e07d`.
+No fallback was applied. Applying it remains one explicit human policy gate;
+the importer requires `--accept-known-role-narrator-fallback`, commits the full
+scope under one lease and cannot accept a partial queue selection.

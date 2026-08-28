@@ -19,6 +19,8 @@ from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioRoute,
+    LiveFallbackDecision,
+    LiveFallbackRoute,
     PlaybackOutcome,
     PlaybackStatus,
     PreparedGeneratedAudio,
@@ -2706,6 +2708,41 @@ class MainTest(unittest.TestCase):
             SpeechChunk(6, "???", "Who am I?", ordinal=1), generated("Unknown")
         )
 
+        def live_fallback(queue_id, requested):
+            return LiveFallbackRoute(
+                backend.prepare_playback("Narrator", "Fallback line."),
+                LiveFallbackDecision(
+                    "vntts.authoring-live-fallback-decision",
+                    1,
+                    "reference_unavailable_after_audit",
+                    "pocket-tts",
+                    "pocket-tts",
+                    "default",
+                    queue_id,
+                    queue_id,
+                    "a" * 64,
+                    requested,
+                    requested,
+                    None,
+                    "2026-08-28T00:00:00+00:00",
+                    "b" * 64,
+                ),
+                stub_route_trace("live-fallback", queue_id),
+                None,
+                None,
+            )
+
+        aderyn_fallback, aderyn_label = controller._prepare_speaker_announcement(
+            SpeechChunk(7, "Aderyn", "Fallback line.", ordinal=1),
+            live_fallback("game:aderyn", "Aderyn"),
+        )
+        unknown_fallback, unknown_fallback_label = (
+            controller._prepare_speaker_announcement(
+                SpeechChunk(8, "???", "Fallback line.", ordinal=1),
+                live_fallback("game:unknown", "Narrator"),
+            )
+        )
+
         self.assertIsNone(true_narrator)
         self.assertIsNotNone(poacher)
         self.assertEqual(poacher_label, "Poacher I")
@@ -2714,11 +2751,19 @@ class MainTest(unittest.TestCase):
         self.assertIsNotNone(poacher_again)
         self.assertIsNotNone(unknown)
         self.assertEqual(unknown_label, "Unknown")
+        self.assertIsNotNone(aderyn_fallback)
+        self.assertEqual(aderyn_label, "Aderyn")
+        self.assertIsNotNone(unknown_fallback)
+        self.assertEqual(unknown_fallback_label, "Unknown")
         self.assertEqual(
             backend.prepare_calls,
             [
                 ("Narrator", "Poacher I."),
                 ("Narrator", "Poacher I."),
+                ("Narrator", "Unknown."),
+                ("Narrator", "Fallback line."),
+                ("Narrator", "Aderyn."),
+                ("Narrator", "Fallback line."),
                 ("Narrator", "Unknown."),
             ],
         )

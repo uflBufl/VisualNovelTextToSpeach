@@ -110,6 +110,10 @@ from vntts.authoring.listening_import import (
     import_listening_session,
     inspect_listening_session,
 )
+from vntts.authoring.missing_voice_live_fallback import (
+    MissingVoiceLiveFallbackError,
+    authorize_missing_voice_live_fallback,
+)
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
     NARRATOR_ROLES,
@@ -1004,6 +1008,21 @@ def create_parser():
     missing_voice_binding.add_argument("plan", type=Path)
     missing_voice_binding.add_argument("session", type=Path)
     missing_voice_binding.add_argument("--output", type=Path, required=True)
+    missing_voice_live_fallback = subparsers.add_parser(
+        "missing-voice-live-fallback",
+        help="Preflight or atomically authorize one audited missing-role cohort",
+    )
+    missing_voice_live_fallback.add_argument("workspace", type=Path)
+    missing_voice_live_fallback.add_argument("authority_directory", type=Path)
+    missing_voice_live_fallback.add_argument("character")
+    missing_voice_live_fallback.add_argument(
+        "--accept-known-role-narrator-fallback",
+        action="store_true",
+        help=(
+            "Explicitly accept live Pocket fallback for the full known-role scope; "
+            "omit for a read-only preflight"
+        ),
+    )
     portrait_alias_plan = subparsers.add_parser(
         "portrait-alias-plan",
         help="Suggest checksum-bound same-character portrait expression aliases",
@@ -2165,6 +2184,17 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "missing-voice-live-fallback":
+            result = authorize_missing_voice_live_fallback(
+                arguments.workspace,
+                arguments.authority_directory,
+                arguments.character,
+                accept_known_role_narrator_fallback=(
+                    arguments.accept_known_role_narrator_fallback
+                ),
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "portrait-alias-plan":
             plan = build_portrait_alias_plan(
                 arguments.quality_review,
@@ -2562,6 +2592,7 @@ def main(argv=None):
         MissingVoiceReuseError,
         MissingVoiceReuseBindingError,
         MissingVoiceReuseReviewError,
+        MissingVoiceLiveFallbackError,
         PortraitAliasError,
         ReferenceSelectionError,
         ReferenceRenderComparisonError,

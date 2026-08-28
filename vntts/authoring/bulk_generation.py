@@ -108,7 +108,11 @@ LIVE_FALLBACK_SCHEMA = "vntts.authoring-live-fallback-decision"
 LIVE_FALLBACK_VERSION = 1
 LIVE_FALLBACK_EVIDENCE_VERSION = 2
 LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION = 3
+LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION = 4
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
+MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
+    "vntts.authoring-missing-voice-live-fallback-evidence"
+)
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
     {
@@ -3989,6 +3993,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         in {
             LIVE_FALLBACK_EVIDENCE_VERSION,
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
+            LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
         }
         else common_fields
     )
@@ -4001,6 +4006,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_VERSION,
             LIVE_FALLBACK_EVIDENCE_VERSION,
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
+            LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
         }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
@@ -4011,7 +4017,17 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback decision is malformed"
         )
-    if version in {
+    if version == LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION:
+        if decision.get("reason") != "reference_unavailable_after_audit":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} missing-voice fallback reason is invalid"
+            )
+        _validate_missing_voice_live_fallback_evidence(
+            decision.get("evidence"),
+            queue_id,
+            decision.get("requested_voice_character"),
+        )
+    elif version in {
         LIVE_FALLBACK_EVIDENCE_VERSION,
         LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
     }:
@@ -4053,6 +4069,64 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
     }:
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback has an invalid terminal state"
+        )
+
+
+def _validate_missing_voice_live_fallback_evidence(
+    evidence, queue_id, requested_voice_character
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "authority_bundle_id",
+        "authority_bundle_sha256",
+        "authority_decision_id",
+        "authority_decision_sha256",
+        "plan_id",
+        "source_workspace_id",
+        "source_workspace_sha256",
+        "cohort_id",
+        "queue_id",
+        "decision_origin",
+        "requested_voice_character",
+        "configured_narrator_character",
+        "batch_id",
+    }
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema") != MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("requested_voice_character") != requested_voice_character
+        or evidence.get("decision_origin") != "automatic_no_complete_candidate"
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} missing-voice fallback evidence is malformed"
+        )
+    for field in (
+        "authority_bundle_id",
+        "authority_bundle_sha256",
+        "authority_decision_id",
+        "authority_decision_sha256",
+        "plan_id",
+        "source_workspace_sha256",
+        "cohort_id",
+        "batch_id",
+    ):
+        _required_sha256(
+            evidence.get(field),
+            f"State item {queue_id!r} missing-voice fallback {field}",
+        )
+    for field in (
+        "source_workspace_id",
+        "queue_id",
+        "requested_voice_character",
+        "configured_narrator_character",
+    ):
+        _required_text(
+            evidence.get(field),
+            f"State item {queue_id!r} missing-voice fallback {field}",
         )
 
 

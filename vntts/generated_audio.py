@@ -754,7 +754,7 @@ def _live_fallback_index(metadata):
     indexed = {}
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
-        fields = common_fields | ({"evidence"} if version in {2, 3} else set())
+        fields = common_fields | ({"evidence"} if version in {2, 3, 4} else set())
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
         for field in fields - {
@@ -772,6 +772,7 @@ def _live_fallback_index(metadata):
             1,
             2,
             3,
+            4,
         }:
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
@@ -800,7 +801,17 @@ def _live_fallback_index(metadata):
             or raw["generation_profile"] != "default"
         ):
             raise ValueError("Generated-audio live fallback policy is unsupported")
-        if version in {2, 3}:
+        if version == 4:
+            if raw["reason"] != "reference_unavailable_after_audit":
+                raise ValueError(
+                    "Generated-audio missing-voice fallback reason is unsupported"
+                )
+            _validate_missing_voice_live_fallback_evidence(
+                raw["evidence"],
+                raw["queue_id"],
+                raw["requested_voice_character"],
+            )
+        elif version in {2, 3}:
             if raw["reason"] != "generation_hypotheses_exhausted":
                 raise ValueError(
                     "Generated-audio evidence fallback reason is unsupported"
@@ -905,6 +916,59 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
         raise ValueError(
             "Generated-audio live fallback evidence hypotheses are not canonical"
         )
+
+
+def _validate_missing_voice_live_fallback_evidence(
+    evidence, queue_id, requested_voice_character
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "authority_bundle_id",
+        "authority_bundle_sha256",
+        "authority_decision_id",
+        "authority_decision_sha256",
+        "plan_id",
+        "source_workspace_id",
+        "source_workspace_sha256",
+        "cohort_id",
+        "queue_id",
+        "decision_origin",
+        "requested_voice_character",
+        "configured_narrator_character",
+        "batch_id",
+    }
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema")
+        != "vntts.authoring-missing-voice-live-fallback-evidence"
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("requested_voice_character") != requested_voice_character
+        or evidence.get("decision_origin") != "automatic_no_complete_candidate"
+    ):
+        raise ValueError("Generated-audio missing-voice fallback evidence is malformed")
+    for field in (
+        "authority_bundle_id",
+        "authority_bundle_sha256",
+        "authority_decision_id",
+        "authority_decision_sha256",
+        "plan_id",
+        "source_workspace_sha256",
+        "cohort_id",
+        "batch_id",
+    ):
+        if not _lowercase_sha256(evidence.get(field)):
+            raise ValueError("Generated-audio missing-voice fallback hash is malformed")
+    for field in (
+        "source_workspace_id",
+        "queue_id",
+        "requested_voice_character",
+        "configured_narrator_character",
+    ):
+        if not isinstance(evidence.get(field), str) or not evidence[field].strip():
+            raise ValueError("Generated-audio missing-voice fallback text is malformed")
 
 
 def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):

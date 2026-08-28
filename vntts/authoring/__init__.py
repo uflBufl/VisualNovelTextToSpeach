@@ -202,6 +202,11 @@ from vntts.authoring.listening_import import (
     import_listening_session,
     inspect_listening_session,
 )
+from vntts.authoring.missing_voice_live_fallback import (
+    MissingVoiceLiveFallbackError,
+    MissingVoiceLiveFallbackResult,
+    authorize_missing_voice_live_fallback,
+)
 from vntts.authoring.missing_voice_policy import (
     BLOCK_MISSING_VOICE,
     MISSING_VOICE_POLICY_VERSION,
@@ -704,10 +709,13 @@ __all__ = [
     "MissingVoiceReuseReviewError",
     "MissingVoiceReuseBindingError",
     "MissingVoiceReuseBindingResult",
+    "MissingVoiceLiveFallbackError",
+    "MissingVoiceLiveFallbackResult",
     "MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA",
     "MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION",
     "MISSING_VOICE_REUSE_DECISION_SCHEMA",
     "MISSING_VOICE_REUSE_DECISION_VERSION",
+    "authorize_missing_voice_live_fallback",
     "REVIEW_BUNDLE_SCHEMA",
     "REVIEW_KEY_SCHEMA",
     "REVIEW_SESSION_SCHEMA",

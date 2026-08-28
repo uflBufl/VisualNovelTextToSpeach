@@ -47,7 +47,16 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       zero-override decision is recorded in
       [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md);
       do not replay or regenerate those candidates. Decide an explicit live
-      Narrator fallback for those 93 known-role lines.
+      Narrator fallback for those 93 known-role lines. The atomic importer and
+      real read-only preflight are complete: batch
+      `67bd260baaceef5931b8ee2712da643559f62a565141d5c8deb87c179d7e8f11`
+      is exactly 93 Aderyn lines across two automatic-`Neither` cohorts and left
+      state SHA-256 `e5983ad3...` unchanged. If the user accepts this policy,
+      run the same `missing-voice-live-fallback` command with
+      `--accept-known-role-narrator-fallback`, verify its idempotent repeat and
+      refresh the coverage census. Pocket remains Pocket; fallback-only speaker
+      announcements identify the retained `Aderyn` role and map `???` to
+      `Unknown`, without claiming a Centurion voice clone.
       The Dobharchú task still has one complete opaque candidate: hear all four
       available WAVs and choose that candidate or `Neither`. Replay remains
       available during background saves and failed arms remain visible but

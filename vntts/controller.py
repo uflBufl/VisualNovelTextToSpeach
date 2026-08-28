@@ -1757,11 +1757,16 @@ class AppController:
             return None, None
         visible_speaker = str(chunk.character or "Narrator").strip() or "Narrator"
         if mode == "narrator-fallback-roles":
-            announcement_speaker = (
-                dialogue_route.prepared.narrator_fallback_role
-                if isinstance(dialogue_route, GeneratedAudioRoute)
-                else None
-            )
+            if isinstance(dialogue_route, GeneratedAudioRoute):
+                announcement_speaker = dialogue_route.prepared.narrator_fallback_role
+            elif isinstance(dialogue_route, LiveFallbackRoute):
+                announcement_speaker = (
+                    "Unknown"
+                    if is_unattributed_speaker(visible_speaker)
+                    else dialogue_route.decision.requested_voice_character
+                )
+            else:
+                announcement_speaker = None
         else:
             announcement_speaker = (
                 "Narrator"
