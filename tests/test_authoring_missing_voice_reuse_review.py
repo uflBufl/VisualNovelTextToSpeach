@@ -87,8 +87,7 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             root = Path(directory)
             plan_path, evidence, snapshots, queue_id = self.fixture(root)
             with patch(
-                "vntts.authoring.missing_voice_reuse_review."
-                "_load_candidate_workspace",
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
                 side_effect=lambda _plan, _candidate, path: snapshots[
                     Path(path).resolve()
                 ],
@@ -110,11 +109,15 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             )
 
             self.assertEqual(cohort["complete_candidate_labels"], [generated["label"]])
-            self.assertEqual(cohort["decision_options"], [generated["label"], "neither"])
+            self.assertEqual(
+                cohort["decision_options"], [generated["label"], "neither"]
+            )
             self.assertEqual(
                 failed["samples"][0]["failure_kind"], "missed_eos_audio_limit"
             )
-            with self.assertRaisesRegex(MissingVoiceReuseReviewError, "cannot be heard"):
+            with self.assertRaisesRegex(
+                MissingVoiceReuseReviewError, "cannot be heard"
+            ):
                 record_missing_voice_reuse_heard(
                     session_path, cohort["cohort_id"], queue_id, failed["label"]
                 )
@@ -129,7 +132,9 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 session_path, cohort["cohort_id"], generated["label"]
             )
 
-            self.assertEqual(missing_voice_reuse_review_progress(bundle, session), (0, 1))
+            self.assertEqual(
+                missing_voice_reuse_review_progress(bundle, session), (0, 1)
+            )
             self.assertEqual(updated["decisions"][0]["decision"], generated["label"])
             self.assertEqual(
                 load_missing_voice_reuse_review(session_path)[1]["decisions"][0][
@@ -145,8 +150,7 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 root, statuses=("failed", "failed")
             )
             with patch(
-                "vntts.authoring.missing_voice_reuse_review."
-                "_load_candidate_workspace",
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
                 side_effect=lambda _plan, _candidate, path: snapshots[
                     Path(path).resolve()
                 ],
@@ -164,13 +168,91 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             )
             self.assertEqual(session["decisions"][0]["decision"], "neither")
 
+    def test_exact_failed_control_can_review_one_complete_alternative(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = AuthoringMissingVoiceReuseTest()
+            fixture, _imported, workspace = helper.create_workspace(root)
+            plan = helper.build_failed_plan(fixture, workspace)
+            plan_path = root / "failed-plan.json"
+            write_missing_voice_reuse_plan(plan, plan_path)
+            candidate = plan.document["candidates"][0]
+            candidate_root = (root / "candidate").resolve()
+            candidate_root.mkdir()
+            audio = candidate_root / "generated-audio/audio/sample.wav"
+            write_wav(audio)
+            queue_id = fixture["queue_id"]
+            snapshot = {
+                "directory": candidate_root,
+                "workspace": {"workspace_id": "candidate-workspace"},
+                "state": {
+                    "items": {
+                        queue_id: {
+                            "status": "generated",
+                            "attempts": 1,
+                            "path": "audio/sample.wav",
+                            "file_sha256": sha256_file(audio),
+                            "quality": {"duration_seconds": 0.1},
+                            "source_reference_binding": {
+                                "queue_id": queue_id,
+                                "synthesis_voice_character": candidate[
+                                    "voice_character"
+                                ],
+                            },
+                        }
+                    }
+                },
+                "authority": {
+                    "path": str(candidate_root),
+                    "workspace_id": "candidate-workspace",
+                    "workspace_sha256": "1" * 64,
+                    "state_sha256": "2" * 64,
+                    "voice_manifest_sha256": "3" * 64,
+                },
+            }
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+                return_value=snapshot,
+            ):
+                session_path = build_missing_voice_reuse_review(
+                    plan_path,
+                    {candidate["candidate_id"]: (candidate_root,)},
+                    root / "review",
+                )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            label = bundle["candidates"][0]["label"]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, label
+            )
+            decided = record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], label
+            )
+
+        self.assertEqual(bundle["candidate_count"], 1)
+        self.assertEqual(bundle["target_mode"], "failed")
+        self.assertEqual(
+            bundle["source_control"],
+            [
+                {
+                    "queue_id": queue_id,
+                    "status": "failed",
+                    "failure_category": "speech silence",
+                    "state_item_sha256": plan.document["targets"][0][
+                        "source_state_item_sha256"
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(cohort["decision_options"], [label, "neither"])
+        self.assertEqual(decided["decisions"][0]["decision"], label)
+
     def test_review_audio_and_bundle_are_tamper_evident(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan_path, evidence, snapshots, _queue_id = self.fixture(root)
             with patch(
-                "vntts.authoring.missing_voice_reuse_review."
-                "_load_candidate_workspace",
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
                 side_effect=lambda _plan, _candidate, path: snapshots[
                     Path(path).resolve()
                 ],

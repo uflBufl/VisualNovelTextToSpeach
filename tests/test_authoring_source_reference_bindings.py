@@ -95,6 +95,47 @@ class AuthoringSourceReferenceBindingsTest(unittest.TestCase):
                 ),
             )
 
+    def test_exact_failed_control_can_be_superseded_by_review_candidate(self):
+        document = copy.deepcopy(self.document())
+        reuse = document[MISSING_VOICE_REUSE_BINDING_FIELD]
+        reuse["queue_voice_overrides"] = {"queue:source": "Centurion"}
+        reuse["queue_voice_overrides_sha256"] = queue_voice_overrides_sha256(
+            reuse["queue_voice_overrides"]
+        )
+        reuse["target_mode"] = "failed"
+        reuse["source_failed_state_item_sha256s"] = {"queue:source": "8" * 64}
+
+        overrides = queue_voice_overrides_from_manifest(
+            document,
+            queue_ids=("queue:source",),
+            voices=(
+                SimpleNamespace(character="Source variant"),
+                SimpleNamespace(character="Centurion"),
+            ),
+        )
+
+        self.assertEqual(overrides, {"queue:source": "Centurion"})
+
+    def test_failed_overlap_requires_every_exact_source_item_hash(self):
+        document = copy.deepcopy(self.document())
+        reuse = document[MISSING_VOICE_REUSE_BINDING_FIELD]
+        reuse["queue_voice_overrides"] = {"queue:source": "Centurion"}
+        reuse["queue_voice_overrides_sha256"] = queue_voice_overrides_sha256(
+            reuse["queue_voice_overrides"]
+        )
+        reuse["target_mode"] = "failed"
+        reuse["source_failed_state_item_sha256s"] = {}
+
+        with self.assertRaisesRegex(SourceReferenceBindingError, "overlap"):
+            queue_voice_overrides_from_manifest(
+                document,
+                queue_ids=("queue:source",),
+                voices=(
+                    SimpleNamespace(character="Source variant"),
+                    SimpleNamespace(character="Centurion"),
+                ),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

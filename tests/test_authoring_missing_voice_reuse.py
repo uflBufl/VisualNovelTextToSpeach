@@ -139,6 +139,23 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             candidate_voice_characters=("Adult Aderyn", "Centurion"),
         )
 
+    def build_failed_plan(self, fixture, workspace):
+        state_path = workspace / "generated-audio/generation-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["items"][fixture["queue_id"]] = {
+            "status": "failed",
+            "attempts": 3,
+            "last_error": "Generated WAV failed speech-silence validation",
+        }
+        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        return build_missing_voice_reuse_plan(
+            workspace,
+            "Aderyn",
+            cohorts={"failed family": ("314601.png",)},
+            candidate_voice_characters=("Centurion",),
+            failed_queue_ids=(fixture["queue_id"],),
+        )
+
     def test_plan_is_exact_small_and_does_not_mutate_workspace(self):
         with TemporaryDirectory() as directory:
             fixture, _imported, workspace = self.create_workspace(Path(directory))
@@ -284,6 +301,89 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
         self.assertEqual(command.count("--queue-id"), 1)
         self.assertIn(fixture["queue_id"], command)
         self.assertNotIn("--regenerate-existing", command)
+
+    def test_exact_failed_mode_accepts_one_candidate_and_keeps_control_out(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, workspace = self.create_workspace(root)
+            plan = self.build_failed_plan(fixture, workspace)
+            candidate = plan.document["candidates"][0]
+
+            prepared = prepare_missing_voice_reuse_candidate_workspace(
+                plan,
+                candidate["candidate_id"],
+                imported,
+                root / "candidate-inputs",
+                root / "workspaces",
+            )
+            candidate_state = json.loads(
+                (
+                    prepared.workspace_directory
+                    / "generated-audio/generation-state.json"
+                ).read_text(encoding="utf-8")
+            )
+            readiness = inspect_generation_readiness(
+                prepared.workspace_directory,
+                queue_ids=(fixture["queue_id"],),
+            )
+
+        target = plan.document["targets"][0]
+        self.assertEqual(plan.document["target_mode"], "failed")
+        self.assertEqual(plan.document["candidate_count"], 1)
+        self.assertEqual(target["state"], "failed")
+        self.assertEqual(target["failure_category"], "speech silence")
+        self.assertEqual(len(target["source_state_item_sha256"]), 64)
+        self.assertNotIn(fixture["queue_id"], candidate_state["items"])
+        self.assertEqual(readiness.selected, 1)
+        self.assertEqual(readiness.ready, 1)
+
+    def test_failed_mode_rejects_absent_or_non_failed_exact_ids(self):
+        with TemporaryDirectory() as directory:
+            fixture, _imported, workspace = self.create_workspace(Path(directory))
+            with self.assertRaisesRegex(MissingVoiceReuseError, "not an exact failed"):
+                build_missing_voice_reuse_plan(
+                    workspace,
+                    "Aderyn",
+                    cohorts={"failed family": ("314601.png",)},
+                    candidate_voice_characters=("Centurion",),
+                    failed_queue_ids=(fixture["queue_id"],),
+                )
+            with self.assertRaisesRegex(MissingVoiceReuseError, "absent"):
+                build_missing_voice_reuse_plan(
+                    workspace,
+                    "Aderyn",
+                    cohorts={"failed family": ("314601.png",)},
+                    candidate_voice_characters=("Centurion",),
+                    failed_queue_ids=("missing-queue-id",),
+                )
+
+    def test_cli_publishes_single_candidate_failed_control_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, _imported, workspace = self.create_workspace(root)
+            self.build_failed_plan(fixture, workspace)
+            output = root / "failed-plan.json"
+
+            with redirect_stdout(StringIO()):
+                exit_code = authoring_main(
+                    [
+                        "missing-voice-reuse-plan",
+                        str(workspace),
+                        "Aderyn",
+                        "--cohort",
+                        "failed family=314601.png",
+                        "--candidate-voice",
+                        "Centurion",
+                        "--failed-queue-id",
+                        fixture["queue_id"],
+                        "--output",
+                        str(output),
+                    ]
+                )
+            target_mode = load_missing_voice_reuse_plan(output).document["target_mode"]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(target_mode, "failed")
 
 
 if __name__ == "__main__":

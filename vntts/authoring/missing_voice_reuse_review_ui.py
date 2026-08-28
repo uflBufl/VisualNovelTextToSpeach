@@ -58,17 +58,28 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self._sample_index = 0
         self._close_pending = False
 
-        self.setWindowTitle("Blind missing-voice reuse review")
+        self.failed_control_mode = self.bundle.get("target_mode") == "failed"
+        self.setWindowTitle(
+            "Blind failed-line fallback review"
+            if self.failed_control_mode
+            else "Blind missing-voice reuse review"
+        )
         self.setMinimumSize(820, 520)
         self.resize(1050, 650)
 
         self.progress = QLabel()
         self.progress.setAccessibleName("Missing voice review progress")
-        self.instructions = QLabel(
-            "Compare opaque voices only within this family. Failed renders stay "
+        instructions = (
+            "The original production route failed its technical gate and has no "
+            "playable WAV. Hear every available opaque fallback sample. Choose the "
+            "fallback only if it completed every required sample and sounds "
+            "acceptable; otherwise keep the exact lines unresolved."
+            if self.failed_control_mode
+            else "Compare opaque voices only within this family. Failed renders stay "
             "visible and cannot be selected. Finish every available sample, then "
             "choose one complete voice or Neither."
         )
+        self.instructions = QLabel(instructions)
         self.instructions.setWordWrap(True)
         self.cohort_heading = QLabel()
         self.cohort_heading.setWordWrap(True)
@@ -140,20 +151,30 @@ class MissingVoiceReuseReviewDialog(QDialog):
         decisions = QHBoxLayout()
         for candidate in self.bundle["candidates"]:
             label = candidate["label"]
-            button = QPushButton(f"Choose {label} for this family")
+            button = QPushButton(
+                f"Use fallback {label} for these lines"
+                if self.failed_control_mode
+                else f"Choose {label} for this family"
+            )
             button.clicked.connect(
                 lambda _checked=False, value=label: self._save_decision(value)
             )
             decisions.addWidget(button)
             self.decision_buttons[label] = button
-        self.neither = QPushButton("Neither voice is acceptable")
+        self.neither = QPushButton(
+            "Keep these lines unresolved"
+            if self.failed_control_mode
+            else "Neither voice is acceptable"
+        )
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.clicked.connect(lambda: self._save_decision("neither"))
         decisions.addWidget(self.neither)
         decision_layout = QVBoxLayout()
         decision_layout.addWidget(self.decision_reason)
         decision_layout.addLayout(decisions)
-        decision_box = QGroupBox("Family decision")
+        decision_box = QGroupBox(
+            "Failed-line decision" if self.failed_control_mode else "Family decision"
+        )
         decision_box.setLayout(decision_layout)
 
         self.status = QLabel()
@@ -191,8 +212,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             f"Completed {completed} of {total} families | Remaining {total - completed}"
         )
         decisions = {
-            value["cohort_id"]: value["decision"]
-            for value in self.session["decisions"]
+            value["cohort_id"]: value["decision"] for value in self.session["decisions"]
         }
         self._cohort = next(
             (
@@ -218,7 +238,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
             )
         self.sample_selector.blockSignals(False)
         self.cohort_heading.setText(
-            f"Family {completed + 1} of {total} | "
+            f"{'Failed-line group' if self.failed_control_mode else 'Family'} "
+            f"{completed + 1} of {total} | "
             f"{self._cohort['sample_count']} required sample(s)"
         )
         self.status.setText(
@@ -263,7 +284,9 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 quality = arm.get("quality") or {}
                 duration = quality.get("duration_seconds")
                 duration_text = (
-                    f"{float(duration):.2f}s" if isinstance(duration, (int, float)) else "duration unknown"
+                    f"{float(duration):.2f}s"
+                    if isinstance(duration, (int, float))
+                    else "duration unknown"
                 )
                 repair = arm.get("repair_strategy") or "direct render"
                 self.arm_statuses[label].setText(
@@ -358,10 +381,16 @@ class MissingVoiceReuseReviewDialog(QDialog):
             except Exception as refresh_error:
                 self.status.setText(f"HEARD SAVED, REFRESH FAILED: {refresh_error}")
         if saved is not None and error is not None:
-            self._pending_heard = [value for value in self._pending_heard if value != saved]
+            self._pending_heard = [
+                value for value in self._pending_heard if value != saved
+            ]
         self._start_next_heard_save()
         self._refresh_sample()
-        if self._close_pending and not self.heard_runner.active and not self._pending_heard:
+        if (
+            self._close_pending
+            and not self.heard_runner.active
+            and not self._pending_heard
+        ):
             self._close_pending = False
             self.close()
 
@@ -369,20 +398,22 @@ class MissingVoiceReuseReviewDialog(QDialog):
         if self._cohort is None:
             return set()
         cohort_id = self._cohort["cohort_id"]
-        return {
-            (value["queue_id"], value["label"])
-            for value in self.session["heard"]
-            if value["cohort_id"] == cohort_id
-        } | {
-            (queue_id, label)
-            for current_cohort, queue_id, label in self._pending_heard
-            if current_cohort == cohort_id
-        } | (
+        return (
             {
-                (self._saving_heard[1], self._saving_heard[2])
+                (value["queue_id"], value["label"])
+                for value in self.session["heard"]
+                if value["cohort_id"] == cohort_id
             }
-            if self._saving_heard is not None and self._saving_heard[0] == cohort_id
-            else set()
+            | {
+                (queue_id, label)
+                for current_cohort, queue_id, label in self._pending_heard
+                if current_cohort == cohort_id
+            }
+            | (
+                {(self._saving_heard[1], self._saving_heard[2])}
+                if self._saving_heard is not None and self._saving_heard[0] == cohort_id
+                else set()
+            )
         )
 
     def _all_heard_records(self):
@@ -488,7 +519,11 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.stop.setEnabled(enabled and self._playing_key is not None)
 
     def closeEvent(self, event: QCloseEvent):
-        if self.heard_runner.active or self._pending_heard or self.decision_runner.active:
+        if (
+            self.heard_runner.active
+            or self._pending_heard
+            or self.decision_runner.active
+        ):
             self._close_pending = True
             self.status.setText(
                 "Close requested; waiting for the current background save to finish."

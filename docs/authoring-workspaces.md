@@ -434,6 +434,32 @@ the same binding in its own config identity. This is not a general option to
 attach a reference to unrelated IDs: the failure policy, current source item,
 binding override and carry ledger must all name the same queue identity.
 
+### Reviewing a different voice for an exact failed line
+
+`missing-voice-reuse-plan` also accepts repeated `--failed-queue-id` values.
+This is an exact exhausted-failure mode, not missing-voice discovery. Every
+requested queue ID must still be a current failed spoken item for the named
+character. The plan binds its state-item SHA-256 and normalized failure
+category, and permits one or more existing manifest voices as comparison
+candidates. A one-candidate plan is intentional: the operator chooses that
+fallback only if its complete evidence is acceptable, or keeps the source line
+unresolved. The failed production control has no WAV and is shown as a
+non-playable checksum-bound control rather than silently omitted.
+
+Candidate workspaces start from the immutable imported job and do not carry the
+failed result or consume its attempt ledger. Their manifest may supersede an
+older exact source-reference override only when the comparison binding declares
+`target_mode=failed` and binds a SHA-256 source failure item for every override.
+All other overlap between source-reference and reuse bindings still fails. The
+review bundle exposes those source controls, failed candidate arms and generated
+WAV hashes. A candidate remains unselectable unless it completed every required
+sample; every available WAV must reach end of playback before either decision.
+
+Importing a selected failed-line candidate still publishes only a voice-binding
+successor. It never approves the comparison audio or the next production WAV.
+`Keep unresolved` publishes auditable zero-override authority and does not
+authorize another seed or an implicit backend transition.
+
 Cohort planning and application recompute that same complete config
 fingerprint, including `failure_reference_binding`. Omitting the overlay from a
 review-time fingerprint would falsely report that an unchanged binding-backed

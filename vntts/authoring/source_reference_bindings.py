@@ -49,10 +49,18 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
     )
     overlap = set(source_overrides).intersection(reuse_overrides)
     if overlap:
-        raise SourceReferenceBindingError(
-            "Source-reference and missing-voice reuse bindings overlap queue IDs: "
-            + ", ".join(sorted(overlap))
-        )
+        reuse = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        controls = reuse.get("source_failed_state_item_sha256s", {})
+        if (
+            reuse.get("target_mode") != "failed"
+            or not isinstance(controls, dict)
+            or set(controls) != set(reuse_overrides)
+            or any(not _is_sha256(value) for value in controls.values())
+        ):
+            raise SourceReferenceBindingError(
+                "Source-reference and missing-voice reuse bindings overlap queue IDs: "
+                + ", ".join(sorted(overlap))
+            )
     return {**source_overrides, **reuse_overrides}
 
 
@@ -268,9 +276,7 @@ def _missing_voice_reuse_overrides_from_manifest(
         "Missing-voice reuse source workspace SHA-256",
     )
     if mode == "comparison_sample_only":
-        _required_sha256(
-            value.get("candidate_id"), "Missing-voice reuse candidate ID"
-        )
+        _required_sha256(value.get("candidate_id"), "Missing-voice reuse candidate ID")
         candidate = _text(
             value.get("candidate_voice_character"),
             "Missing-voice reuse candidate voice",
@@ -397,9 +403,7 @@ def _validate_approved_reuse_authority(value):
         )
     decisions = value.get("decisions")
     if not isinstance(decisions, list) or not decisions:
-        raise SourceReferenceBindingError(
-            "Approved missing-voice decisions are empty"
-        )
+        raise SourceReferenceBindingError("Approved missing-voice decisions are empty")
     observed_cohorts = []
     observed_queue_ids = set()
     used_candidate_ids = set()

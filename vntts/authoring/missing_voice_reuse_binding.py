@@ -84,10 +84,9 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         bundle, session = load_missing_voice_reuse_review(session_path)
     except (MissingVoiceReuseError, MissingVoiceReuseReviewError) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
-    if (
-        bundle.get("plan", {}).get("plan_id") != document["plan_id"]
-        or bundle["plan"].get("sha256") != sha256_file(plan_path)
-    ):
+    if bundle.get("plan", {}).get("plan_id") != document["plan_id"] or bundle[
+        "plan"
+    ].get("sha256") != sha256_file(plan_path):
         raise MissingVoiceReuseBindingError(
             "Missing-voice review belongs to a different immutable plan"
         )
@@ -100,9 +99,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         key = json.loads(key_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
-    candidate_by_label = {
-        value["label"]: value for value in key.get("candidates", [])
-    }
+    candidate_by_label = {value["label"]: value for value in key.get("candidates", [])}
     planned_candidate_by_id = {
         value["candidate_id"]: value for value in document["candidates"]
     }
@@ -110,9 +107,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
     for target in document["targets"]:
         target_by_cohort.setdefault(target["cohort_id"], []).append(target["queue_id"])
 
-    review_cohort_by_id = {
-        value["cohort_id"]: value for value in bundle["cohorts"]
-    }
+    review_cohort_by_id = {value["cohort_id"]: value for value in bundle["cohorts"]}
     decisions = []
     selected_by_id = {}
     overrides = {}
@@ -208,9 +203,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         "schema_version": MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
         "mode": "approved_cohort_reuse",
         "plan_id": document["plan_id"],
-        "source_voice_manifest_sha256": document["source"][
-            "voice_manifest_sha256"
-        ],
+        "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
         "source_workspace_id": document["source"]["workspace_id"],
         "source_workspace_sha256": document["source"]["workspace_sha256"],
         "review_bundle_id": bundle["bundle_id"],
@@ -226,6 +219,17 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
             "Human-reviewed exact cohort reuse binding. Neither decisions bind no voice."
         ),
     }
+    if document.get("target_mode", "missing") == "failed":
+        target_by_id = {target["queue_id"]: target for target in document["targets"]}
+        binding.update(
+            {
+                "target_mode": "failed",
+                "source_failed_state_item_sha256s": {
+                    queue_id: target_by_id[queue_id]["source_state_item_sha256"]
+                    for queue_id in sorted(overrides)
+                },
+            }
+        )
     successor = copy.deepcopy(source_document)
     successor[MISSING_VOICE_REUSE_BINDING_FIELD] = binding
 
@@ -251,7 +255,9 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
                 if key_name in seen:
                     continue
                 seen.add(key_name)
-                source = _within(source_root, relative, "Missing-voice binding reference")
+                source = _within(
+                    source_root, relative, "Missing-voice binding reference"
+                )
                 if source.is_symlink() or not source.is_file():
                     raise MissingVoiceReuseBindingError(
                         f"Missing-voice binding reference is unsafe: {value!r}"
@@ -329,9 +335,7 @@ def _validate_binding_bundle(directory, plan, expected_binding):
         )
     inventory = bundle.get("inventory")
     if not isinstance(inventory, list) or not inventory:
-        raise MissingVoiceReuseBindingError(
-            "Missing-voice binding inventory is empty"
-        )
+        raise MissingVoiceReuseBindingError("Missing-voice binding inventory is empty")
     declared = set()
     for item in inventory:
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
@@ -340,9 +344,11 @@ def _validate_binding_bundle(directory, plan, expected_binding):
             )
         relative = _safe_relative(item["path"], "Missing-voice binding artifact")
         artifact = _within(directory, relative, "Missing-voice binding artifact")
-        if artifact.is_symlink() or not artifact.is_file() or sha256_file(
-            artifact
-        ) != item["sha256"]:
+        if (
+            artifact.is_symlink()
+            or not artifact.is_file()
+            or sha256_file(artifact) != item["sha256"]
+        ):
             raise MissingVoiceReuseBindingError(
                 "Missing-voice binding artifact changed"
             )
@@ -396,9 +402,7 @@ def _validate_binding_bundle(directory, plan, expected_binding):
     if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != expected_binding:
         raise MissingVoiceReuseBindingError("Missing-voice binding manifest changed")
     if overrides != expected_binding["queue_voice_overrides"]:
-        raise MissingVoiceReuseBindingError(
-            "Missing-voice binding overrides changed"
-        )
+        raise MissingVoiceReuseBindingError("Missing-voice binding overrides changed")
 
 
 def _result(directory, binding, *, created):

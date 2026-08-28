@@ -46,6 +46,7 @@ from vntts.authoring.workbench import (
     _within,
     create_resume_workspace,
     generation_command,
+    generation_failure_category,
 )
 
 MISSING_VOICE_REUSE_PLAN_SCHEMA = "vntts.authoring-missing-voice-reuse-plan"
@@ -98,11 +99,22 @@ def build_missing_voice_reuse_plan(
     *,
     cohorts,
     candidate_voice_characters,
+    failed_queue_ids=None,
 ):
-    """Plan a small representative comparison without binding or rendering lines."""
+    """Plan a small representative comparison without binding or rendering lines.
+
+    ``failed_queue_ids`` switches the plan from missing-voice discovery to an
+    exact exhausted-failure hypothesis.  The failed source item remains the
+    immutable control; candidate workspaces render only fresh comparison
+    samples and cannot consume or rewrite its attempt ledger.
+    """
     character = _text(character, "Missing-voice character")
     cohort_rules = _cohort_rules(cohorts)
-    requested_candidates = _candidate_names(candidate_voice_characters)
+    target_mode = "failed" if failed_queue_ids is not None else "missing"
+    requested_failed_ids = _failed_queue_ids(failed_queue_ids)
+    requested_candidates = _candidate_names(
+        candidate_voice_characters, minimum=1 if target_mode == "failed" else 2
+    )
     try:
         directory, workspace, workspace_sha256 = _load_workspace_snapshot(
             workspace_directory, "missing-voice reuse plan"
@@ -170,15 +182,21 @@ def build_missing_voice_reuse_plan(
             continue
         if not is_spoken_queue_item(item):
             continue
-        effective_voice = overrides.get(item.queue_id, item.voice_character)
-        if normalize_character_name(effective_voice) in voice_by_name:
-            continue
         result = state_items.get(item.queue_id)
-        if result is not None:
-            # This workflow is intentionally narrower than failure repair. A
-            # rejected or failed result already has a separate terminal
-            # authority and must not be absorbed into a missing-voice cohort.
-            continue
+        effective_voice = overrides.get(item.queue_id, item.voice_character)
+        if target_mode == "missing":
+            if normalize_character_name(effective_voice) in voice_by_name:
+                continue
+            if result is not None:
+                # Rejected and failed results have separate terminal authority.
+                continue
+        else:
+            if item.queue_id not in requested_failed_ids:
+                continue
+            if not isinstance(result, dict) or result.get("status") != "failed":
+                raise MissingVoiceReuseError(
+                    f"Failed-voice target is not an exact failed result: {item.queue_id}"
+                )
         record = story_by_line_id.get(item.line_id)
         if record is None:
             raise MissingVoiceReuseError(
@@ -200,27 +218,51 @@ def build_missing_voice_reuse_plan(
         bucket = (
             "short" if word_count <= 6 else "medium" if word_count <= 14 else "long"
         )
-        targets.append(
-            {
-                "queue_id": item.queue_id,
-                "line_id": item.line_id,
-                "text": item.text,
-                "text_sha256": item.text_sha256,
-                "speaker": item.speaker,
-                "declared_voice_character": item.voice_character,
-                "portrait": portrait,
-                "cohort_id": cohort_id,
-                "word_count": word_count,
-                "length_bucket": bucket,
-                "state": "absent",
-                "voice_binding_status": "missing",
-            }
-        )
+        target = {
+            "queue_id": item.queue_id,
+            "line_id": item.line_id,
+            "text": item.text,
+            "text_sha256": item.text_sha256,
+            "speaker": item.speaker,
+            "declared_voice_character": item.voice_character,
+            "portrait": portrait,
+            "cohort_id": cohort_id,
+            "word_count": word_count,
+            "length_bucket": bucket,
+            "state": "absent" if target_mode == "missing" else "failed",
+            "voice_binding_status": (
+                "missing" if target_mode == "missing" else "source_failed"
+            ),
+        }
+        if target_mode == "failed":
+            target.update(
+                {
+                    "source_voice_character": effective_voice,
+                    "source_state_item_sha256": _canonical_sha256(result),
+                    "failure_category": generation_failure_category(
+                        result if result.get("failure") else result.get("last_error")
+                    ),
+                }
+            )
+        targets.append(target)
     targets.sort(key=lambda value: value["queue_id"])
     if not targets:
+        if target_mode == "failed":
+            raise MissingVoiceReuseError(
+                "Failed-voice queue IDs are absent from the exact character scope: "
+                + ", ".join(sorted(requested_failed_ids))
+            )
         raise MissingVoiceReuseError(
             f"Character has no spoken missing-voice items: {character!r}"
         )
+    if target_mode == "failed":
+        observed_ids = {target["queue_id"] for target in targets}
+        missing_ids = sorted(requested_failed_ids - observed_ids)
+        if missing_ids:
+            raise MissingVoiceReuseError(
+                "Failed-voice queue IDs are absent from the exact character scope: "
+                + ", ".join(missing_ids)
+            )
     observed_cohorts = {target["cohort_id"] for target in targets}
     declared_cohorts = {rule["cohort_id"] for rule in cohort_rules}
     unused = sorted(declared_cohorts - observed_cohorts)
@@ -238,22 +280,33 @@ def build_missing_voice_reuse_plan(
         "voice_manifest_sha256": manifest_sha256,
         "story_index_sha256": story_sha256,
     }
+    policy = {
+        "authority": "plan_only_no_binding_generation_or_review_mutation",
+        "cohorts_are_review_scopes_not_portrait_identity_proof": True,
+        "retired_reference_variants_are_candidates": False,
+        "sample_rule": (
+            "one deterministic missing-voice item per available length bucket "
+            "and exact declared cohort"
+        ),
+        "approval_scope": "one explicit decision per exact cohort",
+        "neither_keeps_cohort_unbound": True,
+    }
+    if target_mode == "failed":
+        policy.update(
+            {
+                "sample_rule": (
+                    "one deterministic exact failed item per available length "
+                    "bucket and exact declared cohort"
+                ),
+                "failed_source_is_non_playable_control": True,
+            }
+        )
     body = {
         "schema": MISSING_VOICE_REUSE_PLAN_SCHEMA,
         "schema_version": MISSING_VOICE_REUSE_PLAN_VERSION,
         "character": character,
         "source": source,
-        "policy": {
-            "authority": "plan_only_no_binding_generation_or_review_mutation",
-            "cohorts_are_review_scopes_not_portrait_identity_proof": True,
-            "retired_reference_variants_are_candidates": False,
-            "sample_rule": (
-                "one deterministic missing-voice item per available length bucket "
-                "and exact declared cohort"
-            ),
-            "approval_scope": "one explicit decision per exact cohort",
-            "neither_keeps_cohort_unbound": True,
-        },
+        "policy": policy,
         "cohorts": cohort_rules,
         "cohort_count": len(cohort_rules),
         "target_count": len(targets),
@@ -264,6 +317,8 @@ def build_missing_voice_reuse_plan(
         "comparison_samples": samples,
         "comparison_sample_queue_ids": [value["queue_id"] for value in samples],
     }
+    if target_mode == "failed":
+        body["target_mode"] = "failed"
     plan_id = _canonical_sha256(body)
     plan = MissingVoiceReusePlan(plan_id, {**body, "plan_id": plan_id})
     _validate_plan(plan)
@@ -341,11 +396,13 @@ def prepare_missing_voice_reuse_candidate_workspace(
             missing_voice_policy=run_config.get("missing_voice_policy"),
             failure_repair_policy=None,
         )
-        created = (
-            rebase_workspace_config(source_directory, target.directory, workspaces_root)
-            if source_state.get("items")
-            else target
-        )
+        created = target
+        if document.get("target_mode", "missing") == "missing" and source_state.get(
+            "items"
+        ):
+            created = rebase_workspace_config(
+                source_directory, target.directory, workspaces_root
+            )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
     return MissingVoiceReuseCandidateWorkspace(
@@ -447,6 +504,11 @@ def _require_fresh_plan(document):
         candidate_voice_characters=tuple(
             candidate["voice_character"] for candidate in document["candidates"]
         ),
+        failed_queue_ids=(
+            tuple(target["queue_id"] for target in document["targets"])
+            if document.get("target_mode", "missing") == "failed"
+            else None
+        ),
     )
     if fresh.plan_id != document["plan_id"]:
         raise MissingVoiceReuseError(
@@ -459,7 +521,7 @@ def _candidate_binding(document, candidate):
         queue_id: candidate["voice_character"]
         for queue_id in document["comparison_sample_queue_ids"]
     }
-    return {
+    binding = {
         "schema": MISSING_VOICE_REUSE_BINDING_SCHEMA,
         "schema_version": MISSING_VOICE_REUSE_BINDING_VERSION,
         "mode": "comparison_sample_only",
@@ -480,6 +542,18 @@ def _candidate_binding(document, candidate):
             "the remaining cohort or approve generated audio."
         ),
     }
+    if document.get("target_mode", "missing") == "failed":
+        target_by_id = {target["queue_id"]: target for target in document["targets"]}
+        binding.update(
+            {
+                "target_mode": "failed",
+                "source_failed_state_item_sha256s": {
+                    queue_id: target_by_id[queue_id]["source_state_item_sha256"]
+                    for queue_id in document["comparison_sample_queue_ids"]
+                },
+            }
+        )
+    return binding
 
 
 def _publish_candidate_input(document, candidate, source_directory, input_root):
@@ -701,16 +775,31 @@ def _cohort_rules(cohorts):
     return rules
 
 
-def _candidate_names(values):
-    if not isinstance(values, (list, tuple)) or len(values) < 2:
+def _candidate_names(values, *, minimum=2):
+    if not isinstance(values, (list, tuple)) or len(values) < minimum:
+        if minimum == 2:
+            raise MissingVoiceReuseError(
+                "Missing-voice reuse requires at least two candidate voices"
+            )
         raise MissingVoiceReuseError(
-            "Missing-voice reuse requires at least two candidate voices"
+            "Failed-voice reuse requires at least one candidate voice"
         )
     names = [_text(value, "Missing-voice candidate voice") for value in values]
     normalized = [normalize_character_name(value) for value in names]
     if len(set(normalized)) != len(normalized):
         raise MissingVoiceReuseError("Missing-voice candidate voices must be distinct")
     return names
+
+
+def _failed_queue_ids(values):
+    if values is None:
+        return set()
+    if not isinstance(values, (list, tuple)) or not values:
+        raise MissingVoiceReuseError("Failed-voice queue IDs must be non-empty")
+    queue_ids = [_text(value, "Failed-voice queue ID") for value in values]
+    if len(queue_ids) != len(set(queue_ids)):
+        raise MissingVoiceReuseError("Failed-voice queue IDs must be distinct")
+    return set(queue_ids)
 
 
 def _candidate_controls(manifest_path, voice_by_name, names, retired_names):
@@ -832,7 +921,13 @@ def _validate_plan(plan):
     if document.get("comparison_sample_queue_ids") != sample_ids:
         raise MissingVoiceReuseError("Missing-voice sample order changed")
     candidate_ids = [value.get("candidate_id") for value in candidates]
-    if len(candidate_ids) < 2 or len(candidate_ids) != len(set(candidate_ids)):
+    target_mode = document.get("target_mode", "missing")
+    if target_mode not in {"missing", "failed"}:
+        raise MissingVoiceReuseError("Missing-voice target mode is invalid")
+    minimum_candidates = 1 if target_mode == "failed" else 2
+    if len(candidate_ids) < minimum_candidates or len(candidate_ids) != len(
+        set(candidate_ids)
+    ):
         raise MissingVoiceReuseError("Missing-voice candidates are invalid")
     return copy.deepcopy(document)
 

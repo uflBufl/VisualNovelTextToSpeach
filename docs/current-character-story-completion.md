@@ -1025,3 +1025,25 @@ that cohort, not merely the listening samples. A `Neither` decision is retained
 as an auditable zero-override authority. The importer rechecks the current
 source workspace, plan, review bundle, session, key, candidate references and
 all copied manifest inputs; it cannot regenerate or approve a WAV.
+
+The same exact matrix now supports exhausted failed controls. Three immutable
+Mrs. Owen -> Centurion plans bind the final authorities separately: b971 plan
+`e0ac3de0eacec6111d24cd3a822c29f4fd32c9bb1fded98fd9bc1d7205fe6f06`
+contains three final seed-2 failures and two deterministic samples; f24 plan
+`9a7f240e44f2875e20b607d77dab0948c984342b22c776ecbeb33e108b6d1d11`
+contains `314608:86`; a2 plan
+`5c70f04b58b26b4d3f0c3cd9e29d7f127f7f55b72ec5c746fbf1b7537b35f4f2`
+contains `314603:13`. All bind the same three-reference Centurion candidate and
+retain each original speech-silence item as a non-playable checksum control.
+
+Four seed-0 comparison attempts were run in fresh workspaces, without carrying
+or incrementing the source failures. Only one b971 sample completed; its cohort
+candidate is therefore incomplete. The other b971 sample and both single-line
+samples failed, so no plan currently has a selectable Centurion candidate.
+Review bundles
+`ee14f9a400daf81fb1af18c3f9f560a66ea50b66895cf2ee6b58152adb4cddec`,
+`7413adc95cf34819ca5ce70201d5c9e052658210c6ed070cab19da6b815c3e11`
+and
+`274c6afb2e8cfb11e4a68b8427075278ac67a242a5ee0b3e5afa3ac1da23e50c`
+make that negative evidence explicit. They permit only an explicit unresolved
+decision; this result does not authorize another Mrs. Owen seed.

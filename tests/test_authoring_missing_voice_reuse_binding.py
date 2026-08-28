@@ -30,9 +30,7 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
         )
         with patch(
             "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
-            side_effect=lambda _plan, _candidate, path: snapshots[
-                Path(path).resolve()
-            ],
+            side_effect=lambda _plan, _candidate, path: snapshots[Path(path).resolve()],
         ):
             session_path = build_missing_voice_reuse_review(
                 plan_path, evidence, root / "review", seed=7

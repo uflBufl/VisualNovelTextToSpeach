@@ -884,7 +884,19 @@ def create_parser():
         "--candidate-voice",
         action="append",
         required=True,
-        help="Existing immutable manifest voice to compare; repeat at least twice",
+        help=(
+            "Existing immutable manifest voice to compare; repeat at least twice "
+            "for missing targets, or supply one or more for exact failed targets"
+        ),
+    )
+    missing_voice_reuse.add_argument(
+        "--failed-queue-id",
+        action="append",
+        default=None,
+        help=(
+            "Switch to exact failed-control mode and name one failed queue ID; "
+            "repeat for additional targets"
+        ),
     )
     missing_voice_reuse.add_argument("--output", type=Path, required=True)
     missing_voice_candidate_workspace = subparsers.add_parser(
@@ -1987,6 +1999,7 @@ def main(argv=None):
                 arguments.character,
                 cohorts=parse_cohort_arguments(arguments.cohort),
                 candidate_voice_characters=tuple(arguments.candidate_voice),
+                failed_queue_ids=arguments.failed_queue_id,
             )
             write_missing_voice_reuse_plan(plan, arguments.output)
             print(

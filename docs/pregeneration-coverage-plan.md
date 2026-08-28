@@ -293,6 +293,28 @@ Opaque sides bind the two completed WAV hashes above; the operator must hear
 both and choose A, B or neither before any reference binding or production
 render is allowed.
 
+The blind session became terminal on 2026-08-28 with opaque side B selected.
+Importing that result into fresh audit v2 selected comparison candidate 01,
+reference SHA-256
+`f14f99ac31ebd5f4124bb76ba3d8478dac82ec3a7986c7e776dae4a88cf59515`,
+and published decision-set ID
+`1cc59530ab8ee4e58b0f3ce124ddaeca43db7a2c255babad9cad8fdcb6c3d68b`.
+The immutable binding
+`current-character-story-poacher-ii-reference-v2` has ID
+`4c37d5aa6dfd763bd837c63ae980b0d06aaeaa252e513795bdca567e217c778f`.
+Its config-addressed successor is
+`resume-395a5e5eec0327a3a793b66d-9c0be9a3ebff9afc`.
+
+The single authorized production attempt completed as a pending-review WAV,
+SHA-256
+`051889ddc892a41758b1cad9b2970e3c27b7d5c04a22f1dd3b43f2a113ab9337`.
+It is 4.00 seconds, 48 kHz mono, has 0.08 seconds leading silence, no trailing
+silence, and 0.16 seconds maximum internal silence; it has no technical review
+flags. Plan `current-character-story-poacher-ii-production-v1.json`, ID
+`f6845108924ff021f055f4688120b6629f9d27ec6480345ef823e871d20a98dd`,
+contains exactly that WAV. These measurements do not approve the speech: one
+individual perceptual verdict is still required before merge.
+
 The first real-story Aderyn review refined the fixed-corpus result. Adult
 Aderyn is not rejected as a whole: two natural lines were approved, while four
 lines with conspicuous slow pacing or mid-phrase pauses were rejected. Those

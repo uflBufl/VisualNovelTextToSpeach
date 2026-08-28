@@ -50,6 +50,27 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       control failure and expose only genuinely distinct reference/marker
       hypotheses. Do not infer acceptance from a completed but unpublished
       failure WAV or spend another seed outside those comparison workflows.
+      The exact failed-control voice mode is implemented and tested: it binds
+      every source failure hash/category, allows one alternative plus
+      `Keep unresolved`, renders in fresh comparison-only workspaces, displays
+      the non-playable failed control, and lets a later human selection override
+      an older source-reference route only for those checksum-bound IDs. Three
+      Mrs. Owen -> Centurion review sessions are published for the final b971,
+      f24 and original a2 authorities. Only one of four representative WAVs
+      completed, leaving every candidate incomplete; hear that one available
+      WAV in the b971 session and explicitly keep all three groups unresolved.
+      No new Mrs. Owen production seed is authorized.
+
+      Next, publish Hotelier's already evaluated exact composite as an
+      experimental comparison voice without treating its `needs_sample`
+      quality card as production authority. Use the failed-control mode on the
+      Hotelier reference cases and require `Keep unresolved` if its candidate
+      cannot complete every exact sample. Separately add the same immutable
+      failed-control matrix for bounded inline-marker hypotheses on Hotelier
+      `314601:28` and Mrs. Owen `314605:4`; bind the marker transform and prompt
+      hash rather than treating it as a voice change. Completion requires
+      source-state tamper tests, no-replace publication, exact generation scope,
+      and an importer that cannot approve speech.
 - [ ] Resolve the remaining missing-voice boundary without silently widening a
       reference: 93 spoken Aderyn lines have no age/portrait-safe route after
       the child variant's real-story rejection, and Dobharchú `314608:95` and
@@ -103,24 +124,18 @@ Follow the evidence-backed order and invariants in
       but every one is unavailable in the current install and the `gasp` cues
       are stream/water events rather than a proven human gasp. `Tsk!`,
       `*whimper*`, `*yelp*` and `*gurgle*` remain unbound.
-- [ ] Resolve Poacher II failure
-      `reverse1999:314606:62:e3f44f0529c8ced0` through the narrow immutable
-      audit `current-character-story-poacher-ii-reference-audit-v1`. Compare
-      its three blinded Centurion references on generated output before
-      selecting an exact next reference hypothesis; raw-reference quality alone
-      is insufficient. The exact three-arm render-only comparison
-      `current-character-story-poacher-ii-reference-render-v1` is now immutable:
-      candidates 01 and 02 completed, while candidate 03 ended typed limited and
-      published no WAV. The checksum-bound listening command now accepts an
-      explicit complete two-arm subset of the same comparison, retains the
-      omitted-arm failure evidence and does not rerender either completed
-      candidate. The one-trial blind session is published at
-      `current-character-story-poacher-ii-reference-render-v1-listening`; hear
-      both opaque sides and choose A, B or neither. A selected hypothesis still
-      needs one bounded production render, technical validation, individual
-      human review and exact outcome merge.
-      `Neither` leaves the line failed for explicit live fallback; it does not
-      authorize another MOSS seed or automatic Pocket transition.
+- [ ] Review the one final Poacher II production WAV in
+      `current-character-story-poacher-ii-production-v1.json`. The completed
+      blind comparison selected candidate 01 and was imported into fresh audit
+      v2; binding `current-character-story-poacher-ii-reference-v2` and
+      successor workspace `resume-395a5e5eec0327a3a793b66d-9c0be9a3ebff9afc`
+      produced one technically clean pending WAV for
+      `reverse1999:314606:62:e3f44f0529c8ced0`. Accept or reject that exact WAV
+      on voice identity, words, cadence and artifacts. On acceptance, merge the
+      checksum-bound outcome into the current Character Story successor; on
+      rejection, keep the line failed for explicit live fallback. Do not spend
+      another MOSS seed or infer production approval from the earlier blind
+      reference preference.
 ### P0 - Make long-pause repair automatic and provenance-safe
 
 Follow the measured Dobharchú attribution in

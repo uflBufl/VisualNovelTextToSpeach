@@ -76,8 +76,7 @@ def build_missing_voice_reuse_review(
     ordered = list(candidate_ids)
     random.Random(seed).shuffle(ordered)
     labels = {
-        candidate_id: _opaque_label(index)
-        for index, candidate_id in enumerate(ordered)
+        candidate_id: _opaque_label(index) for index, candidate_id in enumerate(ordered)
     }
     target_by_id = {target["queue_id"]: target for target in document["targets"]}
     sample_by_id = {
@@ -111,9 +110,7 @@ def build_missing_voice_reuse_review(
                 "candidate_id": candidate_id,
                 "voice_character": candidate["voice_character"],
                 "speaker": candidate["speaker"],
-                "ordered_references": copy.deepcopy(
-                    candidate["ordered_references"]
-                ),
+                "ordered_references": copy.deepcopy(candidate["ordered_references"]),
                 "workspaces": [snapshot["authority"] for snapshot in snapshots],
             }
         )
@@ -238,6 +235,25 @@ def build_missing_voice_reuse_review(
             "cohort_count": len(cohorts),
             "cohorts": cohorts,
         }
+        if document.get("target_mode", "missing") == "failed":
+            body.update(
+                {
+                    "target_mode": "failed",
+                    "source_control": [
+                        {
+                            "queue_id": queue_id,
+                            "status": "failed",
+                            "failure_category": target_by_id[queue_id][
+                                "failure_category"
+                            ],
+                            "state_item_sha256": target_by_id[queue_id][
+                                "source_state_item_sha256"
+                            ],
+                        }
+                        for queue_id in document["comparison_sample_queue_ids"]
+                    ],
+                }
+            )
         bundle_id = _canonical_sha256(body)
         bundle = {**body, "bundle_id": bundle_id}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
@@ -289,11 +305,12 @@ def load_missing_voice_reuse_review(session_path):
     if claimed_bundle_id != _canonical_sha256(
         {key: value for key, value in bundle.items() if key != "bundle_id"}
     ):
-        raise MissingVoiceReuseReviewError("Missing-voice review bundle identity changed")
-    if (
-        session.get("bundle_id") != claimed_bundle_id
-        or session.get("bundle_sha256") != sha256_file(bundle_path)
-    ):
+        raise MissingVoiceReuseReviewError(
+            "Missing-voice review bundle identity changed"
+        )
+    if session.get("bundle_id") != claimed_bundle_id or session.get(
+        "bundle_sha256"
+    ) != sha256_file(bundle_path):
         raise MissingVoiceReuseReviewError("Missing-voice review authority changed")
     key_path = root / ".blind-key.json"
     if (
@@ -537,7 +554,7 @@ def _validate_public_matrix(root, bundle, key):
     private_labels = [candidate.get("label") for candidate in key.get("candidates", [])]
     if (
         bundle.get("candidate_count") != len(labels)
-        or len(labels) < 2
+        or not labels
         or len(set(labels)) != len(labels)
         or set(labels) != set(private_labels)
     ):
@@ -547,18 +564,55 @@ def _validate_public_matrix(root, bundle, key):
         for cohort in bundle.get("cohorts", [])
         for sample in cohort.get("samples", [])
     }
+    target_mode = bundle.get("target_mode", "missing")
+    if target_mode == "failed":
+        controls = bundle.get("source_control")
+        if (
+            not isinstance(controls, list)
+            or [value.get("queue_id") for value in controls]
+            != [
+                sample["queue_id"]
+                for cohort in bundle.get("cohorts", [])
+                for sample in cohort.get("samples", [])
+            ]
+            or any(
+                value.get("status") != "failed"
+                or not value.get("failure_category")
+                or not isinstance(value.get("state_item_sha256"), str)
+                or len(value["state_item_sha256"]) != 64
+                for value in controls
+            )
+        ):
+            raise MissingVoiceReuseReviewError(
+                "Failed-control review authority is invalid"
+            )
+    elif target_mode != "missing" or "source_control" in bundle:
+        raise MissingVoiceReuseReviewError(
+            "Missing-voice review target mode is invalid"
+        )
     for candidate in bundle["candidates"]:
         samples = candidate.get("samples")
-        if not isinstance(samples, list) or {sample.get("queue_id") for sample in samples} != queue_ids:
-            raise MissingVoiceReuseReviewError("Missing-voice review matrix is incomplete")
+        if (
+            not isinstance(samples, list)
+            or {sample.get("queue_id") for sample in samples} != queue_ids
+        ):
+            raise MissingVoiceReuseReviewError(
+                "Missing-voice review matrix is incomplete"
+            )
         for sample in samples:
             if sample.get("status") == "generated":
                 relative = _safe_relative(sample.get("audio"), "Review audio")
                 audio = _within(root, relative, "Review audio")
-                if not audio.is_file() or sha256_file(audio) != sample.get("audio_sha256"):
-                    raise MissingVoiceReuseReviewError("Missing-voice review audio changed")
+                if not audio.is_file() or sha256_file(audio) != sample.get(
+                    "audio_sha256"
+                ):
+                    raise MissingVoiceReuseReviewError(
+                        "Missing-voice review audio changed"
+                    )
             elif sample.get("status") != "failed" or not sample.get("failure_kind"):
-                raise MissingVoiceReuseReviewError("Missing-voice review outcome is invalid")
+                raise MissingVoiceReuseReviewError(
+                    "Missing-voice review outcome is invalid"
+                )
     if bundle.get("cohort_count") != len(bundle.get("cohorts", [])):
         raise MissingVoiceReuseReviewError("Missing-voice review cohort count changed")
     for cohort in bundle["cohorts"]:
@@ -566,16 +620,16 @@ def _validate_public_matrix(root, bundle, key):
         complete = []
         for candidate in bundle["candidates"]:
             statuses = {
-                sample["queue_id"]: sample["status"]
-                for sample in candidate["samples"]
+                sample["queue_id"]: sample["status"] for sample in candidate["samples"]
             }
             if all(statuses[queue_id] == "generated" for queue_id in ids):
                 complete.append(candidate["label"])
-        if (
-            cohort.get("complete_candidate_labels") != complete
-            or cohort.get("decision_options") != [*complete, "neither"]
-        ):
-            raise MissingVoiceReuseReviewError("Missing-voice review decision gate changed")
+        if cohort.get("complete_candidate_labels") != complete or cohort.get(
+            "decision_options"
+        ) != [*complete, "neither"]:
+            raise MissingVoiceReuseReviewError(
+                "Missing-voice review decision gate changed"
+            )
 
 
 def _validate_review_session(session, bundle):
@@ -590,20 +644,27 @@ def _validate_review_session(session, bundle):
     if not isinstance(heard, list) or len(heard) != len(
         {(v.get("cohort_id"), v.get("queue_id"), v.get("label")) for v in heard}
     ):
-        raise MissingVoiceReuseReviewError("Missing-voice review heard ledger is invalid")
+        raise MissingVoiceReuseReviewError(
+            "Missing-voice review heard ledger is invalid"
+        )
     for value in heard:
         cohort = _cohort(bundle, value.get("cohort_id"))
         if value.get("queue_id") not in {
             sample["queue_id"] for sample in cohort["samples"]
         }:
             raise MissingVoiceReuseReviewError("Heard sample is outside its cohort")
-        if _public_sample(bundle, value.get("label"), value["queue_id"])["status"] != "generated":
+        if (
+            _public_sample(bundle, value.get("label"), value["queue_id"])["status"]
+            != "generated"
+        ):
             raise MissingVoiceReuseReviewError("Heard ledger names a failed arm")
     for value in decisions:
         decision = value.get("decision")
         if decision is None:
             if set(value) != {"cohort_id", "decision"}:
-                raise MissingVoiceReuseReviewError("Pending review decision is malformed")
+                raise MissingVoiceReuseReviewError(
+                    "Pending review decision is malformed"
+                )
             continue
         cohort = _cohort(bundle, value["cohort_id"])
         if decision not in cohort["decision_options"] or not value.get("decided_at"):
@@ -635,14 +696,18 @@ def _public_sample(bundle, label, queue_id):
     ]
     if len(matches) != 1:
         raise MissingVoiceReuseReviewError("Unknown opaque candidate label")
-    samples = [sample for sample in matches[0]["samples"] if sample["queue_id"] == queue_id]
+    samples = [
+        sample for sample in matches[0]["samples"] if sample["queue_id"] == queue_id
+    ]
     if len(samples) != 1:
         raise MissingVoiceReuseReviewError("Unknown candidate sample")
     return samples[0]
 
 
 def _cohort(bundle, cohort_id):
-    matches = [cohort for cohort in bundle["cohorts"] if cohort.get("cohort_id") == cohort_id]
+    matches = [
+        cohort for cohort in bundle["cohorts"] if cohort.get("cohort_id") == cohort_id
+    ]
     if len(matches) != 1:
         raise MissingVoiceReuseReviewError("Unknown missing-voice review cohort")
     return matches[0]
@@ -652,7 +717,9 @@ def _load_json(path, label):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceReuseReviewError(f"Unable to load {label}: {error}") from error
+        raise MissingVoiceReuseReviewError(
+            f"Unable to load {label}: {error}"
+        ) from error
     if not isinstance(value, dict):
         raise MissingVoiceReuseReviewError(f"{label.capitalize()} must be an object")
     return value
