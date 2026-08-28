@@ -17,7 +17,7 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
     _require_fresh_plan,
@@ -295,7 +295,10 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
             "session_path": str(session_path),
             "binding": binding,
         }
-        decision = {**decision_body, "decision_id": _canonical_sha256(decision_body)}
+        decision = {
+            **decision_body,
+            "decision_id": canonical_document_sha256(decision_body),
+        }
         atomic_write_json(staging / "decision.json", decision, sort_keys=True)
         inventory = [
             {"path": "decision.json", "sha256": sha256_file(staging / "decision.json")},
@@ -311,7 +314,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         }
         atomic_write_json(
             staging / "bundle.json",
-            {**body, "bundle_id": _canonical_sha256(body)},
+            {**body, "bundle_id": canonical_document_sha256(body)},
             sort_keys=True,
         )
         _validate_binding_bundle(staging, document, binding)
@@ -336,7 +339,7 @@ def _validate_binding_bundle(directory, plan, expected_binding):
         or bundle.get("schema_version") != MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION
         or bundle.get("plan_id") != plan["plan_id"]
         or bundle.get("bundle_id")
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in bundle.items() if key != "bundle_id"}
         )
     ):
@@ -386,7 +389,7 @@ def _validate_binding_bundle(directory, plan, expected_binding):
         or decision.get("schema_version") != MISSING_VOICE_REUSE_DECISION_VERSION
         or decision.get("binding") != expected_binding
         or decision.get("decision_id")
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in decision.items() if key != "decision_id"}
         )
     ):

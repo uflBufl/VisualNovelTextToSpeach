@@ -13,11 +13,8 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    _canonical_sha256,
-    sha256_control_path,
-)
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewDecision,
     CohortReviewError,
@@ -143,7 +140,7 @@ def build_voice_quality_gate(workspace_directory, plan, decision):
         "identity": identity,
         "source_review": source,
     }
-    gate_id = _canonical_sha256(body)
+    gate_id = canonical_document_sha256(body)
     return VoiceQualityGate(gate_id, {**body, "gate_id": gate_id})
 
 
@@ -310,7 +307,7 @@ def _reusable_identity(directory, workspace, cohort_identity):
     else:
         model_control = {
             "kind": "identifier",
-            "sha256": _canonical_sha256({"model": model}),
+            "sha256": canonical_document_sha256({"model": model}),
         }
     binding = cohort_identity.get("source_reference_binding")
     if isinstance(binding, dict):
@@ -365,7 +362,7 @@ def _validated_gate_document(gate):
     ):
         raise VoiceQualityGateError("Voice-quality gate schema is unsupported")
     claimed = _required_sha256(document.get("gate_id"), "Voice-quality gate ID")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "gate_id"}
     )
     if claimed != actual:

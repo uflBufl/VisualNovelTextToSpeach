@@ -48,6 +48,7 @@ from vntts.authoring.audio_event_workspace import (
     composition_item_ledger,
     validate_audio_event_composition_workspace,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     LEASE_SCHEMA,
     LEASE_VERSION,
@@ -56,7 +57,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
     ReviewCommit,
-    _canonical_sha256,
     _inline_pause_matches_failure,
     _sentence_repair_matches_failure,
     _snapshot_control_files,
@@ -118,6 +118,8 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     synthesis_character_for_line,
 )
+
+_canonical_sha256 = canonical_document_sha256
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
 WORKSPACE_VERSION = 1
@@ -710,7 +712,7 @@ def create_failure_reference_workspace(
                 raise AuthoringWorkbenchError(
                     f"Failure-reference base item is missing: {queue_id!r}"
                 )
-            if _canonical_sha256(result) != case["failure_sha256"]:
+            if canonical_document_sha256(result) != case["failure_sha256"]:
                 raise AuthoringWorkbenchError(
                     f"Failure-reference base authority is stale for {queue_id!r}"
                 )
@@ -970,7 +972,7 @@ def create_audio_event_composition_workspace(
             "base_workspace_sha256": base_workspace_sha256,
             "base_state_path": "inputs/audio-event-base/generation-state.json",
             "base_state_sha256": state_sha256,
-            "base_item_sha256": _canonical_sha256(previous),
+            "base_item_sha256": canonical_document_sha256(previous),
             "base_audio_path": "inputs/audio-event-base/rejected.wav",
             "base_audio_sha256": previous_audio_sha256,
         }
@@ -1051,12 +1053,12 @@ def create_audio_event_composition_workspace(
             "model": AUDIO_EVENT_MODEL,
             "prompt_sha256": NO_PROMPT_SHA256,
             "prompt_applied": False,
-            "queue_annotations_sha256": _canonical_sha256(
+            "queue_annotations_sha256": canonical_document_sha256(
                 queue_item.document.get("prompt_adapters") or {}
             ),
             "synthesis_text_sha256": queue_item.text_sha256,
             "text_transform": "audio-event-composition-v1",
-            "synthesis_provenance_sha256": _canonical_sha256(ledger),
+            "synthesis_provenance_sha256": canonical_document_sha256(ledger),
             "seed": 0,
             "generation_profile": AUDIO_EVENT_PROFILE,
             "speaker": queue_item.speaker,
@@ -1279,7 +1281,7 @@ def _merge_workspace_outcomes(
                     != base_document["workspace_id"]
                     or not isinstance(base_result, dict)
                     or root_source_failure.get("source_item_sha256")
-                    != _canonical_sha256(base_result)
+                    != canonical_document_sha256(base_result)
                 ):
                     raise AuthoringWorkbenchError(
                         f"Outcome merge source authority is stale for {queue_id!r}"
@@ -1301,7 +1303,7 @@ def _merge_workspace_outcomes(
                     or action["text_sha256"] != queue_item.text_sha256
                     or source["workspace_id"] != source_document["workspace_id"]
                     or source["authority"] != authority
-                    or source["state_item_sha256"] != _canonical_sha256(result)
+                    or source["state_item_sha256"] != canonical_document_sha256(result)
                     or _terminal_review_outcome(base_result)
                 ):
                     raise AuthoringWorkbenchError(
@@ -1332,7 +1334,7 @@ def _merge_workspace_outcomes(
                 "queue_id": queue_id,
                 "source_workspace_id": source_document["workspace_id"],
                 "source_state_sha256": source_state_sha256,
-                "source_item_sha256": _canonical_sha256(result),
+                "source_item_sha256": canonical_document_sha256(result),
                 "audio_sha256": audio_sha256,
                 "status": result["status"],
                 "review_status": result["review_status"],
@@ -2908,7 +2910,7 @@ def _carry_forward_review_outcomes(
             raise AuthoringWorkbenchError(
                 f"Carry-forward seed WAV differs for {queue_item.queue_id!r}"
             )
-        source_item_sha256 = _canonical_sha256(result)
+        source_item_sha256 = canonical_document_sha256(result)
         carry_record = {
             "mode": mode,
             "source_workspace_id": source_document["workspace_id"],
@@ -3027,7 +3029,7 @@ def _carry_forward_review_outcomes(
                 raise AuthoringWorkbenchError(
                     f"Bounded repair source attempts are exhausted for {queue_id!r}"
                 )
-        source_item_sha256 = _canonical_sha256(result)
+        source_item_sha256 = canonical_document_sha256(result)
         requested_character = synthesis_character_for_line(
             queue_by_id[queue_id].speaker,
             queue_by_id[queue_id].voice_character,
@@ -3134,7 +3136,7 @@ def _root_carry_forward_authority(value):
     observed = set()
     current = value
     while isinstance(current.get("source_parent_carry_forward"), dict):
-        digest = _canonical_sha256(current)
+        digest = canonical_document_sha256(current)
         if digest in observed:
             raise AuthoringWorkbenchError("Nested carry-forward provenance is cyclic")
         observed.add(digest)
@@ -3172,7 +3174,7 @@ def _validate_full_carry_forward_item(
         "voice_character": character,
         "prompt_sha256": NO_PROMPT_SHA256,
         "prompt_applied": False,
-        "queue_annotations_sha256": _canonical_sha256(
+        "queue_annotations_sha256": canonical_document_sha256(
             queue_item.document.get("prompt_adapters") or {}
         ),
         "synthesis_provenance_sha256": source_provenance,
@@ -3299,7 +3301,7 @@ def _workspace_generation_provenance(directory, workspace):
         synthesis_configuration["queue_voice_overrides_sha256"] = (
             queue_voice_overrides_sha256(queue_overrides)
         )
-    return _canonical_sha256(
+    return canonical_document_sha256(
         {
             "provider": backend,
             "model": model,
@@ -4207,7 +4209,10 @@ def _validate_workspace_offline_fallback_state(directory, workspace):
             parent_carry = expected.get("source_parent_carry_forward")
             if parent_carry is not None:
                 source_result["carry_forward"] = copy.deepcopy(parent_carry)
-            if _canonical_sha256(source_result) != expected["source_item_sha256"]:
+            if (
+                canonical_document_sha256(source_result)
+                != expected["source_item_sha256"]
+            ):
                 raise AuthoringWorkbenchError(
                     f"Workspace carried failure changed for {queue_id!r}"
                 )
@@ -4628,7 +4633,7 @@ def _validate_workspace_outcome_merge(directory, workspace):
         source_result.pop("outcome_merge", None)
         if queue_id in terminal_queue_ids:
             source_result.pop("terminal_conflict_resolution", None)
-        if _canonical_sha256(source_result) != source_item_sha256:
+        if canonical_document_sha256(source_result) != source_item_sha256:
             raise AuthoringWorkbenchError(
                 f"Workspace merged source item changed for {queue_id!r}"
             )
@@ -4824,7 +4829,7 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace):
             )
         source_result = copy.deepcopy(result)
         source_result.pop("terminal_conflict_resolution", None)
-        if _canonical_sha256(source_result) != item["source_item_sha256"]:
+        if canonical_document_sha256(source_result) != item["source_item_sha256"]:
             raise AuthoringWorkbenchError(
                 f"Workspace terminal conflict source item changed for {queue_id!r}"
             )

@@ -11,7 +11,8 @@ from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
-from vntts.authoring.bulk_generation import ReviewAuthority, _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.bulk_generation import ReviewAuthority
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
@@ -28,6 +29,8 @@ from vntts.authoring.cohort_review import (
     execute_cohort_review_decision,
 )
 from vntts.authoring.workbench import ReviewItem
+
+_canonical_sha256 = canonical_document_sha256
 
 COHORT_REVIEW_BUNDLE_SCHEMA = "vntts.authoring-cohort-review-bundle"
 COHORT_REVIEW_BUNDLE_VERSION = 2
@@ -219,7 +222,7 @@ def _assemble_bundle(source_plans):
             ),
         ),
     }
-    bundle_id = _canonical_sha256(body)
+    bundle_id = canonical_document_sha256(body)
     return CohortReviewBundle(bundle_id, {**body, "bundle_id": bundle_id})
 
 
@@ -389,7 +392,7 @@ def load_cohort_review_observations(publication, original, current):
         or document.get("schema_version")
         not in SUPPORTED_COHORT_REVIEW_OBSERVATIONS_VERSIONS
         or document.get("root_bundle_id") != root["bundle_id"]
-        or document.get("observations_id") != _canonical_sha256(body)
+        or document.get("observations_id") != canonical_document_sha256(body)
     ):
         raise CohortReviewError("Cohort review observations identity is invalid")
     observed_bundle_id = _required_sha256(
@@ -537,7 +540,7 @@ def write_cohort_review_observations(
         "current_bundle_id": active["bundle_id"],
         "observations": observations,
     }
-    document = {**body, "observations_id": _canonical_sha256(body)}
+    document = {**body, "observations_id": canonical_document_sha256(body)}
     path = cohort_review_observations_path(publication)
     if path.is_symlink():
         raise CohortReviewError("Cohort review observations cannot be a symlink")
@@ -576,7 +579,7 @@ def write_cohort_review_progress(publication, original, current):
         "root_bundle_id": root.bundle_id,
         "current_bundle": candidate.document,
     }
-    document = {**body, "progress_id": _canonical_sha256(body)}
+    document = {**body, "progress_id": canonical_document_sha256(body)}
     try:
         atomic_write_json(progress, document, sort_keys=True)
     except OSError as error:
@@ -1052,7 +1055,7 @@ def _reconciled_plan_document(
         "blocked_items": [],
         "cohorts": sorted(cohorts, key=lambda value: value["cohort_id"]),
     }
-    document = {**body, "plan_id": _canonical_sha256(body)}
+    document = {**body, "plan_id": canonical_document_sha256(body)}
     return _validated_plan_document(document)
 
 
@@ -1073,7 +1076,7 @@ def _validated_progress_document(document, original):
     ):
         raise CohortReviewError("Cohort review progress is malformed")
     body = {name: value for name, value in document.items() if name != "progress_id"}
-    if document.get("progress_id") != _canonical_sha256(body):
+    if document.get("progress_id") != canonical_document_sha256(body):
         raise CohortReviewError("Cohort review progress identity changed")
     current = _validated_bundle_document(document["current_bundle"])
     original_workspaces = {
@@ -1184,7 +1187,7 @@ def _load_source_sample_records(source, source_cohorts):
             authority=ReviewAuthority(
                 queue_sha256=queue_sha256,
                 state_sha256=state_sha256,
-                item_sha256=_canonical_sha256(result),
+                item_sha256=canonical_document_sha256(result),
                 audio_sha256=sample["audio_sha256"],
             ),
             state=state_path,
@@ -1459,7 +1462,7 @@ def _validated_bundle_document(bundle):
     if actual != rebuilt:
         raise CohortReviewError("Cohort review bundle cohort inventory changed")
     body = {key: value for key, value in document.items() if key != "bundle_id"}
-    bundle_id = _canonical_sha256(body)
+    bundle_id = canonical_document_sha256(body)
     if document.get("bundle_id") != bundle_id:
         raise CohortReviewError("Cohort review bundle identity changed")
     return document

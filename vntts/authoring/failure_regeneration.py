@@ -8,8 +8,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
-    _canonical_sha256,
     generation_failure_repair_plan,
     load_generation_state,
 )
@@ -79,7 +79,7 @@ def build_failure_regeneration_plan(workspace_directory):
             {
                 "queue_id": queue_id,
                 "line_id": planned["line_id"],
-                "item_sha256": _canonical_sha256(item),
+                "item_sha256": canonical_document_sha256(item),
                 "failure_kind": planned["failure_kind"],
                 "attempts": planned["attempts"],
                 "seed": planned["seed"],
@@ -97,7 +97,7 @@ def build_failure_regeneration_plan(workspace_directory):
         "failure_count": len(records),
         "records": records,
     }
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     return FailureRegenerationPlan(plan_id, {**body, "plan_id": plan_id})
 
 
@@ -153,7 +153,7 @@ def build_failure_regeneration_command(
         "queue_ids": list(queue_ids),
     }
     return FailureRegenerationCommand(
-        batch_id=_canonical_sha256(identity),
+        batch_id=canonical_document_sha256(identity),
         batch_index=batch_index,
         batch_count=batch_count,
         queue_ids=queue_ids,
@@ -245,7 +245,7 @@ def _validated_plan_document(plan):
         )
     if document.get("failure_count") != len(canonical):
         raise FailureRegenerationError("Failure regeneration count is inconsistent")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     )
     if actual != document["plan_id"]:

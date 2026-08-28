@@ -10,10 +10,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
-    _canonical_sha256,
     _review_generation_cohort,
 )
 from vntts.authoring.workbench import (
@@ -184,7 +184,7 @@ def build_cohort_review_plan(
                 }
             )
             continue
-        cohort_id = _canonical_sha256(identity)
+        cohort_id = canonical_document_sha256(identity)
         word_count = len(WORD_PATTERN.findall(item.text))
         record = {
             "queue_id": item.queue_id,
@@ -279,7 +279,7 @@ def build_cohort_review_plan(
         "blocked_items": sorted(blocked, key=lambda value: value["queue_id"]),
         "cohorts": planned,
     }
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     document = {**body, "plan_id": plan_id}
     return CohortReviewPlan(plan_id, document)
 
@@ -436,7 +436,7 @@ def build_cohort_review_decision(
             next_clean_samples_per_bucket if decision == "expand" else None
         ),
     }
-    decision_id = _canonical_sha256(body)
+    decision_id = canonical_document_sha256(body)
     return CohortReviewDecision(decision_id, {**body, "decision_id": decision_id})
 
 
@@ -599,7 +599,7 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         authorities[queue_id] = ReviewAuthority(
             queue_sha256=plan_document["queue_sha256"],
             state_sha256=plan_document["state_sha256"],
-            item_sha256=_canonical_sha256(item),
+            item_sha256=canonical_document_sha256(item),
             audio_sha256=target["audio_sha256"],
         )
     provenance = {
@@ -742,7 +742,7 @@ def _plan_identity_and_document(document):
     if document.get("schema_version") != COHORT_REVIEW_PLAN_VERSION:
         raise CohortReviewError("Cohort review plan version is unsupported")
     plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     )
     if actual != plan_id:
@@ -885,7 +885,7 @@ def _validated_decision_document(document):
     if version not in SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS:
         raise CohortReviewError("Cohort review decision version is unsupported")
     claimed = _required_sha256(document.get("decision_id"), "Decision ID")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "decision_id"}
     )
     if actual != claimed:

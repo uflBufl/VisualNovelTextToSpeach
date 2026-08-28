@@ -318,6 +318,22 @@ while one-sentence controls remained below 0.25 seconds.
       full unit suite and authoring import-graph regression to pass with no
       concrete-module cycles and no remaining cross-module dependency on the
       extracted private helpers.
+      Implement this in dependency-safe slices: (1) replace every production
+      import of `bulk_generation._canonical_sha256` with the existing public
+      `authority.canonical_document_sha256`, retain the private name only as a
+      local compatibility alias, and add an AST regression that forbids this
+      cross-module import; (2) extract generic contained-path, immutable file,
+      JSON and workspace-snapshot readers from `workbench` into a leaf
+      foundation module, expose typed public names, and migrate callers while
+      keeping workbench aliases; (3) extract the generation-state/manifest and
+      lease boundary from `bulk_generation` into a leaf foundation module,
+      migrate publication/live-fallback/config-rebase callers, and preserve
+      public behavior; (4) expose narrower domain APIs for the remaining
+      workspace validation/config helpers instead of re-exporting internals.
+      After each slice run the focused modules plus Ruff/import-graph tests;
+      remove this item only after an AST inventory reports zero production
+      imports of underscore-prefixed names from either dependency magnet and
+      the complete suite passes.
 - [ ] Replace the eager `vntts.authoring` compatibility facade with a small or
       lazy public surface. Preserve every documented external import during the
       migration, but stop a direct leaf-module import from loading unrelated

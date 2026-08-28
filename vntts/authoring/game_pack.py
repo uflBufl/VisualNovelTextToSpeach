@@ -31,10 +31,10 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _approved_manifest_entries,
-    _canonical_sha256,
     _load_stable_queue,
     _process_started_at,
     _validate_state_document,
@@ -59,6 +59,8 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.voices import synthesis_character_for_line
+
+_canonical_sha256 = canonical_document_sha256
 
 
 class FinalGamePackError(RuntimeError):
@@ -567,7 +569,7 @@ def _live_fallback_records(state, queue):
         records.append(
             {
                 **copy.deepcopy(decision),
-                "decision_sha256": _canonical_sha256(decision),
+                "decision_sha256": canonical_document_sha256(decision),
             }
         )
     return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
@@ -857,7 +859,7 @@ def _verify_voice_control_provenance(
         configuration = result.get("synthesis_configuration")
         if configuration is not None:
             provenance_document.update(configuration)
-        calculated = _canonical_sha256(provenance_document)
+        calculated = canonical_document_sha256(provenance_document)
         if calculated != provenance:
             raise FinalGamePackError(
                 f"State item {queue_id!r} synthesis provenance is inconsistent"

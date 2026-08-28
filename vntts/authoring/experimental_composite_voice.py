@@ -18,7 +18,7 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.reference_composite import (
     COMPOSITE_EVALUATION_SCHEMA,
     COMPOSITE_EVALUATION_VERSION,
@@ -223,7 +223,7 @@ def publish_experimental_composite_voice_input(
             "experimental_reference_sha256": composite["reference_sha256"],
             "inventory": sorted(inventory, key=lambda value: value["path"]),
         }
-        bundle = {**body, "bundle_id": _canonical_sha256(body)}
+        bundle = {**body, "bundle_id": canonical_document_sha256(body)}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
         _validate_experimental_composite_voice_input(staging, expected)
         _rename_directory_no_replace(staging, output)
@@ -348,7 +348,7 @@ def _validate_experimental_composite_voice_input(directory, expected):
         or bundle.get("experimental_reference_sha256")
         != expected["authority"]["voices"][0]["reference_sha256"]
         or bundle.get("bundle_id")
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in bundle.items() if key != "bundle_id"}
         )
     ):

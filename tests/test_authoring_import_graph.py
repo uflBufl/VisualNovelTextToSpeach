@@ -60,7 +60,30 @@ def _reachable(graph, source, target):
     return False
 
 
+def _production_importers(module, imported_name):
+    root = Path(__file__).parents[1] / "vntts"
+    importers = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == module
+            and any(alias.name == imported_name for alias in node.names)
+            for node in ast.walk(tree)
+        ):
+            importers.append(path.relative_to(root.parent).as_posix())
+    return sorted(importers)
+
+
 class AuthoringImportGraphTest(unittest.TestCase):
+    def test_canonical_document_hash_does_not_import_bulk_private_helper(self):
+        self.assertEqual(
+            _production_importers(
+                "vntts.authoring.bulk_generation", "_canonical_sha256"
+            ),
+            [],
+        )
+
     def test_authoring_module_graph_has_no_strongly_connected_components(self):
         graph = _authoring_import_graph()
         cycles = []

@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_audit,
     load_failure_reference_decisions,
@@ -74,7 +74,7 @@ def _load_public_document(audit):
     validated = load_failure_reference_audit(audit)
     path = validated.directory / "audit.json"
     document = json.loads(path.read_text(encoding="utf-8"))
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {name: value for name, value in document.items() if name != "audit_id"}
     )
     if actual != validated.audit_id:

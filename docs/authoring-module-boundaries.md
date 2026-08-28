@@ -33,10 +33,27 @@ still the SHA-256 of the same canonical JSON projection, reference paths remain
 symlink-safe and contained, and queue override inventory validation remains
 unchanged.
 
+## Canonical document identity
+
+`authority.canonical_document_sha256` is the leaf API for the stable SHA-256 of
+canonical JSON-compatible records. Production authoring modules must not import
+the historical private `bulk_generation._canonical_sha256` helper. The first
+dependency-magnet extraction slice migrated all 21 production consumers,
+including workbench, cohort, reference, config-rebase, terminal-conflict and
+final-pack workflows, without changing any calculated document identity.
+
+`bulk_generation._canonical_sha256` remains available for compatibility, and
+the few modules whose existing tests exercised their imported private alias
+retain a local alias to the leaf function. New code must use the public
+authority name. The import-graph test performs an AST inventory over all
+production modules and fails if a direct private bulk-generation hash import is
+introduced again.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and
 asserts that neither extracted record module can reach its higher layers and
 that no pair in either former strongly connected component is mutually
-reachable. Focused publication, loader, decision, workbench and final-pack tests
-must accompany this graph gate whenever either record schema changes.
+reachable. It also enforces the canonical-hash leaf boundary described above.
+Focused publication, loader, decision, workbench and final-pack tests must
+accompany this graph gate whenever either record schema changes.

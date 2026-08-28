@@ -8,7 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
@@ -106,7 +106,7 @@ def build_specialist_failure_plan(workspace_directories):
                 "generation_profile": result.get("generation_profile"),
                 "repair_strategy": repair.get("strategy"),
                 "failure": failure,
-                "result_sha256": _canonical_sha256(result),
+                "result_sha256": canonical_document_sha256(result),
                 "text_shape": {
                     "sentence_boundary_count": text_features.get(
                         "sentence_boundary_count"
@@ -117,7 +117,7 @@ def build_specialist_failure_plan(workspace_directories):
                 "next_action": action,
                 "rationale": rationale,
             }
-            item["cluster_key"] = _canonical_sha256(
+            item["cluster_key"] = canonical_document_sha256(
                 {
                     key: item[key]
                     for key in (
@@ -188,7 +188,7 @@ def build_specialist_failure_plan(workspace_directories):
         "clusters": clusters,
         "items": items,
     }
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     return SpecialistFailurePlan(plan_id, {**body, "plan_id": plan_id})
 
 
@@ -257,7 +257,7 @@ def _validated(plan):
     if document.get("schema_version") != SPECIALIST_FAILURE_PLAN_VERSION:
         raise CohortReviewError("Unsupported specialist failure plan version")
     claimed = document.get("plan_id")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     )
     if claimed != actual:

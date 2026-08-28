@@ -19,7 +19,8 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.bulk_generation import _canonical_sha256, sha256_control_path
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.bulk_generation import sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
@@ -220,7 +221,7 @@ def build_voice_repair_comparison_plan(
         "sha256": (
             sha256_control_path(model_path)
             if model_path.exists()
-            else _canonical_sha256({"model": model})
+            else canonical_document_sha256({"model": model})
         ),
     }
     candidates = []
@@ -234,7 +235,7 @@ def build_voice_repair_comparison_plan(
             "prompt_policy": "queue_annotations_unapplied",
             "variants": variants,
         }
-        candidates.append({**body, "candidate_id": _canonical_sha256(body)})
+        candidates.append({**body, "candidate_id": canonical_document_sha256(body)})
     source = {
         "workspace": str(directory),
         "workspace_id": workspace["workspace_id"],
@@ -275,7 +276,7 @@ def build_voice_repair_comparison_plan(
         "candidates": candidates,
         "comparison_sample_queue_ids": samples,
     }
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     plan = VoiceRepairComparisonPlan(plan_id, {**body, "plan_id": plan_id})
     _validate_plan(plan)
     _rehash_sources(
@@ -403,7 +404,7 @@ def build_voice_repair_candidate_command(
     observed_model_sha256 = (
         sha256_control_path(model_path)
         if model_control["kind"] == "path"
-        else _canonical_sha256({"model": candidate["model"]})
+        else canonical_document_sha256({"model": candidate["model"]})
     )
     if observed_model_sha256 != model_control["sha256"]:
         raise VoiceRepairComparisonError("Candidate model changed after planning")
@@ -547,7 +548,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
             "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
             "inventory": inventory,
         }
-        bundle_id = _canonical_sha256(body)
+        bundle_id = canonical_document_sha256(body)
         atomic_write_json(
             staging / "bundle.json", {**body, "bundle_id": bundle_id}, sort_keys=True
         )
@@ -596,7 +597,7 @@ def _validate_candidate_input(directory, document, candidate):
     ):
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
     claimed = _required_sha256(bundle.get("bundle_id"), "Candidate bundle ID")
-    if claimed != _canonical_sha256(
+    if claimed != canonical_document_sha256(
         {key: value for key, value in bundle.items() if key != "bundle_id"}
     ):
         raise VoiceRepairComparisonError("Candidate bundle identity is invalid")
@@ -749,7 +750,9 @@ def _item_record(directory, item, result, variant, review_by_id):
         ),
         "status": status,
         "review_status": review_status,
-        "state_item_sha256": (None if result is None else _canonical_sha256(result)),
+        "state_item_sha256": (
+            None if result is None else canonical_document_sha256(result)
+        ),
         "audio_sha256": audio_sha256,
         "failure_category": failure_category,
         "word_count": word_count,
@@ -792,7 +795,7 @@ def _comparison_samples(targets):
                 continue
             choice = min(
                 candidates,
-                key=lambda value: _canonical_sha256(
+                key=lambda value: canonical_document_sha256(
                     {
                         "queue_id": value["queue_id"],
                         "text_sha256": value["text_sha256"],
@@ -835,7 +838,7 @@ def _validate_plan(plan):
             "Voice repair comparison schema is unsupported"
         )
     claimed = _required_sha256(document.get("plan_id"), "Comparison plan ID")
-    actual = _canonical_sha256(
+    actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     )
     if claimed != actual:
@@ -980,7 +983,7 @@ def _validate_plan(plan):
             raise VoiceRepairComparisonError("Comparison candidate variants differ")
         if candidate.get("prompt_policy") != "queue_annotations_unapplied":
             raise VoiceRepairComparisonError("Comparison prompt policy is unsafe")
-        if candidate_id != _canonical_sha256(
+        if candidate_id != canonical_document_sha256(
             {key: value for key, value in candidate.items() if key != "candidate_id"}
         ):
             raise VoiceRepairComparisonError("Comparison candidate identity is invalid")

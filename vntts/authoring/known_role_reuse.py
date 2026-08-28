@@ -19,9 +19,9 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _canonical_sha256,
     _load_stable_queue,
     _validate_state_document,
     is_spoken_queue_item,
@@ -264,14 +264,14 @@ def publish_known_role_reuse_binding(
             and result.get("review_status") == "rejected"
         ):
             source_state = "rejected"
-            state_item_sha256 = _canonical_sha256(result)
+            state_item_sha256 = canonical_document_sha256(result)
             rejected[queue_id] = state_item_sha256
         elif (
             isinstance(result, dict)
             and result.get("status") == "approved"
             and result.get("review_status") == "approved"
         ):
-            approved[queue_id] = _canonical_sha256(result)
+            approved[queue_id] = canonical_document_sha256(result)
             continue
         else:
             raise KnownRoleReuseError(
@@ -305,7 +305,7 @@ def publish_known_role_reuse_binding(
             retired_records.append(
                 {
                     "variant_id": record["variant_id"],
-                    "record_sha256": _canonical_sha256(record),
+                    "record_sha256": canonical_document_sha256(record),
                     "queue_ids": queue_ids,
                 }
             )
@@ -356,7 +356,7 @@ def publish_known_role_reuse_binding(
         "unresolved_authority_directory": str(unresolved_authority_directory),
         "binding": known_binding,
     }
-    decision_id = _canonical_sha256(decision_body)
+    decision_id = canonical_document_sha256(decision_body)
     result = KnownRoleReuseResult(
         output,
         source_character,
@@ -417,7 +417,7 @@ def publish_known_role_reuse_binding(
         }
         atomic_write_json(
             staging / "bundle.json",
-            {**body, "bundle_id": _canonical_sha256(body)},
+            {**body, "bundle_id": canonical_document_sha256(body)},
             sort_keys=True,
         )
         _validate_bundle(staging, known_binding, decision_body, queue_by_id)
@@ -443,8 +443,8 @@ def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
     if (
         bundle.get("schema") != KNOWN_ROLE_REUSE_BUNDLE_SCHEMA
         or bundle.get("schema_version") != KNOWN_ROLE_REUSE_BUNDLE_VERSION
-        or bundle.get("bundle_id") != _canonical_sha256(body)
-        or bundle.get("decision_id") != _canonical_sha256(decision_body)
+        or bundle.get("bundle_id") != canonical_document_sha256(body)
+        or bundle.get("decision_id") != canonical_document_sha256(decision_body)
     ):
         raise KnownRoleReuseError("Known-role bundle identity is invalid")
     inventory = bundle.get("inventory")
@@ -472,7 +472,8 @@ def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
         raise KnownRoleReuseError("Known-role bundle inventory is incomplete")
     decision = _read_json(directory / "decision.json", "known-role decision")
     if (
-        decision != {**decision_body, "decision_id": _canonical_sha256(decision_body)}
+        decision
+        != {**decision_body, "decision_id": canonical_document_sha256(decision_body)}
         or decision.get("binding") != expected_binding
     ):
         raise KnownRoleReuseError("Known-role decision changed")

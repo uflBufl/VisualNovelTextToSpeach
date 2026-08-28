@@ -21,7 +21,8 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
-from vntts.authoring.bulk_generation import _canonical_sha256, is_spoken_queue_item
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.bulk_generation import is_spoken_queue_item
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
@@ -252,7 +253,7 @@ def build_missing_voice_reuse_plan(
             target.update(
                 {
                     "source_voice_character": effective_voice,
-                    "source_state_item_sha256": _canonical_sha256(result),
+                    "source_state_item_sha256": canonical_document_sha256(result),
                     "failure_category": generation_failure_category(
                         result if result.get("failure") else result.get("last_error")
                     ),
@@ -339,7 +340,7 @@ def build_missing_voice_reuse_plan(
         body["target_mode"] = "failed"
     if inline_pause_ms is not None:
         body["candidate_mode"] = INLINE_PAUSE_MARKER
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     plan = MissingVoiceReusePlan(plan_id, {**body, "plan_id": plan_id})
     _validate_plan(plan)
     _assert_sources_unchanged(
@@ -674,7 +675,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         }
         atomic_write_json(
             staging / "bundle.json",
-            {**body, "bundle_id": _canonical_sha256(body)},
+            {**body, "bundle_id": canonical_document_sha256(body)},
             sort_keys=True,
         )
         _validate_candidate_input(staging, document, candidate)
@@ -701,7 +702,7 @@ def _validate_candidate_input(directory, document, candidate):
         or bundle.get("plan_id") != document["plan_id"]
         or bundle.get("candidate_id") != candidate["candidate_id"]
         or claimed
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in bundle.items() if key != "bundle_id"}
         )
     ):
@@ -806,7 +807,7 @@ def _cohort_rules(cohorts):
             )
         seen_portraits.update(portraits)
         identity = {"label": label, "portraits": portraits}
-        rules.append({**identity, "cohort_id": _canonical_sha256(identity)})
+        rules.append({**identity, "cohort_id": canonical_document_sha256(identity)})
     return rules
 
 
@@ -870,7 +871,9 @@ def _inline_pause_candidates(candidates, samples, targets, pause_ms):
             if key != "candidate_id"
         }
         identity["render_hypothesis"] = copy.deepcopy(hypothesis)
-        enriched.append({**identity, "candidate_id": _canonical_sha256(identity)})
+        enriched.append(
+            {**identity, "candidate_id": canonical_document_sha256(identity)}
+        )
     return enriched
 
 
@@ -928,7 +931,9 @@ def _candidate_controls(manifest_path, voice_by_name, names, retired_names):
             "speaker": voice.speaker,
             "ordered_references": references,
         }
-        candidates.append({**identity, "candidate_id": _canonical_sha256(identity)})
+        candidates.append(
+            {**identity, "candidate_id": canonical_document_sha256(identity)}
+        )
     return candidates
 
 
@@ -956,7 +961,7 @@ def _comparison_samples(targets):
                 continue
             choice = min(
                 candidates,
-                key=lambda value: _canonical_sha256(
+                key=lambda value: canonical_document_sha256(
                     {
                         "queue_id": value["queue_id"],
                         "text_sha256": value["text_sha256"],
@@ -985,7 +990,7 @@ def _validate_plan(plan):
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan schema is unsupported")
     claimed = document.get("plan_id")
-    if claimed != _canonical_sha256(
+    if claimed != canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan identity is invalid")
@@ -1023,7 +1028,7 @@ def _validate_plan(plan):
     ):
         raise MissingVoiceReuseError("Missing-voice candidates are invalid")
     for candidate in candidates:
-        if candidate.get("candidate_id") != _canonical_sha256(
+        if candidate.get("candidate_id") != canonical_document_sha256(
             {key: value for key, value in candidate.items() if key != "candidate_id"}
         ):
             raise MissingVoiceReuseError("Missing-voice candidate identity changed")

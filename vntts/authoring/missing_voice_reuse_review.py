@@ -16,7 +16,7 @@ from pathlib import Path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import (
     MISSING_VOICE_REUSE_PLAN_SCHEMA,
     MissingVoiceReuseError,
@@ -256,7 +256,7 @@ def build_missing_voice_reuse_review(
                     ],
                 }
             )
-        bundle_id = _canonical_sha256(body)
+        bundle_id = canonical_document_sha256(body)
         bundle = {**body, "bundle_id": bundle_id}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
         created_at = _utc_now()
@@ -309,7 +309,7 @@ def load_missing_voice_reuse_review(session_path):
     ):
         raise MissingVoiceReuseReviewError("Missing-voice review schema is unsupported")
     claimed_bundle_id = bundle.get("bundle_id")
-    if claimed_bundle_id != _canonical_sha256(
+    if claimed_bundle_id != canonical_document_sha256(
         {key: value for key, value in bundle.items() if key != "bundle_id"}
     ):
         raise MissingVoiceReuseReviewError(
@@ -486,7 +486,7 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "status": item["status"],
                 "workspace": snapshot["authority"],
                 "attempts": item.get("attempts", 0),
-                "item_sha256": _canonical_sha256(item),
+                "item_sha256": canonical_document_sha256(item),
             }
             if item["status"] == "generated":
                 relative = _safe_relative(item.get("path"), "Candidate WAV path")

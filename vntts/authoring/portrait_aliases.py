@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QImage
 
-from vntts.authoring.bulk_generation import _canonical_sha256
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
@@ -119,7 +119,7 @@ def build_portrait_alias_plan(
             "dhash_distance": distance,
             "variants": members,
         }
-        suggestions.append({"suggestion_id": _canonical_sha256(body), **body})
+        suggestions.append({"suggestion_id": canonical_document_sha256(body), **body})
     suggestions.sort(key=lambda value: value["suggestion_id"])
     body = {
         "schema": PORTRAIT_ALIAS_PLAN_SCHEMA,
@@ -131,7 +131,7 @@ def build_portrait_alias_plan(
         "suggestion_count": len(suggestions),
         "suggestions": suggestions,
     }
-    document = {**body, "plan_id": _canonical_sha256(body)}
+    document = {**body, "plan_id": canonical_document_sha256(body)}
     if (
         hashlib.sha256(_read(path, "source-reference quality review")).hexdigest()
         != source_sha256
@@ -192,7 +192,7 @@ def build_portrait_alias_decision(plan, accepted_suggestion_ids):
         "identity_count": len(groups),
         "identities": groups,
     }
-    document = {**body, "decision_id": _canonical_sha256(body)}
+    document = {**body, "decision_id": canonical_document_sha256(body)}
     return PortraitAliasDecision(document["decision_id"], document)
 
 
@@ -272,7 +272,7 @@ def _connected_alias_groups(suggestions):
             "variants": members,
         }
         groups.append(
-            {"identity_id": _canonical_sha256(identity_body), **identity_body}
+            {"identity_id": canonical_document_sha256(identity_body), **identity_body}
         )
     groups.sort(key=lambda value: value["identity_id"])
     return groups

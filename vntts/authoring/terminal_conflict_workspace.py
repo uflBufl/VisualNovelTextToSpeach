@@ -17,12 +17,12 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     assert_authority_snapshot,
+    canonical_document_sha256,
     capture_authority_file,
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
-    _canonical_sha256,
     _write_generated_manifest_from_state,
     load_review_audio_bytes,
     process_is_alive,
@@ -287,7 +287,7 @@ def merge_terminal_conflict_resolution(
         source_item = source_state.get("items", {}).get(queue_id)
         if (
             not isinstance(source_item, dict)
-            or _canonical_sha256(source_item) != authority.item_sha256
+            or canonical_document_sha256(source_item) != authority.item_sha256
             or source_item.get("file_sha256") != candidate["audio_sha256"]
         ):
             raise AuthoringWorkbenchError(
@@ -337,7 +337,7 @@ def merge_terminal_conflict_resolution(
             "queue_id": queue_id,
             "source_workspace_id": source_document["workspace_id"],
             "source_state_sha256": state_snapshot.sha256,
-            "source_item_sha256": _canonical_sha256(source_item),
+            "source_item_sha256": canonical_document_sha256(source_item),
             "audio_sha256": resolution_audio_snapshot.sha256,
             "status": source_item["status"],
             "review_status": source_item["review_status"],

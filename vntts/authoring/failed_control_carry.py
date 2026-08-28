@@ -11,9 +11,9 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _canonical_sha256,
     load_generation_state,
     process_is_alive,
 )
@@ -177,7 +177,7 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                 records.append(
                     {
                         "queue_id": queue_id,
-                        "source_item_sha256": _canonical_sha256(result),
+                        "source_item_sha256": canonical_document_sha256(result),
                         "effective_voice_character": source_route[0],
                         "reference_sha256s": list(source_route[1]),
                     }
@@ -191,15 +191,15 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                 "target_workspace_id": target["workspace_id"],
                 "target_workspace_sha256": target_workspace_sha256,
                 "queue_sha256": queue_sha256,
-                "target_base_state_id": _canonical_sha256(base),
-                "target_result_state_id": _canonical_sha256(proposed),
+                "target_base_state_id": canonical_document_sha256(base),
+                "target_result_state_id": canonical_document_sha256(proposed),
                 "items": records,
                 "authority": (
                     "Exact non-playable failed controls only. This carry adds no "
                     "audio, generation attempt, review decision or voice binding."
                 ),
             }
-            report = {**body, "carry_id": _canonical_sha256(body)}
+            report = {**body, "carry_id": canonical_document_sha256(body)}
             if report_path.is_symlink():
                 raise FailedControlCarryError(
                     "Failed-control carry report must not be a symbolic link"

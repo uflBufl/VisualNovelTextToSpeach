@@ -11,9 +11,9 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    canonical_document_sha256,
     write_json_document_no_replace,
 )
-from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.failure_repair import INLINE_PAUSE_MARKER
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
@@ -171,7 +171,7 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
             "state, or approve speech."
         ),
     }
-    selection = {**body, "selection_id": _canonical_sha256(body)}
+    selection = {**body, "selection_id": canonical_document_sha256(body)}
     try:
         write_json_document_no_replace(
             output, selection, "failed prompt hypothesis selection"

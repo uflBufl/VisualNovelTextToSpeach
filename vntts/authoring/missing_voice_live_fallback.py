@@ -14,6 +14,7 @@ from pathlib import Path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
     LIVE_FALLBACK_SCHEMA,
@@ -21,7 +22,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     BulkGenerationSourceChangedError,
     _approved_manifest_entries,
-    _canonical_sha256,
     _GenerationLease,
     _load_stable_queue,
     _validate_state_document,
@@ -160,7 +160,7 @@ def authorize_missing_voice_live_fallback(
         "generation_profile": "default",
         "queue_ids": [target["queue_id"] for target in targets],
     }
-    batch_id = _canonical_sha256(batch_body)
+    batch_id = canonical_document_sha256(batch_body)
     if not accept_known_role_narrator_fallback:
         return MissingVoiceLiveFallbackResult(
             workspace,
@@ -315,7 +315,7 @@ def _load_authority(directory):
         or decision.get("schema") != MISSING_VOICE_REUSE_DECISION_SCHEMA
         or decision.get("schema_version") != 1
         or decision.get("decision_id")
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in decision.items() if key != "decision_id"}
         )
     ):

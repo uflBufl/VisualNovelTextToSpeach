@@ -13,9 +13,9 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    _canonical_sha256,
     _write_generated_manifest_from_state,
     load_generation_state,
     process_is_alive,
@@ -238,7 +238,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     target_route,
                     retired_variants,
                     known_role_reuse,
-                    _canonical_sha256(result),
+                    canonical_document_sha256(result),
                 )
                 relative = _safe_relative(
                     result.get("path"), f"Config rebase item {queue_id!r} WAV"
@@ -259,8 +259,8 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 )
                 record = {
                     "queue_id": queue_id,
-                    "source_item_sha256": _canonical_sha256(result),
-                    "projected_item_sha256": _canonical_sha256(projected),
+                    "source_item_sha256": canonical_document_sha256(result),
+                    "projected_item_sha256": canonical_document_sha256(projected),
                     "audio_sha256": audio_sha256,
                     "status": result["status"],
                     "review_status": result["review_status"],
@@ -278,7 +278,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                             target_route,
                             route_status,
                             known_role_reuse,
-                            _canonical_sha256(result),
+                            canonical_document_sha256(result),
                         )
                         else REBASE_CARRIED_TERMINAL
                     ),
@@ -731,7 +731,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         source_item = source_state["items"].get(queue_id)
         if (
             not isinstance(source_item, dict)
-            or _canonical_sha256(source_item) != record["source_item_sha256"]
+            or canonical_document_sha256(source_item) != record["source_item_sha256"]
         ):
             raise AuthoringWorkbenchError(
                 f"Config rebase source item changed for {queue_id!r}"
@@ -740,7 +740,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         projected = _project_source_item(
             source_item, exclude_live_fallback=source_live_fallback is not None
         )
-        if _canonical_sha256(projected) != record["projected_item_sha256"]:
+        if canonical_document_sha256(projected) != record["projected_item_sha256"]:
             raise AuthoringWorkbenchError(
                 f"Config rebase projected source changed for {queue_id!r}"
             )
@@ -799,7 +799,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 not isinstance(live_fallback, dict)
                 or live_fallback.get("reason") != "generated_audio_rejected"
                 or live_fallback.get("previous_result_sha256")
-                != _canonical_sha256(expected_base)
+                != canonical_document_sha256(expected_base)
             ):
                 raise AuthoringWorkbenchError(
                     f"Config rebase live fallback base changed for {queue_id!r}"
@@ -853,7 +853,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         current_without_extension = copy.deepcopy(current)
         current_without_extension.pop("config_rebase", None)
         if (
-            _canonical_sha256(current_without_extension)
+            canonical_document_sha256(current_without_extension)
             != record["projected_item_sha256"]
         ):
             raise AuthoringWorkbenchError(
