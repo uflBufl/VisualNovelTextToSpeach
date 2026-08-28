@@ -4,9 +4,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests.test_authoring_missing_voice_reuse import AuthoringMissingVoiceReuseTest
+from tests.test_authoring_missing_voice_reuse import (
+    build_failed_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_workspace,
+)
 from tests.test_authoring_missing_voice_reuse_review import (
-    AuthoringMissingVoiceReuseReviewTest,
+    create_missing_voice_reuse_review_fixture,
 )
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_binding import (
@@ -25,10 +28,16 @@ from vntts.authoring.source_reference_bindings import (
 )
 
 
+def create_missing_voice_reuse_binding_review(root, statuses=("generated", "failed")):
+    return AuthoringMissingVoiceReuseBindingTest().create_review(
+        root, statuses=statuses
+    )
+
+
 class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
     def create_review(self, root, statuses=("generated", "failed")):
         plan_path, evidence, snapshots, queue_id = (
-            AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
+            create_missing_voice_reuse_review_fixture(root, statuses=statuses)
         )
         with patch(
             "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
@@ -40,9 +49,8 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
         return plan_path, session_path, queue_id
 
     def create_failed_review(self, root):
-        helper = AuthoringMissingVoiceReuseTest()
-        fixture, _imported, workspace = helper.create_workspace(root)
-        plan = helper.build_failed_plan(fixture, workspace)
+        fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
+        plan = build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
         plan_path = root / "failed-plan.json"
         write_missing_voice_reuse_plan(plan, plan_path)
         candidate = plan.document["candidates"][0]

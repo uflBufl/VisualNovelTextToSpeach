@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tests.test_authoring_missing_voice_reuse_binding import (
-    AuthoringMissingVoiceReuseBindingTest,
+    create_missing_voice_reuse_binding_review,
 )
 from vntts.authoring.bulk_generation import (
     _canonical_sha256,
@@ -23,10 +23,13 @@ from vntts.authoring.missing_voice_reuse_binding import (
 from vntts.generated_audio import _live_fallback_index
 
 
+def create_missing_voice_live_fallback_fixture(root):
+    return AuthoringMissingVoiceLiveFallbackTest().fixture(root)
+
+
 class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
     def fixture(self, root):
-        helper = AuthoringMissingVoiceReuseBindingTest()
-        plan_path, session_path, queue_id = helper.create_review(
+        plan_path, session_path, queue_id = create_missing_voice_reuse_binding_review(
             root, statuses=("failed", "failed")
         )
         binding = publish_missing_voice_reuse_binding(

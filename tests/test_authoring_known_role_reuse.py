@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from tests.test_authoring_missing_voice_live_fallback import (
-    AuthoringMissingVoiceLiveFallbackTest,
+    create_missing_voice_live_fallback_fixture,
 )
 from vntts.authoring.known_role_reuse import (
     KnownRoleReuseError,
@@ -22,8 +22,8 @@ from vntts.authoring.workbench import create_resume_workspace
 
 class AuthoringKnownRoleReuseTest(unittest.TestCase):
     def fixture(self, root):
-        workspace, unresolved, queue_id = (
-            AuthoringMissingVoiceLiveFallbackTest().fixture(root)
+        workspace, unresolved, queue_id = create_missing_voice_live_fallback_fixture(
+            root
         )
         return workspace, unresolved, queue_id
 

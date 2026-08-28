@@ -23,6 +23,10 @@ from vntts.authoring.cohort_review import (
 )
 
 
+def create_pending_cohort_workspace(root):
+    return AuthoringCohortReviewTest().create_pending_workspace(root)
+
+
 class AuthoringCohortReviewTest(unittest.TestCase):
     def create_pending_workspace(self, root):
         _fixture, _imported, created = create_test_workspace(root)

@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 import vntts.authoring.workbench as workbench_module
 from tests.test_authoring_bulk_generation import SyntheticRenderer
-from tests.test_authoring_failure_reference_audit import FailureReferenceAuditTest
+from tests.test_authoring_failure_reference_audit import (
+    create_failed_reference_workspace,
+)
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     apply_cohort_review_decision,
@@ -40,8 +42,7 @@ from vntts.authoring.workbench import (
 
 class FailureReferenceBindingTest(unittest.TestCase):
     def create_decided_audit(self, root):
-        fixture = FailureReferenceAuditTest()
-        workspace, queue_id = fixture.create_failed_workspace(root)
+        workspace, queue_id = create_failed_reference_workspace(root)
         state_path = workspace / "generated-audio/generation-state.json"
         state = json.loads(state_path.read_text())
         state["active"] = None
@@ -105,9 +106,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
     def test_incomplete_and_neither_decisions_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _queue_id = FailureReferenceAuditTest().create_failed_workspace(
-                root
-            )
+            workspace, _queue_id = create_failed_reference_workspace(root)
             audit = root / "audit"
             publish_failure_reference_audit(workspace, audit)
             with self.assertRaisesRegex(

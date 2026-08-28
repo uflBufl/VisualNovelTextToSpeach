@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests.test_authoring_missing_voice_reuse import AuthoringMissingVoiceReuseTest
+from tests.test_authoring_missing_voice_reuse import (
+    build_failed_missing_voice_reuse_plan_fixture,
+    build_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_workspace,
+)
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
@@ -29,11 +33,14 @@ def write_wav(path):
         output.writeframes(b"\x00\x00" * 800)
 
 
+def create_missing_voice_reuse_review_fixture(root, statuses=("generated", "failed")):
+    return AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
+
+
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
-        helper = AuthoringMissingVoiceReuseTest()
-        fixture, _imported, workspace = helper.create_workspace(root)
-        plan = helper.build_plan(workspace)
+        fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
+        plan = build_missing_voice_reuse_plan_fixture(workspace)
         plan_path = root / "plan.json"
         write_missing_voice_reuse_plan(plan, plan_path)
         queue_id = fixture["queue_id"]
@@ -227,9 +234,8 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def test_exact_failed_control_can_review_one_complete_alternative(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            helper = AuthoringMissingVoiceReuseTest()
-            fixture, _imported, workspace = helper.create_workspace(root)
-            plan = helper.build_failed_plan(fixture, workspace)
+            fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
+            plan = build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
             plan_path = root / "failed-plan.json"
             write_missing_voice_reuse_plan(plan, plan_path)
             candidate = plan.document["candidates"][0]

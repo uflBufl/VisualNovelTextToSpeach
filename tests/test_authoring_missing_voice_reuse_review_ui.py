@@ -13,7 +13,7 @@ try:
     from PySide6.QtWidgets import QApplication
 
     from tests.test_authoring_missing_voice_reuse_review import (
-        AuthoringMissingVoiceReuseReviewTest,
+        create_missing_voice_reuse_review_fixture,
     )
     from vntts.authoring.missing_voice_reuse_review import (
         build_missing_voice_reuse_review,
@@ -48,7 +48,7 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
 
     def create_review(self, root, *, statuses=("generated", "failed")):
         plan_path, evidence, snapshots, queue_id = (
-            AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
+            create_missing_voice_reuse_review_fixture(root, statuses=statuses)
         )
         with patch(
             "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",

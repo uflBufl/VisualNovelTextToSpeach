@@ -132,6 +132,10 @@ def candidate_key(character, portrait, bank, media_id, reference_sha256):
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
+def publish_source_reference_quality_fixture(root):
+    return AuthoringSourceReferenceReviewTest().publish_quality_fixture(root)
+
+
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def publish_quality_fixture(
         self,

@@ -12,8 +12,8 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 from tests.test_authoring_failure_reference_audit import (
-    FailureReferenceAuditTest,
     _PreviewBackendFactory,
+    create_failed_reference_workspace,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
@@ -146,9 +146,7 @@ class RenderHypothesisReviewTest(unittest.TestCase):
     def test_accepted_hypothesis_imports_into_fresh_audit_and_binding(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, queue_id = FailureReferenceAuditTest().create_failed_workspace(
-                root
-            )
+            workspace, queue_id = create_failed_reference_workspace(root)
             source_audit = root / "source-audit"
             source = publish_failure_reference_audit(
                 workspace, source_audit, seed=0, queue_ids=(queue_id,)

@@ -4,23 +4,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.run_ci_unittests import (
+    _flatten_suite,
     _run_exact_test_file,
-    canonical_discovered_test_ids,
     partition_macos_test_ids,
 )
 
 
 class CiUnitTestRunnerTest(unittest.TestCase):
-    def test_canonical_inventory_collapses_only_exact_discovery_aliases(self):
-        values = [
-            "tests.test_alpha.AlphaTest.test_one",
-            "tests.test_zed.ZedTest.test_two",
-            "tests.test_alpha.AlphaTest.test_one",
-        ]
-        self.assertEqual(
-            canonical_discovered_test_ids(values),
-            tuple(values[:2]),
-        )
+    def test_repository_discovery_has_no_testcase_import_aliases(self):
+        suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
+        test_ids = [test.id() for test in _flatten_suite(suite)]
+        self.assertEqual(len(test_ids), len(set(test_ids)))
 
     def test_partition_assigns_every_test_exactly_once(self):
         values = [

@@ -132,6 +132,10 @@ class _PreviewBackendFactory:
         return backend
 
 
+def create_failed_reference_workspace(root):
+    return FailureReferenceAuditTest().create_failed_workspace(root)
+
+
 class FailureReferenceAuditTest(unittest.TestCase):
     def create_failed_workspace(self, root):
         _fixture, _imported, created = create_test_workspace(root)

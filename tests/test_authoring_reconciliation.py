@@ -18,10 +18,10 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.reconciliation as reconciliation_module
-from tests.test_authoring_cohort_review import AuthoringCohortReviewTest
+from tests.test_authoring_cohort_review import create_pending_cohort_workspace
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_source_reference_review import (
-    AuthoringSourceReferenceReviewTest,
+    publish_source_reference_quality_fixture,
 )
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import authorize_live_fallback
@@ -53,9 +53,7 @@ def _tree_hashes(root):
 class AuthoringReconciliationTest(unittest.TestCase):
     def create_fixture(self, root):
         authoring = root / "authoring"
-        workspace, state, queue_id = (
-            AuthoringCohortReviewTest().create_pending_workspace(authoring)
-        )
+        workspace, state, queue_id = create_pending_cohort_workspace(authoring)
         bundles = authoring / "review-bundles"
         bundles.mkdir()
         quality = authoring / "source-reference-quality-reviews"
@@ -160,9 +158,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             authoring = root / "authoring"
-            workspace, _state, queue_id = (
-                AuthoringCohortReviewTest().create_pending_workspace(authoring)
-            )
+            workspace, _state, queue_id = create_pending_cohort_workspace(authoring)
             bundles = authoring / "review-bundles"
             bundles.mkdir()
             (authoring / "source-reference-quality-reviews").mkdir()
@@ -623,9 +619,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
             quality_root = authoring / "explicit-quality"
             quality_root.mkdir()
             _plan, _evaluation, _generation, quality = (
-                AuthoringSourceReferenceReviewTest().publish_quality_fixture(
-                    quality_root
-                )
+                publish_source_reference_quality_fixture(quality_root)
             )
             unrelated = authoring / "source-reference-quality-reviews/unrelated"
             unrelated.mkdir(parents=True)

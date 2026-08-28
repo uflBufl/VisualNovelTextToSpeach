@@ -34,6 +34,18 @@ from vntts.authoring.workbench import (
 )
 
 
+def create_missing_voice_reuse_workspace(root):
+    return AuthoringMissingVoiceReuseTest().create_workspace(root)
+
+
+def build_missing_voice_reuse_plan_fixture(workspace):
+    return AuthoringMissingVoiceReuseTest().build_plan(workspace)
+
+
+def build_failed_missing_voice_reuse_plan_fixture(fixture, workspace):
+    return AuthoringMissingVoiceReuseTest().build_failed_plan(fixture, workspace)
+
+
 class AuthoringMissingVoiceReuseTest(unittest.TestCase):
     def create_workspace(self, root, *, text=None, missing_voice_policy=None):
         fixture = write_legacy_fixture(root / "legacy")

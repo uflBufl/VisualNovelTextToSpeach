@@ -343,12 +343,6 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Make the standard quality path trustworthy
 
-- [ ] Remove duplicate `unittest` discovery aliases by replacing imports of
-      concrete `TestCase` helper classes with fixture functions, mixins that are
-      not discoverable, or dedicated test-support modules. Make both the README
-      command and `scripts/run_ci_unittests.py discover -s tests` execute the
-      same unique inventory successfully; retain the macOS Qt process isolation
-      only for the crash boundary, not for deduplication correctness.
 - [ ] Introduce gradual static typing at the highest-value boundaries first:
       artifact schemas, synthesis/playback protocols, worker messages and
       orchestration inputs/results. Add a scoped mypy or pyright CI gate and

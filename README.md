@@ -663,7 +663,7 @@ Verify formatting, linting, and tests:
 ```sh
 uv run ruff format --check .
 uv run ruff check .
-uv run python -m unittest discover -s tests
+uv run python scripts/run_ci_unittests.py discover -s tests
 ```
 
 Run an interactive example:

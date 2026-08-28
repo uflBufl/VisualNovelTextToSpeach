@@ -22,11 +22,6 @@ def _flatten_suite(suite):
             yield value
 
 
-def canonical_discovered_test_ids(test_ids):
-    """Collapse unittest aliases while preserving the first discovery order."""
-    return tuple(dict.fromkeys(test_ids))
-
-
 def partition_macos_test_ids(test_ids):
     """Assign every exact test once, isolating the crash-prone Qt app module."""
     values = list(test_ids)
@@ -68,8 +63,7 @@ def _run_exact_test_file(path):
 
 def _run_macos_full_discovery():
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
-    discovered_ids = [value.id() for value in _flatten_suite(suite)]
-    test_ids = canonical_discovered_test_ids(discovered_ids)
+    test_ids = tuple(value.id() for value in _flatten_suite(suite))
     try:
         app_ids, remainder_ids = partition_macos_test_ids(test_ids)
     except ValueError as error:
@@ -93,11 +87,7 @@ def _run_macos_full_discovery():
             )
             if completed.returncode:
                 return completed.returncode
-    aliases = len(discovered_ids) - len(test_ids)
-    print(
-        f"Ran all {len(test_ids)} exact discovered tests once in 2 shards "
-        f"({aliases} duplicate unittest discovery aliases collapsed)"
-    )
+    print(f"Ran all {len(test_ids)} exact discovered tests once in 2 shards")
     return 0
 
 
