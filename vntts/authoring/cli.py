@@ -23,6 +23,9 @@ from vntts.authoring.audio_event_composition import (
 from vntts.authoring.audio_event_omission import (
     create_audio_event_omission_workspace,
 )
+from vntts.authoring.audio_event_projection_fallback import (
+    create_audio_event_projection_fallback_workspace,
+)
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
     load_audio_event_review,
@@ -189,6 +192,9 @@ from vntts.authoring.render_hypothesis_review import (
     load_render_hypothesis_review,
     publish_render_hypothesis_review,
     record_render_hypothesis_decision,
+)
+from vntts.authoring.reviewed_waveform_publication import (
+    create_reviewed_waveform_publication_workspace,
 )
 from vntts.authoring.robustness_asr import (
     SpeechRobustnessAsrError,
@@ -574,6 +580,25 @@ def create_parser():
         "--queue-id", action="append", dest="queue_ids", required=True
     )
     event_omission.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    event_projection = subparsers.add_parser(
+        "audio-event-projection-fallback",
+        help="Route only spoken text from exact mixed audio-event lines",
+    )
+    event_projection.add_argument("base_workspace", type=Path)
+    event_projection.add_argument(
+        "--queue-id", action="append", dest="queue_ids", required=True
+    )
+    event_projection.add_argument(
+        "--workspaces-root", type=Path, default=default_workspaces_root()
+    )
+    reviewed_waveforms = subparsers.add_parser(
+        "reviewed-waveform-publication",
+        help="Migrate exact approved WAVs without inventing synthesis controls",
+    )
+    reviewed_waveforms.add_argument("base_workspace", type=Path)
+    reviewed_waveforms.add_argument(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
     config_rebase = subparsers.add_parser(
@@ -1546,6 +1571,41 @@ def main(argv=None):
             result = create_audio_event_omission_workspace(
                 arguments.base_workspace,
                 arguments.queue_ids,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "audio-event-projection-fallback":
+            result = create_audio_event_projection_fallback_workspace(
+                arguments.base_workspace,
+                arguments.queue_ids,
+                arguments.workspaces_root,
+            )
+            print(
+                json.dumps(
+                    {
+                        "directory": str(result.directory),
+                        "created": result.created,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "reviewed-waveform-publication":
+            result = create_reviewed_waveform_publication_workspace(
+                arguments.base_workspace,
                 arguments.workspaces_root,
             )
             print(

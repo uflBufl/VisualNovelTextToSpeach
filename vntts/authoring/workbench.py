@@ -809,6 +809,8 @@ def create_failure_reference_workspace(
             base_document.get("explicit_fallback_merge"),
             base_document.get("known_role_live_fallback"),
             base_document.get("audio_event_omission"),
+            base_document.get("audio_event_projection_fallback"),
+            base_document.get("reviewed_waveform_publication"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1010,6 +1012,8 @@ def create_audio_event_composition_workspace(
             base_document.get("explicit_fallback_merge"),
             base_document.get("known_role_live_fallback"),
             base_document.get("audio_event_omission"),
+            base_document.get("audio_event_projection_fallback"),
+            base_document.get("reviewed_waveform_publication"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1432,6 +1436,8 @@ def _merge_workspace_outcomes(
         base_document.get("explicit_fallback_merge"),
         base_document.get("known_role_live_fallback"),
         base_document.get("audio_event_omission"),
+        base_document.get("audio_event_projection_fallback"),
+        base_document.get("reviewed_waveform_publication"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -3588,6 +3594,18 @@ def _load_workspace(workspace_directory):
     if audio_event_omission is not None:
         module = importlib.import_module("vntts.authoring.audio_event_omission")
         module.validate_audio_event_omission_workspace(directory, workspace)
+    audio_event_projection_fallback = workspace.get("audio_event_projection_fallback")
+    if audio_event_projection_fallback is not None:
+        module = importlib.import_module(
+            "vntts.authoring.audio_event_projection_fallback"
+        )
+        module.validate_audio_event_projection_fallback_workspace(directory, workspace)
+    reviewed_waveform_publication = workspace.get("reviewed_waveform_publication")
+    if reviewed_waveform_publication is not None:
+        module = importlib.import_module(
+            "vntts.authoring.reviewed_waveform_publication"
+        )
+        module.validate_reviewed_waveform_publication_workspace(directory, workspace)
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -3603,6 +3621,8 @@ def _load_workspace(workspace_directory):
         explicit_fallback_merge,
         known_role_live_fallback,
         audio_event_omission,
+        audio_event_projection_fallback,
+        reviewed_waveform_publication,
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3843,6 +3863,16 @@ def validate_workspace_provenance_extensions(directory, workspace, import_snapsh
     if workspace.get("audio_event_omission") is not None:
         module = importlib.import_module("vntts.authoring.audio_event_omission")
         module.validate_audio_event_omission_workspace(directory, workspace)
+    if workspace.get("audio_event_projection_fallback") is not None:
+        module = importlib.import_module(
+            "vntts.authoring.audio_event_projection_fallback"
+        )
+        module.validate_audio_event_projection_fallback_workspace(directory, workspace)
+    if workspace.get("reviewed_waveform_publication") is not None:
+        module = importlib.import_module(
+            "vntts.authoring.reviewed_waveform_publication"
+        )
+        module.validate_reviewed_waveform_publication_workspace(directory, workspace)
 
 
 def _validate_workspace_carry_forward(directory, workspace):

@@ -29,22 +29,22 @@ The reconciled baseline and exact remaining identities are recorded in
 
 Follow the authorities and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
-The work is split across immutable successors and must be composed before a
-pack can be published: `...-2624f64ea2773d6b` contains the terminal Poacher II
-and Dobharchú results but only nine Aderyn approvals, while
-`...-af9b4fb0bb4a451c` contains the reviewed Aderyn history. Do not regenerate
-or repeat cohort review merely to combine them.
+The reviewed Aderyn, Poacher II and Dobharchú outcomes and all pure-event
+omissions are composed in immutable baseline `...-bc27ca69bfa40f01`. Do not
+regenerate or repeat review merely to combine them.
 
-- [ ] Terminalize the one remaining Aderyn speech item
-      `reverse1999:314606:65:1664f7ace785d5c3`. Its checksum-bound 180 ms
-      inline-pause WAV was heard and selected as the preferred hypothesis, but
-      that selection explicitly is not audio approval. Present this one exact
-      WAV through the terminal quality-review gate, then compose an approval or
-      route it to the existing `Aderyn -> Rhiannon` Pocket fallback without
-      rerendering. The exact one-sample bundle is
-      `current-character-story-aderyn-final-quality-v1.json`, bundle ID
-      `d18033000170a8f842576a686515e35e8084641e543f892462024be26108ff44`.
-      Do not infer the decision from old chat or TODO text.
+- [ ] Publish an immutable explicit-rejected-fallback successor from
+      `...-c5a8b5a17cd5fce6`. Cover exactly the 83 `generated/rejected` items with no
+      existing fallback. Embed each unchanged rejected base result and bind its
+      current effective character: use the active config-rebase target for 59
+      records and the recorded `Rhiannon` synthesis character for the 24 older
+      Aderyn records. Route Narrator and unknown roles through Centurion, retain
+      Aderyn/Rhiannon as Rhiannon, and preserve the selected Dobharchú/Poacher/
+      Aderyn's Father voice characters. This authorizes Pocket live synthesis;
+      it does not approve the rejected WAV or claim that Pocket will reproduce
+      its reference-cloned timbre. Add exact-result, route, tamper, idempotence
+      and runtime tests. Then publish a new v2 pack; retain v1 as an immutable
+      verified checkpoint.
 - [ ] Rebuild the approved-only manifest from the composed terminal state and
       require all 592 queue items to have approved audio, an explicit supported
       live fallback or an explicit non-verbal omission. Verify zero pending

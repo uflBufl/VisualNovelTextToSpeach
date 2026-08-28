@@ -1625,3 +1625,90 @@ SHA-256
 `06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`.
 Accepting or rejecting that cohort is the remaining human audio-quality action;
 the bundle publication itself changes no generation state.
+
+### Final Aderyn approval and composition
+
+The operator approved the exact final Aderyn WAV through that one-sample
+bundle. Decision
+`93b47d32076d1fd051785c11ae2e0ce1c13a19e79d2c98c921e54e24a8c37b24`
+binds the 4.72-second WAV with SHA-256
+`06a616bfe87ef15d250718e7b809e144ec84969e120582d2ee0d01b431bee871`;
+the source voice remains `Aderyn` and the synthesis voice is the explicit
+`Rhiannon` binding.
+
+Reconciliation
+`current-character-story-20260828-aderyn-final-approved-v1.json`, report ID
+`b0284b8d23b9693e0f1166323851fcb3c95900e3988ec4782f84b70fce9972b7`,
+contained exactly one `terminal_merge_required` action and no conflict. Applying
+it to the pure-event omission checkpoint produced immutable successor
+`resume-395a5e5eec0327a3a793b66d-bc27ca69bfa40f01`, workspace SHA-256
+`4036a21f733f4db8514254cc9e3d2ecff1aaffbf84bb1ea2580a049b6d76da51`
+and generation-state SHA-256
+`48fd111f847a7f10b4638938d41cf2ba486b84914fa6c658ec513742f28f1f57`.
+All 592 queue identities are present: 472 are approved, seven are explicit pure
+event omissions, 28 have effective live-fallback decisions, 88 rejected WAVs
+remain historical terminal evidence, and there are zero pending or failed
+records and no active generation. This is the composition baseline for the
+mixed-event projection boundary and final pack publication.
+
+### Mixed audio-event projection checkpoint
+
+The two rejected mixed speech/event lines are now explicit schema-v6 Pocket
+live fallbacks. Immutable successor
+`resume-395a5e5eec0327a3a793b66d-d15c76db0b8ee933`, workspace SHA-256
+`80a586679b048f1dc305e071050b15f16c6ef672e051e32b40e68c541cda6b35`
+and generation-state SHA-256
+`f16373fd0a9eaee79cf65f1470fd208737474257e7d9d1f926c04c0e7942b76f`,
+retains both rejected WAVs as embedded checksum-bound evidence. Runtime routes
+`reverse1999:314607:83:327de590ff262fcc` as `Wh-What!` and
+`reverse1999:314607:84:e1ab45a7b54e20d4` as `N-No!` through Pocket's
+`Narrator` voice; neither `*gasp*` nor `*gurgle*` reaches a speech backend. Batch
+ID is
+`c311430011502fee757dd3e32844768c4417c67587d0b3a59fb58ca426aa80ed`.
+An exact repeat returned the same directory with `created=false`.
+
+The first final-pack attempt then failed closed before creating its destination:
+the composed state has no top-level `synthesis_controls` registry. Of its 472
+approved WAVs, 430 retain an item-level synthesis-provenance hash and 42 are
+older reviewed `provider=vntts` records from before per-control inventory was
+introduced. Five additional old unbound WAVs are rejected and are not pack
+payload. No historical control set may be invented from the current manifest;
+publication requires an explicit reviewed-waveform migration authority instead.
+
+### Reviewed-waveform migration and portable pack checkpoint
+
+The exact migration successor is
+`resume-395a5e5eec0327a3a793b66d-c5a8b5a17cd5fce6`, workspace SHA-256
+`f88c3384848b776752b215671537f3c6e3b036f6f62516c59d591e73661360de`
+and generation-state SHA-256
+`d348d3f4fbc3fc271826df9860e7b2fa5097778348f35d62b87cc196a2777ba7`.
+Batch
+`5379f66a8f256f9820802ec0125d589b234ce782e539ffe402600781120fb732`
+binds all 472 approved queue/item/WAV identities to their unchanged base
+results. It preserves 409 active config-rebase routes and labels the 63 older
+records as historical reviewed waveforms with no reproducibility claim. An
+exact repeat returned the same directory with `created=false`; predecessor
+workspace and state hashes remained
+`80a586679b048f1dc305e071050b15f16c6ef672e051e32b40e68c541cda6b35`
+and
+`f16373fd0a9eaee79cf65f1470fd208737474257e7d9d1f926c04c0e7942b76f`.
+
+Portable checkpoint pack
+`authoring/game-packs/current-character-story-3.7-v1` has game-pack SHA-256
+`587d7bdc3c38cbf39a6bb22c6ebb3f9f5b3b8777eab10c15d3a96f5443c374a3`
+and passed `vntts-preflight-game-pack`. It contains 472 approved WAVs, 30
+explicit live-fallback decisions and seven omissions. The three configured
+Centurion OGG references were decoded only in staging to PCM16 mono WAV at
+24 kHz; the projection ledger binds each source/output hash and the original
+workspace references remain unchanged. Runtime metadata selects Centurion and
+routes the two mixed events as exact spoken projections `Wh-What!` and `N-No!`,
+without the literal `*gasp*` or `*gurgle*` markers.
+
+This v1 is a verified checkpoint, not the final all-lines acceptance candidate:
+83 rejected historical/generated records still rely on ordinary live routing
+rather than an explicit checksum-bound fallback decision. Their exact route
+distribution is 24 Aderyn/Rhiannon, 22 Narrator/Centurion, 14 Rhiannon, seven
+unknown/Centurion, six Dobharchú, four Poachers, five legacy Rhiannon records
+whose item speaker field predates normalization, and one Aderyn's Father. The
+next immutable successor must bind those already rejected results to their
+current effective live characters before publishing a v2 pack.

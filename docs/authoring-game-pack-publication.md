@@ -15,16 +15,28 @@ Final publication requires all of the following:
 - state contains exactly the selected queue IDs, with every item terminal as
   approved, rejected or explicitly authorized `live_fallback`; active, raw
   failed, pending or partial state is rejected;
-- queue metadata contains non-optional source paths and SHA-256 bindings for
-  its original story index and voice manifest. Story identity must still match
-  exactly. A deliberate replacement voice snapshot is allowed only when every
-  terminal state item proves that exact selected manifest and references in its
-  synthesis-control inventory;
+- queue metadata contains source paths and SHA-256 bindings for its original
+  story index and voice manifest. A legacy queue that predates those fields is
+  accepted only through the explicit reviewed-waveform migration described
+  below, and only when its selected story and voice SHA-256 values match the
+  migration authority. A copied immutable story snapshot may replace a legacy
+  path or pre-rebase hash only when the selected file hash matches the
+  migration authority, which is itself bound to the validated base workspace
+  and exact queue bytes. Publication never follows or trusts a later-mutated
+  file at the old absolute path. Story identity must still match exactly. A deliberate
+  replacement voice snapshot is allowed only when every publishable item proves
+  that selected manifest through synthesis controls or the exact-waveform
+  migration;
 - every approved line ID/text hash exists in the bound story index;
 - current-schema state contains the per-control inventory captured by bulk
   synthesis. The manifest and every referenced voice WAV must retain the same
-  path and bytes used during synthesis. Legacy or older unbound states must be
-  migrated or regenerated before final publication;
+  path and bytes used during synthesis. An exact approved WAV may instead carry
+  a `vntts.authoring-reviewed-waveform-publication` authority. It binds the
+  unchanged base result, line/text/WAV hashes, source workspace/state/queue,
+  selected story and voice manifests, and current narrator references. It
+  explicitly sets `synthesis_reproducibility=false`; it never reconstructs
+  controls that were not recorded. A rejected WAV is not pack payload and is
+  therefore excluded from synthesis-control validation;
 - every generated WAV still matches authoritative state hashes, PCM quality and
   its approved review decision.
 
@@ -35,6 +47,18 @@ partial WAVs, queue/state files and review diagnostics remain in application
 data and are not shipped. The generated-audio metadata carries a checksum-bound
 `vntts.authoring.live_fallback` ledger for every deliberate fallback identity.
 It contains no audio and cannot be inferred from an absent or failed record.
+An exact reviewed-waveform ledger is also copied into generated-audio metadata,
+while the game-pack authoring extension records its batch ID, approved count and
+non-reproducibility claim. Removing one approved identity from that ledger does
+not grant a partial bypass: an uncovered approved item must still have its exact
+synthesis-control inventory.
+
+When the migration covers every shipped approved WAV, it is the final
+publication authority for those payloads. The packager does not recursively
+reopen the historical config-rebase graph after acquiring its own generation
+lease: that graph was validated while creating the immutable migration, whose
+ledger embeds its exact base workspace, state and results. Partial migrations
+do not receive this exemption.
 
 When a proven replacement voice snapshot is published, the raw game-pack
 authoring extension retains the original queue voice-manifest SHA-256, the
@@ -67,6 +91,21 @@ Source manifests, WAVs, queue and review state are never deleted, overwritten
 or regenerated.
 
 ## Command line
+
+For a terminal legacy workspace whose already approved WAVs lack a complete
+control inventory, first publish an immutable migration successor:
+
+```sh
+uv run vntts-pregenerate reviewed-waveform-publication \
+  /path/to/base-workspace \
+  --workspaces-root /path/to/workspaces
+```
+
+The command selects all and only `approved/approved` items. Active workspaces
+and empty migrations fail closed. Existing `config_rebase` routes are preserved;
+older approved records are labelled `historical_reviewed_waveform` with
+`not_reproducible` status and no invented references. Repeating the exact
+command returns the same successor with `created=false`.
 
 ```sh
 uv run vntts-pregenerate publish-pack \

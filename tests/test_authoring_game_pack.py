@@ -1196,6 +1196,9 @@ class AuthoringGamePackTest(unittest.TestCase):
                 pack.extensions["vntts.authoring"]["source_state_sha256"],
                 sha256_file(fixture["state"]),
             )
+            self.assertIsNone(
+                pack.extensions["vntts.authoring"]["voice_reference_projection"]
+            )
             self.assertEqual(before, {path: path.read_bytes() for path in source_paths})
             self.assertFalse(list(root.glob(".final-pack.staging-*")))
 

@@ -170,6 +170,8 @@ def merge_explicit_live_fallbacks(
         merge,
         base_document.get("known_role_live_fallback"),
         base_document.get("audio_event_omission"),
+        base_document.get("audio_event_projection_fallback"),
+        base_document.get("reviewed_waveform_publication"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

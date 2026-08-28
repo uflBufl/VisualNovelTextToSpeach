@@ -362,6 +362,12 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     "known_role_live_fallback"
                 ),
                 audio_event_omission=target_document.get("audio_event_omission"),
+                audio_event_projection_fallback=target_document.get(
+                    "audio_event_projection_fallback"
+                ),
+                reviewed_waveform_publication=target_document.get(
+                    "reviewed_waveform_publication"
+                ),
             )
             workspace_id = (
                 "resume-"

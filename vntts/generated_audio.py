@@ -575,7 +575,11 @@ class GeneratedAudioFallbackBackend:
                 if live_fallback is not None
                 else synthesis_character(character)
             ),
-            text,
+            (
+                live_fallback.evidence["spoken_text"]
+                if live_fallback is not None and live_fallback.schema_version == 6
+                else text
+            ),
         )
         effective_source = prepared.audio_source
         line_id = line.line_id if line is not None else None
@@ -834,7 +838,7 @@ def _live_fallback_index(metadata):
     indexed = {}
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
-        fields = common_fields | ({"evidence"} if version in {2, 3, 4, 5} else set())
+        fields = common_fields | ({"evidence"} if version in {2, 3, 4, 5, 6} else set())
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
         for field in fields - {
@@ -854,6 +858,7 @@ def _live_fallback_index(metadata):
             3,
             4,
             5,
+            6,
         }:
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
@@ -902,6 +907,18 @@ def _live_fallback_index(metadata):
                 raw["queue_id"],
                 raw["speaker"],
                 raw["requested_voice_character"],
+            )
+        elif version == 6:
+            if raw["reason"] != "generated_audio_rejected":
+                raise ValueError(
+                    "Generated-audio event projection fallback reason is unsupported"
+                )
+            _validate_audio_event_projection_fallback_evidence(
+                raw["evidence"],
+                raw["queue_id"],
+                raw["speaker"],
+                raw["requested_voice_character"],
+                raw["previous_result_sha256"],
             )
         elif version in {2, 3}:
             if raw["reason"] != "generation_hypotheses_exhausted":
@@ -1207,6 +1224,81 @@ def _validate_known_role_live_fallback_evidence(
     ):
         if not isinstance(evidence.get(field), str) or not evidence[field].strip():
             raise ValueError("Generated-audio known-role fallback text is malformed")
+
+
+def _validate_audio_event_projection_fallback_evidence(
+    evidence,
+    queue_id,
+    source_character,
+    synthesis_character,
+    previous_result_sha256,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "batch_id",
+        "base_workspace_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "queue_id",
+        "base_result_sha256",
+        "base_result",
+        "plan_sha256",
+        "spoken_text",
+        "spoken_text_sha256",
+        "source_character",
+        "synthesis_character",
+    }
+    base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema")
+        != "vntts.authoring-audio-event-projection-live-fallback-evidence"
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("source_character") != source_character
+        or evidence.get("synthesis_character") != synthesis_character
+        or synthesis_character != "Narrator"
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or not isinstance(base_result, dict)
+        or base_result.get("status") != "generated"
+        or base_result.get("review_status") != "rejected"
+        or isinstance(base_result.get("live_fallback"), dict)
+        or _canonical_sha256(base_result) != evidence.get("base_result_sha256")
+    ):
+        raise ValueError(
+            "Generated-audio event projection fallback evidence is malformed"
+        )
+    for field in (
+        "batch_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "base_result_sha256",
+        "plan_sha256",
+        "spoken_text_sha256",
+    ):
+        if not _lowercase_sha256(evidence.get(field)):
+            raise ValueError(
+                "Generated-audio event projection fallback hash is malformed"
+            )
+    for field in (
+        "base_workspace_id",
+        "spoken_text",
+        "source_character",
+        "synthesis_character",
+    ):
+        if not isinstance(evidence.get(field), str) or not evidence[field].strip():
+            raise ValueError(
+                "Generated-audio event projection fallback text is malformed"
+            )
+    if (
+        hashlib.sha256(evidence["spoken_text"].encode("utf-8")).hexdigest()
+        != evidence["spoken_text_sha256"]
+    ):
+        raise ValueError("Generated-audio event spoken projection changed")
 
 
 def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):

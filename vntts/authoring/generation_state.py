@@ -61,6 +61,7 @@ LIVE_FALLBACK_EVIDENCE_VERSION = 2
 LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION = 3
 LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION = 4
 LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION = 5
+LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION = 6
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
 MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-missing-voice-live-fallback-evidence"
@@ -68,9 +69,15 @@ MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
 KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-known-role-live-fallback-evidence"
 )
+AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
+    "vntts.authoring-audio-event-projection-live-fallback-evidence"
+)
 AUDIO_EVENT_OMISSION_SCHEMA = "vntts.authoring-audio-event-omission"
 AUDIO_EVENT_OMISSION_VERSION = 1
 AUDIO_EVENT_OMISSION_REASON = "no_validated_source_or_supported_generator"
+REVIEWED_WAVEFORM_PUBLICATION_SCHEMA = "vntts.authoring-reviewed-waveform-publication"
+REVIEWED_WAVEFORM_PUBLICATION_VERSION = 1
+REVIEWED_WAVEFORM_PUBLICATION_REASON = "legacy_control_inventory_unavailable"
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
     {
@@ -382,6 +389,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         )
         _validate_failure_repair_record(result, queue_id, queue_item)
         _validate_seed_application(result, queue_id)
+    _validate_reviewed_waveform_publication(state, queue_by_id)
     active = state.get("active")
     if active is not None and not isinstance(active, dict):
         raise BulkGenerationError(
@@ -549,6 +557,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
+            LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
         }
         else common_fields
     )
@@ -563,6 +572,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
             LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
+            LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
         }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
@@ -595,6 +605,18 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             decision.get("requested_voice_character"),
             result.get("voice_character"),
         )
+    elif version == LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION:
+        if decision.get("reason") != "generated_audio_rejected":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} audio-event projection fallback reason is invalid"
+            )
+        _validate_audio_event_projection_live_fallback_evidence(
+            decision.get("evidence"),
+            queue_id,
+            decision.get("previous_result_sha256"),
+            decision.get("requested_voice_character"),
+            queue_item,
+        )
     elif version in {
         LIVE_FALLBACK_EVIDENCE_VERSION,
         LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
@@ -623,7 +645,10 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             "text_sha256": queue_item.text_sha256,
             "speaker": queue_item.speaker,
         }
-        if version != LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION:
+        if version not in {
+            LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
+            LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
+        }:
             expected["requested_voice_character"] = synthesis_character_for_line(
                 queue_item.speaker, queue_item.voice_character
             )
@@ -851,6 +876,102 @@ def _validate_known_role_live_fallback_evidence(
         _required_text(
             evidence.get(field),
             f"State item {queue_id!r} known-role fallback {field}",
+        )
+
+
+def _validate_audio_event_projection_live_fallback_evidence(
+    evidence,
+    queue_id,
+    previous_result_sha256,
+    requested_voice_character,
+    queue_item,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "batch_id",
+        "base_workspace_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "queue_id",
+        "base_result_sha256",
+        "base_result",
+        "plan_sha256",
+        "spoken_text",
+        "spoken_text_sha256",
+        "source_character",
+        "synthesis_character",
+    }
+    base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema")
+        != AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or evidence.get("synthesis_character") != requested_voice_character
+        or requested_voice_character != "Narrator"
+        or not isinstance(base_result, dict)
+        or base_result.get("status") != "generated"
+        or base_result.get("review_status") != "rejected"
+        or isinstance(base_result.get("live_fallback"), dict)
+        or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} audio-event projection evidence is malformed"
+        )
+    for field in (
+        "batch_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "base_result_sha256",
+        "plan_sha256",
+        "spoken_text_sha256",
+    ):
+        _required_sha256(
+            evidence.get(field),
+            f"State item {queue_id!r} audio-event projection {field}",
+        )
+    for field in (
+        "base_workspace_id",
+        "spoken_text",
+        "source_character",
+        "synthesis_character",
+    ):
+        _required_text(
+            evidence.get(field),
+            f"State item {queue_id!r} audio-event projection {field}",
+        )
+    spoken_text = evidence["spoken_text"]
+    if (
+        hashlib.sha256(spoken_text.encode("utf-8")).hexdigest()
+        != evidence["spoken_text_sha256"]
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} audio-event spoken projection changed"
+        )
+    if queue_item is None:
+        return
+    try:
+        plan = audio_event_plan_for_record(queue_item)
+    except ValueError as error:
+        raise BulkGenerationError(str(error)) from error
+    if (
+        not isinstance(plan, dict)
+        or not plan.get("requires_composition")
+        or not plan.get("events")
+        or not plan.get("spoken_text")
+        or plan.get("spoken_text") != spoken_text
+        or plan.get("plan_sha256") != evidence["plan_sha256"]
+        or plan.get("spoken_text_sha256") != evidence["spoken_text_sha256"]
+        or queue_item.speaker != evidence["source_character"]
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} fallback is not bound to a mixed audio event"
         )
 
 
@@ -1531,6 +1652,198 @@ def _validate_synthesis_controls(state):
                     )
 
 
+def _validate_reviewed_waveform_publication(state, queue_by_id):
+    publication = state.get("reviewed_waveform_publication")
+    if publication is None:
+        return
+    fields = {
+        "schema",
+        "schema_version",
+        "batch_id",
+        "reason",
+        "publication_scope",
+        "synthesis_reproducibility",
+        "base_workspace_id",
+        "base_workspace_path",
+        "base_workspace_sha256",
+        "base_state_path",
+        "base_state_sha256",
+        "queue_sha256",
+        "selected_story_index_sha256",
+        "selected_voice_manifest_sha256",
+        "narrator_character",
+        "narrator_reference_sha256s",
+        "items",
+    }
+    if (
+        not isinstance(publication, dict)
+        or set(publication) != fields
+        or publication.get("schema") != REVIEWED_WAVEFORM_PUBLICATION_SCHEMA
+        or publication.get("schema_version") != REVIEWED_WAVEFORM_PUBLICATION_VERSION
+        or publication.get("reason") != REVIEWED_WAVEFORM_PUBLICATION_REASON
+        or publication.get("publication_scope") != "exact_reviewed_waveform"
+        or publication.get("synthesis_reproducibility") is not False
+        or publication.get("batch_id")
+        != canonical_document_sha256(
+            {key: value for key, value in publication.items() if key != "batch_id"}
+        )
+    ):
+        raise BulkGenerationError(
+            "Reviewed-waveform publication authority is malformed"
+        )
+    for field in (
+        "batch_id",
+        "base_workspace_sha256",
+        "base_state_sha256",
+        "queue_sha256",
+        "selected_story_index_sha256",
+        "selected_voice_manifest_sha256",
+    ):
+        _required_sha256(
+            publication.get(field), f"Reviewed-waveform publication {field}"
+        )
+    _required_text(
+        publication.get("base_workspace_id"),
+        "Reviewed-waveform publication base workspace ID",
+    )
+    _required_text(
+        publication.get("base_workspace_path"),
+        "Reviewed-waveform publication base workspace path",
+    )
+    _required_text(
+        publication.get("base_state_path"),
+        "Reviewed-waveform publication base state path",
+    )
+    _required_text(
+        publication.get("narrator_character"),
+        "Reviewed-waveform publication narrator character",
+    )
+    narrator_references = publication.get("narrator_reference_sha256s")
+    if (
+        not isinstance(narrator_references, list)
+        or not narrator_references
+        or narrator_references != sorted(set(narrator_references))
+    ):
+        raise BulkGenerationError(
+            "Reviewed-waveform narrator references are not canonical"
+        )
+    for digest in narrator_references:
+        _required_sha256(digest, "Reviewed-waveform narrator reference SHA-256")
+    items = publication.get("items")
+    if not isinstance(items, list) or not items:
+        raise BulkGenerationError("Reviewed-waveform publication ledger is empty")
+    observed = []
+    for ledger in items:
+        ledger_fields = {
+            "queue_id",
+            "line_id",
+            "text_sha256",
+            "speaker",
+            "path",
+            "file_sha256",
+            "base_result_sha256",
+            "base_result",
+            "route",
+        }
+        if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
+            raise BulkGenerationError("Reviewed-waveform publication item is malformed")
+        queue_id = _required_text(ledger.get("queue_id"), "Reviewed-waveform queue ID")
+        result = state["items"].get(queue_id)
+        base_result = ledger.get("base_result")
+        route = ledger.get("route")
+        if (
+            not isinstance(result, dict)
+            or result.get("status") != "approved"
+            or result.get("review_status") != "approved"
+            or not isinstance(base_result, dict)
+            or result != base_result
+            or canonical_document_sha256(base_result)
+            != ledger.get("base_result_sha256")
+            or result.get("line_id") != ledger.get("line_id")
+            or result.get("text_sha256") != ledger.get("text_sha256")
+            or result.get("path") != ledger.get("path")
+            or result.get("file_sha256") != ledger.get("file_sha256")
+        ):
+            raise BulkGenerationError(
+                f"Reviewed-waveform publication item changed for {queue_id!r}"
+            )
+        _required_sha256(
+            ledger.get("text_sha256"), f"Reviewed-waveform {queue_id!r} text SHA-256"
+        )
+        _required_sha256(
+            ledger.get("file_sha256"), f"Reviewed-waveform {queue_id!r} WAV SHA-256"
+        )
+        _required_sha256(
+            ledger.get("base_result_sha256"),
+            f"Reviewed-waveform {queue_id!r} base result SHA-256",
+        )
+        if (
+            not isinstance(route, dict)
+            or set(route)
+            != {
+                "source",
+                "status",
+                "effective_character",
+                "reference_sha256s",
+            }
+            or route.get("source")
+            not in {"config_rebase", "historical_reviewed_waveform"}
+            or route.get("status") not in {"active", "not_reproducible"}
+        ):
+            raise BulkGenerationError(
+                f"Reviewed-waveform route is invalid for {queue_id!r}"
+            )
+        _required_text(
+            route.get("effective_character"),
+            f"Reviewed-waveform {queue_id!r} effective character",
+        )
+        references = route.get("reference_sha256s")
+        if not isinstance(references, list) or references != sorted(set(references)):
+            raise BulkGenerationError(
+                f"Reviewed-waveform references are not canonical for {queue_id!r}"
+            )
+        if route["source"] == "config_rebase" and (
+            route["status"] != "active" or not references
+        ):
+            raise BulkGenerationError(
+                f"Reviewed-waveform active route is incomplete for {queue_id!r}"
+            )
+        if route["source"] == "historical_reviewed_waveform" and (
+            route["status"] != "not_reproducible" or references
+        ):
+            raise BulkGenerationError(
+                f"Reviewed-waveform historical route is overstated for {queue_id!r}"
+            )
+        for digest in references:
+            _required_sha256(
+                digest, f"Reviewed-waveform {queue_id!r} reference SHA-256"
+            )
+        if queue_by_id is not None:
+            queue_item = queue_by_id.get(queue_id)
+            if (
+                queue_item is None
+                or queue_item.line_id != ledger.get("line_id")
+                or queue_item.text_sha256 != ledger.get("text_sha256")
+                or queue_item.speaker != ledger.get("speaker")
+            ):
+                raise BulkGenerationError(
+                    f"Reviewed-waveform queue identity changed for {queue_id!r}"
+                )
+        observed.append(queue_id)
+    if observed != sorted(set(observed)):
+        raise BulkGenerationError(
+            "Reviewed-waveform publication items are not canonical"
+        )
+
+
+def reviewed_waveform_publication_queue_ids(state):
+    """Return exact approved queue IDs covered by a validated migration."""
+    publication = state.get("reviewed_waveform_publication")
+    if not isinstance(publication, dict):
+        return frozenset()
+    return frozenset(item["queue_id"] for item in publication["items"])
+
+
 def _validate_success_item(
     queue_id, result, output_directory, queue_item, *, state_schema
 ):
@@ -1765,6 +2078,7 @@ def validate_generation_state_document(document, output_directory, queue, queue_
 
 
 __all__ = [
+    "AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "AUDIO_EVENT_OMISSION_REASON",
     "AUDIO_EVENT_OMISSION_SCHEMA",
     "AUDIO_EVENT_OMISSION_VERSION",
@@ -1773,6 +2087,7 @@ __all__ = [
     "LEGACY_STATE_VERSION",
     "LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "LIVE_FALLBACK_EVIDENCE_VERSION",
+    "LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION",
     "LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION",
     "LIVE_FALLBACK_HYPOTHESES_EXHAUSTED",
     "LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION",
@@ -1782,12 +2097,16 @@ __all__ = [
     "LIVE_FALLBACK_VERSION",
     "MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA",
+    "REVIEWED_WAVEFORM_PUBLICATION_REASON",
+    "REVIEWED_WAVEFORM_PUBLICATION_SCHEMA",
+    "REVIEWED_WAVEFORM_PUBLICATION_VERSION",
     "STATE_SCHEMA",
     "STATE_VERSION",
     "contained_state_path",
     "control_directory_digest",
     "load_stable_generation_queue",
     "provider_attempts",
+    "reviewed_waveform_publication_queue_ids",
     "required_state_sha256",
     "required_state_text",
     "safe_state_relative_path",
