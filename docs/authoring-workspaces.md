@@ -1085,6 +1085,15 @@ the operator-facing reason each WAV is mandatory: either all of its technical
 flags or the deterministic clean length bucket. Duplicate source paths or
 workspace identities fail closed.
 
+When a repair workspace also contains unrelated inherited pending records, add
+`--workspace-queue-id WORKSPACE QUEUE_ID` for every exact item to include. The
+option is repeatable. Once any exact selection is present, every listed
+workspace must have at least one selected ID; unknown workspaces, duplicate
+IDs, absent IDs and items that are no longer pending fail before publication.
+The selected queue IDs are stored in each embedded source-plan policy, so
+refresh and decision projection cannot widen back to the workspace's other
+pending records.
+
 `cohort-review-bundle-apply BUNDLE WORKSPACE_ID COHORT_ID DECISION` revalidates
 the entire bundle before constructing the ordinary source-plan decision. The
 transaction still writes evidence and projects only into the selected source

@@ -96,6 +96,10 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicyError,
 )
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.known_role_reuse import (
+    KnownRoleReuseError,
+    publish_known_role_reuse_binding,
+)
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     default_import_root,
@@ -1023,6 +1027,23 @@ def create_parser():
             "omit for a read-only preflight"
         ),
     )
+    known_role_reuse = subparsers.add_parser(
+        "known-role-reuse-binding",
+        help="Preflight or publish an exact known story role to existing voice binding",
+    )
+    known_role_reuse.add_argument("workspace", type=Path)
+    known_role_reuse.add_argument("unresolved_authority_directory", type=Path)
+    known_role_reuse.add_argument("source_character")
+    known_role_reuse.add_argument("reuse_voice_character")
+    known_role_reuse.add_argument("--output", type=Path, required=True)
+    known_role_reuse.add_argument(
+        "--accept-known-role-reuse",
+        action="store_true",
+        help=(
+            "Explicitly bind every exact absent/rejected target to the selected "
+            "existing character voice; omit for a read-only preflight"
+        ),
+    )
     portrait_alias_plan = subparsers.add_parser(
         "portrait-alias-plan",
         help="Suggest checksum-bound same-character portrait expression aliases",
@@ -1108,6 +1129,17 @@ def create_parser():
         type=int,
         default=1,
         help="Deterministic clean samples for each short/medium/long bucket",
+    )
+    cohort_bundle.add_argument(
+        "--workspace-queue-id",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("WORKSPACE", "QUEUE_ID"),
+        help=(
+            "Select one exact pending queue ID from one --workspace; repeat as "
+            "needed. When used, every workspace requires at least one selection"
+        ),
     )
     cohort_bundle.add_argument("--output", type=Path)
     cohort_bundle_apply = subparsers.add_parser(
@@ -2195,6 +2227,17 @@ def main(argv=None):
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
+        if arguments.command == "known-role-reuse-binding":
+            result = publish_known_role_reuse_binding(
+                arguments.workspace,
+                arguments.unresolved_authority_directory,
+                arguments.source_character,
+                arguments.reuse_voice_character,
+                arguments.output,
+                accept_known_role_reuse=arguments.accept_known_role_reuse,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            return 0
         if arguments.command == "portrait-alias-plan":
             plan = build_portrait_alias_plan(
                 arguments.quality_review,
@@ -2240,9 +2283,43 @@ def main(argv=None):
             )
             return 0
         if arguments.command == "cohort-review-bundle":
+            selections = None
+            if arguments.workspace_queue_id:
+                selections = {
+                    Path(workspace).expanduser().resolve(): []
+                    for workspace in arguments.workspace
+                }
+                for workspace_value, queue_id in arguments.workspace_queue_id:
+                    workspace = Path(workspace_value).expanduser().resolve()
+                    if workspace not in selections:
+                        raise CohortReviewError(
+                            "Review bundle queue selection references an unknown "
+                            f"workspace: {workspace}"
+                        )
+                    if not queue_id.strip():
+                        raise CohortReviewError(
+                            "Review bundle selected queue ID must be non-empty"
+                        )
+                    if queue_id in selections[workspace]:
+                        raise CohortReviewError(
+                            "Review bundle selected queue ID is duplicated for "
+                            f"{workspace}: {queue_id}"
+                        )
+                    selections[workspace].append(queue_id)
+                missing = sorted(
+                    str(workspace)
+                    for workspace, queue_ids in selections.items()
+                    if not queue_ids
+                )
+                if missing:
+                    raise CohortReviewError(
+                        "Every review bundle workspace requires an exact queue "
+                        f"selection: {missing}"
+                    )
             bundle = build_cohort_review_bundle(
                 arguments.workspace,
                 clean_samples_per_bucket=arguments.clean_samples_per_bucket,
+                queue_ids_by_workspace=selections,
             )
             if arguments.output is not None:
                 write_cohort_review_bundle(bundle, arguments.output)
@@ -2593,6 +2670,7 @@ def main(argv=None):
         MissingVoiceReuseBindingError,
         MissingVoiceReuseReviewError,
         MissingVoiceLiveFallbackError,
+        KnownRoleReuseError,
         PortraitAliasError,
         ReferenceSelectionError,
         ReferenceRenderComparisonError,

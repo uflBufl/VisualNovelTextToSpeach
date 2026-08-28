@@ -34,31 +34,32 @@ Follow the checkpoint, dependencies and acceptance boundaries in
       rebuild the approved-only manifest, require terminal coverage or an
       explicit supported fallback for all 592 queue items, and run the real
       Character Story routing and auto-advance acceptance.
-- [ ] Resolve the remaining missing-voice boundary without silently widening a
-      reference: 93 spoken Aderyn lines have no age/portrait-safe route after
-      the child variant's real-story rejection, and Dobharchú `314608:95` and
-      `314608:96` belong to the intentionally unbound portrait `534705`.
-      Preserve the known speaker identities. Adult Rhiannon, an existing
-      Dobharchú portrait, or Centurion Narrator may be used only through a new
-      explicit, checksum-bound reuse/fallback decision with generated evidence
-      and human approval; unknown-character fallback policy is not authority
-      for these known roles.
-      Aderyn is already terminal `Neither` in both cohorts and its imported
-      zero-override decision is recorded in
-      [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md);
-      do not replay or regenerate those candidates. Decide an explicit live
-      Narrator fallback for those 93 known-role lines. The atomic importer and
-      real read-only preflight are complete: batch
-      `67bd260baaceef5931b8ee2712da643559f62a565141d5c8deb87c179d7e8f11`
-      is exactly 93 Aderyn lines across two automatic-`Neither` cohorts and left
-      state SHA-256 `e5983ad3...` unchanged. If the user accepts this policy,
-      run the same `missing-voice-live-fallback` command with
-      `--accept-known-role-narrator-fallback`, verify its idempotent repeat and
-      refresh the coverage census. Pocket remains Pocket; fallback-only speaker
-      announcements identify the retained `Aderyn` role and map `???` to
-      `Unknown`, without claiming a Centurion voice clone.
-      The Dobharchú task still has one complete opaque candidate: hear all four
-      available WAVs and choose that candidate or `Neither`. Replay remains
+- [ ] Finish the remaining known-role boundary without silently widening a
+      reference. The explicit `Aderyn -> Rhiannon` authority, safe pending-state
+      rebase and first 104-line MOSS pass are complete and recorded in
+      [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
+      Preserve the nine prior Aderyn approvals and the 11 historical rejection
+      WAVs. The 13 exact safe sentence segmentations produced six additional
+      clean WAVs and seven typed failures. The next 46 exact bounded attempts
+      produced seven more clean WAVs, and the final 31 authorized MOSS seeds
+      produced four. MOSS is now exhausted for every failed bounded case. Run
+      Pocket fallback produced 23 clean WAVs and five final failures. Keep the
+      current three inline-pause and 13
+      reference-comparison cases as explicit listening work rather than
+      auto-repair. Review the exact three-item child bundle first. After its
+      decisions are terminal, publish an adult bundle over the other 80 valid
+      WAVs using the implemented per-workspace queue selection, excluding all
+      197 inherited legacy pending records. Keep MOSS and generic Pocket cohorts
+      distinct and use representative short/medium/long samples; do not
+      auto-approve from a clean technical result. Any line still unavailable after bounded
+      repairs may receive only an explicit Pocket fallback whose requested
+      synthesis voice is `Rhiannon` while its audible role announcement remains
+      `Aderyn`; Centurion/Narrator must never be the Aderyn fallback. Refresh
+      the coverage census and runtime routing tests after review/import.
+      Dobharchú `314608:95` and `314608:96` still belong to intentionally
+      unbound portrait `534705`. Its task has one complete opaque candidate:
+      hear all four available WAVs and choose that candidate or `Neither`.
+      Replay remains
       available during background saves and failed arms remain visible but
       unselectable. After its session is terminal, run the no-replace importer.
       Extend a selected voice only to the exact two queue IDs, create a
@@ -325,6 +326,61 @@ while one-sentence controls remained below 0.25 seconds.
 - [ ] Add real Windows and macOS soak tests covering CPU and GPU speech, animated
       scenes, rapid manual advancement, and application shutdown during every
       pipeline stage.
+
+## Architecture and maintainability
+
+### P1 - Reduce dependency magnets without weakening safety invariants
+
+- [ ] Extract stable authoring foundation APIs from
+      `vntts/authoring/bulk_generation.py` and
+      `vntts/authoring/workbench.py`, then migrate the current cross-module
+      imports of private helpers onto those APIs. Keep checksum-bound authority,
+      path containment, immutable snapshots, leases, atomic no-replace
+      publication and compatibility imports unchanged. Completion requires the
+      full unit suite and authoring import-graph regression to pass with no
+      concrete-module cycles and no remaining cross-module dependency on the
+      extracted private helpers.
+- [ ] Replace the eager `vntts.authoring` compatibility facade with a small or
+      lazy public surface. Preserve every documented external import during the
+      migration, but stop a direct leaf-module import from loading unrelated
+      authoring workflows or PySide. Add an import-side-effect regression test
+      and document the supported public API before removing any compatibility
+      export.
+- [ ] Split `vntts.authoring.cli.create_parser()` and `main()` into command-family
+      parser builders and handlers behind one thin dispatcher. Preserve command
+      names, arguments, exit codes, JSON output and headless `-h/--help`
+      behavior; require focused CLI compatibility tests plus the full suite.
+- [ ] Decompose `AppController` into explicit runtime bootstrap/lifecycle,
+      live-session coordination, voice assignment and diagnostics components.
+      Keep `AppController` as the compatibility facade and composition root;
+      preserve cancellation, shutdown, routing, auto-advance and UI callback
+      behavior through existing focused and full-suite tests.
+
+### P1 - Make the standard quality path trustworthy
+
+- [ ] Remove duplicate `unittest` discovery aliases by replacing imports of
+      concrete `TestCase` helper classes with fixture functions, mixins that are
+      not discoverable, or dedicated test-support modules. Make both the README
+      command and `scripts/run_ci_unittests.py discover -s tests` execute the
+      same unique inventory successfully; retain the macOS Qt process isolation
+      only for the crash boundary, not for deduplication correctness.
+- [ ] Introduce gradual static typing at the highest-value boundaries first:
+      artifact schemas, synthesis/playback protocols, worker messages and
+      orchestration inputs/results. Add a scoped mypy or pyright CI gate and
+      expand it module by module without requiring a repository-wide annotation
+      rewrite.
+- [ ] Extend automated maintainability guardrails beyond the current basic Ruff
+      rules. Add checks for forbidden cross-module private imports and bounded
+      module/function complexity, with explicit compatibility exceptions and a
+      ratchet that prevents new debt without blocking incremental extraction.
+
+### P2 - Improve architecture discoverability
+
+- [ ] Add a short architecture index that identifies the canonical runtime,
+      authoring, artifact-authority, publication and UI documents. Separate
+      durable contracts from dated experiment/run histories so a new maintainer
+      can find the current design without reading the operational record; do not
+      discard the existing evidence documents.
 
 ## Windows application
 

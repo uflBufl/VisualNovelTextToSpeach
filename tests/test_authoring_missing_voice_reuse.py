@@ -102,6 +102,7 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
         )
         voice_manifest = Path(fixture["job"]["voice_manifest"])
         (voice_manifest.parent / "adult.wav").write_bytes(b"adult-reference")
+        (voice_manifest.parent / "rhiannon.wav").write_bytes(b"rhiannon-reference")
         (voice_manifest.parent / "narrator.wav").write_bytes(b"narrator-reference")
         voice_manifest.write_text(
             json.dumps(
@@ -112,6 +113,11 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                             "character": "Adult Aderyn",
                             "speaker": "adult-aderyn",
                             "references": ["adult.wav"],
+                        },
+                        {
+                            "character": "Rhiannon",
+                            "speaker": "rhiannon",
+                            "references": ["rhiannon.wav"],
                         },
                         {
                             "character": "Centurion",

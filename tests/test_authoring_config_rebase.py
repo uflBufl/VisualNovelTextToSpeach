@@ -24,7 +24,9 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import (
+    REBASE_PENDING_KNOWN_ROLE_REUSE,
     _failure_reference_route,
+    _known_role_reuse_requeues_rejection,
     _prior_config_rebase_target_route,
     _target_route_status,
     rebase_workspace_config,
@@ -206,6 +208,89 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 retirement,
             ),
             "retired_rejected",
+        )
+
+    def test_known_role_reuse_preserves_exact_rejection_as_history(self):
+        queue_id = "line:aderyn-rejected"
+        source_item_sha256 = "4" * 64
+        source_route = ("Adult Aderyn", ("1" * 64,))
+        target_route = ("Rhiannon", ("2" * 64, "3" * 64))
+        binding = {
+            "reuse_voice_character": "Rhiannon",
+            "reuse_reference_sha256s": ["2" * 64, "3" * 64],
+            "source_rejected_state_item_sha256s": {queue_id: source_item_sha256},
+        }
+
+        self.assertEqual(
+            _target_route_status(
+                queue_id,
+                "generated",
+                "rejected",
+                source_route,
+                target_route,
+                (),
+                binding,
+                source_item_sha256,
+            ),
+            "known_role_reuse_rejected",
+        )
+        self.assertTrue(
+            _known_role_reuse_requeues_rejection(
+                queue_id,
+                "generated",
+                "rejected",
+                target_route,
+                "known_role_reuse_rejected",
+                {
+                    **binding,
+                    "queue_voice_overrides": {queue_id: "Rhiannon"},
+                },
+                source_item_sha256,
+            )
+        )
+        self.assertEqual(
+            REBASE_PENDING_KNOWN_ROLE_REUSE, "pending_after_known_role_reuse"
+        )
+        self.assertFalse(
+            _known_role_reuse_requeues_rejection(
+                queue_id,
+                "generated",
+                "rejected",
+                target_route,
+                "known_role_reuse_rejected",
+                {
+                    **binding,
+                    "queue_voice_overrides": {queue_id: "Rhiannon"},
+                },
+                "5" * 64,
+            )
+        )
+        with self.assertRaisesRegex(
+            AuthoringWorkbenchError, "changes the effective reference"
+        ):
+            _target_route_status(
+                queue_id,
+                "generated",
+                "rejected",
+                source_route,
+                target_route,
+                (),
+                binding,
+                "5" * 64,
+            )
+        self.assertEqual(
+            _prior_config_rebase_target_route(
+                {
+                    "config_rebase": {
+                        "source_effective_character": "Adult Aderyn",
+                        "source_reference_sha256s": ["1" * 64],
+                        "target_effective_character": "Rhiannon",
+                        "target_reference_sha256s": ["2" * 64, "3" * 64],
+                        "target_route_status": "known_role_reuse_rejected",
+                    }
+                }
+            ),
+            source_route,
         )
 
     def test_allows_distinct_variant_labels_bound_to_same_reference_bytes(self):

@@ -174,6 +174,15 @@ from vntts.authoring.game_pack import (
     FinalGamePackResult,
     publish_final_game_pack,
 )
+from vntts.authoring.known_role_reuse import (
+    KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
+    KNOWN_ROLE_REUSE_BUNDLE_VERSION,
+    KNOWN_ROLE_REUSE_DECISION_SCHEMA,
+    KNOWN_ROLE_REUSE_DECISION_VERSION,
+    KnownRoleReuseError,
+    KnownRoleReuseResult,
+    publish_known_role_reuse_binding,
+)
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
     LegacyImportCandidate,
@@ -711,6 +720,12 @@ __all__ = [
     "MissingVoiceReuseBindingResult",
     "MissingVoiceLiveFallbackError",
     "MissingVoiceLiveFallbackResult",
+    "KnownRoleReuseError",
+    "KnownRoleReuseResult",
+    "KNOWN_ROLE_REUSE_BUNDLE_SCHEMA",
+    "KNOWN_ROLE_REUSE_BUNDLE_VERSION",
+    "KNOWN_ROLE_REUSE_DECISION_SCHEMA",
+    "KNOWN_ROLE_REUSE_DECISION_VERSION",
     "MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA",
     "MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION",
     "MISSING_VOICE_REUSE_DECISION_SCHEMA",
@@ -834,6 +849,7 @@ __all__ = [
     "publish_generated_manifest",
     "publish_source_audio_event_review",
     "publish_missing_voice_reuse_binding",
+    "publish_known_role_reuse_binding",
     "publish_audio_event_composition",
     "publish_final_game_pack",
     "publish_failure_reference_audit",

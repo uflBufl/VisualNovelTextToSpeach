@@ -1194,3 +1194,122 @@ and unchanged before/after state SHA-256
 No fallback was applied. Applying it remains one explicit human policy gate;
 the importer requires `--accept-known-role-narrator-fallback`, commits the full
 scope under one lease and cannot accept a partial queue selection.
+
+## Explicit Aderyn -> Rhiannon identity authority, 2026-08-28
+
+The user subsequently established the story identity policy `Aderyn ->
+Rhiannon`, including the three lines formerly assigned to the rejected child
+portrait variant. This supersedes the prepared but unapplied Aderyn Narrator
+fallback. It does not retroactively approve any generated speech.
+
+No-replace bundle
+`authoring/known-role-reuse-bindings/current-character-story-aderyn-to-rhiannon-v1`
+has decision ID
+`3e2137ab2d89f2aadf06ca573e8ac80dbad6828f73978d98bbffb457bd5be2e7`,
+bundle ID
+`98d1f9d08337cb8a09f4702697a0a2ca09567d77f535808455236949167f2685`
+and bundle-document SHA-256
+`4f0963a65a7a198391df70c09b854f26d31ae073e361065b711a990530ae79ac`.
+It binds 104 exact queue/text/speaker identities to the three-reference
+Rhiannon voice: 93 previously absent lines and 11 rejected lines, including
+the three IDs from retired child variant
+`cluster-6a3c52e451a4abb5a69c32a8-anchor-1`. Nine existing approved Aderyn WAVs
+remain outside the override and retain their reviewed source route. The bundle
+copies and validates every voice reference named by its manifest; the first
+incomplete publication was preserved beside it with suffix
+`invalid-incomplete-references-3e2137ab` and is not valid authority.
+
+Config rebase version 3 gives an exact known-role route change a safe state
+transition. Only a rejected item whose canonical state hash is named by the
+binding becomes pending in the successor. Its old decision and WAV move into
+the self-contained config-rebase source snapshot, while unrelated terminal
+decisions remain active and protected. This avoids both overwriting a terminal
+review with `--regenerate-existing` and losing the negative evidence. The real
+successor is
+`resume-395a5e5eec0327a3a793b66d-40a7a5a24af271d0`; exact rebase repetition
+returned `created=false`. Before generation it contained 104 pending Rhiannon
+overrides, nine preserved Aderyn approvals, 11 historical rejected WAVs and no
+Aderyn live or Narrator fallback. The source workspace and state hashes still
+matched the binding after publication.
+
+One bounded MOSS stable seed-0 pass with no retries processed all 104 pending
+items. It produced 43 technically clean `pending_review` WAVs and 61 typed
+failures: 50 `missed_eos_audio_limit` and 11 `speech_silence`. None of the 43
+WAVs carries analysis-version-2 technical-attention flags. The deterministic
+repair planner classifies the 61 failures as 13 safe sentence-boundary
+segmentations, 42 bounded seed retries, two inline-pause comparisons and four
+reference comparisons. No retry or repair result is implied by this census.
+The workspace, generation-state and generated-manifest SHA-256 values at this
+checkpoint are
+`0b5f21190be3006b9e15c32f77afc1c0fcc45794fabf5063735494683ee19850`,
+`3ea19804b28ed30a9472089d24030075a2dd2869772e763f9c54c1a6c398d5a7`
+and
+`d1ea5affdb5a1e8477f93a18da09efe0f18f3bb1eed6dc80e3c51b82eaa500fe`.
+
+The 13 planner-authorized sentence-boundary cases then ran in isolated repair
+workspace `resume-395a5e5eec0327a3a793b66d-706e025553318f5f`, again with
+seed 0 and no retries. Six produced technically clean pending-review WAVs;
+four still ended `missed_eos_audio_limit` and three ended `speech_silence`.
+Re-planning permits one bounded current-provider seed for the four missed-EOS
+items and sends all three silence failures directly to reference comparison.
+The repair workspace, state and manifest SHA-256 values are
+`9ba664c7d59ea9f9994cd3c0ea1ced307dca5070dacec2634c6dd47fc8a4b94e`,
+`396a86eb7852967d28ea44c24f6e714effe97038198f0d900f12fb137c3376b4`
+and
+`378a7d3c1dae5aeea9b4a234a6f59a2400d8679fdae308525fc521cd017ab661`.
+
+The next bounded MOSS seed ran in two source-specific workspaces. Base-failure
+workspace `resume-395a5e5eec0327a3a793b66d-cbecf377c313d430` processed 42
+exact single-sentence cases and produced seven technically valid WAVs. Its 35
+remaining failures re-plan to 31 final bounded seeds, three reference
+comparisons and one inline-pause comparison. Post-segmentation workspace
+`resume-395a5e5eec0327a3a793b66d-d96c8e798db08e17` processed four cases and
+produced no WAV; three now require reference comparison and one has exhausted
+MOSS and permits only the typed offline fallback. The first workspace/state/
+manifest hashes are
+`34d42ae20da5782db4dc2389f230465ed52d3206f0f6598a92c4ec3790aca631`,
+`b3536b3734d8578f7d6189e6b21f11d01c366bbdb2a36623d34783439eb78055`
+and
+`21deab7d9bf374993048cf25673f94483489fb0ba9cfb968f2d70bb30170ca8d`;
+the second set is
+`b35ddff833cccdd2a65223e8880d7f5419bb7250e7a42e92c0a1726b54ff7969`,
+`542c6b75a4f808a988a462f43aaa448826c637344a7a59420243cc31b2c643e5`
+and
+`18064e93ecbbe472d52f5251d72f21c4b9118edd2522efbad98e688c41ada283`.
+
+Final bounded-seed workspace
+`resume-395a5e5eec0327a3a793b66d-f9b67c8120c30d93` processed the 31 remaining
+planner-authorized cases at their third and final MOSS attempt. Four produced
+technically clean WAVs; 27 exhausted the current provider and now all classify
+as `offline_fallback_backend` (24 missed EOS and three speech-silence). The
+workspace/state/manifest hashes are
+`e924c0765ca7497550e8f7e8fa663b2b658fc752dcc98566a404e901f8085c37`,
+`1d9c68c938914fdf9def777bb526a38ed1c2e9f2163a5341c5c7ec3e9da8cc84`
+and
+`f8bad26e8c20809c60c4d590ed6070650f9f40b1697af3aed243d6cc8e33f9d9`.
+Across the Aderyn identity branch, 60 of 104 exact Rhiannon-routed targets now
+have technically clean MOSS WAVs. The unresolved 44 split into 28 typed offline
+fallbacks, three inline-pause comparisons and 13 reference comparisons; no
+further MOSS seed is authorized for the 28 exhausted cases.
+
+The 28 exhausted cases then received their one permitted unseeded Pocket
+attempt in two source-specific workspaces. Workspace
+`resume-395a5e5eec0327a3a793b66d-8cb0f74eaca6cf10` produced 22 valid WAVs and
+five final Pocket failures; workspace
+`resume-395a5e5eec0327a3a793b66d-8aa15e352591f8ed` produced its single valid
+WAV. None of the 23 outputs has analysis-version-2 technical-attention flags.
+Pocket preserves the exact Aderyn speaker and requested Rhiannon route in its
+provenance, but it is a generic fallback voice, not a clone of Rhiannon, so it
+requires a separate perceptual cohort from MOSS. The branch now has 83 valid
+pending WAVs and 21 unresolved targets: five exhausted Pocket failures, three
+inline-pause comparisons and 13 reference comparisons.
+
+The retired child portrait is an explicit quality stratum. Its two valid MOSS
+outputs and one valid Pocket output are published in
+`current-character-story-aderyn-rhiannon-child-production-v1.json`, bundle ID
+`0dc7d440f0d594cc142ac229ca779122cda67515db0dd36bcb7d242569ae2d6a`
+and file SHA-256
+`ae87aa21e5b3f3bc93391e40ac4db1c51d1024838d61f4fc145737aff4e0ca92`.
+The bundle contains exactly two workspaces, two cohorts, three pending items
+and three required samples, so no child line can be approved through an adult
+sample.

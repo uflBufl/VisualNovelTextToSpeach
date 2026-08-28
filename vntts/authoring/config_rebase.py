@@ -27,6 +27,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
 )
 from vntts.authoring.source_reference_bindings import (
+    KNOWN_ROLE_REUSE_BINDING_FIELD,
     SourceReferenceBindingError,
     retired_source_reference_variants_from_manifest,
 )
@@ -50,8 +51,10 @@ from vntts.authoring.workbench import (
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
-CONFIG_REBASE_VERSION = 2
-SUPPORTED_CONFIG_REBASE_VERSIONS = frozenset({1, CONFIG_REBASE_VERSION})
+CONFIG_REBASE_VERSION = 3
+SUPPORTED_CONFIG_REBASE_VERSIONS = frozenset({1, 2, CONFIG_REBASE_VERSION})
+REBASE_CARRIED_TERMINAL = "carried_terminal"
+REBASE_PENDING_KNOWN_ROLE_REUSE = "pending_after_known_role_reuse"
 _WORKFLOW_FIELDS = {
     "carry_forward",
     "outcome_merge",
@@ -161,6 +164,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 retired_variants = retired_source_reference_variants_from_manifest(
                     target_voice_document
                 )
+                known_role_reuse = target_voice_document.get(
+                    KNOWN_ROLE_REUSE_BINDING_FIELD
+                )
             except (VoiceManifestError, SourceReferenceBindingError) as error:
                 raise AuthoringWorkbenchError(str(error)) from error
 
@@ -231,6 +237,8 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     source_route,
                     target_route,
                     retired_variants,
+                    known_role_reuse,
+                    _canonical_sha256(result),
                 )
                 relative = _safe_relative(
                     result.get("path"), f"Config rebase item {queue_id!r} WAV"
@@ -261,13 +269,29 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     "source_reference_sha256s": list(source_route[1]),
                     "target_reference_sha256s": list(target_route[1]),
                     "target_route_status": route_status,
+                    "successor_state": (
+                        REBASE_PENDING_KNOWN_ROLE_REUSE
+                        if _known_role_reuse_requeues_rejection(
+                            queue_id,
+                            result.get("status"),
+                            result.get("review_status"),
+                            target_route,
+                            route_status,
+                            known_role_reuse,
+                            _canonical_sha256(result),
+                        )
+                        else REBASE_CARRIED_TERMINAL
+                    ),
                 }
                 projected["config_rebase"] = {
                     key: value for key, value in record.items() if key != "queue_id"
                 }
                 if source_live_fallback is not None:
                     projected["live_fallback"] = copy.deepcopy(source_live_fallback)
-                projected_state["items"][queue_id] = projected
+                if record["successor_state"] == REBASE_PENDING_KNOWN_ROLE_REUSE:
+                    projected_state["items"].pop(queue_id, None)
+                else:
+                    projected_state["items"][queue_id] = projected
                 records.append(record)
             if not records:
                 raise AuthoringWorkbenchError(
@@ -350,6 +374,28 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             (source_root / "generated-audio" / "generation-state.json").write_bytes(
                 source_state_payload
             )
+            for record in records:
+                if record["successor_state"] != REBASE_PENDING_KNOWN_ROLE_REUSE:
+                    continue
+                source_item = source_state["items"][record["queue_id"]]
+                relative = _safe_relative(
+                    source_item.get("path"),
+                    f"Config rebase pending-history {record['queue_id']!r} WAV",
+                )
+                source_audio = _within(
+                    source_output, relative, "Config rebase pending-history WAV"
+                )
+                history_audio = _within(
+                    source_root / "generated-audio",
+                    relative,
+                    "Config rebase pending-history WAV",
+                )
+                history_audio.parent.mkdir(parents=True, exist_ok=True)
+                payload = _read_file_bytes(
+                    source_audio, "config rebase pending-history WAV"
+                )
+                history_audio.write_bytes(payload)
+                snapshots.append((source_audio, record["audio_sha256"]))
             target_root = staging / "provenance" / "config-rebase" / "target-root"
             target_root.mkdir(parents=True)
             (target_root / "workspace.json").write_bytes(
@@ -545,6 +591,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         retired_variants = retired_source_reference_variants_from_manifest(
             target_voice_document
         )
+        known_role_reuse = target_voice_document.get(KNOWN_ROLE_REUSE_BINDING_FIELD)
     except (VoiceManifestError, SourceReferenceBindingError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     target_registry = _workspace_voice_registry(directory, workspace)
@@ -606,6 +653,8 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         }
         if rebase["schema_version"] >= 2:
             record_fields.add("target_route_status")
+        if rebase["schema_version"] >= 3:
+            record_fields.add("successor_state")
         if not isinstance(record, dict) or set(record) != record_fields:
             raise AuthoringWorkbenchError("Config rebase item record is malformed")
         queue_id = record["queue_id"]
@@ -650,10 +699,34 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 tuple(record["target_reference_sha256s"]),
             ),
             retired_variants,
+            known_role_reuse,
+            record["source_item_sha256"],
         )
         if record.get("target_route_status", "active") != expected_route_status:
             raise AuthoringWorkbenchError(
                 f"Config rebase target route status is invalid for {queue_id!r}"
+            )
+        expected_successor_state = (
+            REBASE_PENDING_KNOWN_ROLE_REUSE
+            if _known_role_reuse_requeues_rejection(
+                queue_id,
+                record.get("status"),
+                record.get("review_status"),
+                (
+                    record["target_effective_character"],
+                    tuple(record["target_reference_sha256s"]),
+                ),
+                expected_route_status,
+                known_role_reuse,
+                record["source_item_sha256"],
+            )
+            else REBASE_CARRIED_TERMINAL
+        )
+        if record.get("successor_state", REBASE_CARRIED_TERMINAL) != (
+            expected_successor_state
+        ):
+            raise AuthoringWorkbenchError(
+                f"Config rebase successor state is invalid for {queue_id!r}"
             )
         source_item = source_state["items"].get(queue_id)
         if (
@@ -675,6 +748,27 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         expected_extension = {
             key: value for key, value in record.items() if key != "queue_id"
         }
+        if expected_successor_state == REBASE_PENDING_KNOWN_ROLE_REUSE:
+            if isinstance(current, dict) and "config_rebase" in current:
+                raise AuthoringWorkbenchError(
+                    f"Config rebase pending item retained terminal history for {queue_id!r}"
+                )
+            historical_audio = _within(
+                source_root / "generated-audio",
+                _safe_relative(
+                    source_item.get("path"), "Config rebase pending-history WAV"
+                ),
+                "Config rebase pending-history WAV",
+            )
+            if (
+                historical_audio.is_symlink()
+                or not historical_audio.is_file()
+                or sha256_file(historical_audio) != record["audio_sha256"]
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Config rebase pending-history WAV changed for {queue_id!r}"
+                )
+            continue
         if not isinstance(current, dict):
             raise AuthoringWorkbenchError(
                 f"Config rebase state item changed for {queue_id!r}"
@@ -859,6 +953,8 @@ def _target_route_status(
     source_route,
     target_route,
     retired_variants,
+    known_role_reuse=None,
+    source_item_sha256=None,
 ):
     if set(source_route[1]).issubset(target_route[1]):
         return "active"
@@ -869,8 +965,59 @@ def _target_route_status(
         is not None
     ):
         return "retired_rejected"
+    controls = (
+        known_role_reuse.get("source_rejected_state_item_sha256s", {})
+        if isinstance(known_role_reuse, dict)
+        else {}
+    )
+    expected_references = (
+        known_role_reuse.get("reuse_reference_sha256s")
+        if isinstance(known_role_reuse, dict)
+        else None
+    )
+    if (
+        isinstance(known_role_reuse, dict)
+        and status == "generated"
+        and review_status == "rejected"
+        and controls.get(queue_id) == source_item_sha256
+        and target_route[0] == known_role_reuse.get("reuse_voice_character")
+        and isinstance(expected_references, list)
+        and list(target_route[1]) == expected_references
+    ):
+        return "known_role_reuse_rejected"
     raise AuthoringWorkbenchError(
         f"Config rebase changes the effective reference for terminal item {queue_id!r}"
+    )
+
+
+def _known_role_reuse_requeues_rejection(
+    queue_id,
+    status,
+    review_status,
+    target_route,
+    route_status,
+    known_role_reuse,
+    source_item_sha256,
+):
+    """Return true only for an exact rejected item authorized for a new voice."""
+    if (
+        not isinstance(known_role_reuse, dict)
+        or status != "generated"
+        or review_status != "rejected"
+        or route_status not in {"known_role_reuse_rejected", "retired_rejected"}
+    ):
+        return False
+    controls = known_role_reuse.get("source_rejected_state_item_sha256s")
+    expected_references = known_role_reuse.get("reuse_reference_sha256s")
+    overrides = known_role_reuse.get("queue_voice_overrides")
+    return (
+        isinstance(controls, dict)
+        and controls.get(queue_id) == source_item_sha256
+        and isinstance(overrides, dict)
+        and overrides.get(queue_id) == known_role_reuse.get("reuse_voice_character")
+        and target_route[0] == known_role_reuse.get("reuse_voice_character")
+        and isinstance(expected_references, list)
+        and list(target_route[1]) == expected_references
     )
 
 
@@ -1042,7 +1189,10 @@ def _prior_config_rebase_target_route(result):
     rebase = result.get("config_rebase")
     if not isinstance(rebase, dict):
         return None
-    retired = rebase.get("target_route_status") == "retired_rejected"
+    retired = rebase.get("target_route_status") in {
+        "retired_rejected",
+        "known_role_reuse_rejected",
+    }
     character_field = (
         "source_effective_character" if retired else "target_effective_character"
     )

@@ -642,8 +642,9 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             output = Path(directory) / "bundle.json"
             stdout = StringIO()
             arguments = ["cohort-review-bundle"]
-            for workspace, _state, _queue_id in sources:
+            for workspace, _state, queue_id in sources:
                 arguments.extend(("--workspace", str(workspace)))
+                arguments.extend(("--workspace-queue-id", str(workspace), queue_id))
             arguments.extend(("--output", str(output)))
 
             with redirect_stdout(stdout):
@@ -652,6 +653,34 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             loaded = load_cohort_review_bundle(output)
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue()), loaded.document)
+        self.assertEqual(
+            {
+                source["workspace_id"]: source["plan"]["policy"]["selected_queue_ids"]
+                for source in loaded.document["sources"]
+            },
+            {workspace.name: [queue_id] for workspace, _state, queue_id in sources},
+        )
+
+    def test_cli_exact_selection_requires_every_workspace(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            arguments = ["cohort-review-bundle"]
+            for workspace, _state, _queue_id in sources:
+                arguments.extend(("--workspace", str(workspace)))
+            arguments.extend(
+                (
+                    "--workspace-queue-id",
+                    str(sources[0][0]),
+                    sources[0][2],
+                )
+            )
+
+            with patch("sys.stderr", new=StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as raised:
+                    authoring_main(arguments)
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("Every review bundle workspace", stderr.getvalue())
 
     def test_live_samples_bind_text_audio_and_source_workspace(self):
         with TemporaryDirectory() as directory:
