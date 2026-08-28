@@ -27,6 +27,7 @@ from vntts.authoring.cohort_review import (
     _write_document_no_replace,
 )
 from vntts.authoring.game_pack import FinalGamePackError
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -34,14 +35,13 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     _load_workspace_snapshot,
-    _rename_directory_no_replace,
-    _safe_relative,
     _stable_workspace_state,
-    _within,
+    contained_workspace_path,
     create_resume_workspace,
     generation_command,
     generation_failure_category,
     list_review_items,
+    safe_workspace_relative_path,
 )
 from vntts.speech_backend import get_moss_tts_generation_profile
 
@@ -476,7 +476,9 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         raise VoiceRepairComparisonError(
             "Voice repair candidate input is a symbolic link"
         )
-    destination = _within(root, Path(name), "Voice repair candidate input")
+    destination = contained_workspace_path(
+        root, Path(name), "Voice repair candidate input"
+    )
     if destination.exists():
         _validate_candidate_input(destination, document, candidate)
         return destination, False
@@ -515,7 +517,9 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         for voice in voices:
             for value in voice.references:
                 try:
-                    relative = _safe_relative(value, "Candidate voice reference")
+                    relative = safe_workspace_relative_path(
+                        value, "Candidate voice reference"
+                    )
                     source = _regular_contained_file(
                         source_root, relative, "Candidate voice reference"
                     )
@@ -555,7 +559,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         _validate_candidate_input(staging, document, candidate)
         _require_fresh_plan(document)
         try:
-            _rename_directory_no_replace(staging, destination)
+            rename_directory_no_replace(staging, destination)
         except (FinalGamePackError, OSError) as error:
             if destination.exists():
                 _validate_candidate_input(destination, document, candidate)
@@ -610,7 +614,9 @@ def _validate_candidate_input(directory, document, candidate):
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
             raise VoiceRepairComparisonError("Candidate bundle inventory is malformed")
         try:
-            relative = _safe_relative(item.get("path"), "Candidate bundle artifact")
+            relative = safe_workspace_relative_path(
+                item.get("path"), "Candidate bundle artifact"
+            )
             path = _regular_contained_file(
                 directory, relative, "Candidate bundle artifact"
             )
@@ -657,7 +663,7 @@ def _regular_contained_file(root, relative, label):
         current /= part
         if current.is_symlink():
             raise VoiceRepairComparisonError(f"{label} contains a symbolic link")
-    path = _within(root, Path(relative), label)
+    path = contained_workspace_path(root, Path(relative), label)
     if not path.is_file():
         raise VoiceRepairComparisonError(f"{label} is missing or is not a file")
     return path
@@ -690,8 +696,10 @@ def _variant_controls(directory, manifest_path, voice_by_name, variant_names):
         references = []
         for value in voice.references:
             try:
-                relative = _safe_relative(value, "Voice repair reference")
-                path = _within(root, relative, "Voice repair reference")
+                relative = safe_workspace_relative_path(value, "Voice repair reference")
+                path = contained_workspace_path(
+                    root, relative, "Voice repair reference"
+                )
             except AuthoringWorkbenchError as error:
                 raise VoiceRepairComparisonError(str(error)) from error
             if path.is_symlink() or not path.is_file():
@@ -721,9 +729,9 @@ def _item_record(directory, item, result, variant, review_by_id):
     audio_source = None
     if isinstance(result, dict) and result.get("path") is not None:
         try:
-            path = _within(
+            path = contained_workspace_path(
                 directory / "generated-audio",
-                _safe_relative(result.get("path"), "Comparison WAV"),
+                safe_workspace_relative_path(result.get("path"), "Comparison WAV"),
                 "Comparison WAV",
             )
         except AuthoringWorkbenchError as error:

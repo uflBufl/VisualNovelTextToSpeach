@@ -31,6 +31,7 @@ from vntts.authoring.missing_voice_live_fallback import (
     _load_authority,
     _validated_targets,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_AUTHORITY,
     KNOWN_ROLE_REUSE_BINDING_FIELD,
@@ -45,11 +46,10 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _rename_directory_no_replace,
-    _safe_relative,
     _selected_voice_manifest,
-    _within,
+    contained_workspace_path,
     inspect_workspace,
+    safe_workspace_relative_path,
 )
 from vntts.voices import synthesis_character_for_line
 
@@ -421,7 +421,7 @@ def publish_known_role_reuse_binding(
             sort_keys=True,
         )
         _validate_bundle(staging, known_binding, decision_body, queue_by_id)
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
     except (
         AuthoringWorkbenchError,
@@ -454,8 +454,12 @@ def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
     for record in inventory:
         if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
             raise KnownRoleReuseError("Known-role bundle inventory is malformed")
-        relative = _safe_relative(record["path"], "Known-role bundle artifact")
-        artifact = _within(directory, relative, "Known-role bundle artifact")
+        relative = safe_workspace_relative_path(
+            record["path"], "Known-role bundle artifact"
+        )
+        artifact = contained_workspace_path(
+            directory, relative, "Known-role bundle artifact"
+        )
         if (
             artifact.is_symlink()
             or not artifact.is_file()
@@ -490,8 +494,12 @@ def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
         raise KnownRoleReuseError(str(error)) from error
     for voice in voices:
         for value in voice.references:
-            relative = _safe_relative(value, "Known-role manifest reference")
-            reference = _within(directory, relative, "Known-role manifest reference")
+            relative = safe_workspace_relative_path(
+                value, "Known-role manifest reference"
+            )
+            reference = contained_workspace_path(
+                directory, relative, "Known-role manifest reference"
+            )
             if reference.is_symlink() or not reference.is_file():
                 raise KnownRoleReuseError(
                     f"Known-role manifest reference is missing: {value!r}"
@@ -518,11 +526,11 @@ def _reference_records(root, references):
     records = []
     seen = set()
     for value in references:
-        relative = _safe_relative(value, "Known-role voice reference")
+        relative = safe_workspace_relative_path(value, "Known-role voice reference")
         if relative.as_posix() in seen:
             continue
         seen.add(relative.as_posix())
-        source = _within(root, relative, "Known-role voice reference")
+        source = contained_workspace_path(root, relative, "Known-role voice reference")
         if source.is_symlink() or not source.is_file():
             raise KnownRoleReuseError(
                 f"Known-role voice reference is unsafe: {value!r}"

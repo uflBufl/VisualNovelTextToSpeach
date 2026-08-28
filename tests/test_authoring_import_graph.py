@@ -84,6 +84,25 @@ class AuthoringImportGraphTest(unittest.TestCase):
             [],
         )
 
+    def test_workspace_foundation_primitives_have_no_private_workbench_importers(self):
+        for imported_name in (
+            "_load_json",
+            "_read_file_bytes",
+            "_rename_directory_no_replace",
+            "_require_sha256",
+            "_safe_relative",
+            "_within",
+        ):
+            with self.subTest(imported_name=imported_name):
+                self.assertEqual(
+                    _production_importers("vntts.authoring.workbench", imported_name),
+                    [],
+                )
+        self.assertEqual(
+            _authoring_import_graph()["vntts.authoring.workspace_foundation"],
+            set(),
+        )
+
     def test_authoring_module_graph_has_no_strongly_connected_components(self):
         graph = _authoring_import_graph()
         cycles = []

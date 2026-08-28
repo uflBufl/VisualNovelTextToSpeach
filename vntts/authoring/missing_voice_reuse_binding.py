@@ -28,6 +28,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -38,9 +39,8 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _rename_directory_no_replace,
-    _safe_relative,
-    _within,
+    contained_workspace_path,
+    safe_workspace_relative_path,
 )
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
@@ -260,12 +260,14 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
         seen = set()
         for voice in source_voices:
             for value in voice.references:
-                relative = _safe_relative(value, "Missing-voice binding reference")
+                relative = safe_workspace_relative_path(
+                    value, "Missing-voice binding reference"
+                )
                 key_name = relative.as_posix()
                 if key_name in seen:
                     continue
                 seen.add(key_name)
-                source = _within(
+                source = contained_workspace_path(
                     source_root, relative, "Missing-voice binding reference"
                 )
                 if source.is_symlink() or not source.is_file():
@@ -318,7 +320,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
             sort_keys=True,
         )
         _validate_binding_bundle(staging, document, binding)
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
     except (AuthoringWorkbenchError, SourceReferenceBindingError) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
@@ -355,8 +357,12 @@ def _validate_binding_bundle(directory, plan, expected_binding):
             raise MissingVoiceReuseBindingError(
                 "Missing-voice binding inventory is malformed"
             )
-        relative = _safe_relative(item["path"], "Missing-voice binding artifact")
-        artifact = _within(directory, relative, "Missing-voice binding artifact")
+        relative = safe_workspace_relative_path(
+            item["path"], "Missing-voice binding artifact"
+        )
+        artifact = contained_workspace_path(
+            directory, relative, "Missing-voice binding artifact"
+        )
         if (
             artifact.is_symlink()
             or not artifact.is_file()

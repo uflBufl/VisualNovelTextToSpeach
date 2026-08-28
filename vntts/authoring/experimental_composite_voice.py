@@ -19,6 +19,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.reference_composite import (
     COMPOSITE_EVALUATION_SCHEMA,
     COMPOSITE_EVALUATION_VERSION,
@@ -36,9 +37,8 @@ from vntts.authoring.source_reference_quality_records import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _rename_directory_no_replace,
-    _safe_relative,
-    _within,
+    contained_workspace_path,
+    safe_workspace_relative_path,
 )
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -226,7 +226,7 @@ def publish_experimental_composite_voice_input(
         bundle = {**body, "bundle_id": canonical_document_sha256(body)}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
         _validate_experimental_composite_voice_input(staging, expected)
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
     except Exception:
         if staging is not None and staging.exists():
@@ -267,8 +267,10 @@ def _load_composite_authority(composite_directory, quality_review):
     if not isinstance(record, dict):
         raise ExperimentalCompositeVoiceError("Composite WAV record is malformed")
     try:
-        relative = _safe_relative(record.get("path"), "Composite WAV")
-        reference = _within(composite_directory, relative, "Composite WAV")
+        relative = safe_workspace_relative_path(record.get("path"), "Composite WAV")
+        reference = contained_workspace_path(
+            composite_directory, relative, "Composite WAV"
+        )
     except AuthoringWorkbenchError as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
     reference_sha256 = _sha256(record.get("sha256"), "Composite WAV SHA-256")
@@ -285,8 +287,12 @@ def _load_composite_authority(composite_directory, quality_review):
         if not isinstance(clip, dict):
             raise ExperimentalCompositeVoiceError("Composite clip record is malformed")
         try:
-            clip_relative = _safe_relative(clip.get("reference"), "Composite clip")
-            clip_path = _within(composite_directory, clip_relative, "Composite clip")
+            clip_relative = safe_workspace_relative_path(
+                clip.get("reference"), "Composite clip"
+            )
+            clip_path = contained_workspace_path(
+                composite_directory, clip_relative, "Composite clip"
+            )
         except AuthoringWorkbenchError as error:
             raise ExperimentalCompositeVoiceError(str(error)) from error
         digest = _sha256(clip.get("reference_sha256"), "Composite clip SHA-256")
@@ -367,8 +373,12 @@ def _validate_experimental_composite_voice_input(directory, expected):
                 "Experimental composite inventory is malformed"
             )
         try:
-            relative = _safe_relative(item["path"], "Experimental artifact")
-            path = _within(directory, relative, "Experimental artifact")
+            relative = safe_workspace_relative_path(
+                item["path"], "Experimental artifact"
+            )
+            path = contained_workspace_path(
+                directory, relative, "Experimental artifact"
+            )
         except AuthoringWorkbenchError as error:
             raise ExperimentalCompositeVoiceError(str(error)) from error
         if (
@@ -443,8 +453,10 @@ def _copy_manifest_references(source_root, voices, destination, inventory):
     for voice in voices:
         for value in voice.references:
             try:
-                relative = _safe_relative(value, "Source voice reference")
-                source = _within(source_root, relative, "Source voice reference")
+                relative = safe_workspace_relative_path(value, "Source voice reference")
+                source = contained_workspace_path(
+                    source_root, relative, "Source voice reference"
+                )
             except AuthoringWorkbenchError as error:
                 raise ExperimentalCompositeVoiceError(str(error)) from error
             if source.is_symlink() or not source.is_file():

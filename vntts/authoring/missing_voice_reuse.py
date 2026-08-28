@@ -38,6 +38,7 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     inline_sentence_pause_prompt,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
     MISSING_VOICE_REUSE_BINDING_SCHEMA,
@@ -50,13 +51,12 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     _load_workspace_snapshot,
-    _rename_directory_no_replace,
-    _safe_relative,
     _stable_workspace_state,
-    _within,
+    contained_workspace_path,
     create_resume_workspace,
     generation_command,
     generation_failure_category,
+    safe_workspace_relative_path,
 )
 
 MISSING_VOICE_REUSE_PLAN_SCHEMA = "vntts.authoring-missing-voice-reuse-plan"
@@ -596,7 +596,9 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     root = Path(input_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     name = f"missing-voice-reuse-{document['plan_id'][:24]}-{candidate['candidate_id'][:16]}"
-    destination = _within(root, Path(name), "Missing-voice candidate input")
+    destination = contained_workspace_path(
+        root, Path(name), "Missing-voice candidate input"
+    )
     if destination.is_symlink():
         raise MissingVoiceReuseError(
             "Missing-voice candidate input must not be a symbolic link"
@@ -635,8 +637,10 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         seen = set()
         for voice in voices:
             for value in voice.references:
-                relative = _safe_relative(value, "Missing-voice candidate reference")
-                source = _within(
+                relative = safe_workspace_relative_path(
+                    value, "Missing-voice candidate reference"
+                )
+                source = contained_workspace_path(
                     source_root, relative, "Missing-voice candidate reference"
                 )
                 if source.is_symlink() or not source.is_file():
@@ -679,7 +683,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
             sort_keys=True,
         )
         _validate_candidate_input(staging, document, candidate)
-        _rename_directory_no_replace(staging, destination)
+        rename_directory_no_replace(staging, destination)
         staging = None
     except Exception:
         if staging is not None and staging.exists():
@@ -718,8 +722,12 @@ def _validate_candidate_input(directory, document, candidate):
             raise MissingVoiceReuseError(
                 "Missing-voice candidate inventory is malformed"
             )
-        relative = _safe_relative(item["path"], "Missing-voice candidate artifact")
-        path = _within(directory, relative, "Missing-voice candidate artifact")
+        relative = safe_workspace_relative_path(
+            item["path"], "Missing-voice candidate artifact"
+        )
+        path = contained_workspace_path(
+            directory, relative, "Missing-voice candidate artifact"
+        )
         if (
             path.is_symlink()
             or not path.is_file()
@@ -915,8 +923,12 @@ def _candidate_controls(manifest_path, voice_by_name, names, retired_names):
         references = []
         for value in voice.references:
             try:
-                relative = _safe_relative(value, "Missing-voice candidate reference")
-                path = _within(root, relative, "Missing-voice candidate reference")
+                relative = safe_workspace_relative_path(
+                    value, "Missing-voice candidate reference"
+                )
+                path = contained_workspace_path(
+                    root, relative, "Missing-voice candidate reference"
+                )
             except AuthoringWorkbenchError as error:
                 raise MissingVoiceReuseError(str(error)) from error
             if path.is_symlink() or not path.is_file():

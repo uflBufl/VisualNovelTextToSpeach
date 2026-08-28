@@ -29,9 +29,9 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     _load_workspace_snapshot,
-    _safe_relative,
     _stable_workspace_state,
-    _within,
+    contained_workspace_path,
+    safe_workspace_relative_path,
 )
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
@@ -298,9 +298,9 @@ def load_missing_voice_reuse_review(session_path):
     """Validate and return the immutable bundle plus mutable review session."""
     session_path = Path(session_path).expanduser().resolve()
     root = session_path.parent
-    session = _load_json(session_path, "missing-voice review session")
+    session = load_workspace_json(session_path, "missing-voice review session")
     bundle_path = root / "bundle.json"
-    bundle = _load_json(bundle_path, "missing-voice review bundle")
+    bundle = load_workspace_json(bundle_path, "missing-voice review bundle")
     if (
         session.get("schema") != REVIEW_SESSION_SCHEMA
         or session.get("schema_version") != REVIEW_VERSION
@@ -326,7 +326,7 @@ def load_missing_voice_reuse_review(session_path):
         or bundle.get("blind_key_sha256") != sha256_file(key_path)
     ):
         raise MissingVoiceReuseReviewError("Missing-voice blind key changed")
-    key = _load_json(key_path, "missing-voice review key")
+    key = load_workspace_json(key_path, "missing-voice review key")
     if (
         key.get("schema") != REVIEW_KEY_SCHEMA
         or key.get("schema_version") != REVIEW_VERSION
@@ -489,8 +489,10 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "item_sha256": canonical_document_sha256(item),
             }
             if item["status"] == "generated":
-                relative = _safe_relative(item.get("path"), "Candidate WAV path")
-                audio = _within(
+                relative = safe_workspace_relative_path(
+                    item.get("path"), "Candidate WAV path"
+                )
+                audio = contained_workspace_path(
                     snapshot["directory"] / "generated-audio",
                     relative,
                     "Candidate WAV",
@@ -633,8 +635,10 @@ def _validate_public_matrix(root, bundle, key):
             )
         for sample in samples:
             if sample.get("status") == "generated":
-                relative = _safe_relative(sample.get("audio"), "Review audio")
-                audio = _within(root, relative, "Review audio")
+                relative = safe_workspace_relative_path(
+                    sample.get("audio"), "Review audio"
+                )
+                audio = contained_workspace_path(root, relative, "Review audio")
                 if not audio.is_file() or sha256_file(audio) != sample.get(
                     "audio_sha256"
                 ):
@@ -788,7 +792,7 @@ def _cohort(bundle, cohort_id):
     return matches[0]
 
 
-def _load_json(path, label):
+def load_workspace_json(path, label):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:

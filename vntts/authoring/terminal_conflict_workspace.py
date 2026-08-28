@@ -56,21 +56,21 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _copy_workspace_tree_snapshot,
-    _load_json,
     _load_workspace,
     _load_workspace_snapshot,
-    _read_file_bytes,
-    _require_sha256,
-    _safe_relative,
     _stable_workspace_state,
     _validate_workspace_carry_forward,
     _validate_workspace_input_config,
     _validate_workspace_offline_fallback_state,
     _validate_workspace_outcome_merge,
     _validate_workspace_terminal_conflict_merge,
-    _within,
     _workspace_config_fingerprint,
+    contained_workspace_path,
     default_workspaces_root,
+    load_workspace_json,
+    read_workspace_file_bytes,
+    require_workspace_sha256,
+    safe_workspace_relative_path,
 )
 
 
@@ -307,9 +307,9 @@ def merge_terminal_conflict_resolution(
             raise AuthoringWorkbenchError(
                 f"Terminal conflict selected authority changed: {queue_id}"
             )
-        resolution_audio = _within(
+        resolution_audio = contained_workspace_path(
             resolution_root,
-            _safe_relative(
+            safe_workspace_relative_path(
                 resolved["selected_audio"], "Terminal conflict resolution WAV"
             ),
             "Terminal conflict resolution WAV",
@@ -401,7 +401,9 @@ def merge_terminal_conflict_resolution(
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = _within(root, Path(workspace_id), "Conflict merge destination")
+    destination = contained_workspace_path(
+        root, Path(workspace_id), "Conflict merge destination"
+    )
     staging = Path(
         tempfile.mkdtemp(prefix=".conflict-merge-staging-", dir=root)
     ).resolve()
@@ -419,7 +421,7 @@ def merge_terminal_conflict_resolution(
                 staging / tree_name,
                 base_snapshots,
             )
-        queue_payload = _read_file_bytes(
+        queue_payload = read_workspace_file_bytes(
             base_directory / "queue.jsonl", "terminal conflict base queue"
         )
         (staging / "queue.jsonl").write_bytes(queue_payload)
@@ -431,7 +433,7 @@ def merge_terminal_conflict_resolution(
         for queue_id, result in base_state["items"].items():
             if not isinstance(result, dict) or not isinstance(result.get("path"), str):
                 continue
-            relative = _safe_relative(
+            relative = safe_workspace_relative_path(
                 result["path"], f"Base generation item {queue_id!r} path"
             )
             owner = path_owners.setdefault(relative.as_posix(), queue_id)
@@ -439,36 +441,42 @@ def merge_terminal_conflict_resolution(
                 raise AuthoringWorkbenchError(
                     f"Base generation WAV path collides with {owner!r}"
                 )
-            source_audio_path = _within(
+            source_audio_path = contained_workspace_path(
                 base_directory / "generated-audio",
                 relative,
                 "Base generation WAV",
             )
-            payload = _read_file_bytes(source_audio_path, "base generation WAV")
+            payload = read_workspace_file_bytes(
+                source_audio_path, "base generation WAV"
+            )
             digest = hashlib.sha256(payload).hexdigest()
-            if digest != _require_sha256(
+            if digest != require_workspace_sha256(
                 result.get("file_sha256"),
                 f"Base item {queue_id!r} WAV SHA-256",
             ):
                 raise AuthoringWorkbenchError(
                     f"Base generation WAV changed for {queue_id!r}"
                 )
-            target = _within(output, relative, "Conflict merge base WAV")
+            target = contained_workspace_path(
+                output, relative, "Conflict merge base WAV"
+            )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(payload)
             base_snapshots.append((source_audio_path, digest))
         for ledger in ledgers:
             queue_id = ledger["queue_id"]
             source_item = selected_items[queue_id]
-            relative = _safe_relative(
+            relative = safe_workspace_relative_path(
                 source_item["path"], f"Conflict result {queue_id!r} path"
             )
             previous = target_state["items"].get(queue_id)
             previous_path = previous.get("path") if isinstance(previous, dict) else None
             if previous_path and previous_path != relative.as_posix():
-                previous_target = _within(
+                previous_target = contained_workspace_path(
                     output,
-                    _safe_relative(previous_path, "Replaced conflict WAV"),
+                    safe_workspace_relative_path(
+                        previous_path, "Replaced conflict WAV"
+                    ),
                     "Replaced conflict WAV",
                 )
                 if previous_target.is_file():
@@ -478,7 +486,9 @@ def merge_terminal_conflict_resolution(
                 raise AuthoringWorkbenchError(
                     f"Terminal conflict WAV path collides with {owner!r}"
                 )
-            target = _within(output, relative, "Resolved terminal conflict WAV")
+            target = contained_workspace_path(
+                output, relative, "Resolved terminal conflict WAV"
+            )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(selected_audio[queue_id].payload)
             copied = copy.deepcopy(source_item)
@@ -507,7 +517,7 @@ def merge_terminal_conflict_resolution(
             )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-        import_snapshot = _load_json(
+        import_snapshot = load_workspace_json(
             staging / "provenance/import.json", "conflict merge import snapshot"
         )
         _validate_workspace_carry_forward(staging, workspace)

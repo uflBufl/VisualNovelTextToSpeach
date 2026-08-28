@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from platformdirs import user_data_path
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -112,6 +112,14 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
+)
+from vntts.authoring.workspace_foundation import (
+    contained_path,
+    load_json_object,
+    load_json_object_snapshot,
+    read_regular_file,
+    require_sha256,
+    safe_relative_path,
 )
 from vntts.voices import (
     CharacterVoice,
@@ -3401,13 +3409,12 @@ def _workspace_queue_voice_overrides(directory, workspace):
 
 
 def _read_file_bytes(path, label):
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise AuthoringWorkbenchError(f"{label.capitalize()} is missing or unsafe")
-    try:
-        return path.read_bytes()
-    except OSError as error:
-        raise AuthoringWorkbenchError(f"Unable to read {label}: {error}") from error
+    return read_regular_file(path, label, error_type=AuthoringWorkbenchError)
+
+
+def read_workspace_file_bytes(path, label):
+    """Read one non-symlink workspace file with workbench error semantics."""
+    return _read_file_bytes(path, label)
 
 
 def _validated_import_inventory(source, manifest):
@@ -5202,43 +5209,27 @@ def _latest_outcome(queue, relevant):
 
 
 def _load_json(path, description):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise AuthoringWorkbenchError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise AuthoringWorkbenchError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=AuthoringWorkbenchError)
+
+
+def load_workspace_json(path, description):
+    """Load one workspace JSON object with workbench error semantics."""
+    return _load_json(path, description)
 
 
 def _load_json_snapshot(path, description):
-    try:
-        payload = Path(path).read_bytes()
-    except OSError as error:
-        raise AuthoringWorkbenchError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    digest = hashlib.sha256(payload).hexdigest()
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise AuthoringWorkbenchError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise AuthoringWorkbenchError(f"{description.title()} must be a JSON object")
-    return value, digest, payload
+    return load_json_object_snapshot(
+        path, description, error_type=AuthoringWorkbenchError
+    )
+
+
+def load_workspace_json_snapshot(path, description):
+    """Load one exact workspace JSON object and its payload identity."""
+    return _load_json_snapshot(path, description)
 
 
 def _safe_relative(value, label):
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise AuthoringWorkbenchError(f"{label} must be a POSIX-relative path")
-    pure = PurePosixPath(value)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
-        raise AuthoringWorkbenchError(f"{label} must stay inside its workspace")
-    return Path(*pure.parts)
+    return safe_relative_path(value, label, error_type=AuthoringWorkbenchError)
 
 
 def safe_workspace_relative_path(value, label):
@@ -5247,13 +5238,7 @@ def safe_workspace_relative_path(value, label):
 
 
 def _within(root, relative, label):
-    root = Path(root).resolve()
-    path = (root / relative).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise AuthoringWorkbenchError(f"{label} leaves its owning directory") from error
-    return path
+    return contained_path(root, relative, label, error_type=AuthoringWorkbenchError)
 
 
 def contained_workspace_path(root, relative, label):
@@ -5268,13 +5253,12 @@ def merge_terminal_conflict_resolution(*args, **kwargs):
 
 
 def _require_sha256(value, label):
-    if not isinstance(value, str) or len(value) != 64:
-        raise AuthoringWorkbenchError(f"{label} must be a full SHA-256")
-    try:
-        int(value, 16)
-    except ValueError as error:
-        raise AuthoringWorkbenchError(f"{label} must be hexadecimal") from error
-    return value
+    return require_sha256(value, label, error_type=AuthoringWorkbenchError)
+
+
+def require_workspace_sha256(value, label):
+    """Validate one workspace SHA-256 with workbench error semantics."""
+    return _require_sha256(value, label)
 
 
 def _required_text(value, label):
@@ -5335,9 +5319,13 @@ __all__ = [
     "list_workspace_collections",
     "list_review_items",
     "load_workspace_authority",
+    "load_workspace_json",
+    "load_workspace_json_snapshot",
     "merge_terminal_conflict_resolution",
     "merge_workspace_outcomes",
     "prepare_review_audio",
+    "read_workspace_file_bytes",
+    "require_workspace_sha256",
     "review_selected_item",
     "review_workspace_item",
     "safe_workspace_relative_path",

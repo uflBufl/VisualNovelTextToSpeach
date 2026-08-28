@@ -49,6 +49,23 @@ authority name. The import-graph test performs an AST inventory over all
 production modules and fails if a direct private bulk-generation hash import is
 introduced again.
 
+## Workspace filesystem foundation
+
+`workspace_foundation` is a leaf module for canonical POSIX-relative paths,
+contained path resolution, non-symlink regular-file reads, exact JSON-object
+snapshots and full SHA-256 value validation. It has no dependency on workbench,
+generation, publication or UI modules. Each primitive accepts the caller's
+domain error type so existing workflows retain their exact exception class and
+message while sharing one implementation.
+
+`workbench` keeps its historical private aliases and exposes public wrappers
+with `AuthoringWorkbenchError` semantics. Production callers now use those
+public wrappers for path, file, JSON and digest operations; atomic directory
+publication callers use `publication.rename_directory_no_replace` directly.
+The AST regression forbids importing the superseded private workbench names,
+while the workbench test suite verifies that compatibility behavior is
+unchanged.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and

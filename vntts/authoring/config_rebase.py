@@ -35,19 +35,19 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _failure_reference_runtime_binding,
-    _load_json,
-    _read_file_bytes,
-    _require_sha256,
-    _safe_relative,
     _selected_voice_manifest,
     _terminal_review_outcome,
-    _within,
     _workspace_config_fingerprint,
     _workspace_missing_voice_policy,
     _workspace_queue_voice_overrides,
     _workspace_voice_registry,
+    contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
+    load_workspace_json,
+    read_workspace_file_bytes,
+    require_workspace_sha256,
+    safe_workspace_relative_path,
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -77,8 +77,12 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
         raise AuthoringWorkbenchError("Config rebase workspaces use different imports")
     source_queue = source_directory / "queue.jsonl"
     target_queue = target_directory / "queue.jsonl"
-    source_queue_payload = _read_file_bytes(source_queue, "config rebase source queue")
-    target_queue_payload = _read_file_bytes(target_queue, "config rebase target queue")
+    source_queue_payload = read_workspace_file_bytes(
+        source_queue, "config rebase source queue"
+    )
+    target_queue_payload = read_workspace_file_bytes(
+        target_queue, "config rebase target queue"
+    )
     if source_queue_payload != target_queue_payload:
         raise AuthoringWorkbenchError("Config rebase queues are not byte-identical")
     queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
@@ -104,10 +108,10 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             )
             source_state_path = source_output / "generation-state.json"
             target_state_path = target_output / "generation-state.json"
-            source_state_payload = _read_file_bytes(
+            source_state_payload = read_workspace_file_bytes(
                 source_state_path, "config rebase source state"
             )
-            target_state_payload = _read_file_bytes(
+            target_state_payload = read_workspace_file_bytes(
                 target_state_path, "config rebase target state"
             )
             source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
@@ -149,7 +153,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             }
             if audio_event_composition is not None:
                 target_reference_sha256s.add(
-                    _require_sha256(
+                    require_workspace_sha256(
                         audio_event_composition.get("final_audio_sha256"),
                         "Config rebase audio-event composition WAV SHA-256",
                     )
@@ -240,13 +244,15 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     known_role_reuse,
                     canonical_document_sha256(result),
                 )
-                relative = _safe_relative(
+                relative = safe_workspace_relative_path(
                     result.get("path"), f"Config rebase item {queue_id!r} WAV"
                 )
-                audio = _within(source_output, relative, "Config rebase source WAV")
-                payload = _read_file_bytes(audio, "config rebase source WAV")
+                audio = contained_workspace_path(
+                    source_output, relative, "Config rebase source WAV"
+                )
+                payload = read_workspace_file_bytes(audio, "config rebase source WAV")
                 audio_sha256 = hashlib.sha256(payload).hexdigest()
-                if audio_sha256 != _require_sha256(
+                if audio_sha256 != require_workspace_sha256(
                     result.get("file_sha256"),
                     f"Config rebase item {queue_id!r} WAV SHA-256",
                 ):
@@ -331,7 +337,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 + target_document["source"]["import_id"].removeprefix("legacy-")
                 + f"-{config_fingerprint[:16]}"
             )
-            destination = _within(root, Path(workspace_id), "Config rebase destination")
+            destination = contained_workspace_path(
+                root, Path(workspace_id), "Config rebase destination"
+            )
             staging = Path(
                 tempfile.mkdtemp(prefix=".config-rebase-staging-", dir=root)
             ).resolve()
@@ -366,7 +374,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             (source_root / "queue.jsonl").parent.mkdir(parents=True, exist_ok=True)
             (source_root / "queue.jsonl").write_bytes(source_queue_payload)
             (source_root / "workspace.json").write_bytes(
-                _read_file_bytes(
+                read_workspace_file_bytes(
                     source_directory / "workspace.json", "source workspace"
                 )
             )
@@ -378,20 +386,20 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 if record["successor_state"] != REBASE_PENDING_KNOWN_ROLE_REUSE:
                     continue
                 source_item = source_state["items"][record["queue_id"]]
-                relative = _safe_relative(
+                relative = safe_workspace_relative_path(
                     source_item.get("path"),
                     f"Config rebase pending-history {record['queue_id']!r} WAV",
                 )
-                source_audio = _within(
+                source_audio = contained_workspace_path(
                     source_output, relative, "Config rebase pending-history WAV"
                 )
-                history_audio = _within(
+                history_audio = contained_workspace_path(
                     source_root / "generated-audio",
                     relative,
                     "Config rebase pending-history WAV",
                 )
                 history_audio.parent.mkdir(parents=True, exist_ok=True)
-                payload = _read_file_bytes(
+                payload = read_workspace_file_bytes(
                     source_audio, "config rebase pending-history WAV"
                 )
                 history_audio.write_bytes(payload)
@@ -399,7 +407,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             target_root = staging / "provenance" / "config-rebase" / "target-root"
             target_root.mkdir(parents=True)
             (target_root / "workspace.json").write_bytes(
-                _read_file_bytes(
+                read_workspace_file_bytes(
                     target_directory / "workspace.json", "target workspace"
                 )
             )
@@ -414,7 +422,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     result.get("path"), str
                 ):
                     continue
-                relative = _safe_relative(
+                relative = safe_workspace_relative_path(
                     result["path"], f"Config rebase state item {queue_id!r} WAV"
                 )
                 previous = path_owners.setdefault(relative.as_posix(), queue_id)
@@ -425,19 +433,23 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 authority_output = (
                     source_output if queue_id in rebased_queue_ids else target_output
                 )
-                source_audio = _within(
+                source_audio = contained_workspace_path(
                     authority_output, relative, "Config rebase state WAV"
                 )
-                payload = _read_file_bytes(source_audio, "config rebase state WAV")
+                payload = read_workspace_file_bytes(
+                    source_audio, "config rebase state WAV"
+                )
                 digest = hashlib.sha256(payload).hexdigest()
-                if digest != _require_sha256(
+                if digest != require_workspace_sha256(
                     result.get("file_sha256"),
                     f"Config rebase state item {queue_id!r} WAV SHA-256",
                 ):
                     raise AuthoringWorkbenchError(
                         f"Config rebase state WAV changed for {queue_id!r}"
                     )
-                target = _within(output, relative, "Config rebase output WAV")
+                target = contained_workspace_path(
+                    output, relative, "Config rebase output WAV"
+                )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(payload)
                 snapshots.append((source_audio, digest))
@@ -551,7 +563,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         "target_voice_manifest_sha256",
         "queue_sha256",
     ):
-        _require_sha256(rebase.get(field), f"Config rebase {field}")
+        require_workspace_sha256(rebase.get(field), f"Config rebase {field}")
     directory = Path(directory).resolve()
     queue_path = directory / "queue.jsonl"
     if sha256_file(queue_path) != rebase["queue_sha256"]:
@@ -570,8 +582,12 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
     ):
         if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
             raise AuthoringWorkbenchError(f"Config rebase {label} snapshot changed")
-    source_document = _load_json(source_workspace, "config rebase source workspace")
-    target_document = _load_json(target_workspace, "config rebase target workspace")
+    source_document = load_workspace_json(
+        source_workspace, "config rebase source workspace"
+    )
+    target_document = load_workspace_json(
+        target_workspace, "config rebase target workspace"
+    )
     if (
         source_document.get("workspace_id") != rebase["source_workspace_id"]
         or target_document.get("workspace_id") != rebase["target_workspace_id"]
@@ -603,12 +619,12 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
     audio_event_composition = workspace.get("audio_event_composition")
     if isinstance(audio_event_composition, dict):
         target_reference_sha256s.add(
-            _require_sha256(
+            require_workspace_sha256(
                 audio_event_composition.get("final_audio_sha256"),
                 "Config rebase audio-event composition WAV SHA-256",
             )
         )
-    source_state = _load_json(source_state_path, "config rebase source state")
+    source_state = load_workspace_json(source_state_path, "config rebase source state")
     if not isinstance(source_state.get("items"), dict):
         raise AuthoringWorkbenchError(
             "Config rebase source state snapshot is malformed"
@@ -662,7 +678,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError("Config rebase queue identity is invalid")
         observed_ids.append(queue_id)
         for field in ("source_item_sha256", "projected_item_sha256", "audio_sha256"):
-            _require_sha256(record.get(field), f"Config rebase item {field}")
+            require_workspace_sha256(record.get(field), f"Config rebase item {field}")
         for field in ("source_reference_sha256s", "target_reference_sha256s"):
             values = record.get(field)
             if not isinstance(values, list) or values != sorted(set(values)):
@@ -676,7 +692,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                     f"Config rebase item {field} is not canonical"
                 )
             for value in values:
-                _require_sha256(value, f"Config rebase item {field}")
+                require_workspace_sha256(value, f"Config rebase item {field}")
         if not set(record["source_reference_sha256s"]).issubset(
             target_reference_sha256s
         ):
@@ -753,9 +769,9 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 raise AuthoringWorkbenchError(
                     f"Config rebase pending item retained terminal history for {queue_id!r}"
                 )
-            historical_audio = _within(
+            historical_audio = contained_workspace_path(
                 source_root / "generated-audio",
-                _safe_relative(
+                safe_workspace_relative_path(
                     source_item.get("path"), "Config rebase pending-history WAV"
                 ),
                 "Config rebase pending-history WAV",
@@ -782,9 +798,9 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 raise AuthoringWorkbenchError(
                     f"Config rebase carried live fallback changed for {queue_id!r}"
                 )
-            audio = _within(
+            audio = contained_workspace_path(
                 directory / "generated-audio",
-                _safe_relative(current.get("path"), "Config rebase WAV"),
+                safe_workspace_relative_path(current.get("path"), "Config rebase WAV"),
                 "Config rebase WAV",
             )
             if not audio.is_file() or sha256_file(audio) != record["audio_sha256"]:
@@ -814,9 +830,9 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
                 raise AuthoringWorkbenchError(
                     f"Config rebase item projection changed for {queue_id!r}"
                 )
-            audio = _within(
+            audio = contained_workspace_path(
                 directory / "generated-audio",
-                _safe_relative(current.get("path"), "Config rebase WAV"),
+                safe_workspace_relative_path(current.get("path"), "Config rebase WAV"),
                 "Config rebase WAV",
             )
             if not audio.is_file() or sha256_file(audio) != record["audio_sha256"]:
@@ -859,9 +875,9 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError(
                 f"Config rebase item projection changed for {queue_id!r}"
             )
-        audio = _within(
+        audio = contained_workspace_path(
             directory / "generated-audio",
-            _safe_relative(current.get("path"), "Config rebase WAV"),
+            safe_workspace_relative_path(current.get("path"), "Config rebase WAV"),
             "Config rebase WAV",
         )
         if not audio.is_file() or sha256_file(audio) != record["audio_sha256"]:
@@ -1041,7 +1057,7 @@ def _route_reference_identity(
         return (
             "Audio Event",
             (
-                _require_sha256(
+                require_workspace_sha256(
                     audio_event_result["audio_event_composition"].get(
                         "final_audio_sha256"
                     ),
@@ -1165,7 +1181,7 @@ def _historical_failure_reference_digests(result, synthetic_character):
         return None
     return tuple(
         sorted(
-            _require_sha256(
+            require_workspace_sha256(
                 digest, "Config rebase historical failure reference SHA-256"
             )
             for digest in voice["references"]
@@ -1210,7 +1226,7 @@ def _prior_config_rebase_target_route(result):
             "Prior config rebase target references are malformed"
         )
     digests = tuple(
-        _require_sha256(value, "Prior config rebase target reference SHA-256")
+        require_workspace_sha256(value, "Prior config rebase target reference SHA-256")
         for value in values
     )
     return character, digests
@@ -1252,12 +1268,14 @@ def _copy_audio_event_composition_inputs(
         )
     roots = set()
     for value in paths:
-        relative = _safe_relative(value, "Config rebase audio-event composition input")
+        relative = safe_workspace_relative_path(
+            value, "Config rebase audio-event composition input"
+        )
         if len(relative.parts) < 3 or relative.parts[0] != "inputs":
             raise AuthoringWorkbenchError(
                 "Config rebase audio-event composition input leaves inputs"
             )
-        source_file = _within(
+        source_file = contained_workspace_path(
             source_directory,
             relative,
             "Config rebase audio-event composition source",
@@ -1268,7 +1286,7 @@ def _copy_audio_event_composition_inputs(
             )
         roots.add(Path(*relative.parts[:2]))
     for relative_root in sorted(roots):
-        source_root = _within(
+        source_root = contained_workspace_path(
             source_directory,
             relative_root,
             "Config rebase audio-event composition source root",
@@ -1285,9 +1303,11 @@ def _copy_audio_event_composition_inputs(
             if source.is_dir():
                 continue
             relative = relative_root / source.relative_to(source_root)
-            payload = _read_file_bytes(source, "config rebase audio-event composition")
+            payload = read_workspace_file_bytes(
+                source, "config rebase audio-event composition"
+            )
             digest = hashlib.sha256(payload).hexdigest()
-            destination = _within(
+            destination = contained_workspace_path(
                 staging, relative, "Config rebase audio-event composition target"
             )
             if destination.exists():
@@ -1317,9 +1337,9 @@ def _copy_tree(source, destination, snapshots):
         if path.is_dir():
             continue
         relative = path.relative_to(source)
-        payload = _read_file_bytes(path, "config rebase input")
+        payload = read_workspace_file_bytes(path, "config rebase input")
         digest = hashlib.sha256(payload).hexdigest()
-        target = _within(destination, relative, "Config rebase input")
+        target = contained_workspace_path(destination, relative, "Config rebase input")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
         snapshots.append((path, digest))
