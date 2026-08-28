@@ -66,7 +66,10 @@ contained path resolution, non-symlink regular-file reads, exact JSON-object
 snapshots and full SHA-256 value validation. It has no dependency on workbench,
 generation, publication or UI modules. Each primitive accepts the caller's
 domain error type so existing workflows retain their exact exception class and
-message while sharing one implementation.
+message while sharing one implementation. It also owns immutable workspace-tree
+snapshot copying: source trees must be directories without symlinks, every file
+is copied through contained-path checks, and the caller receives the source
+SHA-256 ledger used for post-publication authority verification.
 
 `workbench` keeps its historical private aliases and exposes public wrappers
 with `AuthoringWorkbenchError` semantics. Production callers now use those
@@ -80,9 +83,11 @@ Callers that need only the directory and document discard the returned digest
 after validation rather than reopening a weaker snapshot. Missing-voice reuse,
 reuse review, voice-repair comparison and terminal-conflict publication retain
 their exact workspace digest bindings through the same public API.
-The AST regression forbids importing the superseded private workbench names,
-while the workbench test suite verifies that compatibility behavior is
-unchanged.
+Terminal-conflict publication calls the foundation tree-copy API directly;
+workbench retains `_copy_workspace_tree_snapshot` only as an internal
+compatibility alias. The AST regression forbids importing the superseded
+private workbench names, while the workbench test suite verifies that
+compatibility behavior is unchanged.
 
 ## Generation lease foundation
 

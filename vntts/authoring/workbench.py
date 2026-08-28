@@ -122,6 +122,7 @@ from vntts.authoring.workspace_config import (
 )
 from vntts.authoring.workspace_foundation import (
     contained_path,
+    copy_workspace_tree_snapshot,
     load_json_object,
     load_json_object_snapshot,
     read_regular_file,
@@ -4453,23 +4454,12 @@ def load_workspace_authority(workspace_directory):
 
 
 def _copy_workspace_tree_snapshot(source, target, snapshots):
-    if source.is_symlink() or not source.is_dir():
-        raise AuthoringWorkbenchError("Outcome merge immutable input tree is invalid")
-    target.mkdir(parents=True)
-    for path in sorted(source.rglob("*")):
-        if path.is_symlink():
-            raise AuthoringWorkbenchError(
-                "Outcome merge immutable input tree contains a symlink"
-            )
-        if path.is_dir():
-            continue
-        relative = path.relative_to(source)
-        payload = _read_file_bytes(path, "outcome merge immutable input")
-        digest = hashlib.sha256(payload).hexdigest()
-        destination = _within(target, relative, "Outcome merge immutable input")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(payload)
-        snapshots.append((path, digest))
+    return copy_workspace_tree_snapshot(
+        source,
+        target,
+        snapshots,
+        error_type=AuthoringWorkbenchError,
+    )
 
 
 def _validate_workspace_outcome_merge(directory, workspace):

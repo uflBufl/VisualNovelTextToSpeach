@@ -77,8 +77,39 @@ def require_sha256(value, label, *, error_type=ValueError):
     return value
 
 
+def copy_workspace_tree_snapshot(source, target, snapshots, *, error_type=ValueError):
+    """Copy one symlink-free immutable input tree and retain source hashes."""
+    source = Path(source)
+    target = Path(target)
+    if source.is_symlink() or not source.is_dir():
+        raise error_type("Outcome merge immutable input tree is invalid")
+    target.mkdir(parents=True)
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise error_type("Outcome merge immutable input tree contains a symlink")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(source)
+        payload = read_regular_file(
+            path,
+            "outcome merge immutable input",
+            error_type=error_type,
+        )
+        digest = hashlib.sha256(payload).hexdigest()
+        destination = contained_path(
+            target,
+            relative,
+            "Outcome merge immutable input",
+            error_type=error_type,
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        snapshots.append((path, digest))
+
+
 __all__ = [
     "contained_path",
+    "copy_workspace_tree_snapshot",
     "load_json_object",
     "load_json_object_snapshot",
     "read_regular_file",

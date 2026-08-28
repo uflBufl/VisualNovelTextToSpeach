@@ -55,7 +55,6 @@ from vntts.authoring.terminal_conflict_successor import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    _copy_workspace_tree_snapshot,
     _validate_workspace_carry_forward,
     _validate_workspace_input_config,
     _validate_workspace_offline_fallback_state,
@@ -70,6 +69,7 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 
@@ -418,10 +418,11 @@ def merge_terminal_conflict_resolution(
     ]
     try:
         for tree_name in ("provenance", "inputs"):
-            _copy_workspace_tree_snapshot(
+            copy_workspace_tree_snapshot(
                 base_directory / tree_name,
                 staging / tree_name,
                 base_snapshots,
+                error_type=AuthoringWorkbenchError,
             )
         queue_payload = read_workspace_file_bytes(
             base_directory / "queue.jsonl", "terminal conflict base queue"
