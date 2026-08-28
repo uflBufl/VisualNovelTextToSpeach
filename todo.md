@@ -359,14 +359,6 @@ while one-sentence controls remained below 0.25 seconds.
       module/function complexity, with explicit compatibility exceptions and a
       ratchet that prevents new debt without blocking incremental extraction.
 
-### P2 - Improve architecture discoverability
-
-- [ ] Add a short architecture index that identifies the canonical runtime,
-      authoring, artifact-authority, publication and UI documents. Separate
-      durable contracts from dated experiment/run histories so a new maintainer
-      can find the current design without reading the operational record; do not
-      discard the existing evidence documents.
-
 ## Windows application
 
 ### P2 - Windows distribution

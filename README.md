@@ -622,6 +622,10 @@ entries follow the selected policy's next fallback route.
 - `exps/` - OCR experimentation notebooks
 - `samples/` - sample images and audio
 
+Start architecture work with the
+[canonical architecture index](docs/architecture.md); it separates current
+contracts from dated experiments and operational evidence.
+
 ## Development
 
 Add a dependency:
