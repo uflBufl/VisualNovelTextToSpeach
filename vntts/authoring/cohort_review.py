@@ -24,10 +24,10 @@ from vntts.authoring.workbench import (
     WORKSPACE_VERSION,
     AuthoringWorkbenchError,
     _load_workspace,
-    _workspace_config_fingerprint,
     inspect_workspace,
     list_review_items,
 )
+from vntts.authoring.workspace_config import workspace_config_fingerprint
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
@@ -508,7 +508,7 @@ def _load_bound_review_workspace(workspace_directory, plan_document):
     ):
         raise CohortReviewError("Workspace configuration is malformed")
     try:
-        current_fingerprint = _workspace_config_fingerprint(
+        current_fingerprint = workspace_config_fingerprint(
             import_id,
             workspace.get("story_index"),
             workspace.get("voice_manifest"),

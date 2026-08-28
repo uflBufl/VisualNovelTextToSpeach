@@ -115,6 +115,10 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.authoring.workspace_config import (
+    selected_voice_manifest_path,
+    workspace_config_fingerprint,
+)
 from vntts.authoring.workspace_foundation import (
     contained_path,
     load_json_object,
@@ -4867,45 +4871,7 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace):
         )
 
 
-def _workspace_config_fingerprint(
-    import_id,
-    story_config,
-    voice_config,
-    narrator_character,
-    run_config,
-    carry_forward=None,
-    outcome_merge=None,
-    failure_reference_binding=None,
-    terminal_conflict_merge=None,
-    config_rebase=None,
-    audio_event_composition=None,
-):
-    fingerprint = {
-        "import_id": import_id,
-        "story_index": story_config,
-        "voice_manifest": voice_config,
-        "narrator_character": narrator_character,
-        "run_config": run_config,
-    }
-    if carry_forward is not None:
-        fingerprint["carry_forward"] = carry_forward
-    if outcome_merge is not None:
-        fingerprint["outcome_merge"] = outcome_merge
-    if terminal_conflict_merge is not None:
-        fingerprint["terminal_conflict_merge"] = terminal_conflict_merge
-    if failure_reference_binding is not None:
-        fingerprint["failure_reference_binding"] = failure_reference_binding
-    if config_rebase is not None:
-        fingerprint["config_rebase"] = config_rebase
-    if audio_event_composition is not None:
-        fingerprint["audio_event_composition"] = audio_event_composition
-    payload = json.dumps(
-        fingerprint,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+_workspace_config_fingerprint = workspace_config_fingerprint
 
 
 def _workspace_run_config_with_policy(run_config):
@@ -4959,32 +4925,12 @@ def _workspace_failure_repair_policy(workspace):
 
 
 def _selected_voice_manifest(directory, workspace, selected=None):
-    value = workspace.get("voice_manifest")
-    if not isinstance(value, dict) or not isinstance(value.get("path"), str):
-        return None
-    path = _within(
+    return selected_voice_manifest_path(
         directory,
-        _safe_relative(value["path"], "Voice manifest snapshot"),
-        "Voice manifest snapshot",
+        workspace,
+        selected,
+        error_type=AuthoringWorkbenchError,
     )
-    if selected is not None and Path(selected).expanduser().resolve() != path:
-        raise AuthoringWorkbenchError(
-            "Configure the workspace voice snapshot before generation"
-        )
-    if not path.is_file() or sha256_file(path) != _require_sha256(
-        value.get("sha256"), "Voice manifest snapshot SHA-256"
-    ):
-        raise AuthoringWorkbenchError("Workspace voice manifest snapshot was modified")
-    for control in value.get("controls", []):
-        relative = _safe_relative(control.get("path"), "Voice reference snapshot")
-        reference = _within(directory, relative, "Voice reference snapshot")
-        if not reference.is_file() or sha256_file(reference) != _require_sha256(
-            control.get("sha256"), "Voice reference snapshot SHA-256"
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace voice reference snapshot was modified"
-            )
-    return path
 
 
 def _verify_import_sources(source, copied, import_path, import_sha256):

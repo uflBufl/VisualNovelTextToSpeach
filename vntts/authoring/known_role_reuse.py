@@ -46,11 +46,11 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
-    _selected_voice_manifest,
     contained_workspace_path,
     inspect_workspace,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.voices import synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -146,7 +146,11 @@ def publish_known_role_reuse_binding(
             "Known-role workspace differs from the unresolved source authority"
         )
 
-    selected_voice_manifest = _selected_voice_manifest(workspace, workspace_document)
+    selected_voice_manifest = selected_voice_manifest_path(
+        workspace,
+        workspace_document,
+        error_type=AuthoringWorkbenchError,
+    )
     selected_voice_sha256 = sha256_file(selected_voice_manifest)
     if selected_voice_sha256 != workspace_document["voice_manifest"]["sha256"]:
         raise KnownRoleReuseError("Known-role source voice manifest changed")

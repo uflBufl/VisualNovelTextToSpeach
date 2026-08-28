@@ -131,6 +131,22 @@ fails if any underscore-prefixed compatibility helper is imported from
 `bulk_generation`. This ratchets the dependency magnet without changing cohort
 CAS authority, render validation, repair selection or source-change detection.
 
+## Workspace configuration foundation
+
+`workspace_config` owns the canonical workspace configuration fingerprint and
+the contained, checksum-validated path resolution for a selected voice manifest
+and all of its copied reference controls. Cohort planning, config rebase,
+terminal-conflict publication and known-role reuse consume these leaf APIs
+directly.
+
+`workbench._workspace_config_fingerprint` remains an identity-preserving alias,
+while `_selected_voice_manifest` remains a compatibility wrapper that supplies
+`AuthoringWorkbenchError` as the leaf validator's error type. The AST regression
+forbids production imports of both historical private names and ensures
+`workspace_config` cannot reach the workbench dependency magnet. Canonical JSON
+ordering, SHA-256 identity, path containment, selected-path equality and copied
+reference verification are unchanged.
+
 ## Regression gate
 
 `tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and

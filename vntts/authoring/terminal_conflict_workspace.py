@@ -64,7 +64,6 @@ from vntts.authoring.workbench import (
     _validate_workspace_offline_fallback_state,
     _validate_workspace_outcome_merge,
     _validate_workspace_terminal_conflict_merge,
-    _workspace_config_fingerprint,
     contained_workspace_path,
     default_workspaces_root,
     load_workspace_json,
@@ -72,6 +71,7 @@ from vntts.authoring.workbench import (
     require_workspace_sha256,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_config import workspace_config_fingerprint
 
 
 def merge_terminal_conflict_resolution(
@@ -382,7 +382,7 @@ def merge_terminal_conflict_resolution(
         ),
         "items": ledgers,
     }
-    config_fingerprint = _workspace_config_fingerprint(
+    config_fingerprint = workspace_config_fingerprint(
         base_document["source"]["import_id"],
         base_document.get("story_index"),
         base_document.get("voice_manifest"),

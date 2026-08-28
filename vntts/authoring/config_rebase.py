@@ -35,9 +35,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
     _failure_reference_runtime_binding,
-    _selected_voice_manifest,
     _terminal_review_outcome,
-    _workspace_config_fingerprint,
     _workspace_missing_voice_policy,
     _workspace_queue_voice_overrides,
     _workspace_voice_registry,
@@ -48,6 +46,10 @@ from vntts.authoring.workbench import (
     read_workspace_file_bytes,
     require_workspace_sha256,
     safe_workspace_relative_path,
+)
+from vntts.authoring.workspace_config import (
+    selected_voice_manifest_path,
+    workspace_config_fingerprint,
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -160,7 +162,11 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 )
             target_policy = _workspace_missing_voice_policy(target_document)
             source_policy = _workspace_missing_voice_policy(source_document)
-            target_voice = _selected_voice_manifest(target_directory, target_document)
+            target_voice = selected_voice_manifest_path(
+                target_directory,
+                target_document,
+                error_type=AuthoringWorkbenchError,
+            )
             try:
                 target_voice_document, _target_voice_entries = load_voice_manifest(
                     target_voice, allow_legacy=False
@@ -304,7 +310,11 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                     "Config rebase source has no terminal review outcomes"
                 )
 
-            source_voice = _selected_voice_manifest(source_directory, source_document)
+            source_voice = selected_voice_manifest_path(
+                source_directory,
+                source_document,
+                error_type=AuthoringWorkbenchError,
+            )
             rebase = {
                 "schema": CONFIG_REBASE_SCHEMA,
                 "schema_version": CONFIG_REBASE_VERSION,
@@ -319,7 +329,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 "queue_sha256": queue_sha256,
                 "items": records,
             }
-            config_fingerprint = _workspace_config_fingerprint(
+            config_fingerprint = workspace_config_fingerprint(
                 target_document["source"]["import_id"],
                 target_document.get("story_index"),
                 target_document.get("voice_manifest"),
@@ -593,8 +603,16 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         or target_document.get("workspace_id") != rebase["target_workspace_id"]
     ):
         raise AuthoringWorkbenchError("Config rebase workspace identity changed")
-    source_voice = _selected_voice_manifest(source_root, source_document)
-    selected_voice = _selected_voice_manifest(directory, workspace)
+    source_voice = selected_voice_manifest_path(
+        source_root,
+        source_document,
+        error_type=AuthoringWorkbenchError,
+    )
+    selected_voice = selected_voice_manifest_path(
+        directory,
+        workspace,
+        error_type=AuthoringWorkbenchError,
+    )
     if (
         sha256_file(source_voice) != rebase["source_voice_manifest_sha256"]
         or sha256_file(selected_voice) != rebase["target_voice_manifest_sha256"]

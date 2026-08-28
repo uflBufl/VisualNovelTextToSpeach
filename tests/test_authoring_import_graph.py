@@ -44,7 +44,15 @@ from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workbench import (
+    _selected_voice_manifest,
+    _workspace_config_fingerprint,
+)
+from vntts.authoring.workbench import (
     merge_terminal_conflict_resolution as compatibility_merge_terminal_conflict_resolution,
+)
+from vntts.authoring.workspace_config import (
+    selected_voice_manifest_path,
+    workspace_config_fingerprint,
 )
 
 
@@ -114,7 +122,9 @@ class AuthoringImportGraphTest(unittest.TestCase):
             "_rename_directory_no_replace",
             "_require_sha256",
             "_safe_relative",
+            "_selected_voice_manifest",
             "_within",
+            "_workspace_config_fingerprint",
         ):
             with self.subTest(imported_name=imported_name):
                 self.assertEqual(
@@ -124,6 +134,16 @@ class AuthoringImportGraphTest(unittest.TestCase):
         self.assertEqual(
             _authoring_import_graph()["vntts.authoring.workspace_foundation"],
             set(),
+        )
+        self.assertIs(_workspace_config_fingerprint, workspace_config_fingerprint)
+        self.assertIsNone(_selected_voice_manifest(Path.cwd(), {}))
+        self.assertIsNone(selected_voice_manifest_path(Path.cwd(), {}))
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.workspace_config",
+                "vntts.authoring.workbench",
+            )
         )
 
     def test_generation_lease_has_no_private_bulk_generation_importers(self):
