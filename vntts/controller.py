@@ -741,9 +741,10 @@ class AppController:
     def set_auto_advance_enabled(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
         if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
-            self.speech_backend.require_source_audio_completion = bool(
-                enabled and self.settings.live_sequence_mode != "audio-manual"
-            )
+            # Never replace audio already spoken by the game with live TTS just
+            # to obtain a completion duration. Unknown timing pauses automatic
+            # advance; it must not create audible duplicate dialogue.
+            self.speech_backend.require_source_audio_completion = False
         if self.live_reader is not None:
             self.live_reader.set_auto_advance(self._live_auto_advance_callback())
         self.status_handler(
@@ -1256,10 +1257,7 @@ class AppController:
             "audio_source_policy": policy,
         }
         if policy == "prefer-game-audio":
-            backend_options["require_source_audio_completion"] = bool(
-                self.settings.auto_advance_enabled
-                and self.settings.live_sequence_mode != "audio-manual"
-            )
+            backend_options["require_source_audio_completion"] = False
         self.speech_backend = self.generated_audio_backend_factory(
             live_backend,
             library,
@@ -2646,6 +2644,29 @@ class AppController:
             )
 
     def _play_live_chunk(self, chunk, audio):
+        sequence_event_id = self._begin_sequence_playback(chunk)
+        if (
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            and chunk.line_id is not None
+            and sequence_event_id is None
+        ):
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else chunk.generation
+            )
+            self.pipeline_event_handler(
+                "sequence-playback-suppressed",
+                generation,
+                monotonic(),
+                line_id=chunk.line_id,
+                reason="cursor-does-not-own-unplayed-line",
+                outcome="suppressed",
+            )
+            self.status_handler(
+                f"Duplicate or stale canonical audio suppressed: {chunk.line_id}"
+            )
+            return False
         if isinstance(audio, PreparedLiveChunkRoutes):
             if audio.speaker_announcement is not None:
                 try:
@@ -2685,7 +2706,6 @@ class AppController:
                 self.status_handler(reason)
         playback_started = monotonic()
         outcome = None
-        sequence_event_id = self._begin_sequence_playback(chunk)
         try:
             play_route = getattr(type(self.speech_backend), "play_route", None)
             play_prepared = getattr(type(self.speech_backend), "play_prepared", None)

@@ -14,8 +14,8 @@ The selector keeps the established precedence:
 
 1. a manual named-character override, explicit force-live Narrator setting, or
    `live-tts-only` policy selects live TTS;
-2. active live mode with `prefer-game-audio`, a resolved declared-available
-   source, and any required completion duration selects game pass-through;
+2. active live mode with `prefer-game-audio` and a resolved declared-available
+   source selects game pass-through;
 3. `prefer-game-audio` or `prefer-generated` may select a verified generated
    artifact at speed `1.0`; and
 4. remaining exact, normalized, ambiguous, missing, unsafe, or policy-skipped
@@ -52,14 +52,19 @@ Stopping source pass-through cancels only its completion timer. A guard or stop
 before output produces no first-PCM observation; interruption or failure blocks
 auto advance for that OCR generation and never seals it. A source route without
 observable completion is sealed as the exact line but explicitly blocks auto
-advance. Player exceptions are recorded as a chunk-bound failed outcome before
-the normalized playback error is surfaced.
+advance. It never falls through to live TTS merely to obtain a completion
+timer: the game has already spoken that line, so such a fallback would create
+audible duplicate dialogue. Player exceptions are recorded as a chunk-bound
+failed outcome before the normalized playback error is surfaced.
 
 Route, voice-resolution, generation-start, first-PCM, completion, outcome, and
 suppression timeline records are keyed by chunk ID. Duplicate reports for the
 same stage/chunk merge, while multiple chunks in one OCR generation remain
-distinct. Live synthesis continues to use the backend's existing cache policy;
-source and generated routes bypass live synthesis caches.
+distinct. In sequence-audio modes, one cursor event may complete canonical
+playback once; later prepared or queued audio for that same event is suppressed
+until an explicit reanchor or a transition gives the cursor a new event. Live
+synthesis continues to use the backend's existing cache policy; source and
+generated routes bypass live synthesis caches.
 
 Speaker-change announcements are an optional layer above this selector and are
 disabled by default. `all-speakers` is the broad accessibility mode: for the

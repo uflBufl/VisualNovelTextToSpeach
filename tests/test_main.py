@@ -2971,6 +2971,33 @@ class MainTest(unittest.TestCase):
         self.assertIn("completion timing is unavailable", statuses[-1])
         self.assertIn("advance manually", statuses[-1].casefold())
 
+    def test_sequence_audio_suppresses_a_line_the_cursor_already_played(self):
+        statuses = []
+        pipeline = []
+        controller = AppController(
+            AppSettings(live_sequence_mode="audio-auto"),
+            tts_factory=Mock(),
+            status_handler=statuses.append,
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        controller.live_reader = Mock(active_generation=8)
+        controller._begin_sequence_playback = Mock(return_value=None)
+        controller.speech_backend = Mock()
+        chunk = SpeechChunk(
+            8,
+            "Rhiannon",
+            "An already completed line.",
+            line_id="reverse1999:1:2",
+        )
+
+        self.assertFalse(controller._play_live_chunk(chunk, Mock()))
+
+        controller.speech_backend.play_route.assert_not_called()
+        self.assertEqual(pipeline[-1][0][0], "sequence-playback-suppressed")
+        self.assertIn("Duplicate or stale canonical audio suppressed", statuses[-1])
+
     def test_source_audio_with_completion_keeps_auto_advance_enabled(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
@@ -3255,6 +3282,8 @@ class MainTest(unittest.TestCase):
             AppSettings(
                 story_index="story.jsonl",
                 audio_source_policy="prefer-game-audio",
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=True,
             ),
             tts_factory=Mock(),
             generated_audio_library_factory=library_factory,

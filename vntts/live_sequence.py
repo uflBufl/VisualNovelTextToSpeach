@@ -64,6 +64,7 @@ class StoryCursor:
         self.plan = plan
         self.state = StoryCursorState.UNSYNCHRONIZED
         self.current_event_id = None
+        self.completed_playback_event_id = None
         self.reason = None
 
     @property
@@ -150,6 +151,7 @@ class StoryCursor:
     def reset(self, reason=None):
         self.state = StoryCursorState.UNSYNCHRONIZED
         self.current_event_id = None
+        self.completed_playback_event_id = None
         self.reason = _optional_text(reason)
         return self.snapshot()
 
@@ -166,6 +168,7 @@ class StoryCursor:
     def anchor_event(self, event_id, reason=None):
         event = self._event(event_id)
         self.current_event_id = event.event_id
+        self.completed_playback_event_id = None
         self.state = self._resting_state(event)
         self.reason = _optional_text(reason) or "explicit-anchor"
         return self.snapshot()
@@ -182,6 +185,10 @@ class StoryCursor:
             raise StoryCursorError(f"Cannot play while cursor is {self.state.value}")
         if not event.is_speech:
             raise StoryCursorError(f"Event {event.event_id!r} is not speakable")
+        if self.completed_playback_event_id == event.event_id:
+            raise StoryCursorError(
+                f"Event {event.event_id!r} already completed playback"
+            )
         self.state = StoryCursorState.PLAYING
         self.reason = "playback-started"
         return self.snapshot()
@@ -193,6 +200,8 @@ class StoryCursor:
                 f"Cannot finish playback while cursor is {self.state.value}"
             )
         self.state = self._resting_state(event)
+        if successful:
+            self.completed_playback_event_id = event.event_id
         self.reason = "playback-completed" if successful else "playback-failed"
         return self.snapshot()
 

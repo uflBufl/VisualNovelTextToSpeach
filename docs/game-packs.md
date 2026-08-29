@@ -40,9 +40,8 @@ this fixed precedence:
 
 1. a manual character or Narrator voice override forces live TTS;
 2. `live-tts-only` selects live TTS;
-3. `prefer-game-audio` may select an exact, declared-available source line while
-   live mode is active, provided any completion required by auto advance is
-   available;
+3. `prefer-game-audio` selects an exact, declared-available source line while
+   live mode is active;
 4. `prefer-game-audio` or `prefer-generated` may select an exact or uniquely
    normalized generated entry at speed `1.0`; and
 5. every remaining case uses live TTS with an explicit trace reason.
@@ -50,9 +49,11 @@ this fixed precedence:
 Source audio is game-owned. A positive `source_audio_duration_seconds` under
 the declared duration completion policy creates a conservative delay from route
 acceptance; it is not observation of game-device playback. A source pass
-through with no duration is allowed only when completion is not required. It
-seals the exact OCR line against duplicate suffixes but remains
-`passthrough-unobserved` and cannot authorize auto advance.
+through with no duration remains `passthrough-unobserved`, seals the exact line
+against duplicate suffixes, and cannot authorize auto advance. Missing timing
+never authorizes live-TTS replacement of source audio because the game is
+already speaking the line; the operator advances that line manually until the
+producer supplies a trustworthy duration.
 
 Generated audio is VNTTS-owned. The consumer reads a contained WAV once, hashes
 that byte snapshot, validates its manifest/PCM metadata, and decodes those same

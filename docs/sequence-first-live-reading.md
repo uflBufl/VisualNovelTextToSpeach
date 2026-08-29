@@ -388,9 +388,10 @@ count, settled milliseconds and the final readiness boolean. Cursor observation
 and visual-transition events include previous/current event IDs and the cursor
 reason. They do not record dialogue text.
 
-Production timeline recording accepts the controller's declared sequence and
-speaker-announcement stages as well as generation stages. The accepted fields
-remain allow-listed; an observational event must never abort dialogue routing.
+Production timeline recording accepts the reader's stable-frame/suppression
+events and the controller's declared sequence and speaker-announcement stages
+as well as generation stages. The accepted fields remain allow-listed; an
+observational event must never abort dialogue routing.
 `auto-advance-withheld` records a reason enum for focus, owned-frame visibility
 and callback/cursor refusal without retaining dialogue text.
 
@@ -421,6 +422,13 @@ unfocused application.
 The mode and saved auto-advance toggle are both opt-in. Production enablement
 remains gated on a real-game focus/choice run even though complete chapter route
 and human acceptance are already 92/92.
+
+Original game audio always retains route ownership when the indexed source is
+declared available. If its completion duration is missing, the route is sealed
+without Pocket/live-TTS duplication and automatic advance pauses for that line;
+manual game advance remains safe because the next stable canonical frame moves
+the cursor. A successfully completed cursor event cannot start canonical audio
+again unless the operator explicitly reanchors it.
 
 A checksum-bound sequence plan may be selected externally when an otherwise
 valid game pack does not ship one. Reapplying that same pack while saving or

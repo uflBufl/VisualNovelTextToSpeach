@@ -52,6 +52,8 @@ generation_timeline_stages = (
 # in a separate evidence stream, but the desktop recorder must still accept it:
 # telemetry must never be able to abort dialog processing.
 sequence_timeline_stages = (
+    "stable-frame-gate",
+    "late-chunk-suppressed",
     "sequence-candidate-miss",
     "sequence-shadow",
     "sequence-audio-manual",
@@ -60,6 +62,7 @@ sequence_timeline_stages = (
     "sequence-explicit-user-resync",
     "sequence-visual-transition",
     "sequence-playback-state",
+    "sequence-playback-suppressed",
     "sequence-key-dispatch-authorized",
     "speaker-announcement-route",
     "speaker-announcement-outcome",
@@ -90,6 +93,13 @@ generation_timeline_detail_fields = (
     "next_event_count",
     "reason",
     "route",
+    "fingerprint",
+    "visible",
+    "focused",
+    "owner",
+    "candidate_frames",
+    "settled_ms",
+    "ready",
 )
 
 

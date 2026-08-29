@@ -137,6 +137,15 @@ while one-sentence controls remained below 0.25 seconds.
 
 ## Live mode
 
+### P1 - Restore automatic advance for original game audio
+
+- [ ] Extend the Reverse: 1999 extractor and game-pack publication path to bind
+      a trustworthy `source_audio_duration_seconds` to each exact installed
+      source-media identity. Validate the decoded media checksum/duration and a
+      conservative completion margin before allowing `audio-auto` to dispatch;
+      until then, source audio remains the only audible route and that line
+      requires manual game advance.
+
 ### P0 - Replace OCR-driven playback with a sequence-first story cursor
 
 Follow the architecture and rollout gates in

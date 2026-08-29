@@ -210,6 +210,21 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(cursor.current_event_id, "event-2")
 
+    def test_completed_event_cannot_play_twice_without_explicit_reanchor(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        cursor.observe_line("synthetic:chapter-1:1")
+
+        with self.assertRaisesRegex(StoryCursorError, "already completed playback"):
+            cursor.begin_playback()
+
+        cursor.anchor_event("event-1", "explicit-user-resync")
+        cursor.begin_playback()
+        self.assertEqual(cursor.state, StoryCursorState.PLAYING)
+
     def test_waiting_dispatch_confirms_only_one_deterministic_visual_successor(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)
