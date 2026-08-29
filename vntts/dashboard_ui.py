@@ -127,7 +127,24 @@ class ControlDashboard(QMainWindow):
         reading = QHBoxLayout(reading_group)
         reading.addWidget(self.live_button, 2)
         reading.addWidget(self.read_button)
-        reading.addWidget(self.sequence_resync_button)
+
+        self.sequence_state = QLabel("Unavailable")
+        self.sequence_position = QLabel("-")
+        self.sequence_identity = QLabel("-")
+        self.sequence_canonical = QLabel("-")
+        self.sequence_canonical.setWordWrap(True)
+        self.sequence_guidance = QLabel()
+        self.sequence_guidance.setWordWrap(True)
+        sequence_form = QFormLayout()
+        sequence_form.addRow("Cursor state", self.sequence_state)
+        sequence_form.addRow("Story position", self.sequence_position)
+        sequence_form.addRow("Event / line", self.sequence_identity)
+        sequence_form.addRow("Canonical dialogue", self.sequence_canonical)
+        self.sequence_group = QGroupBox("Sequence-first story cursor")
+        sequence_layout = QVBoxLayout(self.sequence_group)
+        sequence_layout.addLayout(sequence_form)
+        sequence_layout.addWidget(self.sequence_guidance)
+        sequence_layout.addWidget(self.sequence_resync_button)
 
         transport_group = QGroupBox("Playback")
         transport = QHBoxLayout(transport_group)
@@ -173,6 +190,7 @@ class ControlDashboard(QMainWindow):
         layout.addLayout(header)
         layout.addLayout(details)
         layout.addWidget(card)
+        layout.addWidget(self.sequence_group)
         layout.addWidget(self.action_reason)
         layout.addWidget(reading_group)
         layout.addWidget(transport_group)
@@ -210,7 +228,7 @@ class ControlDashboard(QMainWindow):
             else "missing; open Settings"
         )
         sequence_manual = settings.live_sequence_mode == "audio-manual"
-        self.sequence_resync_button.setVisible(sequence_manual)
+        self.sequence_group.setVisible(sequence_manual)
         self.sequence_resync_button.setAccessibleDescription(
             "Choose the visible story event to anchor or recover sequence-first reading"
         )
@@ -221,6 +239,38 @@ class ControlDashboard(QMainWindow):
             f"Capture: {capture}\n"
             f"OCR: {settings.ocr_language}"
         )
+
+    def set_sequence_status(self, status):
+        manual = getattr(status, "mode", "off") == "audio-manual"
+        self.sequence_group.setVisible(manual)
+        if not manual:
+            return
+        state = getattr(status, "state", "unavailable")
+        reason = getattr(status, "reason", None)
+        self.sequence_state.setText(state if not reason else f"{state} ({reason})")
+        chapter = getattr(status, "chapter", None)
+        sequence = getattr(status, "sequence", None)
+        self.sequence_position.setText(
+            "-" if chapter is None else f"Chapter {chapter}, sequence {sequence}"
+        )
+        event_id = getattr(status, "event_id", None)
+        line_id = getattr(status, "line_id", None)
+        self.sequence_identity.setText(
+            f"{event_id or '-'} / {line_id or '-'}; "
+            f"{getattr(status, 'next_event_count', 0)} next candidate(s)"
+        )
+        speaker = getattr(status, "speaker", None)
+        text = getattr(status, "text", None)
+        self.sequence_canonical.setText(
+            "-" if not text else f"{speaker or 'Narrator'}: {text}"
+        )
+        guidance = getattr(status, "guidance", "")
+        self.sequence_guidance.setText(guidance)
+        recovery = bool(getattr(status, "recovery_required", False))
+        self.sequence_resync_button.setStyleSheet(
+            "font-weight: 700;" if recovery else ""
+        )
+        self.sequence_resync_button.setToolTip(guidance)
 
     def set_status(self, message):
         self.status.setText(message)

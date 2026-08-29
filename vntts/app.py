@@ -165,6 +165,7 @@ class AppSignals(QObject):
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
     diagnostics_changed = Signal(object)
+    sequence_status_changed = Signal(object)
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
     support_export_finished = Signal(bool, str)
@@ -1039,6 +1040,7 @@ class TrayApplication(QObject):
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
             diagnostic_handler=self.signals.diagnostics_changed.emit,
+            sequence_status_handler=self.signals.sequence_status_changed.emit,
             unknown_speaker_handler=self.signals.unknown_speaker.emit,
             error_handler=self.report_controller_error,
             route_trace_handler=self.record_audio_route,
@@ -1203,11 +1205,23 @@ class TrayApplication(QObject):
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
         self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
+        self.signals.sequence_status_changed.connect(self.dashboard.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
         self.signals.support_export_finished.connect(self.support_export_finished)
         self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
         self.application.aboutToQuit.connect(self.shutdown)
+        current_sequence_status = getattr(
+            self.controller, "get_live_sequence_status", None
+        )
+        if callable(current_sequence_status):
+            sequence_status = current_sequence_status()
+            if getattr(sequence_status, "mode", None) in {
+                "off",
+                "shadow",
+                "audio-manual",
+            }:
+                self.dashboard.set_sequence_status(sequence_status)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self.toggle_live)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)

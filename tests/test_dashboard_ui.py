@@ -8,6 +8,7 @@ from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGroupBox, QSizePolicy  # noqa: E402
 
+from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.dashboard_ui import CompactController, ControlDashboard  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -62,7 +63,12 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(all(button.isEnabled() for button in dashboard.setup_buttons))
         self.assertEqual(
             {group.title() for group in dashboard.findChildren(QGroupBox)},
-            {"Reading", "Playback", "Setup and support"},
+            {
+                "Reading",
+                "Playback",
+                "Sequence-first story cursor",
+                "Setup and support",
+            },
         )
         dashboard.deleteLater()
 
@@ -98,17 +104,49 @@ class ControlDashboardTest(unittest.TestCase):
     def test_story_resync_is_visible_only_for_sequence_manual_mode(self):
         dashboard = ControlDashboard(AppSettings())
 
-        self.assertTrue(dashboard.sequence_resync_button.isHidden())
+        self.assertTrue(dashboard.sequence_group.isHidden())
 
         dashboard.set_configuration(AppSettings(live_sequence_mode="audio-manual"))
         dashboard.set_ready(True)
 
-        self.assertFalse(dashboard.sequence_resync_button.isHidden())
+        self.assertFalse(dashboard.sequence_group.isHidden())
         self.assertTrue(dashboard.sequence_resync_button.isEnabled())
         self.assertIn(
             "anchor or recover",
             dashboard.sequence_resync_button.accessibleDescription(),
         )
+        dashboard.deleteLater()
+
+    def test_sequence_card_keeps_block_reason_and_recovery_visible(self):
+        dashboard = ControlDashboard(AppSettings(live_sequence_mode="audio-manual"))
+        dashboard.set_ready(True)
+
+        dashboard.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-manual",
+                "desynchronized",
+                chapter="314601",
+                sequence=41,
+                event_id="event-41",
+                line_id="reverse1999:314601:41",
+                speaker="Rhiannon",
+                text="Canonical text.",
+                reason="unexpected-transition",
+                next_event_count=2,
+                recovery_required=True,
+                guidance="Set the visible story position to resume.",
+            )
+        )
+
+        self.assertIn("desynchronized", dashboard.sequence_state.text())
+        self.assertIn("314601", dashboard.sequence_position.text())
+        self.assertIn("event-41", dashboard.sequence_identity.text())
+        self.assertIn("Rhiannon: Canonical text.", dashboard.sequence_canonical.text())
+        self.assertEqual(
+            dashboard.sequence_guidance.text(),
+            "Set the visible story position to resume.",
+        )
+        self.assertIn("font-weight", dashboard.sequence_resync_button.styleSheet())
         dashboard.deleteLater()
 
     def test_close_quits_by_default_instead_of_hiding_silently(self):

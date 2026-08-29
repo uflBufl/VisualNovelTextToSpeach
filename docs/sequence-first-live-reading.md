@@ -52,6 +52,14 @@ not control the game yet:
   speech, binds the latest frame and routes the selected canonical speech event
   immediately; silent events update position without synthesizing text. Invalid
   or non-visible event IDs fail closed.
+- the same control window now keeps a persistent sequence-first card rather than
+  relying on transient status text. It shows cursor state/reason,
+  chapter/sequence, event and line IDs, canonical speaker/text and the count of
+  explicit next candidates. Plan load, session reset, OCR anchor, playback
+  start/outcome, visual transition and resync all publish immutable snapshots.
+  Failed playback, desynchronization and branch/manual boundaries make recovery
+  guidance durable and emphasize the story-position control; off and shadow
+  modes do not present it as a manual action.
 
 `vntts-artifacts` v0.7.0 publishes game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately

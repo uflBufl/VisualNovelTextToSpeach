@@ -1763,6 +1763,9 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
         self.assertEqual(controller.story_cursor.reason, "playback-failed")
         self.assertFalse(controller._stable_live_frame_route("new", True))
+        status = controller.get_live_sequence_status()
+        self.assertTrue(status.recovery_required)
+        self.assertIn("Playback failed", status.guidance)
 
     def test_sequence_manual_resync_lists_visible_events_and_handles_stopped_or_running(
         self,
@@ -1816,6 +1819,7 @@ class MainTest(unittest.TestCase):
         )
         dialogs = []
         statuses = []
+        sequence_statuses = []
         controller = AppController(
             AppSettings(
                 story_index="story.jsonl",
@@ -1827,6 +1831,7 @@ class MainTest(unittest.TestCase):
             live_sequence_plan_factory=Mock(return_value=plan),
             dialog_handler=lambda *args: dialogs.append(args),
             status_handler=statuses.append,
+            sequence_status_handler=sequence_statuses.append,
         )
         stopped_reader = Mock(is_running=False)
         controller.live_reader = stopped_reader
@@ -1842,6 +1847,9 @@ class MainTest(unittest.TestCase):
         self.assertTrue(controller.resync_live_sequence("event-1"))
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
         self.assertTrue(controller.explicit_sequence_anchor_pending)
+        self.assertEqual(sequence_statuses[-1].state, "locked")
+        self.assertEqual(sequence_statuses[-1].event_id, "event-1")
+        self.assertEqual(sequence_statuses[-1].speaker, "Rhiannon")
         self.assertEqual(preloader.current_match.chapter, "1")
         self.assertEqual(dialogs[-1], ("Rhiannon", text))
         stopped_reader.clear_queue.assert_not_called()

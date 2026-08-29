@@ -87,6 +87,22 @@ from vntts.voices import (
 from vntts.window_capture import WindowCaptureTarget
 
 
+@dataclass(frozen=True)
+class LiveSequenceStatus:
+    mode: str
+    state: str
+    chapter: str | None = None
+    sequence: int | None = None
+    event_id: str | None = None
+    line_id: str | None = None
+    speaker: str | None = None
+    text: str | None = None
+    reason: str | None = None
+    next_event_count: int = 0
+    recovery_required: bool = False
+    guidance: str = ""
+
+
 def create_dialog_read_scheduler(
     executor,
     voice_router,
@@ -217,6 +233,7 @@ class AppController:
         status_handler=print,
         dialog_handler=None,
         diagnostic_handler=None,
+        sequence_status_handler=None,
         unknown_speaker_handler=None,
         error_handler=report_runtime_error,
         capture_target_factory=WindowCaptureTarget,
@@ -264,6 +281,9 @@ class AppController:
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
         self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
+        self.sequence_status_handler = sequence_status_handler or (
+            lambda _snapshot: None
+        )
         self.unknown_speaker_handler = unknown_speaker_handler or (lambda _name: None)
         self.error_handler = error_handler
         self.live_sequence_plan = None
@@ -578,6 +598,7 @@ class AppController:
                     self.explicit_sequence_anchor_pending = False
                 else:
                     self.story_cursor.reset("live-session-started")
+                self._publish_live_sequence_status()
         running = self.live_reader.toggle()
         if running:
             self.next_live_narrator_fallback_names.clear()
@@ -1375,16 +1396,19 @@ class AppController:
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
         if self.settings.live_sequence_mode == "off":
+            self._publish_live_sequence_status()
             return False
         if not self.settings.live_sequence_plan:
             self.status_handler(
                 "Sequence-first rollout disabled: configure a live sequence plan"
             )
+            self._publish_live_sequence_status()
             return False
         if not self.settings.story_index:
             self.status_handler(
                 "Sequence-first rollout disabled: configure its story index"
             )
+            self._publish_live_sequence_status()
             return False
         try:
             plan = self.live_sequence_plan_factory(
@@ -1394,6 +1418,7 @@ class AppController:
             cursor = StoryCursor(plan)
         except Exception as error:
             self.status_handler(f"Sequence-first rollout disabled: {error}")
+            self._publish_live_sequence_status()
             return False
         self.live_sequence_plan = plan
         self.story_cursor = cursor
@@ -1401,7 +1426,94 @@ class AppController:
             f"Sequence-first {self.settings.live_sequence_mode} ready: "
             f"{len(plan.events)} planned events"
         )
+        self._publish_live_sequence_status()
         return True
+
+    def get_live_sequence_status(self):
+        cursor = self.story_cursor
+        mode = self.settings.live_sequence_mode
+        if cursor is None:
+            return LiveSequenceStatus(
+                mode,
+                "off" if mode == "off" else "unavailable",
+                guidance=(
+                    "Sequence-first routing is off."
+                    if mode == "off"
+                    else "Configure a valid story index and live sequence plan."
+                ),
+            )
+        snapshot = cursor.snapshot()
+        event = cursor.current_event
+        line = (
+            None
+            if event is None or event.line_id is None
+            else self.chapter_voice_preloader.line_for_id(event.line_id)
+        )
+        recovery_required = False
+        if snapshot.state == StoryCursorState.UNSYNCHRONIZED:
+            guidance = (
+                "Waiting for one exact OCR anchor. You can set the visible story "
+                "position manually."
+            )
+        elif snapshot.state == StoryCursorState.PLAYING:
+            guidance = "Canonical audio is playing; visual transitions are closed."
+        elif snapshot.reason == "playback-failed":
+            recovery_required = True
+            guidance = (
+                "Playback failed. Replay or set the visible story position before "
+                "continuing."
+            )
+        elif snapshot.state == StoryCursorState.DESYNCHRONIZED:
+            recovery_required = True
+            guidance = (
+                "The observed line is outside the allowed successor path. Set the "
+                "visible story position to resume."
+            )
+        elif snapshot.state == StoryCursorState.MANUAL:
+            recovery_required = True
+            guidance = (
+                "A choice or manual boundary needs an explicit story-position "
+                "selection."
+            )
+        elif event is not None and not event.successors:
+            guidance = "This is a terminal sequence event; no successor is expected."
+        elif cursor.can_confirm_visual_transition:
+            candidate = cursor.deterministic_visual_successor()
+            if candidate is None:
+                recovery_required = True
+                guidance = (
+                    "The next event is not deterministic. Set the visible story "
+                    "position after making the in-game choice."
+                )
+            else:
+                guidance = (
+                    "Waiting for the next stable dialogue fingerprint; locked routing "
+                    "will not run OCR."
+                )
+        else:
+            guidance = "Waiting for canonical playback to complete."
+        return LiveSequenceStatus(
+            mode,
+            snapshot.state.value,
+            chapter=event.chapter if event is not None else None,
+            sequence=event.sequence if event is not None else None,
+            event_id=snapshot.current_event_id,
+            line_id=snapshot.current_line_id,
+            speaker=line.speaker if line is not None else None,
+            text=line.text if line is not None else None,
+            reason=snapshot.reason,
+            next_event_count=len(snapshot.expected_successor_ids),
+            recovery_required=recovery_required,
+            guidance=guidance,
+        )
+
+    def _publish_live_sequence_status(self):
+        status = self.get_live_sequence_status()
+        try:
+            self.sequence_status_handler(status)
+        except Exception as error:
+            self.error_handler(error)
+        return status
 
     def _observe_live_sequence(self, character, text):
         cursor = self.story_cursor
@@ -1438,6 +1550,7 @@ class AppController:
             reason=snapshot.reason,
             match_result=match_result,
         )
+        self._publish_live_sequence_status()
         return snapshot, line, match_result
 
     def live_sequence_anchor_options(self):
@@ -1487,6 +1600,7 @@ class AppController:
         if running:
             self.live_reader.clear_queue()
         cursor.anchor_event(event.event_id, "explicit-user-resync")
+        self._publish_live_sequence_status()
         line = (
             None
             if event.line_id is None
@@ -1539,6 +1653,7 @@ class AppController:
                 line_id=None,
                 route="silent",
             )
+            self._publish_live_sequence_status()
             return (None, "")
         line = self.chapter_voice_preloader.line_for_id(event.line_id)
         if line is None:
@@ -1546,6 +1661,7 @@ class AppController:
             self.status_handler(
                 "Sequence-first routing stopped: the expected story line is missing"
             )
+            self._publish_live_sequence_status()
             return False
         self.pipeline_event_handler(
             "sequence-visual-transition",
@@ -1556,6 +1672,7 @@ class AppController:
             line_id=line.line_id,
             route="canonical-story-line",
         )
+        self._publish_live_sequence_status()
         return (line.speaker, line.text)
 
     def _begin_sequence_playback(self, chunk):
@@ -1579,6 +1696,7 @@ class AppController:
             cursor.begin_playback()
         except StoryCursorError:
             return None
+        self._publish_live_sequence_status()
         return event.event_id
 
     def _finish_sequence_playback(self, event_id, outcome):
@@ -1604,6 +1722,7 @@ class AppController:
             line_id=cursor.snapshot().current_line_id,
             outcome="completed" if successful else "failed",
         )
+        self._publish_live_sequence_status()
         return successful
 
     def _canonical_observed_character(self, character, text=None):
