@@ -172,8 +172,9 @@ recovery. This closes the 20-event software replay gate; operator mapping review
 of the Hotelier and Rhiannon silent events was accepted on 2026-08-29. The
 later full capture recovered all 92 visible chapter events. Its stable 91-event
 suffix passed the production sealer twice, and the checksum-bound union with
-this accepted 21-event seal proves 92/92 technical coverage. Only silent event
-78 remains pending explicit human mapping acceptance.
+this accepted 21-event seal proves 92/92 technical coverage. Silent event 78
+received explicit human mapping approval on 2026-08-30, so the union report now
+also proves complete human acceptance for all three silent events.
 
 An original-game route must declare `source_audio_duration_seconds` when replay
 is expected to advance automatically. Without observable completion, production

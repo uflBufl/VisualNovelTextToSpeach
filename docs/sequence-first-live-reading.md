@@ -187,10 +187,10 @@ short lines and faded representative frames. Its first frame was already
 fading and therefore correctly failed the production presence gate; the prior
 accepted seal supplies event 4, while a new overlapping suffix seal passed
 twice for all 91 events from 5 through 101. The checksum-bound union report at
-`rhiannon-visible-chapter-coverage-2026-08-29-v2.json` proves 92/92 technical
-coverage with no missing event. Only the unique silent frontier at event 78
-still requires explicit human mapping acceptance; events 18 and 19 were already
-accepted.
+`rhiannon-visible-chapter-coverage-2026-08-30-v3.json` proves 92/92 technical
+coverage with no missing event. The unique silent frontier at event 78 received
+explicit human mapping approval on 2026-08-30; together with the earlier
+approval for events 18 and 19, the report now proves complete human acceptance.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through
