@@ -45,6 +45,25 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
     sha256_control_path,
 )
+from vntts.authoring.cli_delivery import (
+    COMMANDS as DELIVERY_COMMANDS,
+)
+from vntts.authoring.cli_delivery import (
+    configure_parsers as configure_delivery_parsers,
+)
+from vntts.authoring.cli_delivery import (
+    handle as handle_delivery_command,
+)
+from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
+from vntts.authoring.cli_legacy import (
+    COMMANDS as LEGACY_COMMANDS,
+)
+from vntts.authoring.cli_legacy import (
+    configure_parsers as configure_legacy_parsers,
+)
+from vntts.authoring.cli_legacy import (
+    handle as handle_legacy_command,
+)
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
     execute_cohort_bundle_decision,
@@ -66,7 +85,6 @@ from vntts.authoring.delivery import (
     LEGACY_ENGLISH_POLICY,
     PRESERVE_DELIVERY_POLICY,
     DeliveryAnnotationError,
-    apply_delivery_policy,
 )
 from vntts.authoring.experimental_composite_voice import (
     ExperimentalCompositeVoiceError,
@@ -112,17 +130,9 @@ from vntts.authoring.known_role_reuse import (
 )
 from vntts.authoring.legacy_import import (
     LegacyAuthoringImportError,
-    default_import_root,
-    default_legacy_jobs_root,
-    discover_legacy_jobs,
-    import_legacy_job,
-    import_standalone_generation,
-    inspect_standalone_generation,
 )
 from vntts.authoring.listening_import import (
     ListeningImportError,
-    import_listening_session,
-    inspect_listening_session,
 )
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
@@ -426,45 +436,7 @@ def create_parser():
         description="VNTTS offline pregeneration authoring"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    discover = subparsers.add_parser(
-        "discover-legacy",
-        help="Inspect Reverse: 1999 pregeneration jobs without changing them",
-    )
-    discover.add_argument("--jobs-root", type=Path, default=default_legacy_jobs_root())
-    migrate = subparsers.add_parser(
-        "import-legacy",
-        help="Validate and non-destructively import one legacy job",
-    )
-    migrate.add_argument("job_directory", type=Path)
-    migrate.add_argument("--destination-root", type=Path, default=default_import_root())
-    inspect_standalone = subparsers.add_parser(
-        "inspect-standalone",
-        help="Validate one explicitly paired standalone queue and output",
-    )
-    inspect_standalone.add_argument("--queue", type=Path, required=True)
-    inspect_standalone.add_argument("--output", type=Path, required=True)
-    import_standalone = subparsers.add_parser(
-        "import-standalone",
-        help="Non-destructively import one explicitly paired queue and output",
-    )
-    import_standalone.add_argument("--queue", type=Path, required=True)
-    import_standalone.add_argument("--output", type=Path, required=True)
-    import_standalone.add_argument(
-        "--destination-root", type=Path, default=default_import_root()
-    )
-    inspect_listening = subparsers.add_parser(
-        "inspect-listening",
-        help="Validate one selected legacy blind-listening session",
-    )
-    inspect_listening.add_argument("session_directory", type=Path)
-    import_listening = subparsers.add_parser(
-        "import-listening",
-        help="Non-destructively preserve one selected blind-listening session",
-    )
-    import_listening.add_argument("session_directory", type=Path)
-    import_listening.add_argument(
-        "--destination-root", type=Path, default=default_import_root()
-    )
+    configure_legacy_parsers(subparsers)
     for command, help_text in (
         ("preflight-queue", "Summarize a collection-driven generation queue"),
         ("build-queue", "Publish a validated collection-driven generation queue"),
@@ -1410,74 +1382,22 @@ def create_parser():
         type=_producer_record,
         help="Producer identity as NAME=VERSION; repeat for upstream producers",
     )
-    annotate = subparsers.add_parser(
-        "annotate-delivery",
-        help="Print one provenance-marked legacy English delivery annotation",
-    )
-    annotate.add_argument("--text", required=True)
-    annotate.add_argument("--speaker", default="Narrator")
-    annotate.add_argument("--previous-text")
-    annotate.add_argument("--next-text")
-    annotate.add_argument("--kind", default="dialogue")
+    configure_delivery_parsers(subparsers)
     return parser
+
+
+COMMAND_FAMILIES = (
+    CommandFamily(LEGACY_COMMANDS, handle_legacy_command),
+    CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
+)
 
 
 def main(argv=None):
     arguments = create_parser().parse_args(argv)
-    if arguments.command == "discover-legacy":
-        candidates = discover_legacy_jobs(arguments.jobs_root)
-        print(
-            json.dumps(
-                [
-                    {
-                        "job_directory": str(candidate.job_directory),
-                        "kind": candidate.kind,
-                        "title": candidate.title,
-                        "status": candidate.status,
-                        "queue_items": candidate.queue_items,
-                        "generated_items": candidate.generated_items,
-                        "compatible": candidate.compatible,
-                        "compatibility_error": candidate.compatibility_error,
-                        "diagnostics": list(candidate.diagnostics),
-                    }
-                    for candidate in candidates
-                ],
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
     try:
-        if arguments.command == "annotate-delivery":
-            application = apply_delivery_policy(
-                {
-                    "text": arguments.text,
-                    "speaker": arguments.speaker,
-                    "previous_text": arguments.previous_text,
-                    "next_text": arguments.next_text,
-                    "kind": arguments.kind,
-                },
-                LEGACY_ENGLISH_POLICY,
-            )
-            print(
-                json.dumps(
-                    {
-                        "annotation": {
-                            key: application.record[key]
-                            for key in (
-                                "annotation_version",
-                                "emotion",
-                                "delivery",
-                                "prompt_adapters",
-                            )
-                        },
-                        "provenance": application.provenance,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
+        family_result = dispatch_command(arguments, COMMAND_FAMILIES)
+        if family_result is not None:
+            return family_result
         if arguments.command == "create-workspace":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
             failure_repair_policy = _generation_failure_repair_policy(arguments)
@@ -2806,44 +2726,6 @@ def main(argv=None):
                 payload["output"] = str(output)
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
-        if arguments.command == "inspect-standalone":
-            plan = inspect_standalone_generation(arguments.queue, arguments.output)
-            print(json.dumps(plan.summary, indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "import-standalone":
-            result = import_standalone_generation(
-                arguments.queue,
-                arguments.output,
-                arguments.destination_root,
-            )
-        elif arguments.command == "inspect-listening":
-            inspection = inspect_listening_session(arguments.session_directory)
-            print(
-                json.dumps(
-                    {
-                        "session_directory": str(inspection.session_directory),
-                        "trial_count": inspection.trial_count,
-                        "completed_count": inspection.completed_count,
-                        "audio_count": inspection.audio_count,
-                        "report_present": inspection.report_present,
-                        "logical_identity": inspection.logical_identity,
-                        "source_fingerprint": inspection.source_fingerprint,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        elif arguments.command == "import-listening":
-            result = import_listening_session(
-                arguments.session_directory,
-                arguments.destination_root,
-            )
-        else:
-            result = import_legacy_job(
-                arguments.job_directory,
-                arguments.destination_root,
-            )
     except (
         AudioEventReviewError,
         AudioEventCompositionError,
@@ -2886,18 +2768,7 @@ def main(argv=None):
         VoiceRepairComparisonError,
     ) as error:
         create_parser().error(str(error))
-    print(
-        json.dumps(
-            {
-                "destination": str(result.destination),
-                "created": result.created,
-                "summary": result.manifest["summary"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
+    create_parser().error(f"No handler is registered for {arguments.command!r}")
 
 
 if __name__ == "__main__":

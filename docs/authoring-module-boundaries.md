@@ -238,5 +238,21 @@ asserts that neither extracted record module can reach its higher layers and
 that no pair in either former strongly connected component is mutually
 reachable. It also enforces the canonical-hash, generation-lease, generated
 manifest and generation-state leaf boundaries described above.
+
+## Authoring CLI command families
+
+`cli_dispatch.CommandFamily` is the small ownership contract for commands that
+have been extracted from the historical `cli.py` dependency magnet. Dispatch
+rejects overlapping ownership instead of silently choosing the first handler.
+The top-level parser still owns common error translation and composes family
+parsers in the established order, so command names, help ordering, defaults,
+exit codes and JSON output remain compatible during incremental migration.
+
+`cli_legacy` owns legacy discovery/import, standalone generation import and
+blind-listening import commands. `cli_delivery` owns delivery annotation. These
+family modules depend only on their workflow leaves and never on `cli.py` or on
+each other. Focused tests bind their parser defaults, ordering, single-owner
+dispatch and existing JSON behavior; the complete suite remains the final
+compatibility gate for each extraction slice.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.
