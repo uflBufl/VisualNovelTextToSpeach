@@ -137,6 +137,52 @@ class TrayApplicationTest(unittest.TestCase):
         controller.resync_live_sequence.assert_called_once_with("event-1")
         tray_application.shutdown()
 
+    def test_single_expected_sequence_action_uses_current_candidate_without_dialog(
+        self,
+    ):
+        controller = Mock()
+        controller.live_sequence_expected_options.return_value = (
+            ("Sequence 2 - Ada: Repeated [event-2]", "event-2"),
+        )
+        controller.select_expected_live_sequence_event.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(live_sequence_mode="audio-manual"),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.QInputDialog.getItem") as choose:
+            self.assertTrue(tray_application.choose_expected_sequence_event())
+
+        choose.assert_not_called()
+        controller.select_expected_live_sequence_event.assert_called_once_with(
+            "event-2"
+        )
+        tray_application.shutdown()
+
+    def test_multiple_expected_sequence_candidates_use_bounded_chooser(self):
+        controller = Mock()
+        options = (
+            ("Sequence 2 - Ada: Left [left]", "left"),
+            ("Sequence 3 - Bea: Right [right]", "right"),
+        )
+        controller.live_sequence_expected_options.return_value = options
+        controller.select_expected_live_sequence_event.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(live_sequence_mode="audio-manual"),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch(
+            "vntts.app.QInputDialog.getItem",
+            return_value=(options[1][0], True),
+        ):
+            self.assertTrue(tray_application.choose_expected_sequence_event())
+
+        controller.select_expected_live_sequence_event.assert_called_once_with("right")
+        tray_application.shutdown()
+
     def test_compact_controls_replace_dashboard_and_persist_preference(self):
         controller = Mock()
         controller.get_capture_geometry.return_value = WindowGeometry(

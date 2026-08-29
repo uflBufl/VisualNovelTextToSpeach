@@ -24,6 +24,7 @@ class ControlDashboard(QMainWindow):
     read_requested = Signal()
     live_requested = Signal()
     sequence_resync_requested = Signal()
+    sequence_expected_requested = Signal()
     pause_requested = Signal()
     skip_requested = Signal()
     repeat_requested = Signal()
@@ -43,6 +44,7 @@ class ControlDashboard(QMainWindow):
         self._quitting = False
         self._live = False
         self._ready = False
+        self._sequence_expected_candidate_count = 0
         self.setWindowTitle("Visual Novel Text to Speech")
         self.setMinimumWidth(620)
         self.setMinimumHeight(340)
@@ -97,6 +99,7 @@ class ControlDashboard(QMainWindow):
         self.read_button = QPushButton("Read current dialogue")
         self.live_button = QPushButton("Start live reading")
         self.sequence_resync_button = QPushButton("Set story position / resync")
+        self.sequence_expected_button = QPushButton("Use expected next line")
         self.pause_button = QPushButton("Pause")
         self.skip_button = QPushButton("Skip")
         self.repeat_button = QPushButton("Replay")
@@ -118,6 +121,9 @@ class ControlDashboard(QMainWindow):
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
         self.sequence_resync_button.clicked.connect(self.sequence_resync_requested.emit)
+        self.sequence_expected_button.clicked.connect(
+            self.sequence_expected_requested.emit
+        )
         self.pause_button.clicked.connect(self.pause_requested.emit)
         self.skip_button.clicked.connect(self.skip_requested.emit)
         self.repeat_button.clicked.connect(self.repeat_requested.emit)
@@ -151,6 +157,7 @@ class ControlDashboard(QMainWindow):
         sequence_layout = QVBoxLayout(self.sequence_group)
         sequence_layout.addLayout(sequence_form)
         sequence_layout.addWidget(self.sequence_guidance)
+        sequence_layout.addWidget(self.sequence_expected_button)
         sequence_layout.addWidget(self.sequence_resync_button)
 
         transport_group = QGroupBox("Playback")
@@ -279,6 +286,22 @@ class ControlDashboard(QMainWindow):
         guidance = getattr(status, "guidance", "")
         self.sequence_guidance.setText(guidance)
         recovery = bool(getattr(status, "recovery_required", False))
+        candidate_count = int(getattr(status, "expected_candidate_count", 0))
+        self._sequence_expected_candidate_count = candidate_count
+        self.sequence_expected_button.setEnabled(candidate_count > 0 and self._ready)
+        self.sequence_expected_button.setText(
+            "Use expected next line"
+            if candidate_count == 1
+            else (
+                f"Choose among {candidate_count} expected lines..."
+                if candidate_count > 1
+                else "No expected next line"
+            )
+        )
+        self.sequence_expected_button.setToolTip(
+            "Advance only to a currently allowed sequence candidate; useful when "
+            "two consecutive dialogue boxes look identical"
+        )
         self.sequence_resync_button.setStyleSheet(
             "font-weight: 700;" if recovery else ""
         )
@@ -306,8 +329,12 @@ class ControlDashboard(QMainWindow):
             self.repeat_button,
             self.stop_button,
             self.sequence_resync_button,
+            self.sequence_expected_button,
         ):
             button.setEnabled(self._ready)
+        self.sequence_expected_button.setEnabled(
+            self._ready and self._sequence_expected_candidate_count > 0
+        )
         if self._ready:
             self._set_action_reason(
                 "Ready: start live reading, or read the current dialogue once."
@@ -330,6 +357,7 @@ class ControlDashboard(QMainWindow):
             self.repeat_button,
             self.stop_button,
             self.sequence_resync_button,
+            self.sequence_expected_button,
         ):
             button.setToolTip(description)
 

@@ -105,6 +105,7 @@ class LiveSequenceStatus:
     expected_audio_route: str = "-"
     actual_audio_route: str = "-"
     ocr_activity: str = "-"
+    expected_candidate_count: int = 0
 
 
 def create_dialog_read_scheduler(
@@ -1532,6 +1533,7 @@ class AppController:
                 f"Full OCR idle in locked routing; {recognized_frames} anchor/recovery "
                 "frame(s) recognized"
             )
+        expected_candidate_count = len(self._expected_live_sequence_events())
         return LiveSequenceStatus(
             mode,
             snapshot.state.value,
@@ -1548,6 +1550,7 @@ class AppController:
             expected_audio_route=expected_audio_route,
             actual_audio_route=actual_audio_route,
             ocr_activity=ocr_activity,
+            expected_candidate_count=expected_candidate_count,
         )
 
     def _expected_sequence_audio_route(self, event, line):
@@ -1707,6 +1710,102 @@ class AppController:
                 options.append((label, event_id))
         return tuple(options)
 
+    def _expected_live_sequence_events(self):
+        cursor = self.story_cursor
+        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            return ()
+        if cursor.state in {
+            StoryCursorState.UNSYNCHRONIZED,
+            StoryCursorState.ANCHORING,
+            StoryCursorState.PLAYING,
+        }:
+            return ()
+        if (
+            cursor.state == StoryCursorState.LOCKED
+            and not cursor.can_confirm_visual_transition
+        ):
+            return ()
+        return cursor.bounded_visible_successors()
+
+    def live_sequence_expected_options(self):
+        options = []
+        for event in self._expected_live_sequence_events():
+            line = (
+                None
+                if event.line_id is None
+                else self.chapter_voice_preloader.line_for_id(event.line_id)
+            )
+            speaker = line.speaker if line is not None else "Silent"
+            text = line.text if line is not None else "silent dialogue"
+            preview = text if len(text) <= 90 else f"{text[:87]}..."
+            options.append(
+                (
+                    f"Sequence {event.sequence} - {speaker}: {preview} "
+                    f"[{event.event_id}]",
+                    event.event_id,
+                )
+            )
+        return tuple(options)
+
+    def select_expected_live_sequence_event(self, event_id):
+        cursor = self.story_cursor
+        candidates = {
+            event.event_id: event for event in self._expected_live_sequence_events()
+        }
+        event = candidates.get(str(event_id))
+        if cursor is None or event is None:
+            self.status_handler(
+                "Expected story event was not selected: the candidate is stale or "
+                "outside the current bounded path"
+            )
+            return False
+        previous_event_id = cursor.current_event_id
+        running = bool(self.live_reader is not None and self.live_reader.is_running)
+        if running:
+            self.live_reader.clear_queue()
+        cursor.anchor_event(
+            event.event_id,
+            (
+                "visual-transition-confirmed"
+                if event.kind == "silent"
+                else "explicit-expected-selection"
+            ),
+        )
+        line = (
+            None
+            if event.line_id is None
+            else self.chapter_voice_preloader.line_for_id(event.line_id)
+        )
+        if line is not None:
+            self.chapter_voice_preloader.resolve_exact(line.speaker, line.text)
+        if running:
+            self.live_reader.bind_current_frame_route()
+            if line is not None and not self._enqueue_dialog(line.speaker, line.text):
+                return False
+            if line is None:
+                self.dialog_handler("Narrator", "Silent dialogue")
+        else:
+            self.explicit_sequence_anchor_pending = True
+            self.dialog_handler(
+                line.speaker if line is not None else "Narrator",
+                line.text if line is not None else "Silent dialogue",
+            )
+        generation = (
+            self.live_reader.active_generation if self.live_reader is not None else 0
+        )
+        self.pipeline_event_handler(
+            "sequence-explicit-expected-selection",
+            generation,
+            monotonic(),
+            previous_event_id=previous_event_id,
+            event_id=event.event_id,
+            line_id=event.line_id,
+            reason=cursor.reason,
+        )
+        self._publish_live_sequence_status()
+        self.status_handler(f"Expected story event selected: sequence {event.sequence}")
+        return True
+
     def resync_live_sequence(self, event_id):
         cursor = self.story_cursor
         plan = self.live_sequence_plan
@@ -1726,7 +1825,14 @@ class AppController:
         running = bool(self.live_reader is not None and self.live_reader.is_running)
         if running:
             self.live_reader.clear_queue()
-        cursor.anchor_event(event.event_id, "explicit-user-resync")
+        cursor.anchor_event(
+            event.event_id,
+            (
+                "visual-transition-confirmed"
+                if event.kind == "silent"
+                else "explicit-user-resync"
+            ),
+        )
         self._publish_live_sequence_status()
         line = (
             None

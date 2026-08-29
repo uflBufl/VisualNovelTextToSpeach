@@ -138,6 +138,7 @@ class ControlDashboardTest(unittest.TestCase):
                 expected_audio_route="Generated audio (manifest declaration)",
                 actual_audio_route="generated-audio",
                 ocr_activity="Full OCR idle in locked routing; 1 frame recognized",
+                expected_candidate_count=2,
             )
         )
 
@@ -152,6 +153,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("Generated audio", dashboard.sequence_expected_audio.text())
         self.assertEqual(dashboard.sequence_actual_audio.text(), "generated-audio")
         self.assertIn("OCR idle", dashboard.sequence_ocr.text())
+        self.assertTrue(dashboard.sequence_expected_button.isEnabled())
+        self.assertIn("2 expected", dashboard.sequence_expected_button.text())
         self.assertIn("font-weight", dashboard.sequence_resync_button.styleSheet())
         dashboard.deleteLater()
 

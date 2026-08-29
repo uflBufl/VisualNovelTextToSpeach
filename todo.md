@@ -147,17 +147,6 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Implement branches, repeated lines and manual advancement with an
-      expected-candidate recognizer over explicit successors and a bounded
-      monotonic lookahead. The settled recovery OCR is implemented and restricted
-      to current plus explicit graph candidates; unique text-only nameplate
-      recovery, ambiguous-repeat rejection, bounded desync recovery and
-      privacy-safe evidence are covered. Add an explicit one-expected-next
-      action for identical consecutive lines whose fingerprint cannot change,
-      plus a compact expected-candidate chooser for true branches/manual
-      multi-skips. Cover stale UI candidate rejection and keep full chapter
-      resync as the final fallback. Never speak or advance an unmatched OCR
-      guess.
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
       then add automatic advancement last. Cover long typewriter text, lost
       nameplates, `...`, source/generated/missing-WAV routes, identical lines,

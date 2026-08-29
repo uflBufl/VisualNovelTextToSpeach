@@ -263,6 +263,17 @@ the current cursor line; a previous line's trace is hidden. OCR activity
 distinguishes initial full-OCR anchoring, recovery availability and the normal
 locked state where full OCR is idle.
 
+Manual bounded recovery is available from both the dashboard and tray. When
+the cursor has one allowed visible lookahead event, `Use expected next line`
+selects it directly; this is the explicit escape hatch for consecutive
+identical dialogue boxes whose fingerprint cannot change. Multiple allowed
+events open a compact chooser containing only the current three-visible-event,
+24-node graph window. The controller recomputes the candidates when the action
+is applied, so a stale UI event ID cannot move the cursor. Selection clears
+stale speech, binds the current frame and routes canonical speech (or preserves
+a silent event). Full chapter/line resync remains a separate final recovery
+tool.
+
 Timeline diagnostics should record event ID, line ID, previous/next cursor,
 route, fingerprint transition, readiness gates, branch candidates, recovery
 stage and confidence. Text remains represented by stable IDs/hashes in routine

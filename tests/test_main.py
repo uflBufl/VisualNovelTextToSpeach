@@ -1974,6 +1974,23 @@ class MainTest(unittest.TestCase):
         self.assertEqual(dialogs[-1], ("Rhiannon", text))
         stopped_reader.clear_queue.assert_not_called()
 
+        playback_event_id = controller._begin_sequence_playback(
+            SpeechChunk(1, "Rhiannon", text)
+        )
+        controller._finish_sequence_playback(
+            playback_event_id,
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
+        )
+        expected_options = controller.live_sequence_expected_options()
+        self.assertEqual(
+            [event_id for _label, event_id in expected_options],
+            ["event-2"],
+        )
+        self.assertTrue(controller.select_expected_live_sequence_event("event-2"))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(dialogs[-1], ("Narrator", "Silent dialogue"))
+        self.assertFalse(controller.select_expected_live_sequence_event("event-1"))
+
         running_reader = Mock(is_running=True)
         controller.live_reader = running_reader
         controller._enqueue_dialog = Mock(return_value=True)
