@@ -216,6 +216,25 @@ class GamePackImportTest(unittest.TestCase):
         self.assertIsNone(settings.live_sequence_plan)
         self.assertEqual(settings.live_sequence_mode, "off")
 
+    def test_reapplying_same_pack_preserves_explicit_external_sequence_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(root)
+
+            settings = apply_game_pack(
+                AppSettings(
+                    game_pack=str(pack_path),
+                    live_sequence_plan="external-live-sequence.json",
+                    live_sequence_mode="audio-auto",
+                )
+            )
+
+        self.assertEqual(
+            settings.live_sequence_plan,
+            "external-live-sequence.json",
+        )
+        self.assertEqual(settings.live_sequence_mode, "audio-auto")
+
     def test_pack_import_applies_its_checksum_bound_sequence_plan(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1892,7 +1892,11 @@ class TrayApplication(QObject):
             return
         updated_settings = dialog.settings()
         try:
-            updated_settings = apply_game_pack(updated_settings)
+            selected_new_pack = updated_settings.game_pack != self.settings.game_pack
+            updated_settings = apply_game_pack(
+                updated_settings,
+                updated_settings.game_pack if selected_new_pack else None,
+            )
         except GamePackError as error:
             self.show_error(f"Unable to import game pack: {error}")
             return

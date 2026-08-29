@@ -410,6 +410,12 @@ The mode and saved auto-advance toggle are both opt-in. Production enablement
 remains gated on a real-game focus/choice run even though complete chapter route
 and human acceptance are already 92/92.
 
+A checksum-bound sequence plan may be selected externally when an otherwise
+valid game pack does not ship one. Reapplying that same pack while saving or
+loading settings preserves the explicit external plan and rollout mode. An
+actual switch to a different pack still clears an unowned plan, while a plan
+embedded in the newly selected pack always replaces it.
+
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV
 canonical fallback, consecutive identical lines, a branch/choice, manual single

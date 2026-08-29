@@ -18,20 +18,21 @@ class GamePackImport:
     generated_audio_manifest: Path | None
     live_sequence_plan: Path | None
 
-    def apply_to(self, settings):
+    def apply_to(self, settings, *, preserve_external_sequence=False):
         """Return settings routed to this pack without modifying app or pack data."""
+        sequence_plan = (
+            str(self.live_sequence_plan)
+            if self.live_sequence_plan is not None
+            else settings.live_sequence_plan
+            if preserve_external_sequence
+            else None
+        )
         return settings.updated(
             game_pack=str(self.pack.manifest_path),
             story_index=str(self.story_index),
-            live_sequence_plan=(
-                str(self.live_sequence_plan)
-                if self.live_sequence_plan is not None
-                else None
-            ),
+            live_sequence_plan=sequence_plan,
             live_sequence_mode=(
-                settings.live_sequence_mode
-                if self.pack.live_sequence_plan is not None
-                else "off"
+                settings.live_sequence_mode if sequence_plan is not None else "off"
             ),
             voice_manifest=str(self.voice_manifest),
             generated_audio_manifest=(
@@ -65,7 +66,10 @@ def apply_game_pack(settings, path=None):
     configured_path = path if path is not None else settings.game_pack
     if not configured_path:
         return settings
-    return import_game_pack(configured_path).apply_to(settings)
+    return import_game_pack(configured_path).apply_to(
+        settings,
+        preserve_external_sequence=path is None,
+    )
 
 
 def main(argv=None):
