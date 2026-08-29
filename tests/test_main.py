@@ -1525,6 +1525,27 @@ class MainTest(unittest.TestCase):
         self.assertEqual(routed, ("Rhiannon", "Known canonical line."))
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(pipeline[-1][0][0], "sequence-audio-manual")
+        self.assertIsNone(pipeline[-1][1]["previous_event_id"])
+        unprepared_backend = Mock()
+        controller.speech_backend = unprepared_backend
+        status = controller.get_live_sequence_status()
+        unprepared_backend.prepare_route.assert_not_called()
+        self.assertEqual(status.expected_audio_route, "Live TTS")
+        self.assertEqual(status.actual_audio_route, "-")
+        self.assertIn("OCR idle", status.ocr_activity)
+        controller.last_audio_route_trace = stub_route_trace(
+            "generated-audio",
+            "reverse1999:1:1",
+        )
+        self.assertEqual(
+            controller.get_live_sequence_status().actual_audio_route,
+            "generated-audio",
+        )
+        controller.last_audio_route_trace = stub_route_trace(
+            "generated-audio",
+            "reverse1999:other:9",
+        )
+        self.assertEqual(controller.get_live_sequence_status().actual_audio_route, "-")
         self.assertIsNone(controller._live_auto_advance_callback())
         with patch("vntts.controller.DialogueAdvancer") as advancer:
             self.assertFalse(controller._auto_advance_dialog())

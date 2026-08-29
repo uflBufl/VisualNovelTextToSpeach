@@ -133,6 +133,10 @@ class ControlDashboard(QMainWindow):
         self.sequence_identity = QLabel("-")
         self.sequence_canonical = QLabel("-")
         self.sequence_canonical.setWordWrap(True)
+        self.sequence_expected_audio = QLabel("-")
+        self.sequence_actual_audio = QLabel("-")
+        self.sequence_ocr = QLabel("-")
+        self.sequence_ocr.setWordWrap(True)
         self.sequence_guidance = QLabel()
         self.sequence_guidance.setWordWrap(True)
         sequence_form = QFormLayout()
@@ -140,6 +144,9 @@ class ControlDashboard(QMainWindow):
         sequence_form.addRow("Story position", self.sequence_position)
         sequence_form.addRow("Event / line", self.sequence_identity)
         sequence_form.addRow("Canonical dialogue", self.sequence_canonical)
+        sequence_form.addRow("Expected audio", self.sequence_expected_audio)
+        sequence_form.addRow("Actual audio", self.sequence_actual_audio)
+        sequence_form.addRow("OCR activity", self.sequence_ocr)
         self.sequence_group = QGroupBox("Sequence-first story cursor")
         sequence_layout = QVBoxLayout(self.sequence_group)
         sequence_layout.addLayout(sequence_form)
@@ -264,6 +271,11 @@ class ControlDashboard(QMainWindow):
         self.sequence_canonical.setText(
             "-" if not text else f"{speaker or 'Narrator'}: {text}"
         )
+        self.sequence_expected_audio.setText(
+            getattr(status, "expected_audio_route", "-")
+        )
+        self.sequence_actual_audio.setText(getattr(status, "actual_audio_route", "-"))
+        self.sequence_ocr.setText(getattr(status, "ocr_activity", "-"))
         guidance = getattr(status, "guidance", "")
         self.sequence_guidance.setText(guidance)
         recovery = bool(getattr(status, "recovery_required", False))

@@ -245,10 +245,24 @@ The tray/dashboard should expose one consistent live-session card:
 - whether full OCR is idle, anchoring or recovering;
 - a visible desync explanation and explicit recovery actions.
 
+The persistent dashboard card implements these fields for manual-audio mode.
+Its expected-audio value is a non-mutating policy/manifest prediction: status
+rendering never prepares audio and never hashes a WAV. The actual-audio value
+comes from the typed route trace and is shown only when that trace's line ID is
+the current cursor line; a previous line's trace is hidden. OCR activity
+distinguishes initial full-OCR anchoring, recovery availability and the normal
+locked state where full OCR is idle.
+
 Timeline diagnostics should record event ID, line ID, previous/next cursor,
 route, fingerprint transition, readiness gates, branch candidates, recovery
 stage and confidence. Text remains represented by stable IDs/hashes in routine
 logs.
+
+The implemented `stable-frame-gate` timeline event records only a shortened
+dialogue fingerprint, visibility, focus, cursor owner event ID, candidate-frame
+count, settled milliseconds and the final readiness boolean. Cursor observation
+and visual-transition events include previous/current event IDs and the cursor
+reason. They do not record dialogue text.
 
 ## Migration and acceptance gates
 

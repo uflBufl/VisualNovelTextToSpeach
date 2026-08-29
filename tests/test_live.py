@@ -292,6 +292,15 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             route_calls,
             [("second-glyphs", False), ("second-glyphs", True)],
         )
+        gate_events = [
+            details
+            for stage, _generation, _occurred_at, details in harness.pipeline_events
+            if stage == "stable-frame-gate"
+        ]
+        self.assertEqual([event["ready"] for event in gate_events], [False, True])
+        self.assertEqual(gate_events[-1]["owner"], "event-1")
+        self.assertEqual(gate_events[-1]["settled_ms"], 120)
+        self.assertNotIn("text", gate_events[-1])
         self.assertEqual(harness.errors, [])
 
     def test_stable_frame_route_waits_for_minimum_settled_time(self):

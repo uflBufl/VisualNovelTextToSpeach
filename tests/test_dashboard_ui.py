@@ -135,6 +135,9 @@ class ControlDashboardTest(unittest.TestCase):
                 next_event_count=2,
                 recovery_required=True,
                 guidance="Set the visible story position to resume.",
+                expected_audio_route="Generated audio (manifest declaration)",
+                actual_audio_route="generated-audio",
+                ocr_activity="Full OCR idle in locked routing; 1 frame recognized",
             )
         )
 
@@ -146,6 +149,9 @@ class ControlDashboardTest(unittest.TestCase):
             dashboard.sequence_guidance.text(),
             "Set the visible story position to resume.",
         )
+        self.assertIn("Generated audio", dashboard.sequence_expected_audio.text())
+        self.assertEqual(dashboard.sequence_actual_audio.text(), "generated-audio")
+        self.assertIn("OCR idle", dashboard.sequence_ocr.text())
         self.assertIn("font-weight", dashboard.sequence_resync_button.styleSheet())
         dashboard.deleteLater()
 

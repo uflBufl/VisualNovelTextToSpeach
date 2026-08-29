@@ -152,9 +152,6 @@ locked.
       monotonic lookahead. On conflict, stop auto advance and recover through
       lightweight anchors, then bounded current-chapter OCR, then explicit
       manual resync. Never speak or advance an unmatched OCR guess.
-- [ ] Extend the implemented persistent live-session card with expected and
-      actual audio route plus explicit OCR activity. Add cursor transition,
-      readiness-gate and recovery fields to privacy-safe timelines.
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
       then add automatic advancement last. Cover long typewriter text, lost
       nameplates, `...`, source/generated/missing-WAV routes, identical lines,

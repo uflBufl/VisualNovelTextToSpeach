@@ -102,6 +102,9 @@ class LiveSequenceStatus:
     next_event_count: int = 0
     recovery_required: bool = False
     guidance: str = ""
+    expected_audio_route: str = "-"
+    actual_audio_route: str = "-"
+    ocr_activity: str = "-"
 
 
 def create_dialog_read_scheduler(
@@ -1495,6 +1498,40 @@ class AppController:
                 )
         else:
             guidance = "Waiting for canonical playback to complete."
+        expected_audio_route = self._expected_sequence_audio_route(event, line)
+        trace = getattr(self, "last_audio_route_trace", None)
+        actual_audio_route = "-"
+        if (
+            trace is not None
+            and snapshot.current_line_id is not None
+            and trace.line_id == snapshot.current_line_id
+        ):
+            actual_audio_route = trace.effective_source
+            if trace.fallback_reason:
+                actual_audio_route += f" ({trace.fallback_reason})"
+        recognized_frames = 0
+        live_reader = getattr(self, "live_reader", None)
+        if live_reader is not None:
+            recognized_frames = live_reader.get_pipeline_metrics().recognized_frames
+        if snapshot.state in {
+            StoryCursorState.UNSYNCHRONIZED,
+            StoryCursorState.ANCHORING,
+        }:
+            ocr_activity = (
+                f"Full OCR anchoring; {recognized_frames} frame(s) recognized"
+            )
+        elif snapshot.state in {
+            StoryCursorState.DESYNCHRONIZED,
+            StoryCursorState.MANUAL,
+        }:
+            ocr_activity = (
+                f"Recovery OCR available; {recognized_frames} frame(s) recognized"
+            )
+        else:
+            ocr_activity = (
+                f"Full OCR idle in locked routing; {recognized_frames} anchor/recovery "
+                "frame(s) recognized"
+            )
         return LiveSequenceStatus(
             mode,
             snapshot.state.value,
@@ -1508,7 +1545,42 @@ class AppController:
             next_event_count=len(snapshot.expected_successor_ids),
             recovery_required=recovery_required,
             guidance=guidance,
+            expected_audio_route=expected_audio_route,
+            actual_audio_route=actual_audio_route,
+            ocr_activity=ocr_activity,
         )
+
+    def _expected_sequence_audio_route(self, event, line):
+        if event is None:
+            return "Waiting for a canonical event"
+        if event.kind == "silent":
+            return "No speech (silent event)"
+        if line is None:
+            return "Unavailable canonical line"
+        if self.settings.audio_source_policy == "live-tts-only":
+            return "Live TTS"
+        if (
+            self.settings.audio_source_policy == "prefer-game-audio"
+            and line.source_audio_status == "available"
+            and not self._has_manual_voice_override(line.speaker)
+        ):
+            return "Original game audio"
+        backend = getattr(self, "speech_backend", None)
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            library = backend.library
+            if (
+                library is not None
+                and line.line_id
+                and line.text_sha256
+                and library.index.find(
+                    line.line_id,
+                    line.text_sha256,
+                    verify_file=False,
+                )
+                is not None
+            ):
+                return "Generated audio (manifest declaration)"
+        return "Live TTS fallback"
 
     def _publish_live_sequence_status(self):
         status = self.get_live_sequence_status()
@@ -1534,6 +1606,7 @@ class AppController:
             match_result = "exact" if line is not None else "no-match"
         if line is None or line.line_id is None:
             return None
+        previous_event_id = cursor.current_event_id
         snapshot = cursor.observe_line(line.line_id)
         generation = (
             self.live_reader.active_generation if self.live_reader is not None else 0
@@ -1547,6 +1620,7 @@ class AppController:
             generation,
             monotonic(),
             state=snapshot.state.value,
+            previous_event_id=previous_event_id,
             event_id=snapshot.current_event_id,
             line_id=snapshot.current_line_id,
             next_event_count=len(snapshot.expected_successor_ids),
@@ -1640,6 +1714,7 @@ class AppController:
             return None
         if not settled or not cursor.can_confirm_visual_transition:
             return False
+        previous_event_id = cursor.current_event_id
         event = cursor.confirm_visual_transition()
         if event is None:
             return False
@@ -1652,9 +1727,11 @@ class AppController:
                 generation,
                 monotonic(),
                 state=cursor.state.value,
+                previous_event_id=previous_event_id,
                 event_id=event.event_id,
                 line_id=None,
                 route="silent",
+                reason=cursor.reason,
             )
             self._publish_live_sequence_status()
             return (None, "")
@@ -1671,9 +1748,11 @@ class AppController:
             generation,
             monotonic(),
             state=cursor.state.value,
+            previous_event_id=previous_event_id,
             event_id=event.event_id,
             line_id=line.line_id,
             route="canonical-story-line",
+            reason=cursor.reason,
         )
         self._publish_live_sequence_status()
         return (line.speaker, line.text)
@@ -2051,6 +2130,7 @@ class AppController:
             except Exception as error:
                 self.error_handler(error)
             self._record_pipeline_route(chunk, trace)
+            self._publish_live_sequence_status()
             return (
                 PreparedLiveChunkRoutes(
                     prepared,

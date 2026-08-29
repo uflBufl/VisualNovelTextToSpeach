@@ -1021,7 +1021,19 @@ class LiveDialogReader:
             or fingerprint == self.routed_frame_fingerprint
         ):
             return None
-        if not visible or not self._is_focused():
+        focused = self._is_focused()
+        if not visible or not focused:
+            self._report_pipeline_event(
+                "stable-frame-gate",
+                self.active_generation,
+                fingerprint=self._privacy_safe_fingerprint(fingerprint),
+                visible=bool(visible),
+                focused=focused,
+                owner=self.stable_frame_owner(),
+                candidate_frames=0,
+                settled_ms=0,
+                ready=False,
+            )
             self._reset_stable_frame_candidate()
             return False
         owner = self.stable_frame_owner()
@@ -1037,11 +1049,31 @@ class LiveDialogReader:
             self.candidate_frame_owner = owner
             self.candidate_frame_started_at = now
         settled_for = now - self.candidate_frame_started_at
+        ready = (
+            self.candidate_frame_count >= 2
+            and settled_for >= self.stable_frame_minimum_seconds
+        )
+        self._report_pipeline_event(
+            "stable-frame-gate",
+            self.active_generation,
+            fingerprint=self._privacy_safe_fingerprint(fingerprint),
+            visible=True,
+            focused=True,
+            owner=owner,
+            candidate_frames=self.candidate_frame_count,
+            settled_ms=round(settled_for * 1000),
+            ready=ready,
+        )
         return self.stable_frame_route(
             fingerprint,
-            self.candidate_frame_count >= 2
-            and settled_for >= self.stable_frame_minimum_seconds,
+            ready,
         )
+
+    @staticmethod
+    def _privacy_safe_fingerprint(fingerprint):
+        if isinstance(fingerprint, bytes):
+            return fingerprint.hex()[:16]
+        return str(fingerprint)[:64]
 
     def _accept_routed_frame(self, fingerprint):
         self.routed_frame_fingerprint = fingerprint
