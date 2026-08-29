@@ -17,6 +17,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     write_generated_audio_manifest,
 )
+from vntts_artifacts.live_sequence import write_live_sequence_plan
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
@@ -266,6 +267,39 @@ def publish(fixture, destination, **overrides):
     }
     options.update(overrides)
     return publish_final_game_pack(destination, **options)
+
+
+def write_fixture_live_sequence(fixture, path, *, story_path=None):
+    events = []
+    for index, item in enumerate(fixture["items"]):
+        is_last = index == len(fixture["items"]) - 1
+        events.append(
+            {
+                "event_id": f"event-{index + 1}",
+                "sequence": index + 1,
+                "kind": "speech",
+                "line_id": item["line_id"],
+                "control": "terminal" if is_last else "automatic",
+                "successors": [] if is_last else [f"event-{index + 2}"],
+            }
+        )
+    write_live_sequence_plan(
+        path,
+        {
+            "game_id": "synthetic-game",
+            "producer": {"name": "synthetic-producer", "version": "1.0"},
+            "source_extract_sha256": "1" * 64,
+            "chapters": [
+                {
+                    "chapter": "chapter-one",
+                    "entry_event_ids": ["event-1"],
+                    "events": events,
+                }
+            ],
+        },
+        fixture["story"] if story_path is None else story_path,
+    )
+    return path
 
 
 class AuthoringGamePackTest(unittest.TestCase):
@@ -1143,6 +1177,89 @@ class AuthoringGamePackTest(unittest.TestCase):
             replacement_voice_sha256,
         )
 
+    def test_publishes_live_sequence_with_reviewed_audio_as_version_two_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root)
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+            sequence = write_fixture_live_sequence(fixture, root / "live-sequence.json")
+
+            result = publish(
+                fixture,
+                root / "final-pack",
+                live_sequence_plan_path=sequence,
+            )
+            pack = load_game_pack(result.manifest)
+            imported = import_game_pack(result.manifest)
+            document = json.loads(result.manifest.read_text(encoding="utf-8"))
+            self.assertEqual(document["schema_version"], 2)
+            self.assertIsNotNone(pack.live_sequence_plan)
+            self.assertEqual(result.live_sequence_plan, pack.live_sequence_plan.path)
+            self.assertEqual(imported.live_sequence_plan, result.live_sequence_plan)
+            self.assertEqual(
+                result.live_sequence_plan.read_bytes(), sequence.read_bytes()
+            )
+
+    def test_rejects_live_sequence_bound_to_different_story_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root, names=("one",))
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+            other_story = root / "other-story.jsonl"
+            rows = fixture["story"].read_text(encoding="utf-8").splitlines()
+            metadata = json.loads(rows[0])
+            metadata["generated_at"] = "2026-08-16T12:01:00+00:00"
+            other_story.write_text(
+                "\n".join([json.dumps(metadata, sort_keys=True), *rows[1:]]) + "\n",
+                encoding="utf-8",
+            )
+            sequence = write_fixture_live_sequence(
+                fixture,
+                root / "live-sequence.json",
+                story_path=other_story,
+            )
+
+            with self.assertRaisesRegex(
+                FinalGamePackError, "different story-index bytes"
+            ):
+                publish(
+                    fixture,
+                    root / "final-pack",
+                    live_sequence_plan_path=sequence,
+                )
+            self.assertFalse((root / "final-pack").exists())
+
+    def test_live_sequence_mutation_during_staging_aborts_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root, names=("one",))
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "approved"
+            )
+            sequence = write_fixture_live_sequence(fixture, root / "live-sequence.json")
+            real_write = game_pack_module.write_game_pack
+
+            def mutate_sequence(*args, **kwargs):
+                result = real_write(*args, **kwargs)
+                with sequence.open("ab") as stream:
+                    stream.write(b"\n")
+                return result
+
+            with patch.object(
+                game_pack_module, "write_game_pack", side_effect=mutate_sequence
+            ):
+                with self.assertRaisesRegex(FinalGamePackError, "changed"):
+                    publish(
+                        fixture,
+                        root / "final-pack",
+                        live_sequence_plan_path=sequence,
+                    )
+            self.assertFalse((root / "final-pack").exists())
+            self.assertFalse(list(root.glob(".final-pack.staging-*")))
+
     def test_publishes_approved_projection_without_mutating_authoring_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1184,6 +1301,13 @@ class AuthoringGamePackTest(unittest.TestCase):
             imported = import_game_pack(result.manifest)
             self.assertEqual(result.approved_count, 1)
             self.assertEqual(result.rejected_count, 1)
+            self.assertIsNone(result.live_sequence_plan)
+            self.assertEqual(
+                json.loads(result.manifest.read_text(encoding="utf-8"))[
+                    "schema_version"
+                ],
+                2,
+            )
             self.assertEqual(len(generated.entries), 1)
             self.assertIn(
                 "synthesis_provenance_sha256", generated_document["entries"][0]
@@ -1575,6 +1699,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][0]["queue_id"], "approved"
             )
+            sequence = write_fixture_live_sequence(fixture, root / "live-sequence.json")
             destination = root / "final-pack"
             stdout = io.StringIO()
             with redirect_stdout(stdout):
@@ -1589,6 +1714,8 @@ class AuthoringGamePackTest(unittest.TestCase):
                         str(fixture["story"]),
                         "--voice-manifest",
                         str(fixture["voices"]),
+                        "--live-sequence-plan",
+                        str(sequence),
                         "--output",
                         str(destination),
                         "--game-id",
@@ -1603,7 +1730,11 @@ class AuthoringGamePackTest(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(exit_code, 0)
             self.assertEqual(payload["approved_count"], 1)
-            self.assertEqual(load_game_pack(payload["manifest"]).game_version, "1.0")
+            pack = load_game_pack(payload["manifest"])
+            self.assertEqual(pack.game_version, "1.0")
+            self.assertEqual(
+                Path(payload["live_sequence_plan"]), pack.live_sequence_plan.path
+            )
 
 
 if __name__ == "__main__":

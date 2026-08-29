@@ -24,6 +24,10 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
     write_generated_audio_manifest,
 )
+from vntts_artifacts.live_sequence import (
+    LiveSequencePlanError,
+    load_live_sequence_plan,
+)
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -78,6 +82,7 @@ class FinalGamePackError(RuntimeError):
 class FinalGamePackResult:
     directory: Path
     manifest: Path
+    live_sequence_plan: Path | None
     game_id: str
     game_version: str
     approved_count: int
@@ -91,6 +96,9 @@ class FinalGamePackResult:
         payload = asdict(self)
         payload["directory"] = str(self.directory)
         payload["manifest"] = str(self.manifest)
+        payload["live_sequence_plan"] = (
+            None if self.live_sequence_plan is None else str(self.live_sequence_plan)
+        )
         return payload
 
 
@@ -101,6 +109,7 @@ def publish_final_game_pack(
     queue_path,
     story_index_path,
     voice_manifest_path,
+    live_sequence_plan_path=None,
     failure_reference_binding_path=None,
     game_id=None,
     game_version,
@@ -113,6 +122,11 @@ def publish_final_game_pack(
     queue_path = Path(queue_path).expanduser().resolve()
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
+    live_sequence_plan_path = (
+        None
+        if live_sequence_plan_path is None
+        else Path(live_sequence_plan_path).expanduser().resolve()
+    )
     failure_reference_binding_path = (
         None
         if failure_reference_binding_path is None
@@ -219,6 +233,19 @@ def publish_final_game_pack(
                         )
 
                 story = _load_story(story_copy)
+                live_sequence_copy = None
+                if live_sequence_plan_path is not None:
+                    live_sequence_copy = staging / "story" / "live-sequence.json"
+                    _copy_control(
+                        live_sequence_plan_path,
+                        live_sequence_copy,
+                        inventory,
+                        "live sequence plan",
+                    )
+                    try:
+                        load_live_sequence_plan(live_sequence_copy, story_copy)
+                    except LiveSequencePlanError as error:
+                        raise FinalGamePackError(str(error)) from error
                 voice_document, voice_entries = _load_voices(voice_copy)
                 narrator_selection = _verify_voice_control_provenance(
                     state,
@@ -321,6 +348,13 @@ def publish_final_game_pack(
                 )
                 pack_manifest = staging / "game-pack.json"
                 try:
+                    components = {
+                        "story_index": story_copy,
+                        "voice_manifest": voice_copy,
+                        "generated_audio": generated_manifest,
+                    }
+                    if live_sequence_copy is not None:
+                        components["live_sequence_plan"] = live_sequence_copy
                     write_game_pack(
                         pack_manifest,
                         {
@@ -372,11 +406,7 @@ def publish_final_game_pack(
                                 **counts,
                             },
                         },
-                        {
-                            "story_index": story_copy,
-                            "voice_manifest": voice_copy,
-                            "generated_audio": generated_manifest,
-                        },
+                        components,
                     )
                     load_game_pack(pack_manifest)
                 except GamePackError as error:
@@ -401,6 +431,11 @@ def publish_final_game_pack(
     return FinalGamePackResult(
         directory=destination,
         manifest=destination / "game-pack.json",
+        live_sequence_plan=(
+            None
+            if live_sequence_plan_path is None
+            else destination / "story" / "live-sequence.json"
+        ),
         game_id=resolved_game_id,
         game_version=game_version,
         approved_count=counts["approved_count"],

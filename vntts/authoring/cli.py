@@ -1392,6 +1392,11 @@ def create_parser():
     pack.add_argument("--story-index", type=Path, required=True)
     pack.add_argument("--voice-manifest", type=Path, required=True)
     pack.add_argument(
+        "--live-sequence-plan",
+        type=Path,
+        help="Exact checksum-bound live sequence plan to ship as a version-2 pack",
+    )
+    pack.add_argument(
         "--failure-reference-binding",
         type=Path,
         help="Exact immutable selected-reference binding used by mixed provenance state",
@@ -2777,6 +2782,7 @@ def main(argv=None):
                 queue_path=arguments.queue,
                 story_index_path=arguments.story_index,
                 voice_manifest_path=arguments.voice_manifest,
+                live_sequence_plan_path=arguments.live_sequence_plan,
                 failure_reference_binding_path=arguments.failure_reference_binding,
                 game_id=arguments.game_id,
                 game_version=arguments.game_version,

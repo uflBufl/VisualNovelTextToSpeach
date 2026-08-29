@@ -1,13 +1,13 @@
 # Final game-pack publication
 
 `vntts.authoring.publish_final_game_pack` is the final, non-destructive
-authoring boundary. It currently creates a portable `vntts.game-pack` version 1 directory
+authoring boundary. It creates a portable `vntts.game-pack` version 2 directory
 from a fully reviewed bulk-generation state plus the exact queue, story index
 and voice manifest that produced it. The implementation uses only the released
 vntts-artifacts v0.7.0 game-pack, binding and lossless generated-audio APIs;
-review authority remains in generation state. Version 2 publication is reserved
-for a checksum-bound live-sequence component and is not inferred from story
-records alone.
+review authority remains in generation state. The live-sequence component is
+optional and is never inferred from story records alone; existing version-1
+packs remain readable through the shared compatibility loader.
 
 ## Publication gates
 
@@ -139,6 +139,7 @@ uv run vntts-pregenerate publish-pack \
   --queue /path/to/app-data/generation-queue.jsonl \
   --story-index /path/to/app-data/story-index.jsonl \
   --voice-manifest /path/to/app-data/voice-manifest.json \
+  --live-sequence-plan /path/to/extractor/live-sequence.json \
   --output /path/to/deliveries/game-v1 \
   --game-id reverse-1999 \
   --game-version 1.0 \
@@ -149,7 +150,13 @@ uv run vntts-pregenerate publish-pack \
 `--producer NAME=VERSION` can be repeated. If omitted, the installed VNTTS
 package identity is recorded. `--game-id` defaults to the bound state game;
 `--game-version` is always explicit. The command prints the final manifest,
-source queue/state hashes and approved/rejected/live-fallback counts as JSON.
+optional published live-sequence path, source queue/state hashes and
+approved/rejected/live-fallback counts as JSON. When `--live-sequence-plan` is
+present, publication copies it into staging, validates its checksum binding
+against the exact copied story index and includes it as a core component. The
+source plan participates in the final mutation check. Omitting the option ships
+no sequence component; publication never guesses ordering or control flow from
+story rows.
 
 At runtime the ledger is matched by exact line ID and text SHA-256 after source
 audio and approved generated-audio checks. A match permits only the recorded
