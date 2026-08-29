@@ -340,9 +340,14 @@ To collect the missing real-game evidence without loading TTS, run
 `uv run vntts-capture-live-replay OUTPUT_DIRECTORY --story-index STORY.jsonl`
 and play the target dialogue manually; Ctrl+C validates and publishes the
 captured corpus. The recorder writes lossless checksum-bound cropped frames,
-rerunnable OCR rather than declared observations, exact story matches when
-unique and a separate report of every inferred boundary that still needs human
-confirmation. It never treats the capture alone as a passed gameplay gate.
+an immutable observation ledger, rerunnable OCR rather than declared
+observations, and a derived dialogue view containing only exact story matches
+or a standalone ellipsis. Typewriter/nameplate noise remains unresolved
+evidence instead of becoming a false dialogue boundary. Use
+`vntts-recover-live-replay-capture` with the exact story and sequence authorities
+before sealing; an insufficient run produces a concrete follow-up capture plan
+without modifying the raw evidence. Capture alone never counts as a passed
+gameplay gate.
 
 Run the objective PCM reference preflight before using a cloning reference:
 

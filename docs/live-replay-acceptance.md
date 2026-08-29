@@ -5,8 +5,9 @@
 `vntts-capture-live-replay OUTPUT_DIRECTORY` uses the current calibrated
 capture mode, dialog region, OCR language/confidence and correction dictionary,
 but does not initialize TTS or open an audio device. It stores every distinct
-accepted cropped frame as lossless PNG with SHA-256. Duplicate fingerprints and
-low-confidence observations are counted but not substituted for accepted OCR.
+cropped frame as lossless PNG with SHA-256. Duplicate fingerprints are counted;
+empty and low-confidence OCR observations remain checksum-bound evidence in
+`observation-ledger.json` instead of disappearing before review.
 Press Ctrl+C to finish, or bound an unattended diagnostic capture with
 `--duration-seconds` or `--max-accepted-frames`. The output directory must not
 already exist.
@@ -19,15 +20,16 @@ written first and `corpus.json` last as the completion marker; interrupted or
 failed sessions deliberately retain their partial frame directory for diagnosis
 but are not replayable until a valid corpus exists.
 
-The recorder groups only same-speaker observations where the old and new text
-are prefix-related, which models a typewriter reveal without fuzzy rewriting.
-An empty observation ends the active group. A speaker change or non-prefix text
-replacement starts a new group and is recorded as an inferred boundary that
-requires operator review. The recorder cannot prove that two consecutive
-identical lines are distinct, so `capture-report.json` must be checked against
-the actual playthrough before the corpus counts as acceptance evidence. Saved
-frame specifications contain path and SHA only: replay reruns OCR on the real
-pixels and never treats capture-time text as a declared observation fixture.
+With a story index, capture no longer interprets typewriter prefixes, temporary
+nameplates or fading text as dialogue boundaries. Every distinct frame is first
+written to the immutable observation ledger. A separate dialogue view promotes
+only an exact canonical story line or a standalone ellipsis observation;
+unmatched text stays explicitly unresolved. Repeated observations of the same
+canonical line are grouped by line ID. Without a story index, the compatibility
+path still groups same-speaker prefix-related text and records inferred
+boundaries for review. Saved frame specifications contain path and SHA only:
+replay reruns OCR on the real pixels and never treats capture-time text as a
+declared observation fixture.
 
 Example:
 
@@ -37,8 +39,15 @@ uv run vntts-capture-live-replay \
   --name "Rhiannon Character Story real capture" \
   --story-index /path/to/story-index.jsonl
 
-uv run vntts-seal-live-replay \
+uv run vntts-recover-live-replay-capture \
   "$HOME/vntts-evidence/rhiannon-raw/corpus.json" \
+  "$HOME/vntts-evidence/rhiannon-recovered" \
+  --story-index /path/to/story-index.jsonl \
+  --sequence-plan /path/to/live-sequence.json \
+  --minimum-events 20
+
+uv run vntts-seal-live-replay \
+  "$HOME/vntts-evidence/rhiannon-recovered/corpus.json" \
   "$HOME/vntts-evidence/rhiannon-sealed" \
   --story-index /path/to/story-index.jsonl \
   --sequence-plan /path/to/live-sequence.json \
@@ -53,6 +62,19 @@ The capture command makes the real-game gate reproducible; it does not itself
 prove OCR quality, correct dialogue boundaries, source/generated route choice,
 audio-device behavior or the 20-line acceptance target.
 
+Recovery is non-destructive and fail-closed. It validates the raw corpus,
+capture report, observation ledger, frames, story index and sequence plan by
+checksum. It publishes a new replayable raw corpus only when exact canonical
+observations form one explicit branch-free successor path meeting the requested
+event count and silent-event gate. An unresolved observation may be absorbed
+only when its normalized text is an exact prefix of the adjacent canonical line;
+the report records that inference. Every other unresolved or uncertain
+observation breaks the candidate run. Arbitrary unresolved text is never
+converted to a silent event; only standalone `...` or `…` may bind the unique
+explicit silent frontier. An insufficient run produces `recovery-report.json` only,
+including the longest recovered run and the exact shortest branch-free event
+segment to capture next. The original directory is never rewritten.
+
 The sealing command is the required bridge from raw capture schema version 1
 to sequence replay schema version 2. The raw capture directory is never
 modified. The command creates a new contained directory and copies the exact
@@ -63,7 +85,9 @@ next visible event is not unique. A lost nameplate may be ignored only when the
 full normalized text selects the one explicit next speech event. A captured
 `...` or `…` may bind a line-less silent event only when that event is the one
 explicit next visible event; it is retained in sequence metrics but never sent
-to TTS.
+to TTS. Every new observation-ledger capture must first pass recovery; direct
+sealing cannot collapse repeated silent/canonical observations or silently
+discard unresolved frames.
 
 Sealing first runs the production-controller replay as a measurement probe,
 writes its exact route, OCR/recovery and attempted/confirmed-key counts into the

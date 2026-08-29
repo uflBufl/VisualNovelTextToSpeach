@@ -152,10 +152,15 @@ locked.
       gate now runs the production controller/cursor and passes tracked `shadow`
       and `audio-manual` corpora with exact canonical identities, OCR/recovery
       counts and key-dispatch counts; schema v1 and both earlier route corpora
-      remain compatibility gates. Next capture and review a real sequence-bound
-      gameplay corpus, then run the 100-event gate below. Do not implement real
-      sequence-owned key delivery until that evidence shows zero wrong-line,
-      duplicate, stale or app-skipped dialogue and safe focus/choice handling.
+      remain compatibility gates. Capture chapter `314601` from fully visible
+      event 4 through fully visible event 23 with the repaired recorder; this is
+      the shortest explicit 20-event run that includes silent events 18 and 19.
+      Recover and seal it, review the mappings, then run the 100-event gate
+      below. Do not implement real sequence-owned key delivery until that
+      evidence shows zero wrong-line, duplicate, stale or app-skipped dialogue
+      and safe focus/choice handling. The immutable legacy capture remains
+      insufficient: unresolved legacy groups reduce its longest fail-closed
+      explicit run to one speech event.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and 100-event real-game run show
       zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every

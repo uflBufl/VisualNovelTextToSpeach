@@ -22,15 +22,21 @@ class FakeStoryResolver:
 
     def resolve_exact_with_result(self, character, text):
         self.calls.append((character, text))
-        if (character, text) != ("Rhiannon", "Hello there."):
+        known = {
+            ("Rhiannon", "Hello there."): ("story:1", "Rhiannon", "Hello there."),
+            ("Hotelier", "A room?"): ("story:2", "Hotelier", "A room?"),
+        }
+        identity = known.get((character, text))
+        if identity is None:
             return None, "no-match"
+        line_id, speaker, canonical_text = identity
         return (
             SimpleNamespace(
-                speaker="Rhiannon",
-                text="Hello there.",
-                line_id="story:1",
+                speaker=speaker,
+                text=canonical_text,
+                line_id=line_id,
                 source_audio_status="available",
-                source_audio_id="event:1",
+                source_audio_id=f"event:{line_id[-1]}",
                 source_audio_duration_seconds=1.25,
             ),
             "exact",
@@ -50,6 +56,8 @@ class LiveReplayCaptureTest(unittest.TestCase):
 
             session.observe(frame("red"), "Rhiannon", "Hello")
             session.observe(frame("green"), "Rhiannon", "Hello there.")
+            session.observe(frame("yellow"), "Narrator", "???")
+            session.observe(frame("purple"), "Narrator", "...")
             session.observe(frame("blue"), "Hotelier", "A room?")
             result = session.finish()
 
@@ -57,19 +65,32 @@ class LiveReplayCaptureTest(unittest.TestCase):
             report = json.loads(result.report.read_text(encoding="utf-8"))
             loaded = load_live_replay_corpus(result.corpus)
 
-            self.assertEqual(result.dialogue_count, 2)
-            self.assertEqual(result.frame_count, 3)
-            self.assertEqual(result.boundary_review_count, 1)
+            self.assertEqual(result.dialogue_count, 3)
+            self.assertEqual(result.frame_count, 5)
+            self.assertEqual(result.boundary_review_count, 0)
             self.assertEqual(document["fixture_kind"], "saved-frame-ocr-replay-capture")
             self.assertEqual(document["dialogue"][0]["line_id"], "story:1")
             self.assertEqual(document["dialogue"][0]["expected_source"], "game")
             self.assertEqual(document["dialogue"][1]["line_id"], "capture:2")
-            self.assertTrue(report["boundary_review_required"])
+            self.assertEqual(document["dialogue"][1]["text"], "...")
+            self.assertEqual(document["dialogue"][2]["line_id"], "story:2")
+            self.assertFalse(report["boundary_review_required"])
+            self.assertEqual(report["unresolved_observation_count"], 2)
+            ledger = json.loads(result.observation_ledger.read_text(encoding="utf-8"))
+            self.assertEqual(ledger["observation_count"], 5)
+            self.assertEqual(
+                [entry["status"] for entry in ledger["observations"]],
+                [
+                    "unresolved",
+                    "canonical",
+                    "unresolved",
+                    "punctuation-only",
+                    "canonical",
+                ],
+            )
             self.assertEqual(loaded.dialogue[0].character, "Rhiannon")
             self.assertEqual(loaded.dialogue[0].text, "Hello there.")
-            self.assertEqual(
-                loaded.dialogue[0].frame_recognition_sources, ("ocr", "ocr")
-            )
+            self.assertEqual(loaded.dialogue[0].frame_recognition_sources, ("ocr",))
             for dialogue in document["dialogue"]:
                 for specification in dialogue["frames"]:
                     payload = root.joinpath(
@@ -109,10 +130,12 @@ class LiveReplayCaptureTest(unittest.TestCase):
             )
             report = json.loads(result.report.read_text(encoding="utf-8"))
 
-            self.assertEqual(result.frame_count, 2)
+            self.assertEqual(result.frame_count, 4)
             self.assertEqual(result.dialogue_count, 2)
             self.assertEqual(report["duplicate_fingerprints_skipped"], 1)
-            self.assertEqual(report["uncertain_observations_skipped"], 1)
+            self.assertEqual(report["uncertain_observations_skipped"], 2)
+            ledger = json.loads(result.observation_ledger.read_text(encoding="utf-8"))
+            self.assertEqual(ledger["observation_count"], 4)
 
     def test_capture_rejects_existing_output_and_changed_frame(self):
         with TemporaryDirectory() as directory:

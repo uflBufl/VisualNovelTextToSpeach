@@ -93,6 +93,15 @@ not control the game yet:
   pure `...` event advances without synthesis, identical ambiguous initial lines
   produce no speech and branch/choice recovery selects only an explicit bounded
   candidate.
+- the real-game recorder writes every distinct crop to a checksum-bound
+  observation ledger before deriving dialogue groups. With a story authority,
+  typewriter prefixes, transient nameplates and corrupted OCR remain unresolved
+  evidence; only exact canonical identities and standalone ellipses are
+  promoted. This prevents animation states from becoming false boundaries;
+- `vntts-recover-live-replay-capture` validates and copies a branch-free exact
+  run into a separate raw corpus without changing the source capture. It never
+  crosses a branch or numeric gap, and it emits an exact next-capture segment
+  instead of hiding unresolved evidence when the gate is insufficient;
 - raw real-game capture remains immutable schema version 1 evidence. The
   `vntts-seal-live-replay` bridge publishes a separate schema-version-2 bundle
   only after copying and hashing its exact story/plan authorities, mapping every
@@ -144,6 +153,17 @@ was bypassed after OCR lost the nameplate and exposed an incomplete prefix as
 Narrator. Local generated playback itself reached first PCM within a few
 milliseconds once routing finally occurred; recognition and synchronization,
 not WAV decoding, dominated the delay and errors.
+
+The first full raw replay capture provided 262 distinct frames but the former
+typewriter grouping emitted 190 dialogue groups and 186 inferred boundaries.
+Only 28 groups mapped to canonical lines; 162 were animation/nameplate noise.
+Strict checksum-bound recovery treats the 162 unresolved legacy groups as
+barriers rather than assuming they are harmless animation; its longest explicit
+run is therefore one speech event, with no silent event. It correctly did not
+publish a sealable 20-event corpus. The recovery report identifies sequences
+4-23 as the shortest explicit 20-visible-event follow-up, including silent
+sequences 18 and 19. This is evidence for the grouping repair, not a passed
+real-game acceptance gate.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through

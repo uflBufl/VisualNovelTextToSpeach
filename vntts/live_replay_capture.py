@@ -34,6 +34,7 @@ class CapturedReplayResult:
     directory: Path
     corpus: Path
     report: Path
+    observation_ledger: Path
     dialogue_count: int
     frame_count: int
     boundary_review_count: int
@@ -84,16 +85,29 @@ class LiveReplayCaptureSession:
         self.dialogue = []
         self.active = None
         self.frame_count = 0
+        self.recognized_observation_count = 0
         self.duplicate_fingerprints = 0
         self.uncertain_observations = 0
+        self.unresolved_observations = 0
+        self.observations = []
         self.boundaries = []
         self.finished = False
 
     def note_duplicate_fingerprint(self):
         self.duplicate_fingerprints += 1
 
-    def note_uncertain_observation(self):
+    def note_uncertain_observation(self, frame=None):
         self.uncertain_observations += 1
+        if frame is not None:
+            frame_spec = self._write_frame(frame)
+            self._record_observation(
+                frame_spec,
+                status="uncertain",
+                character=None,
+                text=None,
+                story_line=None,
+                story_match="ocr-uncertain",
+            )
 
     def observe(self, frame, character, text):
         """Record one accepted OCR observation and its exact cropped pixels."""
@@ -101,10 +115,77 @@ class LiveReplayCaptureSession:
             raise LiveReplayCaptureError("Replay capture is already finished")
         character = str(character or "Narrator").strip() or "Narrator"
         text = " ".join(str(text or "").split())
-        if not text:
-            self._finalize_active("observed-empty-dialogue")
-            return False
         frame_spec = self._write_frame(frame)
+        if not text:
+            self.uncertain_observations += 1
+            self._record_observation(
+                frame_spec,
+                status="uncertain",
+                character=character,
+                text=None,
+                story_line=None,
+                story_match="observed-empty-dialogue",
+            )
+            if self.story_resolver is None:
+                self._finalize_active("observed-empty-dialogue")
+            return False
+        self.recognized_observation_count += 1
+        if self.story_resolver is not None:
+            line, match_result = self.story_resolver.resolve_exact_with_result(
+                character, text
+            )
+            if line is not None:
+                self._record_observation(
+                    frame_spec,
+                    status="canonical",
+                    character=character,
+                    text=text,
+                    story_line=line,
+                    story_match=match_result,
+                )
+                self._observe_resolved_group(
+                    character,
+                    text,
+                    frame_spec,
+                    story_line=line,
+                    story_match=match_result,
+                )
+                return True
+            if _standalone_ellipsis(text):
+                self._record_observation(
+                    frame_spec,
+                    status="punctuation-only",
+                    character=character,
+                    text=text,
+                    story_line=None,
+                    story_match="punctuation-only",
+                )
+                self._observe_resolved_group(
+                    character,
+                    text,
+                    frame_spec,
+                    story_line=None,
+                    story_match="punctuation-only",
+                )
+                return True
+            self.unresolved_observations += 1
+            self._record_observation(
+                frame_spec,
+                status="unresolved",
+                character=character,
+                text=text,
+                story_line=None,
+                story_match=match_result,
+            )
+            return True
+        self._record_observation(
+            frame_spec,
+            status="accepted-unbound",
+            character=character,
+            text=text,
+            story_line=None,
+            story_match="story-index-unavailable",
+        )
         if self.active is None:
             self.active = self._new_dialogue(character, text, frame_spec)
             return True
@@ -122,6 +203,53 @@ class LiveReplayCaptureSession:
         self.active = self._new_dialogue(character, text, frame_spec)
         return True
 
+    def _observe_resolved_group(
+        self,
+        character,
+        text,
+        frame_spec,
+        *,
+        story_line,
+        story_match,
+    ):
+        identity = (
+            f"line:{story_line.line_id}"
+            if story_line is not None
+            else f"punctuation:{''.join(text.split())}"
+        )
+        if self.active is not None and self.active.get("group_identity") == identity:
+            self.active["frames"].append(frame_spec)
+            return
+        self._finalize_active("canonical-successor")
+        self.active = {
+            **self._new_dialogue(character, text, frame_spec),
+            "group_identity": identity,
+            "story_line": story_line,
+            "story_match": story_match,
+        }
+
+    def _record_observation(
+        self,
+        frame_spec,
+        *,
+        status,
+        character,
+        text,
+        story_line,
+        story_match,
+    ):
+        self.observations.append(
+            {
+                "observation_index": len(self.observations) + 1,
+                "frame": frame_spec,
+                "status": status,
+                "observed_character": character,
+                "observed_text": text,
+                "story_line_id": (None if story_line is None else story_line.line_id),
+                "story_match": story_match,
+            }
+        )
+
     def finish(self):
         """Validate captured bytes and publish a replay corpus plus review report."""
         if self.finished:
@@ -134,6 +262,19 @@ class LiveReplayCaptureSession:
             self._corpus_record(index, value)
             for index, value in enumerate(self.dialogue, 1)
         ]
+        ledger_document = {
+            "schema": "vntts.live-replay-capture-observations",
+            "schema_version": LIVE_REPLAY_CAPTURE_VERSION,
+            "story_index_sha256": self.story_index_sha256,
+            "observation_count": len(self.observations),
+            "observations": self.observations,
+        }
+        ledger_payload = _json_payload(ledger_document)
+        ledger_binding = {
+            "path": "observation-ledger.json",
+            "sha256": hashlib.sha256(ledger_payload).hexdigest(),
+            "observation_count": len(self.observations),
+        }
         capture = {
             "schema_version": LIVE_REPLAY_CAPTURE_VERSION,
             "frame_count": self.frame_count,
@@ -141,6 +282,8 @@ class LiveReplayCaptureSession:
             "boundary_review_required": bool(self.boundaries),
             "boundary_review_count": len(self.boundaries),
             "story_index_sha256": self.story_index_sha256,
+            "observation_ledger": ledger_binding,
+            "unresolved_observation_count": self.unresolved_observations,
         }
         corpus_document = {
             "schema_version": 1,
@@ -155,6 +298,8 @@ class LiveReplayCaptureSession:
             **capture,
             "duplicate_fingerprints_skipped": self.duplicate_fingerprints,
             "uncertain_observations_skipped": self.uncertain_observations,
+            "unresolved_observation_count": self.unresolved_observations,
+            "observation_ledger": ledger_binding,
             "boundaries": self.boundaries,
             "dialogue": [
                 {
@@ -173,13 +318,17 @@ class LiveReplayCaptureSession:
         }
         corpus = self.directory / "corpus.json"
         report = self.directory / "capture-report.json"
+        observation_ledger = self.directory / "observation-ledger.json"
         if (
             corpus.exists()
             or corpus.is_symlink()
             or report.exists()
             or report.is_symlink()
+            or observation_ledger.exists()
+            or observation_ledger.is_symlink()
         ):
             raise LiveReplayCaptureError("Replay capture result already exists")
+        _write_payload_no_replace(observation_ledger, ledger_payload)
         _write_json_no_replace(report, report_document)
         _write_json_no_replace(corpus, corpus_document)
         self.finished = True
@@ -187,6 +336,7 @@ class LiveReplayCaptureSession:
             self.directory,
             corpus,
             report,
+            observation_ledger,
             len(records),
             self.frame_count,
             len(self.boundaries),
@@ -202,10 +352,13 @@ class LiveReplayCaptureSession:
     def _finalize_active(self, reason):
         if self.active is None:
             return
-        item = {**self.active, "boundary_reason": reason}
-        line = None
-        match_result = "story-index-unavailable"
-        if self.story_resolver is not None:
+        item = {
+            key: value for key, value in self.active.items() if key != "group_identity"
+        }
+        item["boundary_reason"] = reason
+        line = item.get("story_line")
+        match_result = item.get("story_match", "story-index-unavailable")
+        if self.story_resolver is not None and "story_line" not in item:
             line, match_result = self.story_resolver.resolve_exact_with_result(
                 item["observed_character"], item["observed_text"]
             )
@@ -295,6 +448,15 @@ class LiveReplayCaptureSession:
                     raise LiveReplayCaptureError("Captured replay frame is unavailable")
                 if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
                     raise LiveReplayCaptureError("Captured replay frame changed")
+        for observation in self.observations:
+            frame = observation["frame"]
+            path = self.directory.joinpath(*PurePosixPath(frame["path"]).parts)
+            if path.is_symlink() or not path.is_file():
+                raise LiveReplayCaptureError(
+                    "Captured observation frame is unavailable"
+                )
+            if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
+                raise LiveReplayCaptureError("Captured observation frame changed")
 
 
 def capture_replay_session(
@@ -327,19 +489,25 @@ def capture_replay_session(
             last_fingerprint = fingerprint
             observation = recognize_frame(frame)
             if observation is None:
-                session.note_uncertain_observation()
+                session.note_uncertain_observation(frame)
             else:
                 session.observe(frame, *observation)
-                if maximum_frames is not None and session.frame_count >= maximum_frames:
+                if (
+                    maximum_frames is not None
+                    and session.recognized_observation_count >= maximum_frames
+                ):
                     break
         sleep(interval_seconds)
     return session.finish()
 
 
-def _write_json_no_replace(path, document):
-    payload = (
+def _json_payload(document):
+    return (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+
+
+def _write_payload_no_replace(path, payload):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -364,6 +532,15 @@ def _write_json_no_replace(path, document):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _write_json_no_replace(path, document):
+    _write_payload_no_replace(path, _json_payload(document))
+
+
+def _standalone_ellipsis(value):
+    text = "".join(str(value).split())
+    return text.replace("…", "...") == "..."
 
 
 def build_parser():
@@ -431,8 +608,11 @@ def main(argv=None):
                 ocr_language=settings.ocr_language,
                 correction_dictionary=corrections,
             )
-            if result.text and not result.is_confident(settings.ocr_minimum_confidence):
-                return None
+            # Capture evidence is intentionally broader than live playback.
+            # Keep low-confidence OCR in the immutable observation ledger so a
+            # later exact story/sequence recovery can accept or reject it. The
+            # capture session only promotes exact canonical text or standalone
+            # punctuation to dialogue groups.
             return result.character or "Narrator", result.text
 
         print("Capturing accepted OCR frames; press Ctrl+C to finish and validate")

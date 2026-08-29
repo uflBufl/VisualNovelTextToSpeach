@@ -73,7 +73,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
         capture = root / "raw-capture"
         session = LiveReplayCaptureSession(
             capture,
-            story_resolver=resolver,
+            story_resolver=None,
             story_index_path=story,
             story_index_sha256=sha256_file(story),
         )
@@ -83,6 +83,43 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
             session.observe(self.frame(marker), *observation)
             recognition[marker] = observation
         result = session.finish()
+        corpus = json.loads(result.corpus.read_text(encoding="utf-8"))
+        report = json.loads(result.report.read_text(encoding="utf-8"))
+        result.observation_ledger.unlink()
+        corpus["capture"].pop("observation_ledger")
+        corpus["capture"].pop("unresolved_observation_count")
+        report.pop("observation_ledger")
+        report.pop("unresolved_observation_count")
+        for record, review in zip(corpus["dialogue"], report["dialogue"], strict=True):
+            line, match_result = resolver.resolve_exact_with_result(
+                record["character"], record["text"]
+            )
+            if line is None:
+                continue
+            record.update(
+                {
+                    "line_id": line.line_id,
+                    "source_audio_status": line.source_audio_status,
+                    "source_audio_id": line.source_audio_id,
+                    "source_audio_duration_seconds": (
+                        line.source_audio_duration_seconds
+                    ),
+                    "expected_source": (
+                        "game" if line.source_audio_status == "available" else None
+                    ),
+                    "story_match": match_result,
+                }
+            )
+            review.update(
+                {
+                    "character": line.speaker,
+                    "text": line.text,
+                    "line_id": line.line_id,
+                    "story_match": match_result,
+                }
+            )
+        result.corpus.write_text(json.dumps(corpus, indent=2) + "\n", encoding="utf-8")
+        result.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
         def recognize(frame):
             return recognition[frame.image.getpixel((0, 0))]
@@ -470,6 +507,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
             )
             raw = json.loads(captured.corpus.read_text(encoding="utf-8"))
             frame_path = captured.directory / raw["dialogue"][0]["frames"][0]["path"]
+            original_frame = frame_path.read_bytes()
             frame_path.write_bytes(b"changed")
             with self.assertRaisesRegex(SequenceReplaySealError, "checksum changed"):
                 seal_sequence_replay(
@@ -479,6 +517,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                     sequence_plan=plan,
                     recognizer=recognize,
                 )
+            frame_path.write_bytes(original_frame)
 
             alias = root / "story-alias.jsonl"
             alias.symlink_to(story)

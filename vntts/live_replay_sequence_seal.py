@@ -85,6 +85,11 @@ def seal_sequence_replay(
         capture_report_payload, "Capture review report"
     )
     _validate_capture_report(capture, capture_report_document)
+    _validate_capture_observation_ledger(
+        capture_path,
+        capture,
+        capture_report_document,
+    )
     capture_report_sha256 = hashlib.sha256(capture_report_payload).hexdigest()
 
     _story_path, story_payload = _read_regular_file(story_index, "Story index")
@@ -95,6 +100,11 @@ def seal_sequence_replay(
     if captured_story_sha256 != story_sha256:
         raise SequenceReplaySealError(
             "Raw capture is not bound to the selected story-index bytes"
+        )
+    recovery = capture["capture"].get("recovery")
+    if recovery is not None and recovery["sequence_plan_sha256"] != plan_sha256:
+        raise SequenceReplaySealError(
+            "Recovered capture is not bound to the selected sequence-plan bytes"
         )
     selected_output = Path(output_directory).expanduser()
     if selected_output.exists() or selected_output.is_symlink():
@@ -320,7 +330,7 @@ def _map_dialogue(raw_dialogue, resolver, plan):
                     f"Raw replay dialogue {index} reaches an ambiguous or skipped "
                     "visible sequence frontier"
                 )
-            if _punctuation_only(text):
+            if _standalone_ellipsis(text):
                 silent = tuple(event for event in candidates if event.kind == "silent")
                 if len(silent) != 1 or len(candidates) != 1:
                     raise SequenceReplaySealError(
@@ -668,13 +678,157 @@ def _validate_capture_report(capture, report):
         )
 
 
+def _validate_capture_observation_ledger(capture_path, capture, report):
+    authority = capture["capture"]
+    binding = authority.get("observation_ledger")
+    if binding is None:
+        return
+    if not isinstance(binding, dict) or report.get("observation_ledger") != binding:
+        raise SequenceReplaySealError(
+            "Capture observation ledger binding disagrees with the review report"
+        )
+    unresolved = authority.get("unresolved_observation_count")
+    if (
+        isinstance(unresolved, bool)
+        or not isinstance(unresolved, int)
+        or unresolved < 0
+        or report.get("unresolved_observation_count") != unresolved
+    ):
+        raise SequenceReplaySealError("Capture unresolved-observation count is invalid")
+    _relative, payload = _read_contained(
+        capture_path.parent,
+        binding.get("path"),
+        "Capture observation ledger",
+    )
+    digest = _required_sha256(
+        binding.get("sha256"), "Capture observation ledger sha256"
+    )
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise SequenceReplaySealError("Capture observation ledger checksum changed")
+    document = _decode_json(payload, "Capture observation ledger")
+    observations = document.get("observations")
+    if (
+        document.get("schema") != "vntts.live-replay-capture-observations"
+        or document.get("schema_version") != 1
+        or document.get("story_index_sha256") != authority.get("story_index_sha256")
+        or not isinstance(observations, list)
+        or document.get("observation_count") != len(observations)
+        or binding.get("observation_count") != len(observations)
+    ):
+        raise SequenceReplaySealError("Capture observation ledger is invalid")
+    ledger_frames = set()
+    statuses = []
+    for index, observation in enumerate(observations, start=1):
+        if (
+            not isinstance(observation, dict)
+            or observation.get("observation_index") != index
+        ):
+            raise SequenceReplaySealError("Capture observation ledger order is invalid")
+        status = observation.get("status")
+        if status not in {
+            "canonical",
+            "punctuation-only",
+            "unresolved",
+            "uncertain",
+            "accepted-unbound",
+        }:
+            raise SequenceReplaySealError(
+                "Capture observation ledger status is invalid"
+            )
+        statuses.append(status)
+        frame = observation.get("frame")
+        if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
+            raise SequenceReplaySealError(
+                "Capture observation ledger frame binding is invalid"
+            )
+        _frame_relative, frame_payload = _read_contained(
+            capture_path.parent,
+            frame.get("path"),
+            "Capture observation frame",
+        )
+        frame_digest = _required_sha256(
+            frame.get("sha256"), "Capture observation frame sha256"
+        )
+        if hashlib.sha256(frame_payload).hexdigest() != frame_digest:
+            raise SequenceReplaySealError("Capture observation frame checksum changed")
+        ledger_frames.add((frame["path"], frame_digest))
+    dialogue_frames = {
+        (frame.get("path"), frame.get("sha256"))
+        for record in capture["dialogue"]
+        for frame in record.get("frames", ())
+        if isinstance(frame, dict)
+    }
+    if not dialogue_frames.issubset(ledger_frames):
+        raise SequenceReplaySealError(
+            "Capture dialogue frames are not bound by the observation ledger"
+        )
+    uncertain = report.get("uncertain_observations_skipped")
+    if (
+        isinstance(uncertain, bool)
+        or not isinstance(uncertain, int)
+        or uncertain < 0
+        or statuses.count("unresolved") != unresolved
+        or statuses.count("uncertain") != uncertain
+        or len(observations) != authority.get("frame_count")
+    ):
+        raise SequenceReplaySealError(
+            "Capture observation ledger counts disagree with capture authority"
+        )
+    recovery = authority.get("recovery")
+    if recovery is None:
+        raise SequenceReplaySealError(
+            "Raw observation-ledger capture must recover one explicit sequence "
+            "segment before sealing"
+        )
+    _validate_recovery_authority(capture_path.parent, recovery, report)
+
+
+def _validate_recovery_authority(root, recovery, report):
+    if (
+        not isinstance(recovery, dict)
+        or set(recovery)
+        != {
+            "schema_version",
+            "raw_corpus_sha256",
+            "capture_report_sha256",
+            "sequence_plan_sha256",
+            "mapping_policy",
+        }
+        or recovery.get("schema_version") != 1
+        or recovery.get("mapping_policy") != "exact-explicit-sequence-run"
+        or report.get("recovery") != recovery
+    ):
+        raise SequenceReplaySealError("Capture recovery authority is invalid")
+    for field in (
+        "raw_corpus_sha256",
+        "capture_report_sha256",
+        "sequence_plan_sha256",
+    ):
+        _required_sha256(recovery.get(field), f"Capture recovery {field}")
+    for relative, field, label in (
+        (
+            "provenance/raw-corpus.json",
+            "raw_corpus_sha256",
+            "Recovered source corpus",
+        ),
+        (
+            "provenance/capture-report.json",
+            "capture_report_sha256",
+            "Recovered source capture report",
+        ),
+    ):
+        _path, payload = _read_contained(root, relative, label)
+        if hashlib.sha256(payload).hexdigest() != recovery[field]:
+            raise SequenceReplaySealError(f"{label} checksum changed")
+
+
 def _normalized_exact(value):
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
-def _punctuation_only(value):
+def _standalone_ellipsis(value):
     text = "".join(str(value).split())
-    return bool(text) and not any(character.isalnum() for character in text)
+    return text.replace("…", "...") == "..."
 
 
 def _decode_json(payload, label):
