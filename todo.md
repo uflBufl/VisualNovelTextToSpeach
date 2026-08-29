@@ -148,9 +148,16 @@ numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
-      then add automatic advancement last. Cover long typewriter text, lost
-      nameplates, `...`, source/generated/missing-WAV routes, identical lines,
-      choices, manual skips, focus loss and stale work in deterministic replay.
+      then add automatic advancement last. First restore the tracked legacy
+      smoke fixture by declaring its already-required source-audio completion
+      duration; retain the successful representative Rhiannon route replay.
+      Extend the replay contract with a checksum-bound sequence plan and mode,
+      run the production controller/cursor rather than a parallel simulator,
+      and report canonical event/line IDs, OCR-call count, bounded recoveries and
+      key-dispatch count. Cover long typewriter text, lost nameplates, `...`,
+      source/generated/missing-WAV routes, identical lines, choices, manual
+      skips, focus loss and stale work. Require both `shadow` and `audio-manual`
+      reports to pass before implementing automatic advancement.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and 100-event real-game run show
       zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every

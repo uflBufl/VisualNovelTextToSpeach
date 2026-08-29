@@ -17,6 +17,7 @@
       "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!",
       "line_id": "replay:marcus:1",
       "source_audio_status": "available",
+      "source_audio_duration_seconds": 0.001,
       "expected_source": "game"
     },
     {

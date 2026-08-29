@@ -54,6 +54,13 @@ finish early, but its auto-advance callback waits until OCR has acknowledged
 every declared frame for that dialogue. Final success additionally requires the
 full corpus frame ledger to be consumed.
 
+An original-game route must declare `source_audio_duration_seconds` when replay
+is expected to advance automatically. Without observable completion, production
+correctly returns `passthrough-unobserved` and blocks the key rather than
+guessing when the game's audio ended. The tracked smoke corpus declares a 1 ms
+device-free completion duration for this reason; it passes with both routes,
+all four frames and exactly two completion-bound advances.
+
 Corpus frame entries may remain a path string for real OCR replay, or use an
 object with `path`, `sha256`, `observed_character` and `observed_text`. The object
 form is a deterministic recognition fixture: bytes must match the declared

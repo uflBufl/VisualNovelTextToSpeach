@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "corpus": "Reverse 1999 saved-frame smoke",
+  "fixture_kind": "saved-frame-ocr-replay",
   "successful": true,
   "expected_dialogue": [
     {
@@ -40,6 +41,140 @@
     }
   ],
   "errors": [],
+  "media_integrity": {
+    "frame_sha256s": [
+      "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+      "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+      "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+      "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f"
+    ],
+    "generated_playback": [],
+    "recognized_frames": [
+      {
+        "character": "Marcus",
+        "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!",
+        "source": "ocr",
+        "dialogue_index": 1,
+        "frame_index": 1,
+        "path": "01.jpeg",
+        "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+        "consumed": true,
+        "skip_reason": null
+      },
+      {
+        "character": "Marcus",
+        "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!",
+        "source": "ocr",
+        "dialogue_index": 1,
+        "frame_index": 2,
+        "path": "01.jpeg",
+        "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+        "consumed": true,
+        "skip_reason": null
+      },
+      {
+        "character": "Marcus",
+        "text": "And me, I just wanted to go home for a visit. Why would you take away even that?!",
+        "source": "ocr",
+        "dialogue_index": 1,
+        "frame_index": 2,
+        "path": "01.jpeg",
+        "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+        "consumed": false,
+        "skip_reason": "already-consumed"
+      },
+      {
+        "character": "X",
+        "text": "You were the perfect fulcrum! I don't know what I would have done without you.",
+        "source": "ocr",
+        "dialogue_index": 2,
+        "frame_index": 1,
+        "path": "02.png",
+        "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+        "consumed": true,
+        "skip_reason": null
+      },
+      {
+        "character": "X",
+        "text": "You were the perfect fulcrum! I don't know what I would have done without you.",
+        "source": "ocr",
+        "dialogue_index": 2,
+        "frame_index": 1,
+        "path": "02.png",
+        "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+        "consumed": false,
+        "skip_reason": "already-consumed"
+      },
+      {
+        "character": "X",
+        "text": "You were the perfect fulcrum! I don't know what I would have done without you.",
+        "source": "ocr",
+        "dialogue_index": 2,
+        "frame_index": 2,
+        "path": "02.png",
+        "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+        "consumed": true,
+        "skip_reason": null
+      }
+    ],
+    "frame_consumption": {
+      "complete": true,
+      "declared_count": 4,
+      "consumed_count": 4,
+      "skipped_count": 2,
+      "unmapped_skipped_count": 0,
+      "dialogues": [
+        {
+          "dialogue_index": 1,
+          "declared_count": 2,
+          "consumed_count": 2,
+          "skipped_count": 1,
+          "frames": [
+            {
+              "frame_index": 1,
+              "path": "01.jpeg",
+              "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+              "consumed": true
+            },
+            {
+              "frame_index": 2,
+              "path": "01.jpeg",
+              "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+              "consumed": true
+            }
+          ]
+        },
+        {
+          "dialogue_index": 2,
+          "declared_count": 2,
+          "consumed_count": 2,
+          "skipped_count": 1,
+          "frames": [
+            {
+              "frame_index": 1,
+              "path": "02.png",
+              "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+              "consumed": true
+            },
+            {
+              "frame_index": 2,
+              "path": "02.png",
+              "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+              "consumed": true
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "corpus_sha256": "bdfb1f8684250703c719091158f5566c7024aa719a62344a42f849280251d283",
+    "generated_audio_manifest_sha256": null,
+    "generated_audio_artifacts": [],
+    "recognition_sources": [
+      "ocr"
+    ]
+  },
   "timelines": [
     {
       "generation": 1,
@@ -50,15 +185,15 @@
         },
         {
           "stage": "ocr",
-          "elapsed_ms": 65.136
+          "elapsed_ms": 8.67
         },
         {
           "stage": "stable-text",
-          "elapsed_ms": 65.171
+          "elapsed_ms": 8.718
         },
         {
           "stage": "generation-start",
-          "elapsed_ms": 130.313
+          "elapsed_ms": 995.469
         },
         {
           "stage": "route-decision",
@@ -66,30 +201,42 @@
           "match_result": "exact",
           "line_id": "replay:marcus:1",
           "artifact_preflight_state": "source-audio-declared-available",
-          "elapsed_ms": 130.363
+          "elapsed_ms": 995.529
         },
         {
           "stage": "voice-resolution",
           "voice_reference_id": "replay:marcus",
-          "elapsed_ms": 130.363
+          "elapsed_ms": 995.529
         },
         {
-          "stage": "first-pcm",
-          "elapsed_ms": 130.682
+          "stage": "playback-outcome",
+          "effective_source": "game",
+          "underflowed": false,
+          "generation_limited": false,
+          "outcome": "completed",
+          "synthesis_ms": 0.0,
+          "playback_ms": 1.5145839424803853,
+          "chunk_id": "cad488f33f5ea4fc",
+          "chunk_ordinal": 1,
+          "chunk_characters": 81,
+          "elapsed_ms": 997.374
         },
         {
           "stage": "playback-completion",
-          "elapsed_ms": 130.693
+          "chunk_id": "cad488f33f5ea4fc",
+          "chunk_ordinal": 1,
+          "chunk_characters": 81,
+          "elapsed_ms": 997.415
         },
         {
           "stage": "key-dispatch",
           "attempt": 1,
-          "elapsed_ms": 144.549
+          "elapsed_ms": 1016.93
         },
         {
           "stage": "confirmed-next-dialogue",
           "attempt": 1,
-          "elapsed_ms": 1157.838
+          "elapsed_ms": 3191.105
         }
       ]
     },
@@ -102,15 +249,15 @@
         },
         {
           "stage": "ocr",
-          "elapsed_ms": 66.763
+          "elapsed_ms": 8.888
         },
         {
           "stage": "stable-text",
-          "elapsed_ms": 66.825
+          "elapsed_ms": 8.959
         },
         {
           "stage": "generation-start",
-          "elapsed_ms": 133.795
+          "elapsed_ms": 589.856
         },
         {
           "stage": "route-decision",
@@ -119,20 +266,41 @@
           "fallback_reason": "source-audio-missing;generated-audio-library-not-configured",
           "line_id": "replay:x:2",
           "artifact_preflight_state": "generated-audio-library-not-configured",
-          "elapsed_ms": 133.854
+          "elapsed_ms": 589.929
         },
         {
           "stage": "voice-resolution",
           "voice_reference_id": "replay:x",
-          "elapsed_ms": 133.854
+          "elapsed_ms": 589.929
         },
         {
           "stage": "first-pcm",
-          "elapsed_ms": 133.963
+          "chunk_id": "82320571f00727ff",
+          "chunk_ordinal": 1,
+          "chunk_characters": 78,
+          "elapsed_ms": 590.049
+        },
+        {
+          "stage": "playback-outcome",
+          "effective_source": "live:replay-live-tts",
+          "underflowed": false,
+          "generation_limited": false,
+          "outcome": "completed",
+          "synthesis_ms": 0.0,
+          "playback_ms": 0.0,
+          "first_audio_ms": 0.0,
+          "cache_source": "replay",
+          "chunk_id": "82320571f00727ff",
+          "chunk_ordinal": 1,
+          "chunk_characters": 78,
+          "elapsed_ms": 590.088
         },
         {
           "stage": "playback-completion",
-          "elapsed_ms": 133.973
+          "chunk_id": "82320571f00727ff",
+          "chunk_ordinal": 1,
+          "chunk_characters": 78,
+          "elapsed_ms": 590.115
         }
       ]
     }
