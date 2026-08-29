@@ -35,6 +35,16 @@ not control the game yet:
   unplanned or desynchronized observation is not spoken. The mode forces whole
   dialogue chunks and suppresses auto advance even if the saved general toggle
   is enabled; the player remains responsible for every transition.
+- `audio-manual` binds the first exact anchoring dialogue fingerprint. After its
+  typed playback completes successfully, a changed fingerprint must be observed
+  identically twice; the first observation suppresses OCR while the frame
+  settles, and the second follows only one deterministic graph path to a speech
+  or silent event. Speech uses the exact story-index speaker and text,
+  including one full canonical live fallback when no reviewed WAV exists. A
+  branch, manual boundary, failed playback or still-playing event remains
+  closed. Passive non-dialogue events may be crossed, but a silent dialogue box
+  is retained as its own cursor event. Successful canonical live fallback is
+  sealed against late OCR suffixes just like generated/source WAV playback.
 
 `vntts-artifacts` v0.7.0 publishes game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately
@@ -223,11 +233,12 @@ Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
 The automated `shadow` and `audio-manual` phases are implemented. Shadow only
-records predictions. Audio-manual canonicalizes an allowed exact observation
-before speech while leaving all advancement to the player. Both still use full
-OCR for each observed speech transition; removing that ordinary locked-mode OCR
-dependency and enabling automatic advancement remain gated on deterministic
-replay and real-game route correctness.
+records predictions. Audio-manual uses full OCR for its initial anchor, then a
+two-frame stable visual transition can route deterministic successors without
+another OCR call while leaving all advancement to the player. Explicit manual
+resynchronization, branch selection, a stronger dialogue-presence/render gate
+and automatic advancement remain gated on deterministic replay and real-game
+route correctness.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV

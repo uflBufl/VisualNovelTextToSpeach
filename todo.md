@@ -147,18 +147,18 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Promote `audio-manual` from exact OCR confirmation on each speech line to
-      a truly locked cursor. Bootstrap from one exact/unique OCR anchor or an
-      explicit chapter/event choice, then route the expected canonical line ID
-      directly. Missing approved WAVs must use one full canonical live fallback;
-      OCR text and OCR speaker names must never enter speech routing while
-      locked. Add an explicit manual resync action for desynchronization rather
-      than recovering from later observations implicitly.
+- [ ] Finish explicit `audio-manual` anchoring and recovery controls. Let the
+      player choose a chapter/entry event before OCR, show why a branch/manual
+      boundary or failed playback closed the cursor, and provide an explicit
+      current-chapter/event resync action. Desynchronization must never recover
+      implicitly from a later OCR observation.
 - [ ] Replace full-frame recognition in ordinary locked transitions with a
-      dialogue-presence/fingerprint/render-settled gate. Advance only after
-      audio (or a silent event) completes, rendering settles, the game is
-      focused and the same cursor event still owns the generation. Confirm one
-      linear successor from a visual transition without full OCR.
+      stronger dialogue-presence/fingerprint/render-settled gate. The first
+      manual-audio slice already requires two equal changed fingerprints and no
+      second OCR call; add explicit dialogue visibility, ownership and minimum
+      settled-time checks before enabling keys. Advance only after audio (or a
+      silent event) completes, the game is focused and the same cursor event
+      still owns the generation.
 - [ ] Implement branches, repeated lines and manual advancement with an
       expected-candidate recognizer over explicit successors and a bounded
       monotonic lookahead. On conflict, stop auto advance and recover through

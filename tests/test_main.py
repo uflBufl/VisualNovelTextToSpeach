@@ -1611,6 +1611,159 @@ class MainTest(unittest.TestCase):
         )
         self.assertFalse(controller._dialog_observed("Rhiannon", "Expected line."))
 
+    def test_sequence_audio_manual_routes_stable_successor_without_ocr_text(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, speaker, text in (
+                (1, "Rhiannon", "First canonical line."),
+                (3, "Hotelier", "Second canonical line."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-transition",),
+                "reverse1999:1:1",
+            ),
+            "event-transition": LiveSequenceEvent(
+                "event-transition",
+                "1",
+                2,
+                "transition",
+                "passive",
+                ("event-3",),
+                None,
+            ),
+            "event-3": LiveSequenceEvent(
+                "event-3",
+                "1",
+                3,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:3",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (
+                LiveSequenceChapter(
+                    "1",
+                    ("event-1",),
+                    ("event-1", "event-transition", "event-3"),
+                ),
+            ),
+            events,
+            {
+                "reverse1999:1:1": "event-1",
+                "reverse1999:1:3": "event-3",
+            },
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        first = controller._dialog_observed("Rhiannon", "First canonical line.")
+        chunk = SpeechChunk(1, *first)
+
+        event_id = controller._begin_sequence_playback(chunk)
+
+        self.assertEqual(event_id, "event-1")
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
+        self.assertFalse(controller._stable_live_frame_route("new", True))
+        controller._finish_sequence_playback(
+            event_id,
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
+        )
+        self.assertFalse(controller._stable_live_frame_route("new", False))
+        self.assertEqual(
+            controller._stable_live_frame_route("new", True),
+            ("Hotelier", "Second canonical line."),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-3")
+
+    def test_sequence_audio_manual_failed_playback_keeps_current_event_closed(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": "Known canonical line.",
+                        "text_sha256": text_sha256("Known canonical line."),
+                    }
+                ]
+            }
+        )
+        event = LiveSequenceEvent(
+            "event-1",
+            "1",
+            1,
+            "speech",
+            "terminal",
+            (),
+            "reverse1999:1:1",
+        )
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), ("event-1",)),),
+            {"event-1": event},
+            {"reverse1999:1:1": "event-1"},
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        first = controller._dialog_observed("Rhiannon", "Known canonical line.")
+        event_id = controller._begin_sequence_playback(SpeechChunk(1, *first))
+
+        controller._finish_sequence_playback(
+            event_id,
+            PlaybackOutcome(PlaybackStatus.FAILED, None, error="failed"),
+        )
+
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        self.assertEqual(controller.story_cursor.reason, "playback-failed")
+        self.assertFalse(controller._stable_live_frame_route("new", True))
+
     def test_controller_identifies_live_scope_without_speaking_or_history(self):
         dialogs = []
         preloader = ChapterVoicePreloader.from_document(

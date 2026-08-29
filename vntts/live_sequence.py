@@ -89,6 +89,21 @@ class StoryCursor:
             and len(event.successors) == 1
         )
 
+    @property
+    def can_confirm_visual_transition(self):
+        event = self.current_event
+        return bool(
+            self.state == StoryCursorState.LOCKED
+            and event is not None
+            and (
+                self.reason == "playback-completed"
+                or (
+                    event.kind == "silent"
+                    and self.reason == "visual-transition-confirmed"
+                )
+            )
+        )
+
     def snapshot(self):
         event = self.current_event
         return StoryCursorSnapshot(
@@ -138,15 +153,44 @@ class StoryCursor:
         self.reason = "playback-started"
         return self.snapshot()
 
-    def finish_playback(self):
+    def finish_playback(self, *, successful=True):
         event = self._require_current()
         if self.state != StoryCursorState.PLAYING:
             raise StoryCursorError(
                 f"Cannot finish playback while cursor is {self.state.value}"
             )
         self.state = self._resting_state(event)
-        self.reason = "playback-completed"
+        self.reason = "playback-completed" if successful else "playback-failed"
         return self.snapshot()
+
+    def deterministic_visual_successor(self):
+        """Return one visible successor without guessing across a branch."""
+        if not self.can_confirm_visual_transition:
+            return None
+        current = self._require_current()
+        visited = {current.event_id}
+        while True:
+            if len(current.successors) != 1:
+                return None
+            candidate = self.plan.events[current.successors[0]]
+            if candidate.event_id in visited:
+                return None
+            visited.add(candidate.event_id)
+            if candidate.kind in {"speech", "silent"}:
+                return candidate
+            if candidate.kind in {"choice", "wait"} or candidate.control not in {
+                "automatic",
+                "passive",
+            }:
+                return None
+            current = candidate
+
+    def confirm_visual_transition(self):
+        candidate = self.deterministic_visual_successor()
+        if candidate is None:
+            return None
+        self.anchor_event(candidate.event_id, "visual-transition-confirmed")
+        return candidate
 
     def dispatch_advance(self):
         event = self._require_current()

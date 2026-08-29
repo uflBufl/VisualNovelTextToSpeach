@@ -136,7 +136,7 @@ class RecordingCapturePolicy:
 
 
 class AutoAdvanceFakeFrameHarness:
-    def __init__(self):
+    def __init__(self, *, stable_frame_route=None):
         self.clock = FakeClock()
         self.completed_observations = Queue()
         self.speech_executor = QueuedExecutor()
@@ -158,6 +158,7 @@ class AutoAdvanceFakeFrameHarness:
             read_snapshot=Mock(),
             capture_frame=Mock(),
             recognize_frame=self._recognize,
+            stable_frame_route=stable_frame_route,
             speak_chunk=Mock(),
             prepare_chunk=lambda chunk: f"audio:{chunk.text}",
             play_prepared=self._play,
@@ -195,7 +196,15 @@ class AutoAdvanceFakeFrameHarness:
         if self.worker.is_alive():
             raise AssertionError("OCR worker did not stop")
 
-    def push(self, character, text, *, background, fingerprint="same-glyphs"):
+    def push(
+        self,
+        character,
+        text,
+        *,
+        background,
+        fingerprint="same-glyphs",
+        expected=None,
+    ):
         frame = {
             "character": character,
             "text": text,
@@ -207,9 +216,10 @@ class AutoAdvanceFakeFrameHarness:
             self.reader.frame_version += 1
             self.reader.pause_condition.notify_all()
         observed = self.completed_observations.get(timeout=1)
-        if observed[:2] != (character, text):
+        expected = (character, text) if expected is None else expected
+        if observed[:2] != expected:
             raise AssertionError(
-                f"Expected processed observation {(character, text)!r}, "
+                f"Expected processed observation {expected!r}, "
                 f"received {observed[:2]!r}"
             )
 
@@ -237,6 +247,44 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_stable_frame_route_replaces_second_line_without_another_ocr_call(self):
+        route_calls = []
+
+        def stable_route(fingerprint, settled):
+            route_calls.append((fingerprint, settled))
+            return ("Bea", "Canonical second line.") if settled else False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push(
+            "Ada",
+            "First line.",
+            background="first",
+            fingerprint="first-glyphs",
+        )
+        harness.push(
+            "bad OCR",
+            "partial second",
+            background="second-a",
+            fingerprint="second-glyphs",
+            expected=("Ada", "First line."),
+        )
+        harness.push(
+            "bad OCR",
+            "still wrong",
+            background="second-b",
+            fingerprint="second-glyphs",
+            expected=("Bea", "Canonical second line."),
+        )
+
+        self.assertEqual(len(harness.recognized_frames), 1)
+        self.assertEqual(
+            route_calls,
+            [("second-glyphs", False), ("second-glyphs", True)],
+        )
+        self.assertEqual(harness.errors, [])
+
     def test_delayed_next_screen_confirms_after_playback_without_duplicate_press(self):
         harness = AutoAdvanceFakeFrameHarness()
         with patch(

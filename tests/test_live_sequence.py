@@ -221,6 +221,44 @@ class StoryCursorTest(unittest.TestCase):
         self.assertFalse(cursor.can_auto_advance)
         self.assertIn("unexpected-transition", snapshot.reason)
 
+    def test_visual_transition_requires_successful_playback_and_stops_on_silent_box(
+        self,
+    ):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+
+        self.assertIsNone(cursor.confirm_visual_transition())
+        cursor.begin_playback()
+        cursor.finish_playback()
+
+        candidate = cursor.confirm_visual_transition()
+
+        self.assertEqual(candidate.event_id, "event-2")
+        self.assertEqual(cursor.current_event_id, "event-2")
+        self.assertTrue(cursor.can_confirm_visual_transition)
+
+    def test_visual_transition_skips_one_deterministic_passive_path(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-2", "visual-transition-confirmed")
+
+        candidate = cursor.confirm_visual_transition()
+
+        self.assertEqual(candidate.event_id, "event-3")
+        self.assertEqual(cursor.current_event_id, "event-3")
+
+    def test_failed_playback_never_opens_visual_transition(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback(successful=False)
+
+        self.assertFalse(cursor.can_confirm_visual_transition)
+        self.assertIsNone(cursor.confirm_visual_transition())
+        self.assertEqual(cursor.current_event_id, "event-1")
+
     def test_shadow_observations_follow_an_explicit_silent_successor_chain(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)

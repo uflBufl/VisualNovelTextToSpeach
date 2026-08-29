@@ -441,6 +441,7 @@ class LiveDialogReader:
         capture_frame=None,
         recognize_frame=None,
         frame_fingerprint=None,
+        stable_frame_route=None,
         playback_executor=None,
         prepare_chunk=None,
         play_prepared=None,
@@ -471,6 +472,7 @@ class LiveDialogReader:
         self.capture_frame = capture_frame
         self.recognize_frame = recognize_frame
         self.frame_fingerprint = frame_fingerprint or (lambda _frame: None)
+        self.stable_frame_route = stable_frame_route
         self.speak_chunk = speak_chunk
         self.prepare_chunk = prepare_chunk
         self.play_prepared = play_prepared
@@ -549,6 +551,9 @@ class LiveDialogReader:
         self.focus_probe_failed = False
         self.latest_frame = None
         self.latest_frame_fingerprint = None
+        self.routed_frame_fingerprint = None
+        self.candidate_frame_fingerprint = object()
+        self.candidate_frame_count = 0
         self.frame_version = 0
         self.processed_frame_version = 0
         self.next_capture_interval = interval_seconds
@@ -599,6 +604,9 @@ class LiveDialogReader:
             self._cancel_auto_advance_locked()
             self.latest_frame = None
             self.latest_frame_fingerprint = None
+            self.routed_frame_fingerprint = None
+            self.candidate_frame_fingerprint = object()
+            self.candidate_frame_count = 0
             self.frame_version = 0
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
@@ -920,7 +928,22 @@ class LiveDialogReader:
                             metrics,
                             reused_frames=metrics.reused_frames + 1,
                         )
+                    frame_route = None
                 else:
+                    frame_route = self._stable_frame_route_decision(fingerprint)
+                if frame_route is False:
+                    character, text = cached_observation
+                    interval = policy.observe(character, text, focused=True)
+                    with self.state_lock:
+                        self.next_capture_interval = interval
+                    continue
+                if isinstance(frame_route, tuple) and len(frame_route) == 2:
+                    character, text = frame_route
+                    cached_fingerprint = fingerprint
+                    cached_observation = (character, text)
+                elif frame_route is None and (
+                    fingerprint != cached_fingerprint or awaiting_post_advance_dialog
+                ):
                     character, text = self.recognize_frame(frame)
                     cached_fingerprint = fingerprint
                     cached_observation = (character, text)
@@ -933,6 +956,11 @@ class LiveDialogReader:
                             last_ocr_at=now,
                             last_speaker_resolved_at=now,
                         )
+                elif frame_route is not None:
+                    raise TypeError(
+                        "stable_frame_route must return None, False or "
+                        "a (character, text) tuple"
+                    )
                 routed_observation = self._report_observation(character, text)
                 if routed_observation is None:
                     interval = policy.observe(character, text, focused=True)
@@ -940,6 +968,8 @@ class LiveDialogReader:
                         self.next_capture_interval = interval
                     continue
                 character, text = routed_observation
+                if self.stable_frame_route is not None:
+                    self._accept_routed_frame(fingerprint)
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
@@ -955,6 +985,28 @@ class LiveDialogReader:
         self._set_generation(tracker.generation)
         self._schedule(tracker.flush())
         self._update_dialog_ready(tracker)
+
+    def _stable_frame_route_decision(self, fingerprint):
+        if (
+            self.stable_frame_route is None
+            or self.routed_frame_fingerprint is None
+            or fingerprint == self.routed_frame_fingerprint
+        ):
+            return None
+        if fingerprint == self.candidate_frame_fingerprint:
+            self.candidate_frame_count += 1
+        else:
+            self.candidate_frame_fingerprint = fingerprint
+            self.candidate_frame_count = 1
+        return self.stable_frame_route(
+            fingerprint,
+            self.candidate_frame_count >= 2,
+        )
+
+    def _accept_routed_frame(self, fingerprint):
+        self.routed_frame_fingerprint = fingerprint
+        self.candidate_frame_fingerprint = object()
+        self.candidate_frame_count = 0
 
     def _run(self, stop_event):
         tracker = self.tracker_factory(**self.tracker_options)

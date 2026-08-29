@@ -44,7 +44,12 @@ from vntts.live import (
     IncrementalDialogTracker,
     LiveDialogReader,
 )
-from vntts.live_sequence import LiveSequencePlan, StoryCursor, StoryCursorState
+from vntts.live_sequence import (
+    LiveSequencePlan,
+    StoryCursor,
+    StoryCursorError,
+    StoryCursorState,
+)
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
@@ -456,6 +461,7 @@ class AppController:
                 capture_frame=self._capture_live_frame,
                 recognize_frame=self._recognize_live_frame,
                 frame_fingerprint=fingerprint_dialog_frame,
+                stable_frame_route=self._stable_live_frame_route,
                 speak_chunk=self._speak_live_chunk,
                 prepare_chunk=self._prepare_live_chunk,
                 play_prepared=self._play_live_chunk,
@@ -1429,6 +1435,100 @@ class AppController:
         )
         return snapshot, line, match_result
 
+    def _stable_live_frame_route(self, _fingerprint, settled):
+        cursor = self.story_cursor
+        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            return None
+        if cursor.state in {
+            StoryCursorState.UNSYNCHRONIZED,
+            StoryCursorState.ANCHORING,
+        }:
+            return None
+        if not settled or not cursor.can_confirm_visual_transition:
+            return False
+        event = cursor.confirm_visual_transition()
+        if event is None:
+            return False
+        generation = (
+            self.live_reader.active_generation if self.live_reader is not None else 0
+        )
+        if event.kind == "silent":
+            self.pipeline_event_handler(
+                "sequence-visual-transition",
+                generation,
+                monotonic(),
+                state=cursor.state.value,
+                event_id=event.event_id,
+                line_id=None,
+                route="silent",
+            )
+            return (None, "")
+        line = self.chapter_voice_preloader.line_for_id(event.line_id)
+        if line is None:
+            cursor.desynchronize(f"missing-story-line:{event.line_id}")
+            self.status_handler(
+                "Sequence-first routing stopped: the expected story line is missing"
+            )
+            return False
+        self.pipeline_event_handler(
+            "sequence-visual-transition",
+            generation,
+            monotonic(),
+            state=cursor.state.value,
+            event_id=event.event_id,
+            line_id=line.line_id,
+            route="canonical-story-line",
+        )
+        return (line.speaker, line.text)
+
+    def _begin_sequence_playback(self, chunk):
+        cursor = self.story_cursor
+        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            return None
+        event = cursor.current_event
+        if (
+            cursor.state != StoryCursorState.LOCKED
+            or event is None
+            or not event.is_speech
+        ):
+            return None
+        line = self.chapter_voice_preloader.line_for_id(event.line_id)
+        if line is None or (line.speaker, line.text) != (
+            chunk.character,
+            chunk.text,
+        ):
+            return None
+        try:
+            cursor.begin_playback()
+        except StoryCursorError:
+            return None
+        return event.event_id
+
+    def _finish_sequence_playback(self, event_id, outcome):
+        cursor = self.story_cursor
+        if (
+            event_id is None
+            or cursor is None
+            or cursor.current_event_id != event_id
+            or cursor.state != StoryCursorState.PLAYING
+        ):
+            return False
+        successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
+        cursor.finish_playback(successful=successful)
+        generation = (
+            self.live_reader.active_generation if self.live_reader is not None else 0
+        )
+        self.pipeline_event_handler(
+            "sequence-playback-state",
+            generation,
+            monotonic(),
+            state=cursor.state.value,
+            event_id=event_id,
+            line_id=cursor.snapshot().current_line_id,
+            outcome="completed" if successful else "failed",
+        )
+        return successful
+
     def _canonical_observed_character(self, character, text=None):
         original = str(character or "Narrator").strip() or "Narrator"
         canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
@@ -1812,6 +1912,7 @@ class AppController:
                 self.status_handler(reason)
         playback_started = monotonic()
         outcome = None
+        sequence_event_id = self._begin_sequence_playback(chunk)
         try:
             play_route = getattr(type(self.speech_backend), "play_route", None)
             play_prepared = getattr(type(self.speech_backend), "play_prepared", None)
@@ -1851,14 +1952,17 @@ class AppController:
                     chunk.generation,
                     "Playback was interrupted; retry or wait for a new dialogue",
                 )
-            if result and isinstance(
-                audio,
-                (
-                    GeneratedAudioRoute,
-                    SourceAudioRoute,
-                    PreparedGeneratedAudio,
-                    PreparedSourceAudioPassThrough,
-                ),
+            if result and (
+                self.settings.live_sequence_mode == "audio-manual"
+                or isinstance(
+                    audio,
+                    (
+                        GeneratedAudioRoute,
+                        SourceAudioRoute,
+                        PreparedGeneratedAudio,
+                        PreparedSourceAudioPassThrough,
+                    ),
+                )
             ):
                 self.live_reader.seal_generation(chunk.generation)
             underflowed = outcome.underflowed
@@ -1922,6 +2026,7 @@ class AppController:
                 )
             return result
         finally:
+            self._finish_sequence_playback(sequence_event_id, outcome)
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _prepare_speaker_announcement(self, chunk, dialogue_route):
