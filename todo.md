@@ -148,10 +148,9 @@ numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
-      then add automatic advancement last. First restore the tracked legacy
-      smoke fixture by declaring its already-required source-audio completion
-      duration; retain the successful representative Rhiannon route replay.
-      Extend the replay contract with a checksum-bound sequence plan and mode,
+      then add automatic advancement last. Retain the successful tracked smoke
+      and representative Rhiannon route replays. Extend the replay contract
+      with a checksum-bound sequence plan and mode,
       run the production controller/cursor rather than a parallel simulator,
       and report canonical event/line IDs, OCR-call count, bounded recoveries and
       key-dispatch count. Cover long typewriter text, lost nameplates, `...`,

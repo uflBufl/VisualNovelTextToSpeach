@@ -424,12 +424,14 @@ class CompactController(QWidget):
     skip_requested = Signal()
     stop_requested = Signal()
     full_requested = Signal()
+    sequence_expected_requested = Signal()
 
     def __init__(self, parent=None, *, platform=None):
         super().__init__(parent)
         platform = sys.platform if platform is None else platform
         self._live = False
         self._ready = False
+        self._sequence_expected_candidate_count = 0
         self.setWindowTitle("VNTTS controls")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -481,6 +483,8 @@ class CompactController(QWidget):
         self.pause_button = QPushButton("Pause")
         self.skip_button = QPushButton("Skip")
         self.stop_button = QPushButton("Stop")
+        self.sequence_expected_button = QPushButton("Use expected next line")
+        self.sequence_expected_button.setVisible(False)
         self.full_button = QPushButton("Full")
         self.stop_button.setStyleSheet(
             "QPushButton { color: #a21818; font-weight: 600; }"
@@ -499,6 +503,7 @@ class CompactController(QWidget):
             self.pause_button,
             self.skip_button,
             self.stop_button,
+            self.sequence_expected_button,
             self.full_button,
         ):
             button.setSizePolicy(
@@ -510,6 +515,9 @@ class CompactController(QWidget):
         self.pause_button.clicked.connect(self.pause_requested.emit)
         self.skip_button.clicked.connect(self.skip_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
+        self.sequence_expected_button.clicked.connect(
+            self.sequence_expected_requested.emit
+        )
         self.full_button.clicked.connect(self.full_requested.emit)
 
         layout = QVBoxLayout(self)
@@ -528,6 +536,7 @@ class CompactController(QWidget):
             self.pause_button,
             self.skip_button,
             self.stop_button,
+            self.sequence_expected_button,
             self.full_button,
         ):
             controls.addWidget(button)
@@ -536,6 +545,21 @@ class CompactController(QWidget):
         layout.addWidget(self.action_reason)
         layout.addLayout(controls)
         self.set_ready(False)
+
+    def set_sequence_status(self, status):
+        manual = getattr(status, "mode", "off") == "audio-manual"
+        candidate_count = int(getattr(status, "expected_candidate_count", 0))
+        self._sequence_expected_candidate_count = candidate_count
+        self.sequence_expected_button.setVisible(manual and candidate_count > 0)
+        self.sequence_expected_button.setEnabled(
+            self._ready and manual and candidate_count > 0
+        )
+        self.sequence_expected_button.setText(
+            "Use expected next line"
+            if candidate_count == 1
+            else f"Choose {candidate_count} expected lines..."
+        )
+        self._fit_content()
 
     def show_for_game(self, geometry=None):
         self.show()
@@ -599,8 +623,14 @@ class CompactController(QWidget):
             self.pause_button,
             self.skip_button,
             self.stop_button,
+            self.sequence_expected_button,
         ):
             button.setEnabled(self._ready)
+        self.sequence_expected_button.setEnabled(
+            self._ready
+            and not self.sequence_expected_button.isHidden()
+            and self._sequence_expected_candidate_count > 0
+        )
         if self._ready:
             self._set_action_reason("Ready: start live reading or read once.")
         else:
@@ -619,6 +649,7 @@ class CompactController(QWidget):
             self.pause_button,
             self.skip_button,
             self.stop_button,
+            self.sequence_expected_button,
         ):
             button.setToolTip(message)
 

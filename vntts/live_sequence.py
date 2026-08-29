@@ -260,19 +260,22 @@ class StoryCursor:
         pending = [(event_id, 0) for event_id in current.successors]
         visited_depth = {}
         visible = []
-        visited_nodes = 0
-        while pending and visited_nodes < maximum_nodes:
+        emitted_event_ids = set()
+        while pending and len(visited_depth) < maximum_nodes:
             event_id, visible_depth = pending.pop(0)
             previous_depth = visited_depth.get(event_id)
             if previous_depth is not None and previous_depth <= visible_depth:
                 continue
+            if previous_depth is None and len(visited_depth) >= maximum_nodes:
+                break
             visited_depth[event_id] = visible_depth
-            visited_nodes += 1
             event = self.plan.events[event_id]
             next_visible_depth = visible_depth
             if event.kind in {"speech", "silent"}:
                 next_visible_depth += 1
-                visible.append(event)
+                if event.event_id not in emitted_event_ids:
+                    emitted_event_ids.add(event.event_id)
+                    visible.append(event)
                 if next_visible_depth >= maximum_visible_depth:
                     continue
             if event.kind == "wait":

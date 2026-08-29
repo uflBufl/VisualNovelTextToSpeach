@@ -492,11 +492,18 @@ class GeneratedAudioFallbackBackend:
         self.generated_reservations.put((line.line_id, line.text_sha256), prepared)
         return True
 
-    def prepare_route(self, character, text):
+    def prepare_route(self, character, text, *, line_id=None):
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
         )
-        line, match_result = self._resolve_line(character, text, voice_overridden)
+        if line_id is not None and not voice_overridden:
+            line = self.line_resolver.line_for_id(line_id)
+            if line is not None and (line.speaker, line.text) == (character, text):
+                match_result = "exact"
+            else:
+                line, match_result = None, "line-id-mismatch"
+        else:
+            line, match_result = self._resolve_line(character, text, voice_overridden)
         omission_line = line
         if omission_line is None and voice_overridden:
             omission_line = self._resolve_without_advancing(character, text)

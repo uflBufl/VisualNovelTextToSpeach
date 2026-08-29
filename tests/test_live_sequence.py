@@ -293,6 +293,62 @@ class StoryCursorTest(unittest.TestCase):
             ["event-2", "event-3"],
         )
 
+    def test_bounded_visible_successors_emit_converging_event_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story-index.jsonl"
+            write_story(story)
+            document = plan_input()
+            document["chapters"][0]["events"] = [
+                {
+                    "event_id": "event-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "line_id": "synthetic:chapter-1:1",
+                    "control": "manual",
+                    "successors": ["visible-a", "transition-x"],
+                },
+                {
+                    "event_id": "visible-a",
+                    "sequence": 2,
+                    "kind": "silent",
+                    "control": "automatic",
+                    "successors": ["event-3"],
+                },
+                {
+                    "event_id": "transition-x",
+                    "sequence": 2,
+                    "kind": "transition",
+                    "control": "passive",
+                    "successors": ["transition-y"],
+                },
+                {
+                    "event_id": "transition-y",
+                    "sequence": 2,
+                    "kind": "transition",
+                    "control": "passive",
+                    "successors": ["event-3"],
+                },
+                {
+                    "event_id": "event-3",
+                    "sequence": 3,
+                    "kind": "speech",
+                    "line_id": "synthetic:chapter-1:3",
+                    "control": "terminal",
+                    "successors": [],
+                },
+            ]
+            plan = write_live_sequence_plan(root / "plan.json", document, story)
+            cursor = StoryCursor(plan)
+            cursor.anchor_event("event-1")
+
+            candidates = cursor.bounded_visible_successors()
+
+        self.assertEqual(
+            [candidate.event_id for candidate in candidates],
+            ["visible-a", "event-3"],
+        )
+
     def test_bounded_observation_can_recover_a_declared_lookahead_line(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)

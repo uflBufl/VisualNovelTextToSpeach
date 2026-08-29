@@ -13,6 +13,7 @@ class SpeechChunk:
     character: str
     text: str
     ordinal: int | None = field(default=None, compare=False)
+    line_id: str | None = field(default=None, compare=False)
 
     @property
     def chunk_id(self):
@@ -20,7 +21,10 @@ class SpeechChunk:
             return None
         character = " ".join((self.character or "Narrator").casefold().split())
         text = " ".join((self.text or "").casefold().split())
-        payload = f"{self.generation}\0{self.ordinal}\0{character}\0{text}"
+        payload = (
+            f"{self.generation}\0{self.ordinal}\0{character}\0{text}\0"
+            f"{self.line_id or ''}"
+        )
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -563,6 +567,7 @@ class LiveDialogReader:
         self.latest_frame_fingerprint = None
         self.latest_frame_visible = False
         self.routed_frame_fingerprint = None
+        self.frame_route_epoch = 0
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
         self.candidate_frame_owner = None
@@ -619,7 +624,8 @@ class LiveDialogReader:
             self.latest_frame_fingerprint = None
             self.latest_frame_visible = False
             self.routed_frame_fingerprint = None
-            self._reset_stable_frame_candidate()
+            self.frame_route_epoch += 1
+            self._reset_stable_frame_candidate_locked()
             self.frame_version = 0
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
@@ -716,11 +722,11 @@ class LiveDialogReader:
             self._maybe_auto_advance()
         return self.paused
 
-    def enqueue(self, character, text):
+    def enqueue(self, character, text, *, line_id=None):
         with self.state_lock:
             generation = self.active_generation + 1
         self._set_generation(generation)
-        self._schedule([SpeechChunk(generation, character, text)])
+        self._schedule([SpeechChunk(generation, character, text, line_id=line_id)])
         return True
 
     def bind_current_frame_route(self):
@@ -729,8 +735,12 @@ class LiveDialogReader:
             fingerprint = self.latest_frame_fingerprint
             if fingerprint is None:
                 return False
-            self._accept_routed_frame(fingerprint)
+            self._accept_routed_frame_locked(fingerprint)
         return True
+
+    def frame_route_epoch_is_current(self, epoch):
+        with self.state_lock:
+            return epoch == self.frame_route_epoch
 
     def skip_current(self):
         with self.state_lock:
@@ -748,7 +758,16 @@ class LiveDialogReader:
             suppressed = self.suppressed_generation == generation
         if chunk is None or suppressed:
             return False
-        self._schedule([SpeechChunk(generation, chunk.character, chunk.text)])
+        self._schedule(
+            [
+                SpeechChunk(
+                    generation,
+                    chunk.character,
+                    chunk.text,
+                    line_id=chunk.line_id,
+                )
+            ]
+        )
         return True
 
     def clear_queue(self):
@@ -1015,14 +1034,12 @@ class LiveDialogReader:
         self._update_dialog_ready(tracker)
 
     def _stable_frame_route_decision(self, fingerprint, visible=True):
-        if (
-            self.stable_frame_route is None
-            or self.routed_frame_fingerprint is None
-            or fingerprint == self.routed_frame_fingerprint
-        ):
+        if self.stable_frame_route is None:
             return None
         focused = self._is_focused()
         if not visible or not focused:
+            with self.state_lock:
+                self._reset_stable_frame_candidate_locked()
             self._report_pipeline_event(
                 "stable-frame-gate",
                 self.active_generation,
@@ -1034,25 +1051,31 @@ class LiveDialogReader:
                 settled_ms=0,
                 ready=False,
             )
-            self._reset_stable_frame_candidate()
             return False
         owner = self.stable_frame_owner()
         now = self.stable_frame_clock()
-        if (
-            fingerprint == self.candidate_frame_fingerprint
-            and owner == self.candidate_frame_owner
-        ):
-            self.candidate_frame_count += 1
-        else:
-            self.candidate_frame_fingerprint = fingerprint
-            self.candidate_frame_count = 1
-            self.candidate_frame_owner = owner
-            self.candidate_frame_started_at = now
-        settled_for = now - self.candidate_frame_started_at
-        ready = (
-            self.candidate_frame_count >= 2
-            and settled_for >= self.stable_frame_minimum_seconds
-        )
+        with self.state_lock:
+            if self.routed_frame_fingerprint is None:
+                return None
+            if fingerprint == self.routed_frame_fingerprint:
+                return None
+            route_epoch = self.frame_route_epoch
+            if (
+                fingerprint == self.candidate_frame_fingerprint
+                and owner == self.candidate_frame_owner
+            ):
+                self.candidate_frame_count += 1
+            else:
+                self.candidate_frame_fingerprint = fingerprint
+                self.candidate_frame_count = 1
+                self.candidate_frame_owner = owner
+                self.candidate_frame_started_at = now
+            candidate_frames = self.candidate_frame_count
+            settled_for = now - self.candidate_frame_started_at
+            ready = (
+                candidate_frames >= 2
+                and settled_for >= self.stable_frame_minimum_seconds
+            )
         self._report_pipeline_event(
             "stable-frame-gate",
             self.active_generation,
@@ -1060,14 +1083,20 @@ class LiveDialogReader:
             visible=True,
             focused=True,
             owner=owner,
-            candidate_frames=self.candidate_frame_count,
+            candidate_frames=candidate_frames,
             settled_ms=round(settled_for * 1000),
             ready=ready,
         )
-        return self.stable_frame_route(
+        route = self.stable_frame_route(
             fingerprint,
             ready,
+            owner,
+            route_epoch,
         )
+        with self.state_lock:
+            if route_epoch != self.frame_route_epoch:
+                return False
+        return route
 
     @staticmethod
     def _privacy_safe_fingerprint(fingerprint):
@@ -1076,10 +1105,19 @@ class LiveDialogReader:
         return str(fingerprint)[:64]
 
     def _accept_routed_frame(self, fingerprint):
+        with self.state_lock:
+            self._accept_routed_frame_locked(fingerprint)
+
+    def _accept_routed_frame_locked(self, fingerprint):
         self.routed_frame_fingerprint = fingerprint
-        self._reset_stable_frame_candidate()
+        self.frame_route_epoch += 1
+        self._reset_stable_frame_candidate_locked()
 
     def _reset_stable_frame_candidate(self):
+        with self.state_lock:
+            self._reset_stable_frame_candidate_locked()
+
+    def _reset_stable_frame_candidate_locked(self):
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
         self.candidate_frame_owner = None
@@ -1758,6 +1796,7 @@ class LiveDialogReader:
             chunk.character,
             f"{deferred.text}{separator}{chunk.text}",
             ordinal=deferred.ordinal,
+            line_id=(deferred.line_id if deferred.line_id == chunk.line_id else None),
         )
 
     def _schedule_deferred_if_possible(self):

@@ -4851,7 +4851,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cu129" },
     { name = "transformers", specifier = "==4.57.3" },
-    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.7.0" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.7.1" },
 ]
 provides-extras = ["rapidocr"]
 
@@ -4871,8 +4871,8 @@ notebook = [
 
 [[package]]
 name = "vntts-artifacts"
-version = "0.7.0"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.7.0#e83c24a409667af763ab321b24f36d90a84b29e7" }
+version = "0.7.1"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?tag=v0.7.1#ea00cec899f02b86bdd46f8fbfecdba53c820acf" }
 dependencies = [
     { name = "durable-file" },
 ]

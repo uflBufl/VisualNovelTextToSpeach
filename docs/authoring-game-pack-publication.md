@@ -4,7 +4,7 @@
 authoring boundary. It creates a portable `vntts.game-pack` version 2 directory
 from a fully reviewed bulk-generation state plus the exact queue, story index
 and voice manifest that produced it. The implementation uses only the released
-vntts-artifacts v0.7.0 game-pack, binding and lossless generated-audio APIs;
+vntts-artifacts v0.7.1 game-pack, binding and lossless generated-audio APIs;
 review authority remains in generation state. The live-sequence component is
 optional and is never inferred from story records alone; existing version-1
 packs remain readable through the shared compatibility loader.

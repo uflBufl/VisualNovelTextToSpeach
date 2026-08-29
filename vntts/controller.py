@@ -4,7 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from time import monotonic
 
 from vntts.assets import ModelAssetManager
@@ -291,6 +291,7 @@ class AppController:
         )
         self.unknown_speaker_handler = unknown_speaker_handler or (lambda _name: None)
         self.error_handler = error_handler
+        self.story_cursor_lock = RLock()
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
@@ -600,12 +601,13 @@ class AppController:
             self.narrator_fallback_names.update(self.next_live_narrator_fallback_names)
             with self.speaker_announcement_lock:
                 self.last_visible_speaker_key = None
-            if self.story_cursor is not None:
-                if self.explicit_sequence_anchor_pending:
-                    self.explicit_sequence_anchor_pending = False
-                else:
-                    self.story_cursor.reset("live-session-started")
-                self._publish_live_sequence_status()
+            with self.story_cursor_lock:
+                if self.story_cursor is not None:
+                    if self.explicit_sequence_anchor_pending:
+                        self.explicit_sequence_anchor_pending = False
+                    else:
+                        self.story_cursor.reset("live-session-started")
+                    self._publish_live_sequence_status()
         running = self.live_reader.toggle()
         if running:
             self.next_live_narrator_fallback_names.clear()
@@ -1363,31 +1365,34 @@ class AppController:
             self.dialog_handler("Narrator", "")
             return True
         character = self._canonical_observed_character(character, text)
-        sequence_observation = self._observe_live_sequence(character, text)
         canonical_routing = False
-        if self.settings.live_sequence_mode == "audio-manual":
-            if self.story_cursor is None:
-                return False
-            if sequence_observation is None:
-                if self.story_cursor.state in {
-                    StoryCursorState.LOCKED,
-                    StoryCursorState.MANUAL,
-                    StoryCursorState.DESYNCHRONIZED,
-                }:
+        with self.story_cursor_lock:
+            sequence_observation = self._observe_live_sequence(character, text)
+            if self.settings.live_sequence_mode == "audio-manual":
+                if self.story_cursor is None:
                     return False
-            else:
-                snapshot, line, _match_result = sequence_observation
-                if snapshot.state == StoryCursorState.DESYNCHRONIZED:
-                    return False
-                event = self.live_sequence_plan.events.get(snapshot.current_event_id)
-                if (
-                    event is None
-                    or not event.is_speech
-                    or event.line_id != line.line_id
-                ):
-                    return False
-                character, text = line.speaker, line.text
-                canonical_routing = True
+                if sequence_observation is None:
+                    if self.story_cursor.state in {
+                        StoryCursorState.LOCKED,
+                        StoryCursorState.MANUAL,
+                        StoryCursorState.DESYNCHRONIZED,
+                    }:
+                        return False
+                else:
+                    snapshot, line, _match_result = sequence_observation
+                    if snapshot.state == StoryCursorState.DESYNCHRONIZED:
+                        return False
+                    event = self.live_sequence_plan.events.get(
+                        snapshot.current_event_id
+                    )
+                    if (
+                        event is None
+                        or not event.is_speech
+                        or event.line_id != line.line_id
+                    ):
+                        return False
+                    character, text = line.speaker, line.text
+                    canonical_routing = True
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
@@ -1399,6 +1404,10 @@ class AppController:
         return (character, text) if canonical_routing else True
 
     def _load_live_sequence_plan(self):
+        with self.story_cursor_lock:
+            return self._load_live_sequence_plan_locked()
+
+    def _load_live_sequence_plan_locked(self):
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
@@ -1437,6 +1446,10 @@ class AppController:
         return True
 
     def get_live_sequence_status(self):
+        with self.story_cursor_lock:
+            return self._get_live_sequence_status_locked()
+
+    def _get_live_sequence_status_locked(self):
         cursor = self.story_cursor
         mode = self.settings.live_sequence_mode
         if cursor is None:
@@ -1594,6 +1607,10 @@ class AppController:
         return status
 
     def _observe_live_sequence(self, character, text):
+        with self.story_cursor_lock:
+            return self._observe_live_sequence_locked(character, text)
+
+    def _observe_live_sequence_locked(self, character, text):
         cursor = self.story_cursor
         if cursor is None or self.settings.live_sequence_mode == "off":
             return None
@@ -1684,6 +1701,10 @@ class AppController:
         return snapshot, line, match_result
 
     def live_sequence_anchor_options(self):
+        with self.story_cursor_lock:
+            return self._live_sequence_anchor_options_locked()
+
+    def _live_sequence_anchor_options_locked(self):
         plan = self.live_sequence_plan
         if plan is None or self.settings.live_sequence_mode != "audio-manual":
             return ()
@@ -1711,6 +1732,10 @@ class AppController:
         return tuple(options)
 
     def _expected_live_sequence_events(self):
+        with self.story_cursor_lock:
+            return self._expected_live_sequence_events_locked()
+
+    def _expected_live_sequence_events_locked(self):
         cursor = self.story_cursor
         if cursor is None or self.settings.live_sequence_mode != "audio-manual":
             return ()
@@ -1728,8 +1753,12 @@ class AppController:
         return cursor.bounded_visible_successors()
 
     def live_sequence_expected_options(self):
+        with self.story_cursor_lock:
+            return self._live_sequence_expected_options_locked()
+
+    def _live_sequence_expected_options_locked(self):
         options = []
-        for event in self._expected_live_sequence_events():
+        for event in self._expected_live_sequence_events_locked():
             line = (
                 None
                 if event.line_id is None
@@ -1748,40 +1777,100 @@ class AppController:
         return tuple(options)
 
     def select_expected_live_sequence_event(self, event_id):
-        cursor = self.story_cursor
-        candidates = {
-            event.event_id: event for event in self._expected_live_sequence_events()
-        }
-        event = candidates.get(str(event_id))
-        if cursor is None or event is None:
-            self.status_handler(
-                "Expected story event was not selected: the candidate is stale or "
-                "outside the current bounded path"
+        with self.story_cursor_lock:
+            candidates = {
+                event.event_id: event
+                for event in self._expected_live_sequence_events_locked()
+            }
+            event = candidates.get(str(event_id))
+            if self.story_cursor is None or event is None:
+                self.status_handler(
+                    "Expected story event was not selected: the candidate is stale or "
+                    "outside the current bounded path"
+                )
+                return False
+            return self._apply_explicit_live_sequence_event_locked(
+                event,
+                reason=(
+                    "visual-transition-confirmed"
+                    if event.kind == "silent"
+                    else "explicit-expected-selection"
+                ),
+                pipeline_stage="sequence-explicit-expected-selection",
+                success_message=(
+                    f"Expected story event selected: sequence {event.sequence}"
+                ),
             )
+
+    def _apply_explicit_live_sequence_event_locked(
+        self,
+        event,
+        *,
+        reason,
+        pipeline_stage,
+        success_message,
+    ):
+        cursor = self.story_cursor
+        if cursor is None:
             return False
         previous_event_id = cursor.current_event_id
         running = bool(self.live_reader is not None and self.live_reader.is_running)
-        if running:
-            self.live_reader.clear_queue()
-        cursor.anchor_event(
-            event.event_id,
-            (
-                "visual-transition-confirmed"
-                if event.kind == "silent"
-                else "explicit-expected-selection"
-            ),
-        )
         line = (
             None
             if event.line_id is None
-            else self.chapter_voice_preloader.line_for_id(event.line_id)
+            else self.chapter_voice_preloader.select_line_id(event.line_id)
         )
-        if line is not None:
-            self.chapter_voice_preloader.resolve_exact(line.speaker, line.text)
+        if event.is_speech and line is None:
+            self._report_explicit_live_sequence_outcome(
+                pipeline_stage,
+                previous_event_id,
+                event,
+                "missing-canonical-line",
+            )
+            self._publish_live_sequence_status()
+            self.status_handler(
+                "Story event was not selected: its canonical line is unavailable"
+            )
+            return False
+        if (
+            running
+            and line is not None
+            and self._offer_unknown_speaker_mapping(line.speaker, line.text)
+        ):
+            self._report_explicit_live_sequence_outcome(
+                pipeline_stage,
+                previous_event_id,
+                event,
+                "voice-decision-deferred",
+            )
+            self._publish_live_sequence_status()
+            return False
         if running:
-            self.live_reader.bind_current_frame_route()
-            if line is not None and not self._enqueue_dialog(line.speaker, line.text):
+            self.live_reader.clear_queue()
+        cursor.anchor_event(event.event_id, reason)
+        if running:
+            try:
+                enqueued = (
+                    True if line is None else self._enqueue_selected_sequence_line(line)
+                )
+            except Exception as error:
+                self.error_handler(error)
+                enqueued = False
+            if not enqueued:
+                cursor.desynchronize("explicit-route-failed")
+                self._report_explicit_live_sequence_outcome(
+                    pipeline_stage,
+                    previous_event_id,
+                    event,
+                    "route-failed",
+                )
+                self._publish_live_sequence_status()
+                self.status_handler(
+                    "Story event was selected but canonical audio could not be queued; "
+                    "replay or set the visible story position"
+                )
                 return False
+            self.live_reader.bind_current_frame_route()
             if line is None:
                 self.dialog_handler("Narrator", "Silent dialogue")
         else:
@@ -1790,101 +1879,156 @@ class AppController:
                 line.speaker if line is not None else "Narrator",
                 line.text if line is not None else "Silent dialogue",
             )
+        self._report_explicit_live_sequence_outcome(
+            pipeline_stage,
+            previous_event_id,
+            event,
+            "accepted",
+        )
+        self._publish_live_sequence_status()
+        self.status_handler(success_message)
+        return True
+
+    def resync_live_sequence(self, event_id):
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            plan = self.live_sequence_plan
+            if (
+                cursor is None
+                or plan is None
+                or self.settings.live_sequence_mode != "audio-manual"
+            ):
+                self.status_handler(
+                    "Story position is unavailable: configure sequence-first manual "
+                    "audio"
+                )
+                return False
+            event = plan.events.get(str(event_id))
+            if event is None or event.kind not in {"speech", "silent"}:
+                self.status_handler(
+                    "Story position was not changed: invalid visible event"
+                )
+                return False
+            return self._apply_explicit_live_sequence_event_locked(
+                event,
+                reason=(
+                    "visual-transition-confirmed"
+                    if event.kind == "silent"
+                    else "explicit-user-resync"
+                ),
+                pipeline_stage="sequence-explicit-user-resync",
+                success_message=(
+                    f"Story position set to chapter {event.chapter}, "
+                    f"sequence {event.sequence}"
+                ),
+            )
+
+    def _enqueue_selected_sequence_line(self, line):
+        self._prime_observed_voice(line.speaker)
+        self._prime_likely_chapter_voice(line.speaker, line.text)
+        self.history.add(line.speaker, line.text)
+        preview = line.text if len(line.text) <= 100 else f"{line.text[:97]}..."
+        self.dialog_handler(line.speaker or "Narrator", preview)
+        return self.live_reader.enqueue(
+            line.speaker,
+            line.text,
+            line_id=line.line_id,
+        )
+
+    def _report_explicit_live_sequence_outcome(
+        self,
+        stage,
+        previous_event_id,
+        event,
+        outcome,
+    ):
         generation = (
             self.live_reader.active_generation if self.live_reader is not None else 0
         )
         self.pipeline_event_handler(
-            "sequence-explicit-expected-selection",
+            stage,
             generation,
             monotonic(),
             previous_event_id=previous_event_id,
             event_id=event.event_id,
             line_id=event.line_id,
-            reason=cursor.reason,
+            reason=self.story_cursor.reason if self.story_cursor is not None else None,
+            outcome=outcome,
         )
-        self._publish_live_sequence_status()
-        self.status_handler(f"Expected story event selected: sequence {event.sequence}")
-        return True
 
-    def resync_live_sequence(self, event_id):
-        cursor = self.story_cursor
-        plan = self.live_sequence_plan
-        if (
-            cursor is None
-            or plan is None
-            or self.settings.live_sequence_mode != "audio-manual"
-        ):
-            self.status_handler(
-                "Story position is unavailable: configure sequence-first manual audio"
+    def _stable_live_frame_route(
+        self,
+        _fingerprint,
+        settled,
+        expected_owner=None,
+        route_epoch=None,
+    ):
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+                return None
+            if expected_owner is not None and cursor.current_event_id != expected_owner:
+                return False
+            if (
+                route_epoch is not None
+                and self.live_reader is not None
+                and not self.live_reader.frame_route_epoch_is_current(route_epoch)
+            ):
+                return False
+            if cursor.state in {
+                StoryCursorState.UNSYNCHRONIZED,
+                StoryCursorState.ANCHORING,
+            }:
+                return None
+            if not settled:
+                return False
+            if cursor.state in {
+                StoryCursorState.MANUAL,
+                StoryCursorState.DESYNCHRONIZED,
+            }:
+                return None
+            if not cursor.can_confirm_visual_transition:
+                return False
+            visible_candidates = cursor.bounded_visible_successors()
+            event = cursor.deterministic_visual_successor()
+            if (
+                event is None
+                or len(visible_candidates) != 1
+                or visible_candidates[0].event_id != event.event_id
+            ):
+                # Manual input may have crossed more than one dialogue box before
+                # capture settled. Let bounded canonical recognition identify the
+                # visible event instead of speaking an inferred intermediate line.
+                return None
+            previous_event_id = cursor.current_event_id
+            cursor.anchor_event(event.event_id, "visual-transition-confirmed")
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
             )
-            return False
-        event = plan.events.get(str(event_id))
-        if event is None or event.kind not in {"speech", "silent"}:
-            self.status_handler("Story position was not changed: invalid visible event")
-            return False
-        running = bool(self.live_reader is not None and self.live_reader.is_running)
-        if running:
-            self.live_reader.clear_queue()
-        cursor.anchor_event(
-            event.event_id,
-            (
-                "visual-transition-confirmed"
-                if event.kind == "silent"
-                else "explicit-user-resync"
-            ),
-        )
-        self._publish_live_sequence_status()
-        line = (
-            None
-            if event.line_id is None
-            else self.chapter_voice_preloader.line_for_id(event.line_id)
-        )
-        if line is not None:
-            self.chapter_voice_preloader.resolve_exact(line.speaker, line.text)
-        if running:
-            self.live_reader.bind_current_frame_route()
-            if line is not None:
-                if not self._enqueue_dialog(line.speaker, line.text):
-                    return False
-            else:
-                self.dialog_handler("Narrator", "Silent dialogue")
-        else:
-            self.explicit_sequence_anchor_pending = True
-            self.dialog_handler(
-                line.speaker if line is not None else "Narrator",
-                line.text if line is not None else "Silent dialogue",
-            )
-        self.status_handler(
-            f"Story position set to chapter {event.chapter}, sequence {event.sequence}"
-        )
-        return True
-
-    def _stable_live_frame_route(self, _fingerprint, settled):
-        cursor = self.story_cursor
-        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
-            return None
-        if cursor.state in {
-            StoryCursorState.UNSYNCHRONIZED,
-            StoryCursorState.ANCHORING,
-        }:
-            return None
-        if not settled:
-            return False
-        if cursor.state in {
-            StoryCursorState.MANUAL,
-            StoryCursorState.DESYNCHRONIZED,
-        }:
-            return None
-        if not cursor.can_confirm_visual_transition:
-            return False
-        previous_event_id = cursor.current_event_id
-        event = cursor.confirm_visual_transition()
-        if event is None:
-            return None
-        generation = (
-            self.live_reader.active_generation if self.live_reader is not None else 0
-        )
-        if event.kind == "silent":
+            if event.kind == "silent":
+                self.pipeline_event_handler(
+                    "sequence-visual-transition",
+                    generation,
+                    monotonic(),
+                    state=cursor.state.value,
+                    previous_event_id=previous_event_id,
+                    event_id=event.event_id,
+                    line_id=None,
+                    route="silent",
+                    reason=cursor.reason,
+                )
+                self._publish_live_sequence_status()
+                return (None, "")
+            line = self.chapter_voice_preloader.select_line_id(event.line_id)
+            if line is None:
+                cursor.desynchronize(f"missing-story-line:{event.line_id}")
+                self.status_handler(
+                    "Sequence-first routing stopped: the expected story line is missing"
+                )
+                self._publish_live_sequence_status()
+                return False
             self.pipeline_event_handler(
                 "sequence-visual-transition",
                 generation,
@@ -1892,89 +2036,74 @@ class AppController:
                 state=cursor.state.value,
                 previous_event_id=previous_event_id,
                 event_id=event.event_id,
-                line_id=None,
-                route="silent",
+                line_id=line.line_id,
+                route="canonical-story-line",
                 reason=cursor.reason,
             )
             self._publish_live_sequence_status()
-            return (None, "")
-        line = self.chapter_voice_preloader.line_for_id(event.line_id)
-        if line is None:
-            cursor.desynchronize(f"missing-story-line:{event.line_id}")
-            self.status_handler(
-                "Sequence-first routing stopped: the expected story line is missing"
-            )
-            self._publish_live_sequence_status()
-            return False
-        self.pipeline_event_handler(
-            "sequence-visual-transition",
-            generation,
-            monotonic(),
-            state=cursor.state.value,
-            previous_event_id=previous_event_id,
-            event_id=event.event_id,
-            line_id=line.line_id,
-            route="canonical-story-line",
-            reason=cursor.reason,
-        )
-        self._publish_live_sequence_status()
-        return (line.speaker, line.text)
+            return (line.speaker, line.text)
 
     def _stable_live_frame_owner(self):
-        cursor = self.story_cursor
-        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
-            return None
-        return cursor.current_event_id
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+                return None
+            return cursor.current_event_id
 
     def _begin_sequence_playback(self, chunk):
-        cursor = self.story_cursor
-        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
-            return None
-        event = cursor.current_event
-        if (
-            cursor.state != StoryCursorState.LOCKED
-            or event is None
-            or not event.is_speech
-        ):
-            return None
-        line = self.chapter_voice_preloader.line_for_id(event.line_id)
-        if line is None or (line.speaker, line.text) != (
-            chunk.character,
-            chunk.text,
-        ):
-            return None
-        try:
-            cursor.begin_playback()
-        except StoryCursorError:
-            return None
-        self._publish_live_sequence_status()
-        return event.event_id
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+                return None
+            event = cursor.current_event
+            if (
+                cursor.state != StoryCursorState.LOCKED
+                or event is None
+                or not event.is_speech
+                or (chunk.line_id is not None and chunk.line_id != event.line_id)
+            ):
+                return None
+            line = self.chapter_voice_preloader.line_for_id(event.line_id)
+            if line is None or (line.speaker, line.text) != (
+                chunk.character,
+                chunk.text,
+            ):
+                return None
+            try:
+                cursor.begin_playback()
+            except StoryCursorError:
+                return None
+            self._publish_live_sequence_status()
+            return event.event_id
 
     def _finish_sequence_playback(self, event_id, outcome):
-        cursor = self.story_cursor
-        if (
-            event_id is None
-            or cursor is None
-            or cursor.current_event_id != event_id
-            or cursor.state != StoryCursorState.PLAYING
-        ):
-            return False
-        successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
-        cursor.finish_playback(successful=successful)
-        generation = (
-            self.live_reader.active_generation if self.live_reader is not None else 0
-        )
-        self.pipeline_event_handler(
-            "sequence-playback-state",
-            generation,
-            monotonic(),
-            state=cursor.state.value,
-            event_id=event_id,
-            line_id=cursor.snapshot().current_line_id,
-            outcome="completed" if successful else "failed",
-        )
-        self._publish_live_sequence_status()
-        return successful
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if (
+                event_id is None
+                or cursor is None
+                or cursor.current_event_id != event_id
+                or cursor.state != StoryCursorState.PLAYING
+            ):
+                return False
+            successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
+            cursor.finish_playback(successful=successful)
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
+            )
+            self.pipeline_event_handler(
+                "sequence-playback-state",
+                generation,
+                monotonic(),
+                state=cursor.state.value,
+                event_id=event_id,
+                line_id=cursor.snapshot().current_line_id,
+                outcome="completed" if successful else "failed",
+            )
+            self._publish_live_sequence_status()
+            return successful
 
     def _canonical_observed_character(self, character, text=None):
         original = str(character or "Narrator").strip() or "Narrator"
@@ -2266,8 +2395,15 @@ class AppController:
                 type(self.speech_backend), "prepare_playback", None
             )
             if callable(prepare_route):
-                prepared = prepare_route(
-                    self.speech_backend, chunk.character, chunk.text
+                prepared = (
+                    prepare_route(
+                        self.speech_backend,
+                        chunk.character,
+                        chunk.text,
+                        line_id=chunk.line_id,
+                    )
+                    if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+                    else prepare_route(self.speech_backend, chunk.character, chunk.text)
                 )
             elif callable(prepare_playback):
                 prepared = prepare_playback(

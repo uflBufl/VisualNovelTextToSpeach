@@ -19,6 +19,7 @@ from vntts.app import (  # noqa: E402
     main,
 )
 from vntts.cli import CLIReportResult  # noqa: E402
+from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
@@ -116,6 +117,9 @@ class TrayApplicationTest(unittest.TestCase):
             ("Chapter 1, sequence 2 - Bea: Second [event-2]", "event-2"),
         )
         controller.story_cursor.current_event_id = "event-2"
+        controller.get_live_sequence_status.return_value = LiveSequenceStatus(
+            "audio-manual", "locked", event_id="event-2"
+        )
         controller.resync_live_sequence.return_value = True
         tray_application = TrayApplication(
             self.application,
@@ -181,6 +185,35 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(tray_application.choose_expected_sequence_event())
 
         controller.select_expected_live_sequence_event.assert_called_once_with("right")
+        tray_application.shutdown()
+
+    def test_compact_expected_sequence_button_uses_fresh_controller_candidate(self):
+        controller = Mock()
+        controller.live_sequence_expected_options.return_value = (
+            ("Sequence 2 - Ada: Repeated [event-2]", "event-2"),
+        )
+        controller.select_expected_live_sequence_event.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(live_sequence_mode="audio-manual"),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application._controller_ready = True
+        tray_application.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-manual",
+                "locked",
+                expected_candidate_count=1,
+            )
+        )
+        tray_application.compact_controller.set_ready(True)
+
+        tray_application.compact_controller.sequence_expected_button.click()
+
+        controller.live_sequence_expected_options.assert_called_once_with()
+        controller.select_expected_live_sequence_event.assert_called_once_with(
+            "event-2"
+        )
         tray_application.shutdown()
 
     def test_compact_controls_replace_dashboard_and_persist_preference(self):

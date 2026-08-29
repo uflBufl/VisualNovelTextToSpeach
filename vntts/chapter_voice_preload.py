@@ -162,6 +162,14 @@ class ChapterVoicePreloader:
     def line_for_id(self, line_id):
         return self.by_line_id.get(str(line_id))
 
+    def select_line_id(self, line_id):
+        """Select one checksum-bound canonical line without text re-resolution."""
+        line = self.line_for_id(line_id)
+        if line is None or not line.line_id or not line.text_sha256:
+            return None
+        self.current_match = ChapterMatch(line.chapter, line.sequence, 1.0)
+        return line
+
     def resolve_exact_with_result(self, character, text):
         """Return an exact line plus an explicit match result for diagnostics."""
         speaker_key = _normalize(character)

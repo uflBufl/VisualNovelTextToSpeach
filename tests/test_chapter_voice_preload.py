@@ -141,6 +141,18 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.line_id, "test:0")
         self.assertEqual(result, "normalized-exact")
 
+    def test_explicit_line_selection_uses_identity_without_text_resolution(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story.jsonl"
+            path.write_text(story_index_document(), encoding="utf-8")
+            preloader = ChapterVoicePreloader.load_optional(path)
+
+            line = preloader.select_line_id("test:1")
+
+        self.assertEqual(line.line_id, "test:1")
+        self.assertEqual(preloader.current_match, ChapterMatch("24006", 20, 1.0))
+        self.assertIsNone(preloader.select_line_id("missing"))
+
     def test_expected_resolution_allows_one_text_only_nameplate_recovery(self):
         text = "Only the explicit branch candidate may match."
         preloader = ChapterVoicePreloader.from_document(

@@ -1254,6 +1254,9 @@ class TrayApplication(QObject):
         self.compact_controller.pause_requested.connect(self.toggle_speech_pause)
         self.compact_controller.skip_requested.connect(self.skip_current_speech)
         self.compact_controller.stop_requested.connect(self.emergency_stop)
+        self.compact_controller.sequence_expected_requested.connect(
+            self.choose_expected_sequence_event
+        )
         self.compact_controller.full_requested.connect(self.show_dashboard)
 
     def _application_icon(self):
@@ -1373,11 +1376,8 @@ class TrayApplication(QObject):
             )
             return False
         labels = [label for label, _event_id in options]
-        current_event_id = getattr(
-            getattr(self.controller, "story_cursor", None),
-            "current_event_id",
-            None,
-        )
+        sequence_status = self.controller.get_live_sequence_status()
+        current_event_id = getattr(sequence_status, "event_id", None)
         current_index = next(
             (
                 index
@@ -1428,6 +1428,7 @@ class TrayApplication(QObject):
 
     def set_sequence_status(self, status):
         self.dashboard.set_sequence_status(status)
+        self.compact_controller.set_sequence_status(status)
         manual = getattr(status, "mode", "off") == "audio-manual"
         candidate_count = int(getattr(status, "expected_candidate_count", 0))
         self.sequence_expected_action.setVisible(manual)

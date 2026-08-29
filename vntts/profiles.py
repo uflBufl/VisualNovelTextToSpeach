@@ -7,6 +7,7 @@ from vntts.settings import (
     audio_source_policies,
     default_audio_source_policy,
     get_config_directory,
+    live_sequence_modes,
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
@@ -88,7 +89,7 @@ class GameProfile:
             live_sequence_plan=_optional_text(values.get("live_sequence_plan")),
             live_sequence_mode=(
                 values.get("live_sequence_mode")
-                if values.get("live_sequence_mode") in {"off", "shadow"}
+                if values.get("live_sequence_mode") in live_sequence_modes
                 else "off"
             ),
             generated_audio_manifest=_optional_text(

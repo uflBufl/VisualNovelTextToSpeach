@@ -728,6 +728,43 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsNone(outcome.playback_ms)
         live.prepare_playback.assert_not_called()
 
+    def test_explicit_line_id_routes_repeated_text_without_resolution_ambiguity(self):
+        repeated = "The same words appear twice."
+        resolver = ChapterVoicePreloader(
+            [
+                ChapterDialogue(
+                    f"game:{sequence}",
+                    "1",
+                    sequence,
+                    "Ada",
+                    repeated,
+                    text_sha256(repeated),
+                    "available",
+                    f"voice-{sequence}",
+                    0.1,
+                )
+                for sequence in (1, 2)
+            ]
+        )
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(),
+            None,
+            resolver,
+            audio_source_policy="prefer-game-audio",
+            audio_output=FakeAudioOutput(),
+        )
+        backend.set_live_mode_active(True)
+
+        route = backend.prepare_route(
+            "Ada",
+            repeated,
+            line_id="game:2",
+        )
+
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertEqual(route.prepared.line_id, "game:2")
+        self.assertEqual(route.trace.line_id, "game:2")
+
     def test_story_audio_with_explicit_completion_waits_before_finishing(self):
         live = self.create_live_backend()
         backend = GeneratedAudioFallbackBackend(

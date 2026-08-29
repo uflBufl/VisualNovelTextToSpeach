@@ -1,7 +1,7 @@
 # Game-pack import boundary
 
 VNTTS consumes the released `vntts.game-pack` version 1 and 2 contracts from
-`vntts-artifacts` v0.7.0. A pack manifest binds a required versioned story
+`vntts-artifacts` v0.7.1. A pack manifest binds a required versioned story
 index and voice manifest, every referenced voice WAV, optional generated audio
 and live-sequence-plan components, the producing tool versions, and a SHA-256
 digest for each file.

@@ -5,13 +5,15 @@
 The first two runtime-safe slices landed on 2026-08-29. They deliberately do
 not control the game yet:
 
-- released `vntts-artifacts` v0.7.0 owns the schema-version-1 sequence reader
+- released `vntts-artifacts` v0.7.1 owns the schema-version-1 sequence reader
   and writer, exact story-index SHA-256 binding, source-extract provenance and
   producer identity. VNTTS retains only its runtime cursor;
 - validation rejects unknown or duplicated story line bindings, speech lines
   from another chapter, dangling successors, unreachable events, invalid
   automatic/choice/terminal control, cross-chapter edges and unguarded
-  automatic cycles;
+  automatic cycles. Runtime-transparent passive transitions are part of cycle
+  detection, so they cannot hide an automatic loop behind a non-user-controlled
+  event;
 - invalid input is validated in a temporary candidate before publication, so a
   rejected write does not replace or create the requested output;
 - the session-only `StoryCursor` implements the seven planned states and
@@ -45,6 +47,17 @@ not control the game yet:
   closed. Passive non-dialogue events may be crossed, but a silent dialogue box
   is retained as its own cursor event. Successful canonical live fallback is
   sealed against late OCR suffixes just like generated/source WAV playback.
+- cursor reads and transitions are serialized by one controller-owned re-entrant
+  lock across OCR, playback and UI threads. Stable-frame candidates carry both
+  their cursor owner and a frame-route epoch; an explicit frame bind invalidates
+  in-flight routing before it can overwrite a newer user selection. Invisible
+  or unfocused frames are rejected before even the initial OCR bootstrap path.
+- a changed fingerprint during manual advancement is not evidence that exactly
+  one dialogue box was crossed. OCR-free routing is therefore limited to a graph
+  window with exactly one visible candidate. When two or more visible events are
+  reachable, the bounded canonical recognizer identifies the actual box before
+  the cursor moves, preventing a rapid two-line skip from speaking the skipped
+  intermediate line.
 - the control window and tray expose `Set story position / resync` only in
   `audio-manual`. The chooser lists visible speech/silent events with chapter,
   sequence, speaker, text and event ID. A stopped-session choice establishes the
@@ -52,6 +65,12 @@ not control the game yet:
   speech, binds the latest frame and routes the selected canonical speech event
   immediately; silent events update position without synthesizing text. Invalid
   or non-visible event IDs fail closed.
+- explicit expected-event selection and resync route their canonical line ID in
+  the immutable speech chunk. Repeated identical speaker/text pairs cannot be
+  re-resolved to the wrong occurrence by mutable chapter proximity. Voice
+  deferral leaves the cursor unchanged; a later queueing failure moves it to a
+  published fail-closed state and records the terminal outcome instead of
+  leaving an invisible partial mutation.
 - the same control window now keeps a persistent sequence-first card rather than
   relying on transient status text. It shows cursor state/reason,
   chapter/sequence, event and line IDs, canonical speaker/text and the count of
@@ -61,10 +80,11 @@ not control the game yet:
   guidance durable and emphasize the story-position control; off and shadow
   modes do not present it as a manual action.
 
-`vntts-artifacts` v0.7.0 publishes game-pack schema version 2 with an optional
+`vntts-artifacts` v0.7.0 introduced game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately
 retains schema-v1 compatibility, while schema v1 still rejects the new component
-because its v0.6.x readers cannot understand it. Reverse: 1999 source-pack
+because its v0.6.x readers cannot understand it. The pinned v0.7.1 safety patch
+also rejects automatic cycles hidden behind passive transitions. Reverse: 1999 source-pack
 export can include the plan, and VNTTS pack import selects that exact path or
 clears a stale plan when the imported pack has none.
 
@@ -203,14 +223,17 @@ therefore `audio complete or silent event`, plus `dialogue render settled`, plus
 `game focused`, plus `cursor still owns the same event`.
 
 In a linear successor step, a verified dialogue-region transition is enough to
-move to the one explicit successor. Full OCR is not run. The implemented gate
+move without full OCR only when the bounded graph window contains exactly one
+visible candidate. A longer linear window still requires bounded recognition:
+manual input can cross multiple boxes between captures. The implemented gate
 requires plausible bright glyphs in the lower dialogue band, rejects empty and
 mostly bright popup-like crops, waits for two equal changed fingerprints for at
 least 120 ms, rechecks game focus in the consuming worker, and binds the
-candidate to the cursor event that first observed it. Visibility loss, focus
-loss, a changed fingerprint or a changed owner resets the candidate. The
-three-pixel lower bound intentionally preserves a small anti-aliased `...` as a
-visible dialogue screen.
+candidate to the cursor event and frame-route epoch that first observed it.
+Visibility loss, focus loss, a changed fingerprint, a changed owner or an
+explicit frame bind resets or invalidates the candidate. The three-pixel lower
+bound intentionally preserves a small anti-aliased `...` as a visible dialogue
+screen.
 
 When there are multiple successors, repeated identical lines, an early manual
 advance, or an unexpected fingerprint, use a small expected-candidate recognizer
@@ -273,6 +296,12 @@ is applied, so a stale UI event ID cannot move the cursor. Selection clears
 stale speech, binds the current frame and routes canonical speech (or preserves
 a silent event). Full chapter/line resync remains a separate final recovery
 tool.
+
+Compact in-game controls expose the same bounded expected-event action whenever
+manual mode has at least one current candidate. It recomputes controller options
+when pressed and follows controller lifecycle readiness; full chapter resync
+remains in the full dashboard. Game profiles preserve `audio-manual` across
+serialization, restart and profile switching.
 
 Timeline diagnostics should record event ID, line ID, previous/next cursor,
 route, fingerprint transition, readiness gates, branch candidates, recovery

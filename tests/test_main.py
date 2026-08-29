@@ -1820,6 +1820,13 @@ class MainTest(unittest.TestCase):
             PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
         )
         self.assertFalse(controller._stable_live_frame_route("new", False))
+        self.assertFalse(
+            controller._stable_live_frame_route(
+                "new",
+                True,
+                expected_owner="stale-event",
+            )
+        )
         self.assertEqual(
             controller._stable_live_frame_route("new", True),
             ("Hotelier", "Second canonical line."),
@@ -1993,14 +2000,190 @@ class MainTest(unittest.TestCase):
 
         running_reader = Mock(is_running=True)
         controller.live_reader = running_reader
-        controller._enqueue_dialog = Mock(return_value=True)
 
         self.assertTrue(controller.resync_live_sequence("event-1"))
 
         running_reader.clear_queue.assert_called_once_with()
         running_reader.bind_current_frame_route.assert_called_once_with()
-        controller._enqueue_dialog.assert_called_once_with("Rhiannon", text)
+        running_reader.enqueue.assert_called_once_with(
+            "Rhiannon",
+            text,
+            line_id="reverse1999:1:1",
+        )
         self.assertIn("sequence 1", statuses[-1])
+
+        running_reader.enqueue.return_value = False
+
+        self.assertFalse(controller.resync_live_sequence("event-1"))
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.DESYNCHRONIZED,
+        )
+        self.assertEqual(controller.story_cursor.reason, "explicit-route-failed")
+        self.assertEqual(sequence_statuses[-1].state, "desynchronized")
+        self.assertIn("could not be queued", statuses[-1])
+
+    def test_explicit_selection_routes_repeated_text_by_canonical_line_id(self):
+        repeated = "The same words appear twice."
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": sequence,
+                        "line_id": f"reverse1999:1:{sequence}",
+                        "speaker_name": "Rhiannon",
+                        "text": repeated,
+                        "text_sha256": text_sha256(repeated),
+                    }
+                    for sequence in (1, 2)
+                ]
+            }
+        )
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-2",),
+                "reverse1999:1:1",
+            ),
+            "event-2": LiveSequenceEvent(
+                "event-2",
+                "1",
+                2,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:2",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:1": "event-1",
+                "reverse1999:1:2": "event-2",
+            },
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        reader = Mock(is_running=True)
+        reader.enqueue.return_value = True
+        controller.live_reader = reader
+        controller.story_cursor.anchor_event("event-1")
+        event_id = controller._begin_sequence_playback(
+            SpeechChunk(
+                1,
+                "Rhiannon",
+                repeated,
+                line_id="reverse1999:1:1",
+            )
+        )
+        controller._finish_sequence_playback(
+            event_id,
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
+        )
+
+        self.assertTrue(controller.select_expected_live_sequence_event("event-2"))
+
+        reader.enqueue.assert_called_once_with(
+            "Rhiannon",
+            repeated,
+            line_id="reverse1999:1:2",
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(preloader.current_match.chapter, "1")
+        self.assertEqual(preloader.current_match.sequence, 2)
+
+    def test_manual_multi_line_skip_requires_bounded_recognition(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, speaker, text in (
+                (1, "Ada", "First line."),
+                (2, "Bea", "Intermediate line."),
+                (3, "Cora", "Actually visible third line."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            f"event-{sequence}": LiveSequenceEvent(
+                f"event-{sequence}",
+                "1",
+                sequence,
+                "speech",
+                "terminal" if sequence == 3 else "automatic",
+                () if sequence == 3 else (f"event-{sequence + 1}",),
+                f"reverse1999:1:{sequence}",
+            )
+            for sequence in (1, 2, 3)
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                f"reverse1999:1:{sequence}": f"event-{sequence}"
+                for sequence in (1, 2, 3)
+            },
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        first = controller._dialog_observed("Ada", "First line.")
+        event_id = controller._begin_sequence_playback(SpeechChunk(1, *first))
+        controller._finish_sequence_playback(
+            event_id,
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
+        )
+
+        self.assertIsNone(controller._stable_live_frame_route("third", True))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+
+        routed = controller._dialog_observed(
+            "Cora",
+            "Actually visible third line.",
+        )
+
+        self.assertEqual(routed, ("Cora", "Actually visible third line."))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-3")
 
     def test_controller_identifies_live_scope_without_speaking_or_history(self):
         dialogs = []

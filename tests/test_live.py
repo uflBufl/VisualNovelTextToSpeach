@@ -258,7 +258,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
     def test_stable_frame_route_replaces_second_line_without_another_ocr_call(self):
         route_calls = []
 
-        def stable_route(fingerprint, settled):
+        def stable_route(fingerprint, settled, _owner, _route_epoch):
             route_calls.append((fingerprint, settled))
             return ("Bea", "Canonical second line.") if settled else False
 
@@ -306,7 +306,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
     def test_stable_frame_route_waits_for_minimum_settled_time(self):
         route_calls = []
 
-        def stable_route(fingerprint, settled):
+        def stable_route(fingerprint, settled, _owner, _route_epoch):
             route_calls.append((fingerprint, settled))
             return ("Bea", "Canonical second line.") if settled else False
 
@@ -347,7 +347,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
     def test_stable_frame_route_requires_visible_dialogue(self):
         route_calls = []
 
-        def stable_route(fingerprint, settled):
+        def stable_route(fingerprint, settled, _owner, _route_epoch):
             route_calls.append((fingerprint, settled))
             return ("Bea", "Canonical second line.") if settled else False
 
@@ -376,10 +376,27 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         self.assertEqual(route_calls, [])
         self.assertEqual(len(harness.recognized_frames), 1)
 
+    def test_first_invisible_frame_never_invokes_ocr(self):
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=Mock())
+        harness.start()
+        self.addCleanup(harness.stop)
+
+        harness.push(
+            "bad OCR",
+            "popup",
+            background="popup",
+            fingerprint="popup",
+            visible=False,
+            expected=(None, ""),
+        )
+
+        self.assertEqual(harness.recognized_frames, [])
+        harness.reader.stable_frame_route.assert_not_called()
+
     def test_stable_frame_route_resets_when_owner_changes(self):
         route_calls = []
 
-        def stable_route(fingerprint, settled):
+        def stable_route(fingerprint, settled, _owner, _route_epoch):
             route_calls.append((fingerprint, settled))
             return ("Bea", "Canonical second line.") if settled else False
 
@@ -417,10 +434,42 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             [("second", False), ("second", False), ("second", True)],
         )
 
+    def test_explicit_frame_bind_invalidates_in_flight_stable_route(self):
+        harness = None
+
+        def stable_route(_fingerprint, settled, _owner, _route_epoch):
+            if settled:
+                self.assertTrue(harness.reader.bind_current_frame_route())
+                return ("Bea", "Stale canonical route.")
+            return False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-a",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.12)
+        harness.push(
+            "bad OCR",
+            "still partial",
+            background="second-b",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+
+        self.assertEqual(len(harness.recognized_frames), 1)
+        self.assertEqual(harness.reader.routed_frame_fingerprint, "second")
+
     def test_stable_frame_route_resets_while_game_is_unfocused(self):
         route_calls = []
 
-        def stable_route(fingerprint, settled):
+        def stable_route(fingerprint, settled, _owner, _route_epoch):
             route_calls.append((fingerprint, settled))
             return ("Bea", "Canonical second line.") if settled else False
 

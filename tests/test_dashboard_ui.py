@@ -207,6 +207,39 @@ class ControlDashboardTest(unittest.TestCase):
         controller.close()
         controller.deleteLater()
 
+    def test_compact_expected_sequence_action_tracks_mode_candidates_and_readiness(
+        self,
+    ):
+        controller = CompactController(platform="darwin")
+        requests = []
+        controller.sequence_expected_requested.connect(
+            lambda: requests.append("expected")
+        )
+
+        controller.set_sequence_status(
+            LiveSequenceStatus("off", "off", expected_candidate_count=1)
+        )
+        self.assertTrue(controller.sequence_expected_button.isHidden())
+
+        controller.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-manual",
+                "locked",
+                expected_candidate_count=1,
+            )
+        )
+        self.assertFalse(controller.sequence_expected_button.isHidden())
+        self.assertFalse(controller.sequence_expected_button.isEnabled())
+
+        controller.set_ready(True)
+        controller.sequence_expected_button.click()
+
+        self.assertTrue(controller.sequence_expected_button.isEnabled())
+        self.assertEqual(requests, ["expected"])
+        controller.set_ready(False)
+        self.assertFalse(controller.sequence_expected_button.isEnabled())
+        controller.deleteLater()
+
     def test_compact_status_and_warning_remain_visible_during_live_mode(self):
         controller = CompactController(platform="win32")
         controller.set_live(True)
