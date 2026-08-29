@@ -710,6 +710,15 @@ class LiveDialogReader:
         self._schedule([SpeechChunk(generation, character, text)])
         return True
 
+    def bind_current_frame_route(self):
+        """Bind explicit cursor recovery to the latest captured dialogue frame."""
+        with self.state_lock:
+            fingerprint = self.latest_frame_fingerprint
+            if fingerprint is None:
+                return False
+            self._accept_routed_frame(fingerprint)
+        return True
+
     def skip_current(self):
         with self.state_lock:
             has_current_speech = self.current_chunk is not None

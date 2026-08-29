@@ -268,6 +268,7 @@ class AppController:
         self.error_handler = error_handler
         self.live_sequence_plan = None
         self.story_cursor = None
+        self.explicit_sequence_anchor_pending = False
         self._load_live_sequence_plan()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
@@ -573,7 +574,10 @@ class AppController:
             with self.speaker_announcement_lock:
                 self.last_visible_speaker_key = None
             if self.story_cursor is not None:
-                self.story_cursor.reset("live-session-started")
+                if self.explicit_sequence_anchor_pending:
+                    self.explicit_sequence_anchor_pending = False
+                else:
+                    self.story_cursor.reset("live-session-started")
         running = self.live_reader.toggle()
         if running:
             self.next_live_narrator_fallback_names.clear()
@@ -1369,6 +1373,7 @@ class AppController:
     def _load_live_sequence_plan(self):
         self.live_sequence_plan = None
         self.story_cursor = None
+        self.explicit_sequence_anchor_pending = False
         if self.settings.live_sequence_mode == "off":
             return False
         if not self.settings.live_sequence_plan:
@@ -1434,6 +1439,78 @@ class AppController:
             match_result=match_result,
         )
         return snapshot, line, match_result
+
+    def live_sequence_anchor_options(self):
+        plan = self.live_sequence_plan
+        if plan is None or self.settings.live_sequence_mode != "audio-manual":
+            return ()
+        options = []
+        for chapter in plan.chapters:
+            entries = set(chapter.entry_event_ids)
+            for event_id in chapter.event_ids:
+                event = plan.events[event_id]
+                if event.kind not in {"speech", "silent"}:
+                    continue
+                line = (
+                    None
+                    if event.line_id is None
+                    else self.chapter_voice_preloader.line_for_id(event.line_id)
+                )
+                speaker = line.speaker if line is not None else "Silent"
+                text = line.text if line is not None else "silent dialogue"
+                preview = text if len(text) <= 90 else f"{text[:87]}..."
+                entry = "entry; " if event_id in entries else ""
+                label = (
+                    f"Chapter {chapter.chapter}, {entry}sequence {event.sequence} - "
+                    f"{speaker}: {preview} [{event_id}]"
+                )
+                options.append((label, event_id))
+        return tuple(options)
+
+    def resync_live_sequence(self, event_id):
+        cursor = self.story_cursor
+        plan = self.live_sequence_plan
+        if (
+            cursor is None
+            or plan is None
+            or self.settings.live_sequence_mode != "audio-manual"
+        ):
+            self.status_handler(
+                "Story position is unavailable: configure sequence-first manual audio"
+            )
+            return False
+        event = plan.events.get(str(event_id))
+        if event is None or event.kind not in {"speech", "silent"}:
+            self.status_handler("Story position was not changed: invalid visible event")
+            return False
+        running = bool(self.live_reader is not None and self.live_reader.is_running)
+        if running:
+            self.live_reader.clear_queue()
+        cursor.anchor_event(event.event_id, "explicit-user-resync")
+        line = (
+            None
+            if event.line_id is None
+            else self.chapter_voice_preloader.line_for_id(event.line_id)
+        )
+        if line is not None:
+            self.chapter_voice_preloader.resolve_exact(line.speaker, line.text)
+        if running:
+            self.live_reader.bind_current_frame_route()
+            if line is not None:
+                if not self._enqueue_dialog(line.speaker, line.text):
+                    return False
+            else:
+                self.dialog_handler("Narrator", "Silent dialogue")
+        else:
+            self.explicit_sequence_anchor_pending = True
+            self.dialog_handler(
+                line.speaker if line is not None else "Narrator",
+                line.text if line is not None else "Silent dialogue",
+            )
+        self.status_handler(
+            f"Story position set to chapter {event.chapter}, sequence {event.sequence}"
+        )
+        return True
 
     def _stable_live_frame_route(self, _fingerprint, settled):
         cursor = self.story_cursor

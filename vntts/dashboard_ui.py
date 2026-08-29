@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 class ControlDashboard(QMainWindow):
     read_requested = Signal()
     live_requested = Signal()
+    sequence_resync_requested = Signal()
     pause_requested = Signal()
     skip_requested = Signal()
     repeat_requested = Signal()
@@ -95,6 +96,7 @@ class ControlDashboard(QMainWindow):
 
         self.read_button = QPushButton("Read current dialogue")
         self.live_button = QPushButton("Start live reading")
+        self.sequence_resync_button = QPushButton("Set story position / resync")
         self.pause_button = QPushButton("Pause")
         self.skip_button = QPushButton("Skip")
         self.repeat_button = QPushButton("Replay")
@@ -115,6 +117,7 @@ class ControlDashboard(QMainWindow):
         )
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
+        self.sequence_resync_button.clicked.connect(self.sequence_resync_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
         self.skip_button.clicked.connect(self.skip_requested.emit)
         self.repeat_button.clicked.connect(self.repeat_requested.emit)
@@ -124,6 +127,7 @@ class ControlDashboard(QMainWindow):
         reading = QHBoxLayout(reading_group)
         reading.addWidget(self.live_button, 2)
         reading.addWidget(self.read_button)
+        reading.addWidget(self.sequence_resync_button)
 
         transport_group = QGroupBox("Playback")
         transport = QHBoxLayout(transport_group)
@@ -205,6 +209,11 @@ class ControlDashboard(QMainWindow):
             if Path(manifest).expanduser().is_file()
             else "missing; open Settings"
         )
+        sequence_manual = settings.live_sequence_mode == "audio-manual"
+        self.sequence_resync_button.setVisible(sequence_manual)
+        self.sequence_resync_button.setAccessibleDescription(
+            "Choose the visible story event to anchor or recover sequence-first reading"
+        )
         self.configuration.setText(
             f"Backend: {settings.speech_backend}\n"
             f"Audio policy: {policy}\n"
@@ -234,6 +243,7 @@ class ControlDashboard(QMainWindow):
             self.skip_button,
             self.repeat_button,
             self.stop_button,
+            self.sequence_resync_button,
         ):
             button.setEnabled(self._ready)
         if self._ready:
@@ -257,6 +267,7 @@ class ControlDashboard(QMainWindow):
             self.skip_button,
             self.repeat_button,
             self.stop_button,
+            self.sequence_resync_button,
         ):
             button.setToolTip(description)
 

@@ -147,11 +147,10 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Finish explicit `audio-manual` anchoring and recovery controls. Let the
-      player choose a chapter/entry event before OCR, show why a branch/manual
-      boundary or failed playback closed the cursor, and provide an explicit
-      current-chapter/event resync action. Desynchronization must never recover
-      implicitly from a later OCR observation.
+- [ ] Add a persistent live-session explanation of why a branch/manual boundary,
+      failed playback or desynchronization closed the cursor and point directly
+      to the story-position/resync control in context. Desynchronization must
+      never recover implicitly from a later OCR observation.
 - [ ] Replace full-frame recognition in ordinary locked transitions with a
       stronger dialogue-presence/fingerprint/render-settled gate. The first
       manual-audio slice already requires two equal changed fingerprints and no

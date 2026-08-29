@@ -877,6 +877,15 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         speak_chunk.assert_called_once_with(SpeechChunk(1, "Alice", "Hello."))
 
+    def test_explicit_resync_binds_latest_frame_for_locked_routing(self):
+        reader = self.create_reader()
+
+        self.assertFalse(reader.bind_current_frame_route())
+        reader.latest_frame_fingerprint = "visible-dialogue"
+
+        self.assertTrue(reader.bind_current_frame_route())
+        self.assertEqual(reader.routed_frame_fingerprint, "visible-dialogue")
+
     def test_capture_loop_waits_for_unknown_voice_decision_before_speaking(self):
         stop_event = Event()
         observations = 0

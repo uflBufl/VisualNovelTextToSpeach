@@ -95,6 +95,22 @@ class ControlDashboardTest(unittest.TestCase):
         )
         dashboard.deleteLater()
 
+    def test_story_resync_is_visible_only_for_sequence_manual_mode(self):
+        dashboard = ControlDashboard(AppSettings())
+
+        self.assertTrue(dashboard.sequence_resync_button.isHidden())
+
+        dashboard.set_configuration(AppSettings(live_sequence_mode="audio-manual"))
+        dashboard.set_ready(True)
+
+        self.assertFalse(dashboard.sequence_resync_button.isHidden())
+        self.assertTrue(dashboard.sequence_resync_button.isEnabled())
+        self.assertIn(
+            "anchor or recover",
+            dashboard.sequence_resync_button.accessibleDescription(),
+        )
+        dashboard.deleteLater()
+
     def test_close_quits_by_default_instead_of_hiding_silently(self):
         dashboard = ControlDashboard(AppSettings(keep_running_on_close=False))
         quit_requests = []

@@ -104,9 +104,38 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
+        self.assertFalse(tray_application.sequence_resync_action.isVisible())
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_sequence_resync_action_selects_the_visible_canonical_event(self):
+        controller = Mock()
+        controller.live_sequence_anchor_options.return_value = (
+            ("Chapter 1, sequence 1 - Ada: First [event-1]", "event-1"),
+            ("Chapter 1, sequence 2 - Bea: Second [event-2]", "event-2"),
+        )
+        controller.story_cursor.current_event_id = "event-2"
+        controller.resync_live_sequence.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(live_sequence_mode="audio-manual"),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch(
+            "vntts.app.QInputDialog.getItem",
+            return_value=(
+                "Chapter 1, sequence 1 - Ada: First [event-1]",
+                True,
+            ),
+        ) as choose:
+            self.assertTrue(tray_application.choose_sequence_position())
+
+        self.assertTrue(tray_application.sequence_resync_action.isVisible())
+        self.assertEqual(choose.call_args.args[4], 1)
+        controller.resync_live_sequence.assert_called_once_with("event-1")
+        tray_application.shutdown()
 
     def test_compact_controls_replace_dashboard_and_persist_preference(self):
         controller = Mock()

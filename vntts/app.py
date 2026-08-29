@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -1097,6 +1098,7 @@ class TrayApplication(QObject):
         self.show_dashboard_action = QAction("Open control window")
         self.show_compact_action = QAction("Compact floating controls")
         self.live_action = QAction("Start live reading")
+        self.sequence_resync_action = QAction("Set story position / resync...")
         self.auto_advance_action = QAction("Auto advance dialogue")
         self.auto_advance_action.setCheckable(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
@@ -1124,6 +1126,10 @@ class TrayApplication(QObject):
 
         self.read_action.setEnabled(False)
         self.live_action.setEnabled(False)
+        self.sequence_resync_action.setEnabled(False)
+        self.sequence_resync_action.setVisible(
+            self.settings.live_sequence_mode == "audio-manual"
+        )
         self.pause_action.setEnabled(False)
         self.skip_action.setEnabled(False)
         self.repeat_action.setEnabled(False)
@@ -1137,6 +1143,7 @@ class TrayApplication(QObject):
         self.menu.addSeparator()
         self.menu.addAction(self.read_action)
         self.menu.addAction(self.live_action)
+        self.menu.addAction(self.sequence_resync_action)
         self.menu.addAction(self.auto_advance_action)
         self.menu.addAction(self.pause_action)
         self.menu.addAction(self.skip_action)
@@ -1167,6 +1174,7 @@ class TrayApplication(QObject):
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
         self.show_compact_action.triggered.connect(self.show_compact_controls)
         self.live_action.triggered.connect(self.toggle_live)
+        self.sequence_resync_action.triggered.connect(self.choose_sequence_position)
         self.auto_advance_action.toggled.connect(self.toggle_auto_advance)
         self.pause_action.triggered.connect(self.toggle_speech_pause)
         self.skip_action.triggered.connect(self.skip_current_speech)
@@ -1202,6 +1210,7 @@ class TrayApplication(QObject):
         self.application.aboutToQuit.connect(self.shutdown)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self.toggle_live)
+        self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
         self.dashboard.pause_requested.connect(self.toggle_speech_pause)
         self.dashboard.skip_requested.connect(self.skip_current_speech)
         self.dashboard.repeat_requested.connect(self.repeat_last_speech)
@@ -1329,6 +1338,41 @@ class TrayApplication(QObject):
         if not self.controller.is_live_running:
             return self._start_live_with_preflight()
         return self._toggle_controller_live()
+
+    def choose_sequence_position(self):
+        options = self.controller.live_sequence_anchor_options()
+        if not options:
+            self.set_status(
+                "Story position is unavailable: configure a sequence-first manual pack"
+            )
+            return False
+        labels = [label for label, _event_id in options]
+        current_event_id = getattr(
+            getattr(self.controller, "story_cursor", None),
+            "current_event_id",
+            None,
+        )
+        current_index = next(
+            (
+                index
+                for index, (_label, event_id) in enumerate(options)
+                if event_id == current_event_id
+            ),
+            0,
+        )
+        selected, accepted = QInputDialog.getItem(
+            self.dashboard,
+            "Set story position / resync",
+            "Choose the dialogue box currently visible in the game. This stops "
+            "stale queued speech and makes the selected event authoritative.",
+            labels,
+            current_index,
+            False,
+        )
+        if not accepted:
+            return False
+        event_id = dict(options)[selected]
+        return self.controller.resync_live_sequence(event_id)
 
     def _toggle_controller_live(self):
         running = self.controller.toggle_live()
@@ -1776,6 +1820,9 @@ class TrayApplication(QObject):
         effective_backend = self.controller.settings.speech_backend
         self.settings = updated_settings
         self.dashboard.set_configuration(self.settings)
+        self.sequence_resync_action.setVisible(
+            self.settings.live_sequence_mode == "audio-manual"
+        )
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
         self.auto_advance_action.blockSignals(False)
@@ -1857,6 +1904,10 @@ class TrayApplication(QObject):
             return
         self.settings = dialog.settings()
         path = self.settings.save()
+        self.dashboard.set_configuration(self.settings)
+        self.sequence_resync_action.setVisible(
+            self.settings.live_sequence_mode == "audio-manual"
+        )
         profile = self.profile_store.get(self.settings.active_profile_id)
         self._pending_profile_name = profile.name if profile is not None else None
         generation = self._begin_controller_lifecycle()
@@ -2334,6 +2385,7 @@ class TrayApplication(QObject):
         return (
             self.read_action,
             self.live_action,
+            self.sequence_resync_action,
             self.pause_action,
             self.skip_action,
             self.repeat_action,

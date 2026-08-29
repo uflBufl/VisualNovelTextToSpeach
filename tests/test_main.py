@@ -1764,6 +1764,99 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.reason, "playback-failed")
         self.assertFalse(controller._stable_live_frame_route("new", True))
 
+    def test_sequence_manual_resync_lists_visible_events_and_handles_stopped_or_running(
+        self,
+    ):
+        text = "Known canonical line."
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": text,
+                        "text_sha256": text_sha256(text),
+                    }
+                ]
+            }
+        )
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-2",),
+                "reverse1999:1:1",
+            ),
+            "event-2": LiveSequenceEvent(
+                "event-2",
+                "1",
+                2,
+                "silent",
+                "terminal",
+                (),
+                None,
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), ("event-1", "event-2")),),
+            events,
+            {"reverse1999:1:1": "event-1"},
+        )
+        dialogs = []
+        statuses = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            dialog_handler=lambda *args: dialogs.append(args),
+            status_handler=statuses.append,
+        )
+        stopped_reader = Mock(is_running=False)
+        controller.live_reader = stopped_reader
+
+        options = controller.live_sequence_anchor_options()
+
+        self.assertEqual(
+            [event_id for _label, event_id in options], ["event-1", "event-2"]
+        )
+        self.assertIn("Rhiannon: Known canonical line.", options[0][0])
+        self.assertIn("Silent: silent dialogue", options[1][0])
+        self.assertFalse(controller.resync_live_sequence("missing"))
+        self.assertTrue(controller.resync_live_sequence("event-1"))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        self.assertTrue(controller.explicit_sequence_anchor_pending)
+        self.assertEqual(preloader.current_match.chapter, "1")
+        self.assertEqual(dialogs[-1], ("Rhiannon", text))
+        stopped_reader.clear_queue.assert_not_called()
+
+        running_reader = Mock(is_running=True)
+        controller.live_reader = running_reader
+        controller._enqueue_dialog = Mock(return_value=True)
+
+        self.assertTrue(controller.resync_live_sequence("event-1"))
+
+        running_reader.clear_queue.assert_called_once_with()
+        running_reader.bind_current_frame_route.assert_called_once_with()
+        controller._enqueue_dialog.assert_called_once_with("Rhiannon", text)
+        self.assertIn("sequence 1", statuses[-1])
+
     def test_controller_identifies_live_scope_without_speaking_or_history(self):
         dialogs = []
         preloader = ChapterVoicePreloader.from_document(

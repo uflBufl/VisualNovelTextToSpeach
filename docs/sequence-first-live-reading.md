@@ -45,6 +45,13 @@ not control the game yet:
   closed. Passive non-dialogue events may be crossed, but a silent dialogue box
   is retained as its own cursor event. Successful canonical live fallback is
   sealed against late OCR suffixes just like generated/source WAV playback.
+- the control window and tray expose `Set story position / resync` only in
+  `audio-manual`. The chooser lists visible speech/silent events with chapter,
+  sequence, speaker, text and event ID. A stopped-session choice establishes the
+  next start anchor and story scope. During live reading it clears stale queued
+  speech, binds the latest frame and routes the selected canonical speech event
+  immediately; silent events update position without synthesizing text. Invalid
+  or non-visible event IDs fail closed.
 
 `vntts-artifacts` v0.7.0 publishes game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately
