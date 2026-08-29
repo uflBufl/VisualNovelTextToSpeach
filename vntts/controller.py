@@ -2696,8 +2696,8 @@ class AppController:
             )
             reason = (
                 f"Auto advance paused for original game audio line {source_audio.line_id}: "
-                "completion timing is unavailable. Advance manually or select "
-                "Live TTS only."
+                "completion timing is unavailable. Wait for the original game voice "
+                "to finish, then advance manually in the game."
             )
             if self.live_reader.block_auto_advance_for_generation(
                 chunk.generation,
@@ -2964,6 +2964,17 @@ class AppController:
             )
 
     def _describe_audio_source(self, prepared):
+        lead_seconds = float(
+            getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0
+        )
+        if lead_seconds > 0:
+            following = self._describe_audio_source(
+                replace(prepared, source_audio_lead_seconds=0.0)
+            )
+            return (
+                f"Original game cue ({lead_seconds:.2f}s including post-roll), "
+                f"then {following}"
+            )
         if isinstance(prepared, LiveFallbackRoute):
             return (
                 "Authorized live fallback "

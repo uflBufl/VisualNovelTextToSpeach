@@ -139,12 +139,20 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Restore automatic advance for original game audio
 
-- [ ] Extend the Reverse: 1999 extractor and game-pack publication path to bind
-      a trustworthy `source_audio_duration_seconds` to each exact installed
-      source-media identity. Validate the decoded media checksum/duration and a
-      conservative completion margin before allowing `audio-auto` to dispatch;
-      until then, source audio remains the only audible route and that line
-      requires manual game advance.
+- [ ] Resolve the five duration-plausible chapter `314601` source cues that
+      remain semantically `unknown`. Bind a transcript or human verdict to each
+      exact media SHA-256; only matching evidence may mark a cue `full`, while a
+      mismatch marks it `partial`. Never infer `full` from duration alone.
+- [ ] Pregenerate the complete displayed text for every `partial` source cue in
+      the selected Character Story. Include these source-available lines in a
+      checksum-bound queue instead of treating the short game cue as coverage;
+      generated audio should follow the cue, with approved live TTS only as the
+      fallback when a reviewed WAV is unavailable.
+- [ ] Publish a new immutable Character Story pack from the timed/completeness
+      story index; do not mutate reviewed v2 in place. The final real-game gate
+      must prove that original cues never overlap TTS, every displayed line is
+      fully read, unknown cues stay manual, and exactly one automatic advance
+      follows the final audible route.
 
 ### P0 - Replace OCR-driven playback with a sequence-first story cursor
 

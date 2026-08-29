@@ -680,6 +680,40 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertIsNone(line.source_audio_duration_seconds)
 
+    def test_verified_source_audio_completion_requires_exact_media_provenance(self):
+        document = dialogue_document()
+        document["source_audio_completion"] = "verified-media-duration-seconds"
+        document["dialogue"][0].update(
+            line_id="test:0",
+            text_sha256=hashlib.sha256(
+                document["dialogue"][0]["text"].encode("utf-8")
+            ).hexdigest(),
+            source_audio_status="available",
+            source_audio_duration_seconds=1.25,
+            source_audio_duration_media_id=70,
+            source_audio_duration_media_sha256="a" * 64,
+            source_audio_duration_sample_rate=24000,
+            source_audio_duration_sample_count=30000,
+            source_audio_duration_decoder="r-test",
+            source_audio_completeness="partial",
+            source_media_ids=[70],
+            available_media_ids=[70],
+        )
+
+        line = ChapterVoicePreloader.from_document(document).resolve_exact(
+            "Kamuta",
+            "These old ones are enough to carry everyone.",
+        )
+        self.assertEqual(line.source_audio_duration_seconds, 1.25)
+        self.assertEqual(line.source_audio_completeness, "partial")
+
+        document["dialogue"][0]["source_audio_duration_media_sha256"] = "bad"
+        invalid = ChapterVoicePreloader.from_document(document).resolve_exact(
+            "Kamuta",
+            "These old ones are enough to carry everyone.",
+        )
+        self.assertIsNone(invalid.source_audio_duration_seconds)
+
     def test_exact_resolution_rejects_partial_or_ambiguous_text(self):
         document = dialogue_document()
         duplicate = dict(document["dialogue"][0])

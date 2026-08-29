@@ -423,12 +423,14 @@ The mode and saved auto-advance toggle are both opt-in. Production enablement
 remains gated on a real-game focus/choice run even though complete chapter route
 and human acceptance are already 92/92.
 
-Original game audio always retains route ownership when the indexed source is
-declared available. If its completion duration is missing, the route is sealed
-without Pocket/live-TTS duplication and automatic advance pauses for that line;
-manual game advance remains safe because the next stable canonical frame moves
-the cursor. A successfully completed cursor event cannot start canonical audio
-again unless the operator explicitly reanchors it.
+Original game audio retains route ownership when the indexed source is declared
+available and semantic completeness is `full` or still unknown. Missing timing
+or unknown completeness seals the route without Pocket/live-TTS duplication and
+pauses automatic advance. A checksum-bound `partial` cue instead finishes
+before the full generated/live reading starts; that final route owns completion
+and advance. Manual game advance remains safe because the next stable canonical
+frame moves the cursor. A successfully completed cursor event cannot start
+canonical audio again unless the operator explicitly reanchors it.
 
 A checksum-bound sequence plan may be selected externally when an otherwise
 valid game pack does not ship one. Reapplying that same pack while saving or

@@ -1110,6 +1110,9 @@ def load_live_replay_corpus(path):
                 "source_audio_duration_seconds": item.get(
                     "source_audio_duration_seconds"
                 ),
+                "source_audio_completeness": item.get(
+                    "source_audio_completeness"
+                ),
             }
         )
     if not dialogue:
@@ -1126,7 +1129,10 @@ def load_live_replay_corpus(path):
         fixture_kind,
         hashlib.sha256(payload).hexdigest(),
         tuple(dialogue),
-        {"dialogue": story_rows},
+        {
+            "source_audio_completion": "duration-seconds",
+            "dialogue": story_rows,
+        },
         generated_audio_manifest,
         live_sequence,
     )

@@ -959,6 +959,11 @@ def _recovered_dialogue_record(index, item, frames, resolver):
         "source_audio_status": line.source_audio_status,
         "source_audio_id": line.source_audio_id,
         "source_audio_duration_seconds": line.source_audio_duration_seconds,
+        "source_audio_completeness": getattr(
+            line,
+            "source_audio_completeness",
+            "full" if line.source_audio_duration_seconds is not None else "unknown",
+        ),
         "expected_source": (
             "game" if line.source_audio_status == "available" else None
         ),

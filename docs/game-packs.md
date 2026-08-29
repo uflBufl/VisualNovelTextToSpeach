@@ -40,20 +40,31 @@ this fixed precedence:
 
 1. a manual character or Narrator voice override forces live TTS;
 2. `live-tts-only` selects live TTS;
-3. `prefer-game-audio` selects an exact, declared-available source line while
-   live mode is active;
+3. `prefer-game-audio` selects an exact, declared-available complete source line
+   while live mode is active; a verified partial cue is allowed to finish before
+   the full generated/live reading begins;
 4. `prefer-game-audio` or `prefer-generated` may select an exact or uniquely
    normalized generated entry at speed `1.0`; and
 5. every remaining case uses live TTS with an explicit trace reason.
 
-Source audio is game-owned. A positive `source_audio_duration_seconds` under
-the declared duration completion policy creates a conservative delay from route
-acceptance; it is not observation of game-device playback. A source pass
+Source audio is game-owned. The
+`verified-media-duration-seconds` completion policy requires one exact source
+and available media ID, its SHA-256, positive sample count/rate, decoder
+identity, and a duration consistent with those samples. Incomplete or
+inconsistent producer fields are ignored. A valid duration receives a 350 ms
+runtime post-roll; it is still not observation of game-device playback. A source pass
 through with no duration remains `passthrough-unobserved`, seals the exact line
 against duplicate suffixes, and cannot authorize auto advance. Missing timing
 never authorizes live-TTS replacement of source audio because the game is
 already speaking the line; the operator advances that line manually until the
 producer supplies a trustworthy duration.
+
+Timing and semantic completeness are independent. A `full` source may own the
+complete route and timed advance. A `partial` source is a game-owned cue: VNTTS
+waits for its verified duration/post-roll before playing the full line, so game
+audio and TTS do not overlap. `unknown` completeness remains manual even when
+duration is known. Pack production must never infer `full` merely from a
+plausible duration.
 
 Generated audio is VNTTS-owned. The consumer reads a contained WAV once, hashes
 that byte snapshot, validates its manifest/PCM metadata, and decodes those same

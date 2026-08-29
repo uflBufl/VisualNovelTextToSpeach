@@ -2969,7 +2969,24 @@ class MainTest(unittest.TestCase):
             ANY,
         )
         self.assertIn("completion timing is unavailable", statuses[-1])
+        self.assertIn("advance manually in the game", statuses[-1])
+        self.assertNotIn("Live TTS only", statuses[-1])
         self.assertIn("advance manually", statuses[-1].casefold())
+
+    def test_partial_source_cue_description_explains_delayed_full_reading(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        route = LiveTTSRoute(
+            PreparedPlayback("live", 10.0, 5.0, None, "live:pocket-tts"),
+            stub_route_trace("live:pocket-tts", "reverse1999:1:2"),
+            10.0,
+            5.0,
+            source_audio_lead_seconds=1.6,
+        )
+
+        description = controller._describe_audio_source(route)
+
+        self.assertIn("Original game cue (1.60s including post-roll)", description)
+        self.assertIn("then", description)
 
     def test_sequence_audio_suppresses_a_line_the_cursor_already_played(self):
         statuses = []

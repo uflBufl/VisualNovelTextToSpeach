@@ -31,6 +31,7 @@ LIVE_FALLBACK_REASONS = frozenset(
         "generation_hypotheses_exhausted",
     }
 )
+SOURCE_AUDIO_COMPLETION_MARGIN_SECONDS = 0.35
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ class GeneratedAudioRoute:
     synthesis_ms: float = 0.0
     first_audio_ms: float | None = 0.0
     cache_source: str | None = "generated-audio"
+    source_audio_lead_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ class LiveFallbackRoute:
     synthesis_ms: float | None
     first_audio_ms: float | None
     cache_source: str | None = None
+    source_audio_lead_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,7 @@ class LiveTTSRoute:
     synthesis_ms: float | None
     first_audio_ms: float | None
     cache_source: str | None = None
+    source_audio_lead_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -469,6 +473,7 @@ class GeneratedAudioFallbackBackend:
             line is not None
             and line.line_id
             and getattr(line, "source_audio_status", "unknown") == "available"
+            and getattr(line, "source_audio_completeness", "unknown") != "partial"
             and (
                 not self.require_source_audio_completion
                 or getattr(line, "source_audio_duration_seconds", None) is not None
@@ -519,6 +524,23 @@ class GeneratedAudioFallbackBackend:
             if line is not None
             else None
         )
+        source_audio_wait = (
+            source_audio_completion + SOURCE_AUDIO_COMPLETION_MARGIN_SECONDS
+            if source_audio_completion is not None
+            else None
+        )
+        source_audio_completeness = (
+            getattr(line, "source_audio_completeness", "unknown")
+            if line is not None
+            else "unknown"
+        )
+        source_audio_partial = bool(
+            line is not None
+            and self.audio_source_policy == "prefer-game-audio"
+            and getattr(line, "source_audio_status", "unknown") == "available"
+            and source_audio_completion is not None
+            and source_audio_completeness == "partial"
+        )
         source_audio_missing_completion = bool(
             self.require_source_audio_completion
             and line is not None
@@ -532,6 +554,7 @@ class GeneratedAudioFallbackBackend:
             and self.audio_source_policy == "prefer-game-audio"
             and getattr(line, "source_audio_status", "unknown") == "available"
             and not source_audio_missing_completion
+            and not source_audio_partial
         ):
             trace = AudioRouteTrace(
                 None,
@@ -547,13 +570,25 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     line.text_sha256,
                     getattr(line, "source_audio_id", None),
-                    source_audio_completion,
-                    ("story-index" if source_audio_completion is not None else None),
+                    (
+                        source_audio_wait
+                        if source_audio_completeness == "full"
+                        else None
+                    ),
+                    (
+                        "story-index+conservative-postroll"
+                        if source_audio_completion is not None
+                        and source_audio_completeness == "full"
+                        else None
+                    ),
                 ),
                 trace,
             )
         if self.audio_source_policy == "prefer-game-audio" and line is not None:
-            if source_audio_missing_completion:
+            if source_audio_partial:
+                fallback_reasons.append("source-audio-partial-cue")
+                artifact_preflight_state = "source-audio-partial-cue"
+            elif source_audio_missing_completion:
                 fallback_reasons.append("source-audio-completion-unavailable")
                 artifact_preflight_state = "source-audio-completion-unavailable"
             else:
@@ -604,7 +639,12 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     artifact_preflight_state,
                 )
-                return GeneratedAudioRoute(prepared, trace)
+                route = GeneratedAudioRoute(prepared, trace)
+                return (
+                    replace(route, source_audio_lead_seconds=source_audio_wait)
+                    if source_audio_partial
+                    else route
+                )
             fallback_reasons.append(artifact_preflight_state)
         elif line is not None and self.audio_source_policy in {
             "prefer-generated",
@@ -659,7 +699,7 @@ class GeneratedAudioFallbackBackend:
                 line_id,
                 "live-fallback-authorized",
             )
-            return LiveFallbackRoute(
+            route = LiveFallbackRoute(
                 prepared,
                 live_fallback,
                 trace,
@@ -667,12 +707,22 @@ class GeneratedAudioFallbackBackend:
                 prepared.first_audio_ms,
                 prepared.cache_source,
             )
-        return LiveTTSRoute(
+            return (
+                replace(route, source_audio_lead_seconds=source_audio_wait)
+                if source_audio_partial
+                else route
+            )
+        route = LiveTTSRoute(
             prepared,
             trace,
             prepared.synthesis_ms,
             prepared.first_audio_ms,
             prepared.cache_source,
+        )
+        return (
+            replace(route, source_audio_lead_seconds=source_audio_wait)
+            if source_audio_partial
+            else route
         )
 
     def _resolve_line(self, character, text, voice_overridden):
@@ -765,6 +815,12 @@ class GeneratedAudioFallbackBackend:
             self.generated_audio_stop.clear()
             try:
                 self.playback_active = True
+                if not self._wait_for_source_audio_lead(route, playback_guard):
+                    return _route_outcome(
+                        route,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.clock() - started) * 1000,
+                    )
                 self.active_playback_source = "generated"
                 samples = (
                     np.asarray(route.prepared.samples, dtype=np.float32) * self.volume
@@ -809,6 +865,21 @@ class GeneratedAudioFallbackBackend:
     def _play_live_route(self, route, playback_guard):
         if playback_guard is not None and not playback_guard():
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
+        lead_ms = 0.0
+        if route.source_audio_lead_seconds > 0:
+            lead_started = self.clock()
+            self.playback_active = True
+            try:
+                if not self._wait_for_source_audio_lead(route, playback_guard):
+                    return _route_outcome(
+                        route,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.clock() - lead_started) * 1000,
+                    )
+            finally:
+                self.playback_active = False
+                self.active_playback_source = None
+            lead_ms = (self.clock() - lead_started) * 1000
         try:
             outcome = self.live_backend.play_prepared(
                 route.prepared,
@@ -825,7 +896,21 @@ class GeneratedAudioFallbackBackend:
         return replace(
             outcome,
             audio_source=route.trace.effective_source,
+            playback_ms=(
+                None
+                if outcome.playback_ms is None
+                else outcome.playback_ms + lead_ms
+            ),
         )
+
+    def _wait_for_source_audio_lead(self, route, playback_guard):
+        seconds = float(getattr(route, "source_audio_lead_seconds", 0.0) or 0.0)
+        if seconds <= 0:
+            return playback_guard is None or bool(playback_guard())
+        self.active_playback_source = "game"
+        self.source_audio_completion_stop.clear()
+        interrupted = self.source_audio_completion_stop.wait(seconds)
+        return not interrupted and (playback_guard is None or bool(playback_guard()))
 
     def prime(self, character):
         prime = getattr(self.live_backend, "prime", None)

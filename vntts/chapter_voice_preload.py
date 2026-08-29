@@ -31,6 +31,7 @@ class ChapterDialogue:
     source_audio_status: str = "unknown"
     source_audio_id: str | None = None
     source_audio_duration_seconds: float | None = None
+    source_audio_completeness: str = "full"
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,11 @@ class ChapterVoicePreloader:
     @classmethod
     def from_document(cls, document, *, lookahead_rows=80):
         rows = []
+        completion_contract = (
+            str(document.get("source_audio_completion") or "").strip()
+            if isinstance(document, dict)
+            else ""
+        )
         for entry in document.get("dialogue", ()) if isinstance(document, dict) else ():
             if not isinstance(entry, dict):
                 continue
@@ -95,7 +101,15 @@ class ChapterVoicePreloader:
                 ).strip()
                 or None
             )
-            source_audio_duration_seconds = _source_audio_duration_seconds(entry)
+            source_audio_duration_seconds = _source_audio_duration_seconds(
+                entry,
+                completion_contract=completion_contract or None,
+            )
+            source_audio_completeness = _source_audio_completeness(
+                entry,
+                completion_contract=completion_contract or None,
+                duration_seconds=source_audio_duration_seconds,
+            )
             rows.append(
                 ChapterDialogue(
                     line_id,
@@ -107,6 +121,7 @@ class ChapterVoicePreloader:
                     source_audio_status,
                     source_audio_id,
                     source_audio_duration_seconds,
+                    source_audio_completeness,
                 )
             )
         return cls(rows, lookahead_rows=lookahead_rows)
@@ -122,11 +137,16 @@ class ChapterVoicePreloader:
         needs_source_audio_bridge = bool(
             indexed_lines and not hasattr(indexed_lines[0], "source_audio_status")
         )
-        completion_declared = (
-            metadata.get("source_audio_completion") == "duration-seconds"
-        )
+        completion_contract = str(metadata.get("source_audio_completion") or "").strip()
+        completion_declared = completion_contract in {
+            "duration-seconds",
+            "verified-media-duration-seconds",
+        }
         source_audio_by_line_id = (
-            _load_source_audio_extensions(path)
+            _load_source_audio_extensions(
+                path,
+                completion_contract=completion_contract or None,
+            )
             if needs_source_audio_bridge or completion_declared
             else {}
         )
@@ -134,7 +154,7 @@ class ChapterVoicePreloader:
         def source_audio(line):
             return source_audio_by_line_id.get(
                 line.line_id,
-                ("unknown", None, None),
+                ("unknown", None, None, "unknown"),
             )
 
         rows = (
@@ -147,11 +167,16 @@ class ChapterVoicePreloader:
                 line.text_sha256,
                 getattr(line, "source_audio_status", source_audio(line)[0]),
                 getattr(line, "source_audio_id", source_audio(line)[1]),
-                getattr(
-                    line,
-                    "source_audio_duration_seconds",
-                    source_audio(line)[2],
+                (
+                    source_audio(line)[2]
+                    if completion_declared
+                    else getattr(
+                        line,
+                        "source_audio_duration_seconds",
+                        source_audio(line)[2],
+                    )
                 ),
+                source_audio(line)[3],
             )
             for line in indexed_lines
         )
@@ -634,15 +659,58 @@ def _source_audio_status(entry):
     }.get(str(entry.get("audio_status") or "").strip(), "unknown")
 
 
-def _source_audio_duration_seconds(entry):
+def _source_audio_duration_seconds(entry, *, completion_contract=None):
     value = entry.get("source_audio_duration_seconds")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     value = float(value)
-    return value if math.isfinite(value) and 0 < value <= 600 else None
+    if not math.isfinite(value) or not 0 < value <= 600:
+        return None
+    if completion_contract != "verified-media-duration-seconds":
+        return value
+    media_id = entry.get("source_audio_duration_media_id")
+    media_sha256 = str(entry.get("source_audio_duration_media_sha256") or "").strip()
+    sample_rate = entry.get("source_audio_duration_sample_rate")
+    sample_count = entry.get("source_audio_duration_sample_count")
+    decoder = str(entry.get("source_audio_duration_decoder") or "").strip()
+    if (
+        isinstance(media_id, bool)
+        or not isinstance(media_id, int)
+        or isinstance(sample_rate, bool)
+        or not isinstance(sample_rate, int)
+        or sample_rate <= 0
+        or isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count <= 0
+        or re.fullmatch(r"[0-9a-f]{64}", media_sha256) is None
+        or not decoder
+    ):
+        return None
+    if (
+        entry.get("source_media_ids") != [media_id]
+        or entry.get("available_media_ids") != [media_id]
+    ):
+        return None
+    measured = sample_count / sample_rate
+    return value if math.isclose(value, measured, rel_tol=0, abs_tol=0.000001) else None
 
 
-def _load_source_audio_extensions(path):
+def _source_audio_completeness(
+    entry,
+    *,
+    completion_contract=None,
+    duration_seconds=None,
+):
+    if duration_seconds is None:
+        return "unknown"
+    if completion_contract != "verified-media-duration-seconds":
+        value = str(entry.get("source_audio_completeness") or "full").strip()
+        return value if value in {"full", "partial", "unknown"} else "unknown"
+    value = str(entry.get("source_audio_completeness") or "unknown").strip()
+    return value if value in {"full", "partial", "unknown"} else "unknown"
+
+
+def _load_source_audio_extensions(path, *, completion_contract=None):
     """Retain optional source-audio fields omitted by older contract readers."""
     result = {}
     try:
@@ -661,10 +729,19 @@ def _load_source_audio_extensions(path):
                     ).strip()
                     or None
                 )
+                duration_seconds = _source_audio_duration_seconds(
+                    record,
+                    completion_contract=completion_contract,
+                )
                 result[line_id] = (
                     _source_audio_status(record),
                     source_audio_id,
-                    _source_audio_duration_seconds(record),
+                    duration_seconds,
+                    _source_audio_completeness(
+                        record,
+                        completion_contract=completion_contract,
+                        duration_seconds=duration_seconds,
+                    ),
                 )
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return {}

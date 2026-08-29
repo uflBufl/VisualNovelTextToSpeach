@@ -15,10 +15,13 @@ The selector keeps the established precedence:
 1. a manual named-character override, explicit force-live Narrator setting, or
    `live-tts-only` policy selects live TTS;
 2. active live mode with `prefer-game-audio` and a resolved declared-available
-   source selects game pass-through;
-3. `prefer-game-audio` or `prefer-generated` may select a verified generated
+   source selects game pass-through only when that source is a complete reading
+   or its semantic completeness is still unknown;
+3. a checksum-bound source proven to be a partial cue waits for that game-owned
+   cue plus a 350 ms post-roll, then plays the full generated/live reading;
+4. `prefer-game-audio` or `prefer-generated` may select a verified generated
    artifact at speed `1.0`; and
-4. remaining exact, normalized, ambiguous, missing, unsafe, or policy-skipped
+5. remaining exact, normalized, ambiguous, missing, unsafe, or policy-skipped
    cases use live TTS with an explicit fallback reason.
 
 Generated WAV verification reads bytes once, hashes those exact bytes, and
@@ -56,6 +59,18 @@ advance. It never falls through to live TTS merely to obtain a completion
 timer: the game has already spoken that line, so such a fallback would create
 audible duplicate dialogue. Player exceptions are recorded as a chunk-bound
 failed outcome before the normalized playback error is surfaced.
+
+`source_audio_status=available` proves that the configured Wwise event and
+media exist; it does not prove that the media reads the displayed sentence.
+The exact chapter `314601` audit measured all 15 source WEMs at only
+0.446-1.422 seconds. Local Whisper controls on three long lines produced
+`Please allow me.`, `That'll be an extra charge.`, and `It's all too much!`,
+confirming that these are short character cues rather than full readings. The
+extractor therefore publishes raw sample-count duration and media SHA-256
+separately from a semantic-completeness verdict. A duration-impossible full
+reading can be proven `partial`; plausible duration alone stays `unknown` and
+cannot authorize timed auto advance. Only a `full` verdict may use source
+completion as the final audible route.
 
 Route, voice-resolution, generation-start, first-PCM, completion, outcome, and
 suppression timeline records are keyed by chunk ID. Duplicate reports for the
