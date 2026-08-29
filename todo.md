@@ -51,11 +51,17 @@ Follow the evidence-backed order and invariants in
       stage directions cannot be pronounced by ordinary MOSS or Pocket TTS.
       `Tsk!` is already resolved by its approved exact source-event composition;
       do not review, regenerate or treat it as character-voice evidence. When
-      CUDA is available,
-      evaluate official MOSS-SoundEffect v2 for isolated gasp/gurgle effects in
-      its separate Python 3.12 environment. Require technical validation,
-      perceptual approval and a checksum-bound speech/event/mix ledger; never
-      claim that a generated effect inherited cloned speaker identity. Failed
+      CUDA is available, evaluate official MOSS-SoundEffect v2 in its separate
+      Python 3.12 environment on a fixed corpus of isolated `*gasp*`,
+      `*gurgle*`, `*whimper*` and `*yelp*` prompts plus generic control effects.
+      Render multiple checksum-bound seeds per prompt and record model/version,
+      prompt, requested/actual duration, latency, VRAM, unwanted speech,
+      artifacts and prompt adherence. Compare acceptable candidates with any
+      semantically proven original-game event; do not compare them as cloned
+      character voices because the published SoundEffect v2 inference API has
+      no reference-audio conditioning. Require technical validation, blinded
+      perceptual approval and a checksum-bound speech/event/mix ledger before
+      adding a production provider or composing an effect with speech. Failed
       or unsupported effects stay unresolved or use an explicitly reviewed
       omission, never a silent production drop.
       The extractor's distinct ordered `story_audio_cues` are now strictly
@@ -147,6 +153,9 @@ locked.
       events to exact story-index line IDs; encode explicit successors, entry
       and terminal events, choices and manual-only waits. Publication must reject
       dangling or ambiguous control flow and unexplained visible-event gaps.
+      Promote the validated standalone document into a core component in the
+      next `vntts-artifacts` game-pack schema release rather than emitting a
+      manifest that v0.6.2 rejects.
 - [ ] Add a validated session `StoryCursor` with unsynchronized, anchoring,
       locked, playing, waiting-transition, desynchronized and manual states.
       Bootstrap from one exact/unique OCR anchor or an explicit chapter/event

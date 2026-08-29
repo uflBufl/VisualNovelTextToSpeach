@@ -28,6 +28,12 @@ from vntts.generated_audio import (
     SourceAudioRoute,
 )
 from vntts.live import AdaptiveSpeechBackpressure, SpeechChunk
+from vntts.live_sequence import (
+    LiveSequenceChapter,
+    LiveSequenceEvent,
+    LiveSequencePlan,
+    StoryCursorState,
+)
 from vntts.main import (
     AppController,
     CapturedDialogFrame,
@@ -1381,6 +1387,68 @@ class MainTest(unittest.TestCase):
             controller.history.snapshot()[0].text,
             "A line visible in the tray",
         )
+
+    def test_sequence_shadow_observes_canonical_line_without_changing_speech(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": "Known canonical line.",
+                        "text_sha256": text_sha256("Known canonical line."),
+                    }
+                ]
+            }
+        )
+        event = LiveSequenceEvent(
+            "event-1",
+            "1",
+            1,
+            "speech",
+            "terminal",
+            (),
+            "reverse1999:1:1",
+        )
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), ("event-1",)),),
+            {"event-1": event},
+            {"reverse1999:1:1": "event-1"},
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="shadow",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+
+        accepted = controller._dialog_observed(
+            "Rhiannon",
+            "Known canonical line.",
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        self.assertEqual(pipeline[-1][0][0], "sequence-shadow")
+        self.assertEqual(pipeline[-1][1]["line_id"], "reverse1999:1:1")
 
     def test_controller_identifies_live_scope_without_speaking_or_history(self):
         dialogs = []

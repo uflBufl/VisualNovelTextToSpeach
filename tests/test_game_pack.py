@@ -171,6 +171,22 @@ class GamePackImportTest(unittest.TestCase):
 
         self.assertIsNone(settings.generated_audio_manifest)
 
+    def test_pack_import_clears_a_sequence_plan_bound_to_another_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(root)
+
+            settings = apply_game_pack(
+                AppSettings(
+                    live_sequence_plan="stale-plan.json",
+                    live_sequence_mode="shadow",
+                ),
+                pack_path,
+            )
+
+        self.assertIsNone(settings.live_sequence_plan)
+        self.assertEqual(settings.live_sequence_mode, "off")
+
     def test_preflight_rejects_modified_referenced_wav(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

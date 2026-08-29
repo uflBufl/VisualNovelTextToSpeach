@@ -9,7 +9,7 @@ from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 application_directory_name = "VisualNovelTextToSpeech"
-settings_schema_version = 24
+settings_schema_version = 25
 
 audio_source_policies = {
     "live-tts-only",
@@ -22,6 +22,7 @@ speaker_announcement_modes = {
     "all-speakers",
     "narrator-fallback-roles",
 }
+live_sequence_modes = {"off", "shadow"}
 restart_required_setting_names = (
     "speech_backend",
     "tts_model",
@@ -104,6 +105,8 @@ class AppSettings:
     game_pack: str | None = None
     voice_manifest: str | None = None
     story_index: str | None = None
+    live_sequence_plan: str | None = None
+    live_sequence_mode: str = "off"
     live_speaker_corpus: str | None = None
     generated_audio_manifest: str | None = None
     narrator_speaker: str | None = None
@@ -134,6 +137,7 @@ class AppSettings:
             "speech_backend",
             "audio_source_policy",
             "speaker_announcement_mode",
+            "live_sequence_mode",
             "emergency_stop_hotkey",
         )
         optional_string_fields = (
@@ -144,6 +148,7 @@ class AppSettings:
             "game_pack",
             "voice_manifest",
             "story_index",
+            "live_sequence_plan",
             "live_speaker_corpus",
             "generated_audio_manifest",
             "narrator_speaker",
@@ -248,6 +253,9 @@ class AppSettings:
         if parsed["speaker_announcement_mode"] not in speaker_announcement_modes:
             warn("Invalid 'speaker_announcement_mode' setting; using its default")
             parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
+        if parsed["live_sequence_mode"] not in live_sequence_modes:
+            warn("Invalid 'live_sequence_mode' setting; using its default")
+            parsed["live_sequence_mode"] = defaults.live_sequence_mode
         if (
             "speaker_announcement_mode" not in values
             and parsed["announce_speaker_changes"]
@@ -311,12 +319,14 @@ class AppSettings:
             "VNTTS_GAME_PACK": "game_pack",
             "VNTTS_VOICE_MANIFEST": "voice_manifest",
             "VNTTS_STORY_INDEX": "story_index",
+            "VNTTS_LIVE_SEQUENCE_PLAN": "live_sequence_plan",
             "VNTTS_LIVE_SPEAKER_CORPUS": "live_speaker_corpus",
             "VNTTS_GENERATED_AUDIO_MANIFEST": "generated_audio_manifest",
             "VNTTS_NARRATOR_SPEAKER": "narrator_speaker",
             "VNTTS_OCR_LANGUAGE": "ocr_language",
             "VNTTS_SPEECH_BACKEND": "speech_backend",
             "VNTTS_AUDIO_SOURCE_POLICY": "audio_source_policy",
+            "VNTTS_LIVE_SEQUENCE_MODE": "live_sequence_mode",
             "VNTTS_CAPTURE_MODE": "capture_mode",
             "VNTTS_GAME_WINDOW_TITLE": "game_window_title",
         }

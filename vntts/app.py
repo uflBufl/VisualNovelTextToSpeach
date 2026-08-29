@@ -286,6 +286,15 @@ class SettingsDialog(QDialog):
             or (str(default_voice_manifest) if default_voice_manifest else "")
         )
         self.story_index = QLineEdit(settings.story_index or "")
+        self.live_sequence_plan = QLineEdit(settings.live_sequence_plan or "")
+        self.live_sequence_mode = QComboBox()
+        self.live_sequence_mode.addItem("Disabled", "off")
+        self.live_sequence_mode.addItem(
+            "Shadow diagnostics (does not control speech)", "shadow"
+        )
+        self.live_sequence_mode.setCurrentIndex(
+            max(0, self.live_sequence_mode.findData(settings.live_sequence_mode))
+        )
         self.live_speaker_corpus = QLineEdit(settings.live_speaker_corpus or "")
         self.generated_audio_manifest = QLineEdit(
             settings.generated_audio_manifest or ""
@@ -388,6 +397,15 @@ class SettingsDialog(QDialog):
             file_filter="Story indexes (*.jsonl *.json);;All files (*)",
         )
         (
+            live_sequence_plan_layout,
+            self.live_sequence_plan_button,
+        ) = self._path_selector(
+            self.live_sequence_plan,
+            "Live sequence plan",
+            "Choose the checksum-bound live story sequence plan",
+            file_filter="JSON files (*.json);;All files (*)",
+        )
+        (
             live_speaker_corpus_layout,
             self.live_speaker_corpus_button,
         ) = self._path_selector(
@@ -477,6 +495,12 @@ class SettingsDialog(QDialog):
         )
         _add_composite_form_row(
             speech_form,
+            "Live sequence plan",
+            self.live_sequence_plan,
+            live_sequence_plan_layout,
+        )
+        _add_composite_form_row(
+            speech_form,
             "Live speaker corpus",
             self.live_speaker_corpus,
             live_speaker_corpus_layout,
@@ -495,6 +519,7 @@ class SettingsDialog(QDialog):
         playback_form.addRow("Output volume", self.output_volume)
         playback_form.addRow("Speaking speed", self.speech_rate)
         playback_form.addRow("Auto advance", self.auto_advance)
+        playback_form.addRow("Sequence-first rollout", self.live_sequence_mode)
         playback_form.addRow("Speaker announcements", self.speaker_announcement_mode)
         playback_form.addRow("Advance key", self.auto_advance_key)
         playback_form.addRow("Advance delay", self.auto_advance_delay)
@@ -666,6 +691,7 @@ class SettingsDialog(QDialog):
             self.game_pack,
             self.voice_manifest,
             self.story_index,
+            self.live_sequence_plan,
             self.live_speaker_corpus,
             self.generated_audio_manifest,
             self.narrator_speaker,
@@ -675,6 +701,7 @@ class SettingsDialog(QDialog):
             self.capture_mode,
             self.game_window,
             self.speech_backend,
+            self.live_sequence_mode,
         ):
             field.currentIndexChanged.connect(self.update_validation_summary)
         self.game_window.currentTextChanged.connect(self.update_validation_summary)
@@ -764,10 +791,26 @@ class SettingsDialog(QDialog):
             ("Game pack", self.game_pack),
             ("Voice manifest", self.voice_manifest),
             ("Story index", self.story_index),
+            ("Live sequence plan", self.live_sequence_plan),
             ("Live speaker corpus", self.live_speaker_corpus),
             ("Generated audio manifest", self.generated_audio_manifest),
         ):
             add(2, field, self._file_validation_error(label, field.text()))
+        if self.live_sequence_mode.currentData() == "shadow":
+            if not self.live_sequence_plan.text().strip():
+                add(
+                    2,
+                    self.live_sequence_plan,
+                    "Sequence-first rollout: choose a live sequence plan for "
+                    "shadow diagnostics.",
+                )
+            if not self.story_index.text().strip():
+                add(
+                    2,
+                    self.story_index,
+                    "Story index: choose the exact index bound by the live "
+                    "sequence plan.",
+                )
         return tuple(errors)
 
     def update_validation_summary(self, *_args):
@@ -911,6 +954,8 @@ class SettingsDialog(QDialog):
                 "game_pack": optional_text(self.game_pack),
                 "voice_manifest": optional_text(self.voice_manifest),
                 "story_index": optional_text(self.story_index),
+                "live_sequence_plan": optional_text(self.live_sequence_plan),
+                "live_sequence_mode": self.live_sequence_mode.currentData(),
                 "live_speaker_corpus": optional_text(self.live_speaker_corpus),
                 "generated_audio_manifest": optional_text(
                     self.generated_audio_manifest

@@ -44,6 +44,7 @@ from vntts.live import (
     IncrementalDialogTracker,
     LiveDialogReader,
 )
+from vntts.live_sequence import LiveSequencePlan, StoryCursor
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
@@ -226,6 +227,7 @@ class AppController:
         generated_audio_backend_factory=GeneratedAudioFallbackBackend,
         route_trace_handler=None,
         pipeline_event_handler=None,
+        live_sequence_plan_factory=LiveSequencePlan.load,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -252,12 +254,16 @@ class AppController:
         self.pipeline_event_handler = pipeline_event_handler or (
             lambda _stage, _generation, _occurred_at, **_details: None
         )
+        self.live_sequence_plan_factory = live_sequence_plan_factory
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
         self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
         self.unknown_speaker_handler = unknown_speaker_handler or (lambda _name: None)
         self.error_handler = error_handler
+        self.live_sequence_plan = None
+        self.story_cursor = None
+        self._load_live_sequence_plan()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         self.tts = None
@@ -564,6 +570,8 @@ class AppController:
             self.narrator_fallback_names.update(self.next_live_narrator_fallback_names)
             with self.speaker_announcement_lock:
                 self.last_visible_speaker_key = None
+            if self.story_cursor is not None:
+                self.story_cursor.reset("live-session-started")
         running = self.live_reader.toggle()
         if running:
             self.next_live_narrator_fallback_names.clear()
@@ -1028,6 +1036,7 @@ class AppController:
         self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
             self.settings.story_index
         )
+        self._load_live_sequence_plan()
         self._load_live_speaker_corpus()
         self._configure_generated_audio_backend()
         self.refresh_corrections()
@@ -1316,6 +1325,7 @@ class AppController:
             self.dialog_handler("Narrator", "")
             return True
         character = self._canonical_observed_character(character, text)
+        self._observe_live_sequence_shadow(character, text)
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
@@ -1323,6 +1333,70 @@ class AppController:
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
         return not speech_deferred
+
+    def _load_live_sequence_plan(self):
+        self.live_sequence_plan = None
+        self.story_cursor = None
+        if self.settings.live_sequence_mode == "off":
+            return False
+        if not self.settings.live_sequence_plan:
+            self.status_handler(
+                "Sequence-first shadow disabled: configure a live sequence plan"
+            )
+            return False
+        if not self.settings.story_index:
+            self.status_handler(
+                "Sequence-first shadow disabled: configure its story index"
+            )
+            return False
+        try:
+            plan = self.live_sequence_plan_factory(
+                self.settings.live_sequence_plan,
+                self.settings.story_index,
+            )
+            cursor = StoryCursor(plan)
+        except Exception as error:
+            self.status_handler(f"Sequence-first shadow disabled: {error}")
+            return False
+        self.live_sequence_plan = plan
+        self.story_cursor = cursor
+        self.status_handler(
+            f"Sequence-first shadow ready: {len(plan.events)} planned events"
+        )
+        return True
+
+    def _observe_live_sequence_shadow(self, character, text):
+        cursor = self.story_cursor
+        if cursor is None or self.settings.live_sequence_mode != "shadow":
+            return None
+        resolve = getattr(
+            self.chapter_voice_preloader,
+            "resolve_exact_with_result",
+            None,
+        )
+        if callable(resolve):
+            line, match_result = resolve(character, text)
+        else:
+            line = self.chapter_voice_preloader.resolve_exact(character, text)
+            match_result = "exact" if line is not None else "no-match"
+        if line is None or line.line_id is None:
+            return None
+        snapshot = cursor.observe_line(line.line_id)
+        generation = (
+            self.live_reader.active_generation if self.live_reader is not None else 0
+        )
+        self.pipeline_event_handler(
+            "sequence-shadow",
+            generation,
+            monotonic(),
+            state=snapshot.state.value,
+            event_id=snapshot.current_event_id,
+            line_id=snapshot.current_line_id,
+            next_event_count=len(snapshot.expected_successor_ids),
+            reason=snapshot.reason,
+            match_result=match_result,
+        )
+        return snapshot
 
     def _canonical_observed_character(self, character, text=None):
         original = str(character or "Narrator").strip() or "Narrator"

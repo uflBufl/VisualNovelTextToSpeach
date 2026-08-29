@@ -1,5 +1,49 @@
 # Sequence-first live reading
 
+## Implemented foundation
+
+The first runtime-safe slice landed on 2026-08-29. It deliberately does not
+control speech or the game yet:
+
+- `vntts.live_sequence` reads and writes schema version 1 standalone sequence
+  documents, binds them to the exact story-index file SHA-256 and retains the
+  source-extract SHA-256 and producer identity;
+- validation rejects unknown or duplicated story line bindings, speech lines
+  from another chapter, dangling successors, unreachable events, invalid
+  automatic/choice/terminal control, cross-chapter edges and unguarded
+  automatic cycles;
+- invalid input is validated in a temporary candidate before publication, so a
+  rejected write does not replace or create the requested output;
+- the session-only `StoryCursor` implements the seven planned states and
+  explicit anchor, playback, one-key dispatch, transition confirmation and
+  fail-closed desynchronization operations;
+- `shadow` rollout mode can be selected with a validated plan and story index.
+  It observes only exact canonical story-index line IDs, reports cursor state,
+  event/line IDs, next-event count and reason through the privacy-safe pipeline
+  event callback, and never changes speech routing or sends an advance key;
+- an explicit linear chain of automatic silent and passive transition events
+  may be crossed by a later exact speech observation in shadow mode. A choice,
+  wait, branch or unplanned line still fails closed, and later observations
+  cannot implicitly recover a desynchronized cursor;
+- a `transition` event uses passive control: the game advances its own timed
+  background, effect or title step and VNTTS observes the successor without
+  sending a key. This is distinct from an automatic `speech` or `silent` event,
+  where VNTTS may eventually send exactly one configured advance key.
+
+The current `vntts-artifacts` v0.6.2 game-pack schema rejects unknown core
+components. Importing a v0.6.2 pack therefore clears any standalone sequence
+plan that was bound to a previously selected pack. The standalone schema is the
+compatibility-safe proving ground; it must be promoted into a versioned
+`live_sequence_plan` game-pack component in the next shared contract release.
+
+The Reverse: 1999 producer now preserves explicit raw choice targets, treats
+only a present `sequence + 1` record as a linear successor and exposes multiple
+entry anchors for disconnected branch segments. A complete installed-corpus
+round trip through this loader accepted 2,075 chapters and 152,989 events:
+125,875 bound speech, 3,205 silent, 21,143 transitions, 19 standalone choices
+and 2,747 manual waits. This full graph check is the evidence that no numeric gap
+or serialized array position is being turned into an inferred key press.
+
 ## Problem and evidence
 
 The current live pipeline treats OCR observations as the authority for speaker,
@@ -18,11 +62,16 @@ not WAV decoding, dominated the delay and errors.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through
-101, with seven missing ranges: 18-19, 24, 32, 51, 61, 78 and 89-90. It contains
-no successor edges or choice boundaries. Numeric sequence gaps must not be
-interpreted as a number of key presses: they may represent silent dialogue,
-events, commands or producer filtering. The active generated manifest covers 60
-of those 89 indexed lines, while 15 declare installed source audio.
+101, with seven missing ranges: 18-19, 24, 32, 51, 61, 78 and 89-90. Inspection
+of the exact installed Unity asset on 2026-08-29 showed that the source actually
+contains 104 raw steps with declared order. Sequences 18, 19 and 78 are visible `...` lines
+that the speakability filter removed; 24, 32, 51, 61, 89 and 90 are timed
+background, camera, audio or effect transitions with empty English text; 1-3
+and 102-104 are opening/closing transition and title-card steps. This confirms
+that numeric gaps must not be interpreted as key presses and that the producer
+must classify the raw array before filtering text. The index still contains no
+successor edges or choice boundaries. The active generated manifest covers 60
+of its 89 indexed lines, while 15 declare installed source audio.
 
 ## Target principle
 
@@ -58,7 +107,8 @@ Each chapter plan must contain:
   audio events, intentional omissions and other silent boxes;
 - a story-index line ID for every speakable event, binding canonical speaker and
   text hash without duplicating mutable text;
-- explicit event kind: `speech`, `silent`, `choice`, `wait` or another validated
+- explicit event kind: `speech`, `silent`, `transition`, `choice`, `wait` or
+  another validated
   game-specific kind;
 - explicit successor event IDs, entry points and terminal events;
 - branch/choice metadata sufficient to know when automatic advancement must

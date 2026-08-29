@@ -747,6 +747,7 @@ class TrayApplicationTest(unittest.TestCase):
             (dialog.game_pack, dialog.game_pack_button),
             (dialog.voice_manifest, dialog.voice_manifest_button),
             (dialog.story_index, dialog.story_index_button),
+            (dialog.live_sequence_plan, dialog.live_sequence_plan_button),
             (dialog.live_speaker_corpus, dialog.live_speaker_corpus_button),
             (
                 dialog.generated_audio_manifest,
@@ -961,6 +962,31 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.settings().live_speaker_corpus,
             "session-speakers.json",
         )
+        dialog.deleteLater()
+
+    def test_settings_sequence_shadow_requires_plan_and_story_index(self):
+        dialog = SettingsDialog(AppSettings(live_sequence_mode="shadow"))
+
+        errors = tuple(
+            message for _section, _widget, message in dialog.validation_errors()
+        )
+
+        self.assertTrue(any("live sequence plan" in message for message in errors))
+        self.assertTrue(any("Story index" in message for message in errors))
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story = root / "story.jsonl"
+            plan = root / "live-sequence.json"
+            story.touch()
+            plan.touch()
+            dialog.story_index.setText(str(story))
+            dialog.live_sequence_plan.setText(str(plan))
+
+            self.assertFalse(dialog.validation_errors())
+            settings = dialog.settings()
+
+        self.assertEqual(settings.live_sequence_mode, "shadow")
+        self.assertEqual(settings.live_sequence_plan, str(plan))
         dialog.deleteLater()
 
     def test_settings_offer_moss_with_model_language_and_reference(self):

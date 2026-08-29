@@ -22,6 +22,10 @@ class GamePackImport:
         return settings.updated(
             game_pack=str(self.pack.manifest_path),
             story_index=str(self.story_index),
+            # vntts-artifacts v0.6.2 has no sequence-plan component. Never let
+            # a plan bound to a previously selected pack survive this import.
+            live_sequence_plan=None,
+            live_sequence_mode="off",
             voice_manifest=str(self.voice_manifest),
             generated_audio_manifest=(
                 str(self.generated_audio_manifest)

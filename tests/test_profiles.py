@@ -30,6 +30,8 @@ class GameProfileStoreTest(unittest.TestCase):
                 ocr_language="eng+jpn",
                 voice_manifest="voices/reverse-1999.json",
                 story_index="story/reverse-1999.jsonl",
+                live_sequence_plan="story/live-sequence.json",
+                live_sequence_mode="shadow",
                 generated_audio_manifest="audio/generated.json",
                 audio_source_policy="prefer-generated",
                 voice_assignments={"Narrator": "preset:alba"},
@@ -47,6 +49,8 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.ocr_language, "eng+jpn")
         self.assertEqual(applied.voice_manifest, "voices/reverse-1999.json")
         self.assertEqual(applied.story_index, "story/reverse-1999.jsonl")
+        self.assertEqual(applied.live_sequence_plan, "story/live-sequence.json")
+        self.assertEqual(applied.live_sequence_mode, "shadow")
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
         self.assertEqual(applied.audio_source_policy, "prefer-generated")
         self.assertEqual(applied.voice_assignments, {"Narrator": "preset:alba"})

@@ -83,6 +83,35 @@ class SettingsTest(unittest.TestCase):
     def test_live_tts_is_the_default_audio_source_policy(self):
         self.assertEqual(AppSettings().audio_source_policy, "live-tts-only")
 
+    def test_sequence_first_rollout_is_disabled_by_default(self):
+        self.assertEqual(AppSettings().live_sequence_mode, "off")
+        self.assertIsNone(AppSettings().live_sequence_plan)
+
+    def test_sequence_shadow_can_be_selected_from_environment(self):
+        settings = AppSettings().with_environment_overrides(
+            {
+                "VNTTS_LIVE_SEQUENCE_MODE": "shadow",
+                "VNTTS_LIVE_SEQUENCE_PLAN": "story/live-sequence.json",
+            }
+        )
+
+        self.assertEqual(settings.live_sequence_mode, "shadow")
+        self.assertEqual(
+            settings.live_sequence_plan,
+            "story/live-sequence.json",
+        )
+
+    def test_unknown_sequence_mode_fails_closed(self):
+        warnings = []
+
+        settings = AppSettings.from_mapping(
+            {"live_sequence_mode": "control-the-game"},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(settings.live_sequence_mode, "off")
+        self.assertTrue(any("live_sequence_mode" in value for value in warnings))
+
     def test_narrator_fallback_is_generated_first_by_default(self):
         self.assertFalse(AppSettings().force_live_narrator)
 
@@ -196,6 +225,8 @@ class SettingsTest(unittest.TestCase):
                 tts_language="en",
                 generated_audio_manifest="audio/generated.json",
                 live_speaker_corpus="audio/live-speakers.json",
+                live_sequence_plan="story/live-sequence.json",
+                live_sequence_mode="shadow",
                 audio_source_policy="prefer-generated",
                 voice_assignments={
                     "Narrator": "preset:alba",

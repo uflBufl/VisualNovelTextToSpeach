@@ -10,7 +10,7 @@ from vntts.settings import (
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-profiles_schema_version = 5
+profiles_schema_version = 6
 
 
 def get_profiles_path():
@@ -28,6 +28,8 @@ class GameProfile:
     game_pack: str | None
     voice_manifest: str | None
     story_index: str | None
+    live_sequence_plan: str | None
+    live_sequence_mode: str
     generated_audio_manifest: str | None
     audio_source_policy: str
     voice_assignments: dict[str, str]
@@ -45,6 +47,8 @@ class GameProfile:
             game_pack=settings.game_pack,
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
+            live_sequence_plan=settings.live_sequence_plan,
+            live_sequence_mode=settings.live_sequence_mode,
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
@@ -81,6 +85,12 @@ class GameProfile:
             game_pack=_optional_text(values.get("game_pack")),
             voice_manifest=_optional_text(values.get("voice_manifest")),
             story_index=_optional_text(values.get("story_index")),
+            live_sequence_plan=_optional_text(values.get("live_sequence_plan")),
+            live_sequence_mode=(
+                values.get("live_sequence_mode")
+                if values.get("live_sequence_mode") in {"off", "shadow"}
+                else "off"
+            ),
             generated_audio_manifest=_optional_text(
                 values.get("generated_audio_manifest")
             ),
@@ -103,6 +113,8 @@ class GameProfile:
             game_pack=self.game_pack,
             voice_manifest=self.voice_manifest,
             story_index=self.story_index,
+            live_sequence_plan=self.live_sequence_plan,
+            live_sequence_mode=self.live_sequence_mode,
             generated_audio_manifest=self.generated_audio_manifest,
             audio_source_policy=self.audio_source_policy,
             voice_assignments=dict(self.voice_assignments),
@@ -124,6 +136,8 @@ class GameProfile:
             game_pack=settings.game_pack,
             voice_manifest=settings.voice_manifest,
             story_index=settings.story_index,
+            live_sequence_plan=settings.live_sequence_plan,
+            live_sequence_mode=settings.live_sequence_mode,
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
