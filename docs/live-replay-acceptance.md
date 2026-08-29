@@ -212,8 +212,9 @@ deliberately reports no device underrun claim.
 
 Schema version 2 adds a required `live_sequence` binding while retaining schema
 version 1 compatibility. The binding declares exactly `mode`, `story_index`,
-`plan`, `expected` and `focus_probes`. Only `shadow` and `audio-manual` are
-accepted. The story index and sequence plan are contained relative files with
+`plan`, `expected` and `focus_probes`. `shadow`, `audio-manual` and the explicit
+experimental `audio-auto` mode are accepted. The story index and sequence plan
+are contained relative files with
 exact SHA-256 values. They are re-read, revalidated and copied into a private
 snapshot immediately before execution, so changed bytes, symlinks, mismatched
 canonical speaker/text or a plan that no longer binds the declared line IDs
@@ -241,12 +242,18 @@ In `shadow`, production auto-advance requests and focus checks are exercised,
 but the replay frame source substitutes for the real key device. In
 `audio-manual`, playback completion advances the declared frame source as a
 separate simulated player action and the expected key count remains zero. An
+`audio-auto` replay uses canonical full-line routing, requires the latest
+cursor-owned frame to be visible and stable, rechecks focus before each
+device-free key, and confirms the pending key from the next explicit stable
+event before another event can advance. A canonical line is queued once without
+waiting for the incremental OCR tracker after the cursor has resolved its exact
+line ID. An
 ambiguous initial observation, including identical repeated canonical lines,
 fails closed without speech; it requires explicit position selection or a later
 unambiguous recovery rather than an OCR guess.
 
 When the current explicit successor is a line-less silent event, exact ellipsis
-OCR can acknowledge it in both shadow and audio-manual mode. This special case
+OCR can acknowledge it in shadow, audio-manual and audio-auto mode. This special case
 does not generalize punctuation into a story line: the successor must be unique,
 must be typed `silent` by the plan and contributes a nullable line identity to
 the replay report. Audio-manual replay models the player's next click separately;
@@ -260,14 +267,18 @@ The tracked sequence corpora are:
   automatic dispatch attempts;
 - `samples/sequence-live-replay-audio-manual.json`: the same canonical route
   order with player-driven frame changes, no automatic dispatch and two bounded
-  recoveries caused by lost nameplates/manual skips.
+  recoveries caused by lost nameplates/manual skips;
+- `samples/sequence-live-replay-audio-auto.json`: three cursor-owned automatic
+  keys across original/generated/live routes, including focus loss and return;
+- `samples/sequence-live-replay-audio-auto-safety.json`: a silent dialogue,
+  passive transition and explicit choice/manual boundary, with exactly one key
+  per eligible automatic event and bounded recovery after the choice.
 
-Both must pass before automatic sequence-owned key dispatch is implemented.
-They prove the deterministic software gate, not real game focus, input delivery,
-audio hardware or the required complete-visible-chapter gameplay acceptance
-run.
-Focused synthetic tests separately cover a pure `...` event with no synthesis,
-identical ambiguous lines, branch selection and a bounded multi-line skip.
+All four are regression gates. They prove deterministic software behavior, not
+real game focus, OS input delivery or audio hardware. Focused synthetic tests
+separately cover a pure `...` event with no synthesis, identical ambiguous
+lines, branch selection, bounded multi-line skip, visual-wait postponement and
+an unconfirmed key that is never retried.
 
 The tracked `samples/rhiannon-live-replay-representative.json` covers:
 

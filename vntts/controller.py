@@ -44,6 +44,7 @@ from vntts.live import (
     AdaptiveSpeechBackpressure,
     IncrementalDialogTracker,
     LiveDialogReader,
+    SilentDialogRoute,
 )
 from vntts.live_sequence import (
     LiveSequencePlan,
@@ -62,7 +63,11 @@ from vntts.runtime_config import (
     initialize_voice_router,
 )
 from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
-from vntts.settings import AppSettings, preserve_loaded_runtime_settings
+from vntts.settings import (
+    AppSettings,
+    is_live_sequence_audio_mode,
+    preserve_loaded_runtime_settings,
+)
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSPreparedSpeech,
@@ -525,6 +530,9 @@ class AppController:
                 capture_state_changed=self._capture_state_changed,
                 tracker_factory=IncrementalDialogTracker,
                 auto_advance=self._live_auto_advance_callback(),
+                require_visible_auto_advance=(
+                    self.settings.live_sequence_mode == "audio-auto"
+                ),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
                 auto_advance_state_changed=self._auto_advance_state_changed,
                 pipeline_event_handler=self.pipeline_event_handler,
@@ -1142,6 +1150,9 @@ class AppController:
         live_configuration = self._get_live_configuration()
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
         self.live_reader.tracker_options = live_configuration["tracker_options"]
+        self.live_reader.require_visible_auto_advance = (
+            self.settings.live_sequence_mode == "audio-auto"
+        )
         self.live_reader.set_auto_advance(self._live_auto_advance_callback())
         self.live_reader.auto_advance_delay_seconds = (
             self.settings.auto_advance_delay_ms / 1000
@@ -1169,7 +1180,7 @@ class AppController:
         tracker_options = dict(configuration["tracker_options"])
         tracker_options["complete_dialogue_only"] = bool(
             self.settings.audio_source_policy != "live-tts-only"
-            or self.settings.live_sequence_mode == "audio-manual"
+            or is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         if tracker_options["complete_dialogue_only"] and self.settings.story_index:
             tracker_options["incomplete_dialogue_probe"] = (
@@ -1393,7 +1404,7 @@ class AppController:
         canonical_routing = False
         with self.story_cursor_lock:
             sequence_observation = self._observe_live_sequence(character, text)
-            if self.settings.live_sequence_mode == "audio-manual":
+            if is_live_sequence_audio_mode(self.settings.live_sequence_mode):
                 if self.story_cursor is None:
                     return False
                 if sequence_observation is None:
@@ -1420,7 +1431,7 @@ class AppController:
                         snapshot.current_event_id
                     )
                     if event is not None and event.kind == "silent" and line is None:
-                        return (None, "")
+                        return SilentDialogRoute(event.event_id)
                     if (
                         event is None
                         or not event.is_speech
@@ -1531,6 +1542,16 @@ class AppController:
             guidance = (
                 "A choice or manual boundary needs an explicit story-position "
                 "selection."
+            )
+        elif (
+            snapshot.state == StoryCursorState.WAITING_TRANSITION
+            and cursor.deterministic_manual_successor() is not None
+        ):
+            recovery_required = True
+            guidance = (
+                "The advance key was sent and the next planned event is a choice or "
+                "manual boundary. Make the in-game decision, then select the visible "
+                "expected event; no second key will be sent."
             )
         elif event is not None and not event.successors:
             guidance = "This is a terminal sequence event; no successor is expected."
@@ -1652,6 +1673,7 @@ class AppController:
         if cursor is None or self.settings.live_sequence_mode == "off":
             return None
         previous_event_id = cursor.current_event_id
+        confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
         candidate_events = ()
         if previous_event_id is None or cursor.state in {
             StoryCursorState.UNSYNCHRONIZED,
@@ -1712,6 +1734,14 @@ class AppController:
                 line, match_result = resolve_bounded(
                     character, text, candidate_line_ids
                 )
+                if self.settings.live_sequence_mode == "audio-auto" and "prefix" in str(
+                    match_result
+                ):
+                    # Canonical audio may be prepared from a safe prefix in manual
+                    # mode, but automatic control must wait until the visible box
+                    # itself is complete so a later typewriter update cannot look
+                    # like the post-key transition.
+                    line = None
                 snapshot = (
                     None
                     if line is None
@@ -1739,11 +1769,18 @@ class AppController:
         generation = (
             self.live_reader.active_generation if self.live_reader is not None else 0
         )
+        if (
+            confirming_dispatch
+            and snapshot.state != StoryCursorState.DESYNCHRONIZED
+            and snapshot.current_event_id != previous_event_id
+            and self.live_reader is not None
+        ):
+            self.live_reader.confirm_pending_auto_advance()
         self.pipeline_event_handler(
             (
                 "sequence-shadow"
                 if self.settings.live_sequence_mode == "shadow"
-                else "sequence-audio-manual"
+                else f"sequence-{self.settings.live_sequence_mode}"
             ),
             generation,
             monotonic(),
@@ -1764,7 +1801,9 @@ class AppController:
 
     def _live_sequence_anchor_options_locked(self):
         plan = self.live_sequence_plan
-        if plan is None or self.settings.live_sequence_mode != "audio-manual":
+        if plan is None or not is_live_sequence_audio_mode(
+            self.settings.live_sequence_mode
+        ):
             return ()
         options = []
         for chapter in plan.chapters:
@@ -1795,7 +1834,9 @@ class AppController:
 
     def _expected_live_sequence_events_locked(self):
         cursor = self.story_cursor
-        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+        if cursor is None or not is_live_sequence_audio_mode(
+            self.settings.live_sequence_mode
+        ):
             return ()
         if cursor.state in {
             StoryCursorState.UNSYNCHRONIZED,
@@ -1954,7 +1995,7 @@ class AppController:
             if (
                 cursor is None
                 or plan is None
-                or self.settings.live_sequence_mode != "audio-manual"
+                or not is_live_sequence_audio_mode(self.settings.live_sequence_mode)
             ):
                 self.status_handler(
                     "Story position is unavailable: configure sequence-first manual "
@@ -2023,7 +2064,9 @@ class AppController:
     ):
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            if cursor is None or not is_live_sequence_audio_mode(
+                self.settings.live_sequence_mode
+            ):
                 return None
             if expected_owner is not None and cursor.current_event_id != expected_owner:
                 return False
@@ -2059,7 +2102,12 @@ class AppController:
                 # visible event instead of speaking an inferred intermediate line.
                 return None
             previous_event_id = cursor.current_event_id
-            cursor.anchor_event(event.event_id, "visual-transition-confirmed")
+            confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
+            confirmed_event = cursor.confirm_visual_transition()
+            if confirmed_event is None or confirmed_event.event_id != event.event_id:
+                return False
+            if confirming_dispatch and self.live_reader is not None:
+                self.live_reader.confirm_pending_auto_advance()
             generation = (
                 self.live_reader.active_generation
                 if self.live_reader is not None
@@ -2078,7 +2126,7 @@ class AppController:
                     reason=cursor.reason,
                 )
                 self._publish_live_sequence_status()
-                return (None, "")
+                return SilentDialogRoute(event.event_id)
             line = self.chapter_voice_preloader.select_line_id(event.line_id)
             if line is None:
                 cursor.desynchronize(f"missing-story-line:{event.line_id}")
@@ -2104,7 +2152,9 @@ class AppController:
     def _stable_live_frame_owner(self):
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            if cursor is None or not is_live_sequence_audio_mode(
+                self.settings.live_sequence_mode
+            ):
                 return None
             return cursor.current_event_id
 
@@ -2112,7 +2162,9 @@ class AppController:
         """Return the exact cursor-owned line identity for a routed observation."""
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            if cursor is None or self.settings.live_sequence_mode == "off":
+            if cursor is None or not is_live_sequence_audio_mode(
+                self.settings.live_sequence_mode
+            ):
                 return None
             event = cursor.current_event
             if event is None or not event.is_speech or event.line_id is None:
@@ -2125,7 +2177,9 @@ class AppController:
     def _begin_sequence_playback(self, chunk):
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            if cursor is None or not is_live_sequence_audio_mode(
+                self.settings.live_sequence_mode
+            ):
                 return None
             event = cursor.current_event
             if (
@@ -2333,6 +2387,8 @@ class AppController:
         decision = self._dialog_observed(character, text)
         if decision is False:
             return False
+        if isinstance(decision, SilentDialogRoute):
+            return True
         if isinstance(decision, tuple) and len(decision) == 2:
             character, text = decision
         return self.live_reader.enqueue(character, text)
@@ -2360,7 +2416,39 @@ class AppController:
             or self.settings.live_sequence_mode == "audio-manual"
         ):
             return None
+        if self.settings.live_sequence_mode == "audio-auto":
+            return self._sequence_auto_advance_dialog
         return self._auto_advance_dialog
+
+    def _sequence_auto_advance_dialog(self):
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if (
+                cursor is None
+                or self.settings.live_sequence_mode != "audio-auto"
+                or not cursor.can_auto_advance
+                or not self._is_game_focused()
+            ):
+                return False
+            advanced = self._auto_advance_dialog()
+            if advanced is False:
+                return False
+            snapshot = cursor.dispatch_advance()
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
+            )
+            self.pipeline_event_handler(
+                "sequence-key-dispatch-authorized",
+                generation,
+                monotonic(),
+                event_id=snapshot.current_event_id,
+                line_id=snapshot.current_line_id,
+                next_event_count=len(snapshot.expected_successor_ids),
+            )
+            self._publish_live_sequence_status()
+            return True
 
     def _auto_advance_dialog(self):
         if (
@@ -2373,20 +2461,47 @@ class AppController:
         return True
 
     def _auto_advance_state_changed(self, state, _generation, _attempt):
+        with self.story_cursor_lock:
+            awaiting_manual_boundary = bool(
+                self.story_cursor is not None
+                and self.story_cursor.deterministic_manual_successor() is not None
+            )
         if state == "focus-wait":
             self.status_handler(
                 "Auto advance is waiting; focus the selected game window"
             )
+        elif state == "visual-wait":
+            self.status_handler(
+                "Auto advance is waiting for the current dialogue frame to remain "
+                "visible and stable"
+            )
+        elif state == "blocked":
+            self.status_handler(
+                "Auto advance was blocked because the current cursor event no longer "
+                "owns one safe automatic transition. Resynchronize manually."
+            )
         elif state == "dispatched":
-            self.status_handler("Auto advance key sent; waiting for dialogue change")
+            self.status_handler(
+                "Auto advance key sent; a choice/manual boundary is next. Make the "
+                "in-game decision, then select the visible expected event."
+                if awaiting_manual_boundary
+                else "Auto advance key sent; waiting for dialogue change"
+            )
         elif state == "waiting":
             self.status_handler(
-                "The game is still changing; auto advance is continuing to wait. "
-                "No second key will be sent."
+                "A choice/manual boundary is waiting for your in-game decision; no "
+                "second key will be sent."
+                if awaiting_manual_boundary
+                else "The game is still changing; auto advance is continuing to "
+                "wait. No second key will be sent."
             )
         elif state == "failed":
             self.status_handler(
-                "Dialogue change was not confirmed after the extended wait; no "
+                "The expected choice/manual transition was not confirmed; no second "
+                "key was sent. Make the decision and select the visible expected "
+                "event."
+                if awaiting_manual_boundary
+                else "Dialogue change was not confirmed after the extended wait; no "
                 "second key was sent. Advance manually."
             )
         elif state == "confirmed":
@@ -2609,7 +2724,7 @@ class AppController:
                     "Playback was interrupted; retry or wait for a new dialogue",
                 )
             if result and (
-                self.settings.live_sequence_mode == "audio-manual"
+                is_live_sequence_audio_mode(self.settings.live_sequence_mode)
                 or isinstance(
                     audio,
                     (

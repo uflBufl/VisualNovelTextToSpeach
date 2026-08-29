@@ -14,6 +14,7 @@ from vntts.live import (
     AdaptiveSpeechBackpressure,
     IncrementalDialogTracker,
     LiveDialogReader,
+    SilentDialogRoute,
     SpeechChunk,
 )
 
@@ -704,6 +705,42 @@ class AdaptiveSpeechBackpressureTest(unittest.TestCase):
 
 
 class IncrementalDialogTrackerTest(unittest.TestCase):
+    def test_cursor_owned_silent_event_is_ready_once_without_speech(self):
+        tracker = IncrementalDialogTracker()
+
+        self.assertTrue(tracker.observe_silent("event-silent"))
+        self.assertEqual(tracker.generation, 1)
+        self.assertTrue(tracker.is_idle_complete())
+        self.assertFalse(tracker.observe_silent("event-silent"))
+        self.assertEqual(tracker.generation, 1)
+
+        self.assertEqual(tracker.observe("Ada", "Spoken line."), [])
+        self.assertEqual(tracker.generation, 2)
+        self.assertFalse(tracker.is_idle_complete())
+
+    def test_cursor_owned_canonical_line_emits_once_without_ocr_stability_delay(self):
+        tracker = IncrementalDialogTracker()
+
+        chunks = tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+
+        self.assertEqual(
+            chunks,
+            [
+                SpeechChunk(
+                    1,
+                    "Ada",
+                    "Canonical line.",
+                    ordinal=1,
+                    line_id="line-1",
+                )
+            ],
+        )
+        self.assertTrue(tracker.is_idle_complete())
+        self.assertEqual(
+            tracker.observe_canonical("Ada", "Canonical line.", "line-1"), []
+        )
+        self.assertEqual(tracker.generation, 1)
+
     def create_tracker(self, **options):
         self.clock = FakeClock()
         return IncrementalDialogTracker(clock=self.clock, **options)
@@ -1106,6 +1143,15 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertTrue(reader.bind_current_frame_route())
         self.assertEqual(reader.routed_frame_fingerprint, "visible-dialogue")
 
+    def test_dialog_handler_can_route_a_cursor_owned_silent_event(self):
+        reader = self.create_reader(
+            dialog_observed=lambda _character, _text: SilentDialogRoute("event-silent")
+        )
+
+        routed = reader._report_observation("Rhiannon", "...")
+
+        self.assertEqual(routed, SilentDialogRoute("event-silent"))
+
     def test_capture_loop_waits_for_unknown_voice_decision_before_speaking(self):
         stop_event = Event()
         observations = 0
@@ -1359,6 +1405,81 @@ class LiveDialogReaderTest(unittest.TestCase):
         timer.assert_called_once()
         timer.return_value.start.assert_called_once_with()
         state_changed.assert_called_once_with("focus-wait", 3, 0)
+
+    def test_guarded_auto_advance_waits_for_cursor_owned_visible_frame(self):
+        state_changed = Mock()
+        auto_advance = Mock(return_value=True)
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            require_visible_auto_advance=True,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+        reader.latest_frame_visible = True
+        reader.latest_frame_fingerprint = "newer"
+        reader.routed_frame_fingerprint = "older"
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        auto_advance.assert_not_called()
+        timer.assert_called_once()
+        timer.return_value.start.assert_called_once_with()
+        state_changed.assert_called_once_with("visual-wait", 3, 0)
+
+    def test_focused_callback_refusal_blocks_generation_without_retry(self):
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=Mock(return_value=False),
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        timer.assert_not_called()
+        self.assertEqual(reader.failed_auto_advance_generation, 3)
+        state_changed.assert_called_once_with("blocked", 3, 0)
+
+    def test_focus_loss_inside_callback_window_reschedules_without_consuming_key(self):
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=Mock(return_value=False),
+            focus_probe=Mock(side_effect=[True, False]),
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        timer.assert_called_once()
+        timer.return_value.start.assert_called_once_with()
+        self.assertIsNone(reader.failed_auto_advance_generation)
+        state_changed.assert_called_once_with("focus-wait", 3, 0)
+
+    def test_cursor_visual_confirmation_cancels_terminal_retry(self):
+        state_changed = Mock()
+        reader = self.create_reader(
+            auto_advance=Mock(return_value=True),
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            confirmation_timer = reader.auto_advance_timer
+
+            self.assertTrue(reader.confirm_pending_auto_advance())
+
+        confirmation_timer.cancel.assert_called_once_with()
+        self.assertIsNone(reader.pending_auto_advance_generation)
+        state_changed.assert_called_with("confirmed", 3, 1)
 
     def test_focus_probe_failure_is_fail_closed_and_reported_once(self):
         error = RuntimeError("focus unavailable")

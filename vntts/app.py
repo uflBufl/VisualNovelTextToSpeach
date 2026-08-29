@@ -92,6 +92,7 @@ from vntts.settings import (
     AppSettings,
     get_local_data_directory,
     get_settings_path,
+    is_live_sequence_audio_mode,
     load_app_settings,
     restart_required_setting_changes,
 )
@@ -296,6 +297,9 @@ class SettingsDialog(QDialog):
         )
         self.live_sequence_mode.addItem(
             "Canonical audio routing (manual advancement)", "audio-manual"
+        )
+        self.live_sequence_mode.addItem(
+            "Canonical audio + guarded auto advance (experimental)", "audio-auto"
         )
         self.live_sequence_mode.setCurrentIndex(
             max(0, self.live_sequence_mode.findData(settings.live_sequence_mode))
@@ -872,13 +876,20 @@ class SettingsDialog(QDialog):
         self.diagnostics_browse_button.setEnabled(enabled)
 
     def update_auto_advance_controls(self):
-        manual_sequence = self.live_sequence_mode.currentData() == "audio-manual"
+        sequence_mode = self.live_sequence_mode.currentData()
+        manual_sequence = sequence_mode == "audio-manual"
         self.auto_advance.setEnabled(not manual_sequence)
         self.auto_advance.setToolTip(
             "Sequence-first canonical routing never sends advance keys in the "
             "manual rollout phase."
             if manual_sequence
-            else ""
+            else (
+                "Experimental sequence control sends at most one key for the "
+                "current automatic event, only while the selected game window is "
+                "focused and its dialogue frame remains visible and stable."
+                if sequence_mode == "audio-auto"
+                else ""
+            )
         )
         enabled = self.auto_advance.isChecked() and not manual_sequence
         self.auto_advance_key.setEnabled(enabled)
@@ -1132,10 +1143,10 @@ class TrayApplication(QObject):
         self.sequence_resync_action.setEnabled(False)
         self.sequence_expected_action.setEnabled(False)
         self.sequence_resync_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self.sequence_expected_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self.pause_action.setEnabled(False)
         self.skip_action.setEnabled(False)
@@ -1229,6 +1240,7 @@ class TrayApplication(QObject):
                 "off",
                 "shadow",
                 "audio-manual",
+                "audio-auto",
             }:
                 self.set_sequence_status(sequence_status)
         self.dashboard.read_requested.connect(self.read_once)
@@ -1429,7 +1441,7 @@ class TrayApplication(QObject):
     def set_sequence_status(self, status):
         self.dashboard.set_sequence_status(status)
         self.compact_controller.set_sequence_status(status)
-        manual = getattr(status, "mode", "off") == "audio-manual"
+        manual = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
         candidate_count = int(getattr(status, "expected_candidate_count", 0))
         self.sequence_expected_action.setVisible(manual)
         controls_available = (
@@ -1897,10 +1909,10 @@ class TrayApplication(QObject):
         self.settings = updated_settings
         self.dashboard.set_configuration(self.settings)
         self.sequence_resync_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self.sequence_expected_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
@@ -1985,10 +1997,10 @@ class TrayApplication(QObject):
         path = self.settings.save()
         self.dashboard.set_configuration(self.settings)
         self.sequence_resync_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self.sequence_expected_action.setVisible(
-            self.settings.live_sequence_mode == "audio-manual"
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         profile = self.profile_store.get(self.settings.active_profile_id)
         self._pending_profile_name = profile.name if profile is not None else None
@@ -2514,6 +2526,7 @@ class TrayApplication(QObject):
                 "off",
                 "shadow",
                 "audio-manual",
+                "audio-auto",
             }:
                 self.set_sequence_status(sequence_status)
 

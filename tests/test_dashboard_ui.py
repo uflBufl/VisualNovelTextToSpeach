@@ -101,7 +101,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         dashboard.deleteLater()
 
-    def test_story_resync_is_visible_only_for_sequence_manual_mode(self):
+    def test_story_resync_is_visible_for_sequence_audio_modes(self):
         dashboard = ControlDashboard(AppSettings())
 
         self.assertTrue(dashboard.sequence_group.isHidden())
@@ -114,6 +114,14 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn(
             "anchor or recover",
             dashboard.sequence_resync_button.accessibleDescription(),
+        )
+
+        dashboard.set_configuration(AppSettings(live_sequence_mode="audio-auto"))
+
+        self.assertFalse(dashboard.sequence_group.isHidden())
+        self.assertIn(
+            "Sequence: Canonical audio; guarded automatic advance",
+            dashboard.configuration.text(),
         )
         dashboard.deleteLater()
 

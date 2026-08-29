@@ -87,22 +87,55 @@ class StoryCursor:
             and event is not None
             and event.control == "automatic"
             and len(event.successors) == 1
-        )
-
-    @property
-    def can_confirm_visual_transition(self):
-        event = self.current_event
-        return bool(
-            self.state == StoryCursorState.LOCKED
-            and event is not None
             and (
-                self.reason == "playback-completed"
+                (event.is_speech and self.reason == "playback-completed")
                 or (
                     event.kind == "silent"
                     and self.reason == "visual-transition-confirmed"
                 )
             )
         )
+
+    @property
+    def can_confirm_visual_transition(self):
+        event = self.current_event
+        return bool(
+            event is not None
+            and (
+                self.state == StoryCursorState.WAITING_TRANSITION
+                or (
+                    self.state == StoryCursorState.LOCKED
+                    and (
+                        self.reason == "playback-completed"
+                        or (
+                            event.kind == "silent"
+                            and self.reason == "visual-transition-confirmed"
+                        )
+                    )
+                )
+            )
+        )
+
+    def deterministic_manual_successor(self):
+        """Return the unique upcoming manual boundary, if it precedes dialogue."""
+        if self.state != StoryCursorState.WAITING_TRANSITION:
+            return None
+        current = self._require_current()
+        visited = {current.event_id}
+        while len(current.successors) == 1:
+            candidate = self.plan.events[current.successors[0]]
+            if candidate.event_id in visited:
+                return None
+            visited.add(candidate.event_id)
+            if candidate.kind in {"choice", "wait"} or candidate.control == "manual":
+                return candidate
+            if candidate.kind in {"speech", "silent"} or candidate.control not in {
+                "automatic",
+                "passive",
+            }:
+                return None
+            current = candidate
+        return None
 
     def snapshot(self):
         event = self.current_event

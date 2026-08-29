@@ -22,7 +22,14 @@ speaker_announcement_modes = {
     "all-speakers",
     "narrator-fallback-roles",
 }
-live_sequence_modes = {"off", "shadow", "audio-manual"}
+live_sequence_audio_modes = frozenset({"audio-manual", "audio-auto"})
+live_sequence_modes = {"off", "shadow", *live_sequence_audio_modes}
+
+
+def is_live_sequence_audio_mode(value):
+    return value in live_sequence_audio_modes
+
+
 restart_required_setting_names = (
     "speech_backend",
     "tts_model",

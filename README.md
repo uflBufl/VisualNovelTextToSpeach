@@ -134,8 +134,15 @@ transition. Paused live reading or a temporary focus loss postpones dispatch or
 confirmation without consuming the one permitted key.
 
 Reverse: 1999 choices are rendered outside the configured dialogue capture
-region, so VNTTS does not attempt to detect them from dialogue OCR. Pause live
-reading or disable auto advance manually when approaching a rare choice.
+region, so ordinary OCR-driven mode does not attempt to detect them from
+dialogue OCR. Pause live reading or disable auto advance manually when
+approaching a rare choice. An exact sequence plan enables the separate
+experimental **Canonical audio + guarded auto advance** mode: it sends at most
+one key for a cursor-owned automatic event, requires the selected game to be
+focused and the accepted dialogue frame to remain visible, then stops at a
+declared choice/manual boundary and asks the player to select the visible
+expected event after making the in-game decision. Both the mode and Auto
+advance checkbox are opt-in.
 
 Original game audio requires a trustworthy completion signal before VNTTS may
 auto advance. A game pack can declare

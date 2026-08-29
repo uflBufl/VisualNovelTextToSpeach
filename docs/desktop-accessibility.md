@@ -22,6 +22,10 @@ Auto advance posts a system-level key, so inability to prove that the selected
 game owns keyboard focus is a hard stop. Focus-probe exceptions are interpreted
 as `not focused`; they are never permission to dispatch input. A ready dialogue
 remains pending and is dispatched at most once after focus is proven again.
+The guarded sequence mode additionally requires the latest captured dialogue
+frame to remain visible and to be the exact fingerprint already accepted by the
+cursor. A newer, hidden or unrouted frame postpones dispatch; it is not treated
+as permission to press a key.
 
 On macOS, `CGWindowListCopyWindowInfo` Z-order is not keyboard-focus authority.
 A fullscreen game on another display or Space can remain first in that list

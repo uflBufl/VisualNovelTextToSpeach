@@ -147,21 +147,15 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Validate the implemented shadow and manual-audio feature flags on replay,
-      then add automatic advancement last. The checksum-bound schema-v2 replay
-      gate now runs the production controller/cursor and passes tracked `shadow`
-      and `audio-manual` corpora with exact canonical identities, OCR/recovery
-      counts and key-dispatch counts; schema v1 and both earlier route corpora
-      remain compatibility gates. The repaired real chapter `314601` capture
-      passes the production sealer twice with all 21 events/frames, including
-      silent events 18 and 19, and no skipped dialogue or key dispatch. The two
-      explicit silent-frontier mappings have human approval. The full immutable
-      capture plus the prior accepted overlap now pass checksum-bound technical
-      and human-accepted coverage for all 92/92 visible chapter events: the
-      91-event suffix passed the production sealer twice with no missing frame or
-      event, and all three silent-frontier mappings at events 18, 19 and 78 have
-      explicit human approval. Do not implement real sequence-owned key delivery
-      until the reviewed evidence also shows safe focus/choice handling.
+- [ ] Validate the opt-in `audio-auto` mode in a real-game focus/choice run before
+      enabling sequence-owned key delivery by default. Automated replay already
+      covers focus loss and return, speech and silent events, passive transitions,
+      stale frames, unconfirmed dispatch and a choice/manual boundary; it requires
+      exact canonical identities and at most one confirmed key per eligible
+      cursor event. The real-game gate must prove the selected-window focus pause,
+      correct choice/manual stop and exactly one confirmed key for every eligible
+      event. Keep `audio-manual` and the saved auto-advance toggle as fail-safe
+      defaults until that gate passes.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and full-visible-chapter real-game
       run shows zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue;

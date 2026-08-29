@@ -1576,6 +1576,97 @@ class MainTest(unittest.TestCase):
             "Known canonical line.",
         )
 
+    def test_sequence_audio_auto_dispatch_is_cursor_and_focus_guarded(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": "Rhiannon",
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, text in ((1, "First line."), (2, "Second line."))
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-2",),
+                "reverse1999:1:1",
+            ),
+            "event-2": LiveSequenceEvent(
+                "event-2",
+                "1",
+                2,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:2",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:1": "event-1",
+                "reverse1999:1:2": "event-2",
+            },
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=True,
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        controller.live_reader = Mock(active_generation=7)
+        controller._auto_advance_dialog = Mock(return_value=True)
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+
+        callback = controller._live_auto_advance_callback()
+
+        self.assertTrue(callback())
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.WAITING_TRANSITION,
+        )
+        self.assertFalse(callback())
+        controller._auto_advance_dialog.assert_called_once_with()
+        self.assertEqual(pipeline[-1][0][0], "sequence-key-dispatch-authorized")
+
+        controller.story_cursor.reset()
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.capture_target = Mock()
+        controller.capture_target.is_focused.return_value = False
+        controller._auto_advance_dialog.reset_mock()
+
+        self.assertFalse(callback())
+        controller._auto_advance_dialog.assert_not_called()
+
     def test_sequence_audio_manual_rejects_unexpected_known_line_and_stays_closed(self):
         rows = [
             {

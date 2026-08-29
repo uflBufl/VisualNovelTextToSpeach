@@ -52,7 +52,7 @@ def seal_sequence_replay(
     timeout_seconds=30.0,
 ):
     """Publish a contained v2 corpus only after its production replay passes."""
-    if mode not in {"shadow", "audio-manual"}:
+    if mode not in {"shadow", "audio-manual", "audio-auto"}:
         raise SequenceReplaySealError(f"Unsupported sequence replay mode: {mode!r}")
     if audio_source_policy not in audio_source_policies:
         raise SequenceReplaySealError(
@@ -934,7 +934,9 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--mode", choices=("shadow", "audio-manual"), default="audio-manual"
+        "--mode",
+        choices=("shadow", "audio-manual", "audio-auto"),
+        default="audio-manual",
     )
     parser.add_argument(
         "--audio-source-policy",

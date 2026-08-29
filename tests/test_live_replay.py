@@ -568,7 +568,7 @@ class LiveReplayTest(unittest.TestCase):
             ["branch-1", "branch-3", "branch-right"],
         )
 
-    def test_tracked_sequence_shadow_and_audio_manual_corpora_pass(self):
+    def test_tracked_sequence_rollout_corpora_pass(self):
         root = Path(__file__).resolve().parents[1] / "samples"
         reports = [
             LiveReplayRunner(
@@ -579,27 +579,40 @@ class LiveReplayTest(unittest.TestCase):
             for corpus_name in (
                 "sequence-live-replay-shadow.json",
                 "sequence-live-replay-audio-manual.json",
+                "sequence-live-replay-audio-auto.json",
+                "sequence-live-replay-audio-auto-safety.json",
             )
         ]
 
         self.assertTrue(all(report["successful"] for report in reports), reports)
+        safety = reports[-1]
+        self.assertEqual(safety["advance_requests"], 3)
+        self.assertEqual(
+            safety["sequence"]["observed"]["line_ids"],
+            [
+                "fixture:rhiannon:1",
+                None,
+                "fixture:fledgling:1",
+                "fixture:narrator:1",
+            ],
+        )
         self.assertEqual(
             [report["sequence"]["mode"] for report in reports],
-            ["shadow", "audio-manual"],
+            ["shadow", "audio-manual", "audio-auto", "audio-auto"],
         )
         self.assertEqual(
             [
                 report["sequence"]["observed"]["key_dispatch_attempts"]
                 for report in reports
             ],
-            [3, 0],
+            [3, 0, 3, 3],
         )
         self.assertEqual(
             [
                 report["sequence"]["observed"]["bounded_recoveries"]
                 for report in reports
             ],
-            [0, 2],
+            [0, 2, 2, 2],
         )
 
     def test_sequence_contract_rejects_mode_and_canonical_identity_mismatches(self):

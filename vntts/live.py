@@ -29,6 +29,13 @@ class SpeechChunk:
 
 
 @dataclass(frozen=True)
+class SilentDialogRoute:
+    """A cursor-owned visible dialogue event that intentionally has no speech."""
+
+    event_id: str
+
+
+@dataclass(frozen=True)
 class LivePipelineMetrics:
     captured_frames: int = 0
     replaced_frames: int = 0
@@ -174,6 +181,8 @@ class IncrementalDialogTracker:
         self.pending_character = None
         self.pending_history = deque(maxlen=stability_frames)
         self.next_chunk_ordinal = 1
+        self.silent_event_id = None
+        self.canonical_line_id = None
 
     def observe(self, character, text):
         now = self.clock()
@@ -229,12 +238,68 @@ class IncrementalDialogTracker:
             return []
         return self._emit(stable_text, flush=idle)
 
+    def observe_silent(self, event_id):
+        event_id = str(event_id).strip()
+        if not event_id:
+            raise ValueError("silent event_id must be non-empty")
+        if self.silent_event_id == event_id:
+            return False
+        self.generation += 1
+        self.character = None
+        self.latest_text = ""
+        self.committed_position = 0
+        self.last_change_at = None
+        self.stable_text = ""
+        self.last_stable_change_at = self.clock()
+        self.history.clear()
+        self.next_chunk_ordinal = 1
+        self._clear_pending_dialog()
+        self.silent_event_id = event_id
+        self.canonical_line_id = None
+        return True
+
+    def observe_canonical(self, character, text, line_id):
+        character = (character or "Narrator").strip() or "Narrator"
+        text = self._normalize(text)
+        line_id = str(line_id).strip()
+        if not text or not line_id:
+            raise ValueError("canonical dialogue requires text and line_id")
+        if self.canonical_line_id == line_id:
+            return []
+        now = self.clock()
+        self.generation += 1
+        self.character = character
+        self.latest_text = text
+        self.committed_position = len(text)
+        self.last_change_at = now
+        self.stable_text = text
+        self.last_stable_change_at = now
+        self.history.clear()
+        self.history.extend([text] * self.stability_frames)
+        self.next_chunk_ordinal = 2
+        self._clear_pending_dialog()
+        self.silent_event_id = None
+        self.canonical_line_id = line_id
+        return [
+            SpeechChunk(
+                self.generation,
+                character,
+                text,
+                ordinal=1,
+                line_id=line_id,
+            )
+        ]
+
     def flush(self):
         if not self.latest_text:
             return []
         return self._emit(self.latest_text, flush=True)
 
     def is_idle_complete(self):
+        if self.silent_event_id is not None:
+            return True
+        if self.canonical_line_id is not None:
+            return True
         if (
             not self.latest_text
             or len(self.history) < self.stability_frames
@@ -332,6 +397,8 @@ class IncrementalDialogTracker:
         self.history.clear()
         self.history.append(text)
         self.next_chunk_ordinal = 1
+        self.silent_event_id = None
+        self.canonical_line_id = None
         self._clear_pending_dialog()
 
     def _clear_dialog(self):
@@ -344,6 +411,8 @@ class IncrementalDialogTracker:
         self.last_stable_change_at = None
         self.history.clear()
         self.next_chunk_ordinal = 1
+        self.silent_event_id = None
+        self.canonical_line_id = None
         self._clear_pending_dialog()
 
     def _emit(self, stable_text, *, flush):
@@ -465,6 +534,7 @@ class LiveDialogReader:
         adaptive_policy_factory=AdaptiveCapturePolicy,
         adaptive_options=None,
         auto_advance=None,
+        require_visible_auto_advance=False,
         auto_advance_delay_seconds=0.35,
         auto_advance_confirmation_timeout_seconds=2.0,
         auto_advance_terminal_timeout_seconds=10.0,
@@ -509,6 +579,7 @@ class LiveDialogReader:
         self.adaptive_policy_factory = adaptive_policy_factory
         self.adaptive_options = adaptive_options or {}
         self.auto_advance = auto_advance
+        self.require_visible_auto_advance = bool(require_visible_auto_advance)
         self.auto_advance_delay_seconds = auto_advance_delay_seconds
         if auto_advance_confirmation_timeout_seconds <= 0:
             raise ValueError(
@@ -567,6 +638,7 @@ class LiveDialogReader:
         self.auto_advance_blocked_generation = None
         self.auto_advance_block_reason = None
         self.auto_advance_focus_wait_generation = None
+        self.auto_advance_visual_wait_generation = None
         self.auto_advance_timer = None
         self.focus_probe_failed = False
         self.latest_frame = None
@@ -624,6 +696,7 @@ class LiveDialogReader:
             self.auto_advance_blocked_generation = None
             self.auto_advance_block_reason = None
             self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
             self.focus_probe_failed = False
             self._cancel_auto_advance_locked()
             self.latest_frame = None
@@ -661,6 +734,7 @@ class LiveDialogReader:
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
             self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
             self.pause_condition.notify_all()
         return True
 
@@ -674,6 +748,7 @@ class LiveDialogReader:
                 self.last_auto_advance_dispatched_generation = None
                 self.auto_advance_attempts = 0
                 self.auto_advance_focus_wait_generation = None
+                self.auto_advance_visual_wait_generation = None
                 return False
         self._maybe_auto_advance()
         return True
@@ -685,6 +760,31 @@ class LiveDialogReader:
             self._cancel_auto_advance_locked()
             self.auto_advance_blocked_generation = generation
             self.auto_advance_block_reason = str(reason).strip() or None
+        return True
+
+    def confirm_pending_auto_advance(self):
+        """Confirm one dispatched key from cursor-owned visual evidence."""
+        with self.state_lock:
+            generation = self.pending_auto_advance_generation
+            attempt = self.auto_advance_attempts
+            if generation is None or not attempt:
+                return False
+            self._cancel_auto_advance_locked()
+            self.pending_auto_advance_generation = None
+            self.auto_advance_attempts = 0
+            self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
+            self.pipeline_metrics = replace(
+                self.pipeline_metrics,
+                last_auto_advance_at=monotonic(),
+            )
+        self._report_pipeline_event(
+            "confirmed-next-dialogue",
+            generation,
+            monotonic(),
+            attempt=attempt,
+        )
+        self._report_auto_advance_state("confirmed", generation, attempt)
         return True
 
     def toggle(self):
@@ -792,6 +892,7 @@ class LiveDialogReader:
             self.auto_advance_blocked_generation = None
             self.auto_advance_block_reason = None
             self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
         for future in futures:
             future.cancel()
         # A preparation future may already be running before it becomes
@@ -818,6 +919,7 @@ class LiveDialogReader:
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
             self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
             self.pause_condition.notify_all()
         cleared = self.clear_queue()
         self.release_waiters()
@@ -991,7 +1093,12 @@ class LiveDialogReader:
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
-                if isinstance(frame_route, tuple) and len(frame_route) == 2:
+                if isinstance(frame_route, SilentDialogRoute):
+                    character, text = None, ""
+                    route_kind = "canonical"
+                    cached_fingerprint = fingerprint
+                    cached_observation = (character, text)
+                elif isinstance(frame_route, tuple) and len(frame_route) == 2:
                     character, text = frame_route
                     route_kind = "canonical"
                     cached_fingerprint = fingerprint
@@ -1015,15 +1122,27 @@ class LiveDialogReader:
                 elif frame_route is not None:
                     raise TypeError(
                         "stable_frame_route must return None, False or "
-                        "a (character, text) tuple"
+                        "a SilentDialogRoute/(character, text) route"
                     )
-                routed_observation = self._report_observation(character, text)
+                routed_observation = (
+                    frame_route
+                    if isinstance(frame_route, SilentDialogRoute)
+                    else self._report_observation(character, text)
+                )
                 if routed_observation is None:
                     interval = policy.observe(character, text, focused=True)
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
-                character, text = routed_observation
+                silent_route = (
+                    routed_observation
+                    if isinstance(routed_observation, SilentDialogRoute)
+                    else None
+                )
+                if silent_route is None:
+                    character, text = routed_observation
+                else:
+                    character, text = None, ""
                 with self.state_lock:
                     frame_already_routed = fingerprint == self.routed_frame_fingerprint
                 if route_kind != "cached" and not frame_already_routed:
@@ -1036,10 +1155,15 @@ class LiveDialogReader:
                     )
                 if self.stable_frame_route is not None:
                     self._accept_routed_frame(fingerprint)
-                chunks = tracker.observe(character, text)
-                line_id = self.line_id_resolver(character, text)
-                if line_id is not None:
-                    chunks = [replace(chunk, line_id=str(line_id)) for chunk in chunks]
+                if silent_route is not None:
+                    tracker.observe_silent(silent_route.event_id)
+                    chunks = []
+                else:
+                    line_id = self.line_id_resolver(character, text)
+                    if line_id is None:
+                        chunks = tracker.observe(character, text)
+                    else:
+                        chunks = tracker.observe_canonical(character, text, line_id)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
                 self._update_dialog_ready(tracker)
@@ -1215,6 +1339,7 @@ class LiveDialogReader:
                 self.sealed_generation = None
                 self.failed_auto_advance_generation = None
                 self.auto_advance_focus_wait_generation = None
+                self.auto_advance_visual_wait_generation = None
                 if self.pending_auto_advance_generation == previous_generation:
                     confirmed_advance = (
                         previous_generation,
@@ -1504,7 +1629,9 @@ class LiveDialogReader:
             self.deferred_observation = observation
             self.last_accepted_observation = None
             return None
-        if isinstance(decision, tuple) and len(decision) == 2:
+        if isinstance(decision, SilentDialogRoute):
+            routed = decision
+        elif isinstance(decision, tuple) and len(decision) == 2:
             routed = (decision[0], " ".join((decision[1] or "").split()))
         else:
             routed = observation
@@ -1588,16 +1715,52 @@ class LiveDialogReader:
                 self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
             return
+        with self.state_lock:
+            visual_ready = bool(
+                not self.require_visible_auto_advance
+                or (
+                    self.latest_frame_visible
+                    and self.routed_frame_fingerprint == self.latest_frame_fingerprint
+                )
+            )
+            report_visual_wait = (
+                not visual_ready
+                and self.auto_advance_visual_wait_generation != generation
+            )
+            if not visual_ready:
+                self.auto_advance_visual_wait_generation = generation
+        if not visual_ready:
+            if report_visual_wait:
+                self._report_auto_advance_state("visual-wait", generation, 0)
+            self._maybe_auto_advance()
+            return
         try:
             advanced = self.auto_advance()
         except Exception as error:
             self.report_error(error)
+            return
+        if advanced is False:
+            if not self._is_focused():
+                with self.state_lock:
+                    report_focus_wait = (
+                        self.auto_advance_focus_wait_generation != generation
+                    )
+                    self.auto_advance_focus_wait_generation = generation
+                if report_focus_wait:
+                    self._report_auto_advance_state("focus-wait", generation, 0)
+                self._maybe_auto_advance()
+            else:
+                with self.state_lock:
+                    if generation == self.active_generation:
+                        self.failed_auto_advance_generation = generation
+                self._report_auto_advance_state("blocked", generation, 0)
             return
         if advanced is not False:
             dispatched = None
             with self.state_lock:
                 if generation == self.active_generation:
                     self.auto_advance_focus_wait_generation = None
+                    self.auto_advance_visual_wait_generation = None
                     self.auto_advance_attempts = 1
                     attempt = 1
                     self.last_auto_advance_dispatched_generation = generation
@@ -1671,6 +1834,7 @@ class LiveDialogReader:
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
             self.auto_advance_focus_wait_generation = None
+            self.auto_advance_visual_wait_generation = None
         self._report_pipeline_event(
             "auto-advance-timeout",
             generation,

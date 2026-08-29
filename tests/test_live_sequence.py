@@ -197,11 +197,12 @@ class StoryCursorTest(unittest.TestCase):
 
         cursor.anchor_line("synthetic:chapter-1:1")
         self.assertEqual(cursor.state, StoryCursorState.LOCKED)
-        self.assertTrue(cursor.can_auto_advance)
+        self.assertFalse(cursor.can_auto_advance)
 
         cursor.begin_playback()
         self.assertEqual(cursor.state, StoryCursorState.PLAYING)
         cursor.finish_playback()
+        self.assertTrue(cursor.can_auto_advance)
         cursor.dispatch_advance()
         self.assertEqual(cursor.state, StoryCursorState.WAITING_TRANSITION)
 
@@ -209,10 +210,47 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(cursor.current_event_id, "event-2")
 
+    def test_waiting_dispatch_confirms_only_one_deterministic_visual_successor(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_line("synthetic:chapter-1:1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        cursor.dispatch_advance()
+
+        candidate = cursor.confirm_visual_transition()
+
+        self.assertEqual(candidate.event_id, "event-2")
+        self.assertEqual(cursor.current_event_id, "event-2")
+        self.assertEqual(cursor.state, StoryCursorState.LOCKED)
+        self.assertTrue(cursor.can_auto_advance)
+
+    def test_waiting_dispatch_identifies_manual_boundary_without_second_key(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story-index.jsonl"
+            write_story(story)
+            document = plan_input()
+            choice = document["chapters"][0]["events"][2]
+            choice["kind"] = "choice"
+            choice["control"] = "manual"
+            plan = write_live_sequence_plan(root / "plan.json", document, story)
+            cursor = StoryCursor(plan)
+            cursor.anchor_event("event-2", "visual-transition-confirmed")
+            cursor.dispatch_advance()
+
+            boundary = cursor.deterministic_manual_successor()
+
+        self.assertEqual(boundary.event_id, "event-transition")
+        self.assertEqual(cursor.state, StoryCursorState.WAITING_TRANSITION)
+        self.assertFalse(cursor.can_auto_advance)
+
     def test_unexpected_transition_fails_closed(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)
         cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
         cursor.dispatch_advance()
 
         snapshot = cursor.confirm_transition("event-3")

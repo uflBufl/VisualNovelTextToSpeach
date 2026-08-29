@@ -1112,6 +1112,24 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("never sends advance keys", dialog.auto_advance.toolTip())
         dialog.deleteLater()
 
+    def test_sequence_audio_auto_keeps_guarded_auto_advance_opt_in(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=False,
+            )
+        )
+
+        self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-auto")
+        self.assertTrue(dialog.auto_advance.isEnabled())
+        self.assertFalse(dialog.auto_advance.isChecked())
+        self.assertFalse(dialog.auto_advance_key.isEnabled())
+        self.assertIn("at most one key", dialog.auto_advance.toolTip())
+        dialog.auto_advance.setChecked(True)
+        self.assertTrue(dialog.auto_advance_key.isEnabled())
+        self.assertTrue(dialog.auto_advance_delay.isEnabled())
+        dialog.deleteLater()
+
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
             AppSettings(

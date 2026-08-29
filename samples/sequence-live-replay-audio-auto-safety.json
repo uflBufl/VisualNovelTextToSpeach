@@ -1,0 +1,109 @@
+{
+  "schema_version": 2,
+  "name": "Sequence-first automatic silent and choice safety",
+  "fixture_kind": "checksum-bound-production-controller-audio-auto-safety",
+  "generated_audio_manifest": {
+    "path": "rhiannon-live-replay-generated.json",
+    "sha256": "8a3fba8c0ba96fac31b1a8d40e87e3b423a39786eb46da71ce2705cc44541840"
+  },
+  "live_sequence": {
+    "mode": "audio-auto",
+    "story_index": {
+      "path": "sequence-live-replay-story.jsonl",
+      "sha256": "5e2f586889911619a3cc9c09823f188a2bc1bfacdda2b0e6f1e1c18126c61c0d"
+    },
+    "plan": {
+      "path": "sequence-live-replay-auto-safety-plan.json",
+      "sha256": "c730f4d06a6f488fdc9e4e58d539ec417d9256bda60a285d85753838a7054361"
+    },
+    "focus_probes": [
+      false,
+      true
+    ],
+    "expected": {
+      "event_ids": [
+        "auto-safety-event-1",
+        "auto-safety-silent-2",
+        "auto-safety-event-3",
+        "auto-safety-event-4"
+      ],
+      "line_ids": [
+        "fixture:rhiannon:1",
+        null,
+        "fixture:fledgling:1",
+        "fixture:narrator:1"
+      ],
+      "ocr_calls": 4,
+      "bounded_recoveries": 2,
+      "key_dispatch_attempts": 3,
+      "confirmed_key_dispatches": 3
+    }
+  },
+  "dialogue": [
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Rhiannon",
+          "observed_text": "I, erhm ..."
+        }
+      ],
+      "character": "Rhiannon",
+      "text": "I, erhm ...",
+      "event_id": "auto-safety-event-1",
+      "line_id": "fixture:rhiannon:1",
+      "source_audio_status": "available",
+      "source_audio_duration_seconds": 0.001,
+      "expected_source": "game"
+    },
+    {
+      "frames": [
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Rhiannon",
+          "observed_text": "..."
+        }
+      ],
+      "character": "Rhiannon",
+      "text": "...",
+      "event_id": "auto-safety-silent-2",
+      "line_id": null,
+      "expect_playback": false,
+      "source_audio_status": "absent"
+    },
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Adar Llwch Gwin Fledgling",
+          "observed_text": "The old forest remembers every footstep."
+        }
+      ],
+      "character": "Adar Llwch Gwin Fledgling",
+      "text": "The old forest remembers every footstep.",
+      "event_id": "auto-safety-event-3",
+      "line_id": "fixture:fledgling:1",
+      "source_audio_status": "absent",
+      "expected_source": "generated"
+    },
+    {
+      "frames": [
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        }
+      ],
+      "character": "Narrator",
+      "text": "Night settles over the lake.",
+      "event_id": "auto-safety-event-4",
+      "line_id": "fixture:narrator:1",
+      "source_audio_status": "absent",
+      "expected_source": "live:replay-live-tts"
+    }
+  ]
+}

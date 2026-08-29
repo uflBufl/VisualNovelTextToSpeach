@@ -49,7 +49,7 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 LIVE_REPLAY_CORPUS_VERSION = 2
 LIVE_REPLAY_CORPUS_VERSIONS = frozenset({1, LIVE_REPLAY_CORPUS_VERSION})
-LIVE_REPLAY_SEQUENCE_MODES = frozenset({"shadow", "audio-manual"})
+LIVE_REPLAY_SEQUENCE_MODES = frozenset({"shadow", "audio-manual", "audio-auto"})
 
 
 @dataclass(frozen=True)
@@ -258,6 +258,17 @@ class ReplayFrameSource:
 
     def manual_advance(self):
         return self._advance(manual=True)
+
+    def complete_terminal(self):
+        with self.condition:
+            if (
+                self.dialogue_index + 1 == len(self.dialogue)
+                and self._current_dialogue_consumed()
+            ):
+                self.completed.set()
+                self.condition.notify_all()
+                return True
+            return False
 
     def _advance(self, *, manual):
         with self.condition:
@@ -756,6 +767,16 @@ class LiveReplayRunner:
                     silent_event = event is not None and event.kind == "silent"
                 if silent_event:
                     frame_source.manual_advance()
+            elif mode == "audio-auto":
+                with controller.story_cursor_lock:
+                    event = controller.story_cursor.current_event
+                    terminal_silent = bool(
+                        event is not None
+                        and event.kind == "silent"
+                        and not event.successors
+                    )
+                if terminal_silent:
+                    frame_source.complete_terminal()
 
         def record_route(trace):
             routes.append(trace.support_fields())
@@ -764,7 +785,7 @@ class LiveReplayRunner:
             story_index=str(story_index_path),
             live_sequence_plan=str(plan_path),
             live_sequence_mode=mode,
-            auto_advance_enabled=mode == "shadow",
+            auto_advance_enabled=mode in {"shadow", "audio-auto"},
             audio_source_policy=self.audio_source_policy,
             live_interval_ms=max(1, round(self.interval_seconds * 1000)),
             live_idle_flush_ms=max(1, round(self.interval_seconds * 10_000)),
@@ -813,6 +834,12 @@ class LiveReplayRunner:
                 )
                 if mode == "audio-manual":
                     frame_source.manual_advance()
+                elif mode == "audio-auto":
+                    with controller.story_cursor_lock:
+                        event = controller.story_cursor.current_event
+                        terminal = bool(event is not None and not event.successors)
+                    if terminal:
+                        frame_source.complete_terminal()
             return result
 
         def auto_advance_state_changed(state, generation, attempt):
@@ -848,6 +875,7 @@ class LiveReplayRunner:
             focus_probe=frame_source.focus_probe,
             capture_state_changed=controller._capture_state_changed,
             auto_advance=controller._live_auto_advance_callback(),
+            require_visible_auto_advance=mode == "audio-auto",
             auto_advance_delay_seconds=self.interval_seconds,
             auto_advance_confirmation_timeout_seconds=max(
                 5.0,
@@ -905,7 +933,12 @@ class LiveReplayRunner:
             and (
                 frame_source.manual_advance_requests == len(self.corpus.dialogue)
                 if mode == "audio-manual"
-                else frame_source.advance_requests == len(self.corpus.dialogue)
+                else (
+                    frame_source.advance_requests
+                    == expected_sequence["key_dispatch_attempts"]
+                    if mode == "audio-auto"
+                    else frame_source.advance_requests == len(self.corpus.dialogue)
+                )
             )
         )
         return {
@@ -1620,7 +1653,7 @@ def _sequence_replay_metrics(mode, events, recognized_frames, advance_states):
                 and event.get("route") == "silent"
             )
             or (
-                event["stage"] == "sequence-audio-manual"
+                event["stage"] in {"sequence-audio-manual", "sequence-audio-auto"}
                 and event.get("line_id") is None
                 and event.get("match_result") == "expected-silent-ellipsis"
             )
@@ -1633,7 +1666,7 @@ def _sequence_replay_metrics(mode, events, recognized_frames, advance_states):
     recovered_event_ids = {
         event.get("event_id")
         for event in events
-        if event["stage"] == "sequence-audio-manual"
+        if event["stage"] in {"sequence-audio-manual", "sequence-audio-auto"}
         and event.get("reason") == "observation-bounded-lookahead"
         and event.get("event_id")
     }

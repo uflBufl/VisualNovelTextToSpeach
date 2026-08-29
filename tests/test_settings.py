@@ -106,6 +106,11 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.live_sequence_mode, "audio-manual")
 
+    def test_sequence_audio_auto_can_be_selected_explicitly(self):
+        settings = AppSettings.from_mapping({"live_sequence_mode": "audio-auto"})
+
+        self.assertEqual(settings.live_sequence_mode, "audio-auto")
+
     def test_unknown_sequence_mode_fails_closed(self):
         warnings = []
 

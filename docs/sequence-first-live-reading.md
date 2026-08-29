@@ -393,15 +393,22 @@ reason. They do not record dialogue text.
 Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
-The automated `shadow` and `audio-manual` phases and their deterministic replay
-gate are implemented. Shadow records predictions and exercises the production
+The automated `shadow`, `audio-manual` and explicit experimental `audio-auto`
+phases and their deterministic replay gates are implemented. Shadow records predictions and exercises the production
 dispatch gate through a device-free key adapter. Audio-manual uses full OCR for
 its initial anchor, then the visibility/focus/ownership/render-settled gate can
 route deterministic successors without another OCR call while leaving all
 advancement to the player. Explicit manual resynchronization, bounded
 branch/skip recovery and the persistent cursor-status card are implemented.
-Automatic sequence-owned key delivery remains gated on real-game route
-correctness and the complete-visible-chapter acceptance run.
+Audio-auto queues an exact cursor-owned canonical line immediately, waits for
+successful playback (or a typed silent event), requires the latest accepted
+frame to remain visible, rechecks game focus under the cursor dispatch lock and
+sends at most one key. A changed stable frame confirms that pending key before
+the next event can advance. Choice, wait and manual boundaries retain the
+pending no-second-key state and expose bounded expected-event/resync actions.
+The mode and saved auto-advance toggle are both opt-in. Production enablement
+remains gated on a real-game focus/choice run even though complete chapter route
+and human acceptance are already 92/92.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV

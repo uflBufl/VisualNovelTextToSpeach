@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.settings import is_live_sequence_audio_mode
+
 
 class ControlDashboard(QMainWindow):
     read_requested = Signal()
@@ -233,6 +235,12 @@ class ControlDashboard(QMainWindow):
             "prefer-generated": "Generated audio, then live TTS",
             "prefer-game-audio": "Original game audio, then generated/live TTS",
         }.get(settings.audio_source_policy, settings.audio_source_policy)
+        sequence = {
+            "off": "Disabled",
+            "shadow": "Shadow diagnostics",
+            "audio-manual": "Canonical audio; manual advance",
+            "audio-auto": "Canonical audio; guarded automatic advance",
+        }.get(settings.live_sequence_mode, settings.live_sequence_mode)
         manifest = settings.generated_audio_manifest
         generated_audio = (
             "not configured"
@@ -241,8 +249,8 @@ class ControlDashboard(QMainWindow):
             if Path(manifest).expanduser().is_file()
             else "missing; open Settings"
         )
-        sequence_manual = settings.live_sequence_mode == "audio-manual"
-        self.sequence_group.setVisible(sequence_manual)
+        sequence_audio = is_live_sequence_audio_mode(settings.live_sequence_mode)
+        self.sequence_group.setVisible(sequence_audio)
         self.sequence_resync_button.setAccessibleDescription(
             "Choose the visible story event to anchor or recover sequence-first reading"
         )
@@ -250,14 +258,15 @@ class ControlDashboard(QMainWindow):
             f"Backend: {settings.speech_backend}\n"
             f"Audio policy: {policy}\n"
             f"Generated audio: {generated_audio}\n"
+            f"Sequence: {sequence}\n"
             f"Capture: {capture}\n"
             f"OCR: {settings.ocr_language}"
         )
 
     def set_sequence_status(self, status):
-        manual = getattr(status, "mode", "off") == "audio-manual"
-        self.sequence_group.setVisible(manual)
-        if not manual:
+        sequence_audio = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
+        self.sequence_group.setVisible(sequence_audio)
+        if not sequence_audio:
             return
         state = getattr(status, "state", "unavailable")
         reason = getattr(status, "reason", None)
@@ -547,7 +556,7 @@ class CompactController(QWidget):
         self.set_ready(False)
 
     def set_sequence_status(self, status):
-        manual = getattr(status, "mode", "off") == "audio-manual"
+        manual = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
         candidate_count = int(getattr(status, "expected_candidate_count", 0))
         self._sequence_expected_candidate_count = candidate_count
         self.sequence_expected_button.setVisible(manual and candidate_count > 0)
