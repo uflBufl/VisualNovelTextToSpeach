@@ -86,6 +86,57 @@ route. Generated playback uses a device-free output sink that consumes the exact
 decoded float32 PCM and reports sample rate, sample count and PCM SHA-256. It
 deliberately reports no device underrun claim.
 
+## Sequence-first replay contract
+
+Schema version 2 adds a required `live_sequence` binding while retaining schema
+version 1 compatibility. The binding declares exactly `mode`, `story_index`,
+`plan`, `expected` and `focus_probes`. Only `shadow` and `audio-manual` are
+accepted. The story index and sequence plan are contained relative files with
+exact SHA-256 values. They are re-read, revalidated and copied into a private
+snapshot immediately before execution, so changed bytes, symlinks, mismatched
+canonical speaker/text or a plan that no longer binds the declared line IDs
+fail the replay instead of changing its authority.
+
+Every version-2 dialogue record binds a canonical `line_id`. A record that
+plays audio must declare its exact `expected_source`; a visible silent event can
+set `expect_playback` to false and must not declare a source. The expected block
+binds the ordered event IDs and line IDs plus exact counts for distinct
+OCR-routed frame identities, bounded recoveries, attempted key dispatches and
+confirmed key dispatches. The report also retains raw OCR invocations, which
+may be higher when automatic-transition confirmation rechecks the same frame.
+This distinction prevents an implementation detail from weakening the bounded
+OCR acceptance gate.
+
+Version-2 replay constructs the production `AppController`, `StoryCursor`,
+canonical line resolver, route preparation and playback callbacks. Saved-frame
+capture and device-free audio remain test adapters. Each consumed frame records
+whether it was routed from OCR or from the locked canonical cursor. A cached
+confirmation frame cannot consume a second ledger event, so stale or duplicate
+work remains visible without advancing the declared corpus.
+
+In `shadow`, production auto-advance requests and focus checks are exercised,
+but the replay frame source substitutes for the real key device. In
+`audio-manual`, playback completion advances the declared frame source as a
+separate simulated player action and the expected key count remains zero. An
+ambiguous initial observation, including identical repeated canonical lines,
+fails closed without speech; it requires explicit position selection or a later
+unambiguous recovery rather than an OCR guess.
+
+The tracked sequence corpora are:
+
+- `samples/sequence-live-replay-shadow.json`: focus loss, long typewriter
+  reveal, internal ellipsis, original/generated/live routes and three confirmed
+  automatic dispatch attempts;
+- `samples/sequence-live-replay-audio-manual.json`: the same canonical route
+  order with player-driven frame changes, no automatic dispatch and two bounded
+  recoveries caused by lost nameplates/manual skips.
+
+Both must pass before automatic sequence-owned key dispatch is implemented.
+They prove the deterministic software gate, not real game focus, input delivery,
+audio hardware or the required 100-event gameplay acceptance run.
+Focused synthetic tests separately cover a pure `...` event with no synthesis,
+identical ambiguous lines, branch selection and a bounded multi-line skip.
+
 The tracked `samples/rhiannon-live-replay-representative.json` covers:
 
 - Rhiannon's short `I, erhm ...` through a declared original-game route;

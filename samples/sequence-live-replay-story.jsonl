@@ -1,0 +1,5 @@
+{"record_type":"metadata","schema":"vntts.story-index","schema_version":1,"line_count":4,"source_audio_completion":"duration-seconds"}
+{"record_type":"line","line_id":"fixture:rhiannon:1","chapter":"fixture","sequence":1,"speaker":"Rhiannon","text":"I, erhm ...","kind":"dialogue","source_audio_status":"available","source_audio_duration_seconds":0.001}
+{"record_type":"line","line_id":"fixture:hotelier:1","chapter":"fixture","sequence":2,"speaker":"Hotelier","text":"A single room will be four coins per night.","kind":"dialogue","source_audio_status":"absent"}
+{"record_type":"line","line_id":"fixture:fledgling:1","chapter":"fixture","sequence":3,"speaker":"Adar Llwch Gwin Fledgling","text":"The old forest remembers every footstep.","kind":"dialogue","source_audio_status":"absent"}
+{"record_type":"line","line_id":"fixture:narrator:1","chapter":"fixture","sequence":4,"speaker":"Narrator","text":"Night settles over the lake.","kind":"dialogue","source_audio_status":"absent"}

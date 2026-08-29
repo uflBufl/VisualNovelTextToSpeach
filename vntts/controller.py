@@ -491,6 +491,7 @@ class AppController:
                 frame_presence=dialog_glyphs_visible,
                 stable_frame_route=self._stable_live_frame_route,
                 stable_frame_owner=self._stable_live_frame_owner,
+                line_id_resolver=self._live_sequence_line_id,
                 speak_chunk=self._speak_live_chunk,
                 prepare_chunk=self._prepare_live_chunk,
                 play_prepared=self._play_live_chunk,
@@ -1373,6 +1374,15 @@ class AppController:
                     return False
                 if sequence_observation is None:
                     if self.story_cursor.state in {
+                        StoryCursorState.UNSYNCHRONIZED,
+                        StoryCursorState.ANCHORING,
+                    }:
+                        # Typewriter prefixes may not yet identify one canonical
+                        # line. Consume the changing frame without ever routing
+                        # its unbound OCR text to speech; a later exact frame can
+                        # still establish the anchor.
+                        return (None, "")
+                    if self.story_cursor.state in {
                         StoryCursorState.LOCKED,
                         StoryCursorState.MANUAL,
                         StoryCursorState.DESYNCHRONIZED,
@@ -2049,6 +2059,20 @@ class AppController:
             if cursor is None or self.settings.live_sequence_mode != "audio-manual":
                 return None
             return cursor.current_event_id
+
+    def _live_sequence_line_id(self, character, text):
+        """Return the exact cursor-owned line identity for a routed observation."""
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None or self.settings.live_sequence_mode == "off":
+                return None
+            event = cursor.current_event
+            if event is None or not event.is_speech or event.line_id is None:
+                return None
+            line = self.chapter_voice_preloader.line_for_id(event.line_id)
+            if line is None or (line.speaker, line.text) != (character, text):
+                return None
+            return line.line_id
 
     def _begin_sequence_playback(self, chunk):
         with self.story_cursor_lock:

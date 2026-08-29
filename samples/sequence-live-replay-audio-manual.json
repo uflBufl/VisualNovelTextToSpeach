@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "name": "Sequence-first audio-manual route matrix",
+  "fixture_kind": "checksum-bound-production-controller-audio-manual",
+  "generated_audio_manifest": {
+    "path": "rhiannon-live-replay-generated.json",
+    "sha256": "8a3fba8c0ba96fac31b1a8d40e87e3b423a39786eb46da71ce2705cc44541840"
+  },
+  "live_sequence": {
+    "mode": "audio-manual",
+    "story_index": {
+      "path": "sequence-live-replay-story.jsonl",
+      "sha256": "5e2f586889911619a3cc9c09823f188a2bc1bfacdda2b0e6f1e1c18126c61c0d"
+    },
+    "plan": {
+      "path": "sequence-live-replay-plan.json",
+      "sha256": "b0bffd324de105336132c01579bc392b83a25d21646b91c56a058e073f6a050f"
+    },
+    "focus_probes": [],
+    "expected": {
+      "event_ids": [
+        "fixture-event-1",
+        "fixture-event-2",
+        "fixture-event-3",
+        "fixture-event-4"
+      ],
+      "line_ids": [
+        "fixture:rhiannon:1",
+        "fixture:hotelier:1",
+        "fixture:fledgling:1",
+        "fixture:narrator:1"
+      ],
+      "ocr_calls": 3,
+      "bounded_recoveries": 2,
+      "key_dispatch_attempts": 0,
+      "confirmed_key_dispatches": 0
+    }
+  },
+  "dialogue": [
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Rhiannon",
+          "observed_text": "I, erhm ..."
+        }
+      ],
+      "character": "Rhiannon",
+      "text": "I, erhm ...",
+      "line_id": "fixture:rhiannon:1",
+      "source_audio_status": "available",
+      "source_audio_duration_seconds": 0.001,
+      "expected_source": "game"
+    },
+    {
+      "frames": [
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Hotelier",
+          "observed_text": "A single room will be four coins per night."
+        }
+      ],
+      "character": "Hotelier",
+      "text": "A single room will be four coins per night.",
+      "line_id": "fixture:hotelier:1",
+      "source_audio_status": "absent",
+      "expected_source": "live:replay-live-tts"
+    },
+    {
+      "frames": [
+        {
+          "path": "01.jpeg",
+          "sha256": "58bcac4670f01d51ec592ac40624f636cdd86722b7c4f474b20fcf1502c30605",
+          "observed_character": "Narrator",
+          "observed_text": "The old forest remembers every footstep."
+        }
+      ],
+      "character": "Adar Llwch Gwin Fledgling",
+      "text": "The old forest remembers every footstep.",
+      "line_id": "fixture:fledgling:1",
+      "source_audio_status": "absent",
+      "expected_source": "generated"
+    },
+    {
+      "frames": [
+        {
+          "path": "02.png",
+          "sha256": "bf56b98e8b958e418a9108f6ec968e53b2470d55b3f58a5e0d1d61830084cf3f",
+          "observed_character": "Narrator",
+          "observed_text": "Night settles over the lake."
+        }
+      ],
+      "character": "Narrator",
+      "text": "Night settles over the lake.",
+      "line_id": "fixture:narrator:1",
+      "source_audio_status": "absent",
+      "expected_source": "live:replay-live-tts"
+    }
+  ]
+}

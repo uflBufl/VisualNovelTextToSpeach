@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
+from vntts_artifacts.live_sequence import write_live_sequence_plan
 
 from vntts.live_replay import (
     LiveReplayRunner,
@@ -64,6 +65,164 @@ class LiveReplayTest(unittest.TestCase):
         )
         return path
 
+    def create_sequence_corpus(
+        self,
+        directory,
+        *,
+        mode,
+        story_lines,
+        events,
+        dialogue_line_ids,
+        observations=None,
+        expected_counts,
+        focus_probes=(),
+        generated_line_id=None,
+    ):
+        root = Path(directory)
+        story = root / "story.jsonl"
+        story_records = [
+            {
+                "record_type": "metadata",
+                "schema": "vntts.story-index",
+                "schema_version": 1,
+                "line_count": len(story_lines),
+                "source_audio_completion": "duration-seconds",
+            }
+        ]
+        story_records.extend(
+            {
+                "record_type": "line",
+                "kind": "dialogue",
+                **line,
+            }
+            for line in story_lines
+        )
+        story.write_text(
+            "\n".join(json.dumps(record) for record in story_records) + "\n",
+            encoding="utf-8",
+        )
+        plan = root / "live-sequence.json"
+        write_live_sequence_plan(
+            plan,
+            {
+                "game_id": "replay-test",
+                "producer": {"name": "tests", "version": "1"},
+                "source_extract_sha256": hashlib.sha256(b"fixture").hexdigest(),
+                "chapters": [
+                    {
+                        "chapter": "1",
+                        "entry_event_ids": [events[0]["event_id"]],
+                        "events": events,
+                    }
+                ],
+            },
+            story,
+        )
+        by_id = {line["line_id"]: line for line in story_lines}
+        observation_values = observations or {
+            line_id: [(by_id[line_id]["speaker"], by_id[line_id]["text"])]
+            for line_id in dialogue_line_ids
+        }
+        dialogue = []
+        for dialogue_index, line_id in enumerate(dialogue_line_ids):
+            line = by_id[line_id]
+            frames = []
+            for frame_index, (speaker, text) in enumerate(observation_values[line_id]):
+                image = Image.new("RGB", (80, 40), "black")
+                ImageDraw.Draw(image).rectangle(
+                    (8 + frame_index, 16, 28 + frame_index, 24),
+                    fill="white",
+                )
+                frame = root / f"sequence-{dialogue_index}-{frame_index}.png"
+                image.save(frame)
+                frames.append(
+                    {
+                        "path": frame.name,
+                        "sha256": sha256_file(frame),
+                        "observed_character": speaker,
+                        "observed_text": text,
+                    }
+                )
+            dialogue.append(
+                {
+                    "frames": frames,
+                    "character": line["speaker"],
+                    "text": line["text"],
+                    "line_id": line_id,
+                    "expect_playback": line.get("expect_playback", True),
+                    "source_audio_status": line.get("source_audio_status", "absent"),
+                    "source_audio_duration_seconds": line.get(
+                        "source_audio_duration_seconds"
+                    ),
+                    "expected_source": None
+                    if not line.get("expect_playback", True)
+                    else (
+                        "generated"
+                        if line_id == generated_line_id
+                        else "game"
+                        if line.get("source_audio_status") == "available"
+                        else "live:replay-live-tts"
+                    ),
+                }
+            )
+        corpus = {
+            "schema_version": 2,
+            "name": f"Sequence {mode} fixture",
+            "dialogue": dialogue,
+            "live_sequence": {
+                "mode": mode,
+                "story_index": {
+                    "path": story.name,
+                    "sha256": sha256_file(story),
+                },
+                "plan": {"path": plan.name, "sha256": sha256_file(plan)},
+                "focus_probes": list(focus_probes),
+                "expected": {
+                    "event_ids": [
+                        next(
+                            event["event_id"]
+                            for event in events
+                            if event.get("line_id") == line_id
+                        )
+                        for line_id in dialogue_line_ids
+                    ],
+                    "line_ids": list(dialogue_line_ids),
+                    **expected_counts,
+                },
+            },
+        }
+        if generated_line_id is not None:
+            generated = root / "sequence-generated.wav"
+            with wave.open(str(generated), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(24_000)
+                output.writeframes(b"\0\0\1\0\0\0")
+            generated_manifest = root / "sequence-generated.json"
+            generated_line = by_id[generated_line_id]
+            write_generated_audio_manifest(
+                generated_manifest,
+                {"fixture": "sequence-replay"},
+                [
+                    {
+                        "line_id": generated_line_id,
+                        "text_sha256": text_sha256(generated_line["text"]),
+                        "audio": generated.name,
+                        "audio_format": "wav-pcm16-mono",
+                        "audio_sha256": sha256_file(generated),
+                        "sample_rate": 24_000,
+                        "sample_count": 3,
+                    }
+                ],
+            )
+            corpus["generated_audio_manifest"] = {
+                "path": generated_manifest.name,
+                "sha256": sha256_file(generated_manifest),
+            }
+        path = root / f"sequence-{mode}.json"
+        path.write_text(json.dumps(corpus), encoding="utf-8")
+        return path
+
     @staticmethod
     def recognize(frame):
         marker = frame.image.getpixel((0, 0))
@@ -104,6 +263,411 @@ class LiveReplayTest(unittest.TestCase):
                 "confirmed-next-dialogue",
             },
         )
+
+    def test_sequence_shadow_runs_production_controller_and_reports_gate_metrics(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": "story:shadow:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Rhiannon",
+                    "text": "...",
+                    "source_audio_status": "available",
+                    "source_audio_duration_seconds": 0.001,
+                    "expect_playback": False,
+                },
+                {
+                    "line_id": "story:shadow:2",
+                    "chapter": "1",
+                    "sequence": 2,
+                    "speaker": "Centurion",
+                    "text": "The generated storm passes.",
+                    "source_audio_status": "absent",
+                },
+                {
+                    "line_id": "story:shadow:3",
+                    "chapter": "1",
+                    "sequence": 3,
+                    "speaker": "Hotelier",
+                    "text": "A live fallback closes the scene.",
+                    "source_audio_status": "absent",
+                },
+            ]
+            events = [
+                {
+                    "event_id": "shadow-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["shadow-2"],
+                    "line_id": "story:shadow:1",
+                },
+                {
+                    "event_id": "shadow-2",
+                    "sequence": 2,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["shadow-3"],
+                    "line_id": "story:shadow:2",
+                },
+                {
+                    "event_id": "shadow-3",
+                    "sequence": 3,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:shadow:3",
+                },
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="shadow",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=tuple(line["line_id"] for line in story_lines),
+                observations={
+                    "story:shadow:1": [("Rhiannon", "...")],
+                    "story:shadow:2": [
+                        ("Centurion", "The generated"),
+                        ("Centurion", "The generated storm passes."),
+                    ],
+                    "story:shadow:3": [
+                        ("Hotelier", "A live fallback closes the scene.")
+                    ],
+                },
+                expected_counts={
+                    "ocr_calls": 4,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 2,
+                    "confirmed_key_dispatches": 2,
+                },
+                focus_probes=(False, True),
+                generated_line_id="story:shadow:2",
+            )
+
+            report = LiveReplayRunner(
+                load_live_replay_corpus(path),
+                interval_seconds=0.002,
+                timeout_seconds=4,
+            ).run()
+
+        self.assertTrue(report["successful"], report)
+        self.assertTrue(report["sequence"]["successful"])
+        self.assertEqual(report["sequence"]["mode"], "shadow")
+        self.assertEqual(
+            report["route_sources"],
+            ["generated", "live:replay-live-tts"],
+        )
+        self.assertGreaterEqual(
+            report["media_integrity"]["frame_consumption"]["focus_probe_calls"],
+            2,
+        )
+        self.assertEqual(
+            report["media_integrity"]["frame_consumption"]["skipped_count"],
+            0,
+        )
+
+    def test_sequence_audio_manual_fails_closed_on_ambiguous_identical_anchor(self):
+        with TemporaryDirectory() as temporary_directory:
+            repeated = "The same words appear twice."
+            story_lines = [
+                {
+                    "line_id": "story:repeat:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Rhiannon",
+                    "text": repeated,
+                },
+                {
+                    "line_id": "story:repeat:2",
+                    "chapter": "1",
+                    "sequence": 2,
+                    "speaker": "Rhiannon",
+                    "text": repeated,
+                },
+            ]
+            events = [
+                {
+                    "event_id": "repeat-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["repeat-2"],
+                    "line_id": "story:repeat:1",
+                },
+                {
+                    "event_id": "repeat-2",
+                    "sequence": 2,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:repeat:2",
+                },
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="audio-manual",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=("story:repeat:1", "story:repeat:2"),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+
+            report = LiveReplayRunner(
+                load_live_replay_corpus(path),
+                interval_seconds=0.002,
+                timeout_seconds=0.2,
+            ).run()
+
+        self.assertFalse(report["successful"])
+        self.assertEqual(report["observed_dialogue"], [])
+        self.assertEqual(report["route_sources"], [])
+        self.assertEqual(report["sequence"]["observed"]["event_ids"], [])
+        self.assertEqual(report["manual_advance_requests"], 0)
+        self.assertEqual(report["advance_requests"], 0)
+
+    def test_sequence_audio_manual_uses_bounded_ocr_for_skip_and_choice(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": f"story:branch:{index}",
+                    "chapter": "1",
+                    "sequence": index,
+                    "speaker": speaker,
+                    "text": text,
+                }
+                for index, speaker, text in (
+                    (1, "Ada", "First visible line."),
+                    (2, "Bea", "Skipped intermediate line."),
+                    (3, "Cora", "Actually visible third line."),
+                    (4, "Dora", "Left choice result."),
+                    (5, "Eira", "Right choice result."),
+                )
+            ]
+            events = [
+                {
+                    "event_id": "branch-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["branch-2"],
+                    "line_id": "story:branch:1",
+                },
+                {
+                    "event_id": "branch-2",
+                    "sequence": 2,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["branch-3"],
+                    "line_id": "story:branch:2",
+                },
+                {
+                    "event_id": "branch-3",
+                    "sequence": 3,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["branch-choice"],
+                    "line_id": "story:branch:3",
+                },
+                {
+                    "event_id": "branch-choice",
+                    "sequence": 4,
+                    "kind": "choice",
+                    "control": "manual",
+                    "successors": ["branch-left", "branch-right"],
+                },
+                {
+                    "event_id": "branch-left",
+                    "sequence": 5,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:branch:4",
+                },
+                {
+                    "event_id": "branch-right",
+                    "sequence": 6,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:branch:5",
+                },
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="audio-manual",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=(
+                    "story:branch:1",
+                    "story:branch:3",
+                    "story:branch:5",
+                ),
+                observations={
+                    "story:branch:1": [("Ada", "First visible line.")],
+                    "story:branch:3": [("Cora", "Actually visible third line.")],
+                    "story:branch:5": [("Narrator", "Right choice result.")],
+                },
+                expected_counts={
+                    "ocr_calls": 3,
+                    "bounded_recoveries": 2,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+
+            report = LiveReplayRunner(
+                load_live_replay_corpus(path),
+                interval_seconds=0.002,
+                timeout_seconds=4,
+            ).run()
+
+        self.assertTrue(report["successful"], report)
+        self.assertEqual(report["sequence"]["observed"]["bounded_recoveries"], 2)
+        self.assertEqual(
+            report["sequence"]["observed"]["event_ids"],
+            ["branch-1", "branch-3", "branch-right"],
+        )
+
+    def test_tracked_sequence_shadow_and_audio_manual_corpora_pass(self):
+        root = Path(__file__).resolve().parents[1] / "samples"
+        reports = [
+            LiveReplayRunner(
+                load_live_replay_corpus(root / corpus_name),
+                interval_seconds=0.002,
+                timeout_seconds=5,
+            ).run()
+            for corpus_name in (
+                "sequence-live-replay-shadow.json",
+                "sequence-live-replay-audio-manual.json",
+            )
+        ]
+
+        self.assertTrue(all(report["successful"] for report in reports), reports)
+        self.assertEqual(
+            [report["sequence"]["mode"] for report in reports],
+            ["shadow", "audio-manual"],
+        )
+        self.assertEqual(
+            [
+                report["sequence"]["observed"]["key_dispatch_attempts"]
+                for report in reports
+            ],
+            [3, 0],
+        )
+        self.assertEqual(
+            [
+                report["sequence"]["observed"]["bounded_recoveries"]
+                for report in reports
+            ],
+            [0, 2],
+        )
+
+    def test_sequence_contract_rejects_mode_and_canonical_identity_mismatches(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": "story:contract:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "Canonical text.",
+                }
+            ]
+            events = [
+                {
+                    "event_id": "contract-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:contract:1",
+                }
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="shadow",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=("story:contract:1",),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["live_sequence"]["mode"] = "automatic"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsupported.*mode"):
+                load_live_replay_corpus(path)
+
+            document["live_sequence"]["mode"] = "shadow"
+            document["dialogue"][0]["text"] = "Changed text."
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "disagrees with.*canonical"):
+                load_live_replay_corpus(path)
+
+            document["dialogue"][0]["text"] = "Canonical text."
+            document["dialogue"][0].pop("expected_source")
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must declare expected_source"):
+                load_live_replay_corpus(path)
+
+    def test_sequence_story_and_plan_remain_bound_after_corpus_load(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": "story:bound:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "Bound bytes.",
+                }
+            ]
+            events = [
+                {
+                    "event_id": "bound-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:bound:1",
+                }
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="shadow",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=("story:bound:1",),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            corpus = load_live_replay_corpus(path)
+            plan = Path(temporary_directory) / "live-sequence.json"
+            original_plan = plan.read_bytes()
+            plan.write_bytes(original_plan + b"\n")
+            with self.assertRaisesRegex(ValueError, "plan changed"):
+                LiveReplayRunner(corpus).run()
+
+            plan.write_bytes(original_plan)
+            corpus = load_live_replay_corpus(path)
+            story = Path(temporary_directory) / "story.jsonl"
+            story.write_bytes(story.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "story index changed"):
+                LiveReplayRunner(corpus).run()
 
     def test_unobserved_game_audio_completion_blocks_replay_auto_advance(self):
         with TemporaryDirectory() as temporary_directory:

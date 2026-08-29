@@ -448,6 +448,8 @@ class LiveDialogReader:
         frame_presence=None,
         stable_frame_route=None,
         stable_frame_owner=None,
+        frame_routed=None,
+        line_id_resolver=None,
         stable_frame_minimum_seconds=0.12,
         stable_frame_clock=monotonic,
         playback_executor=None,
@@ -483,6 +485,10 @@ class LiveDialogReader:
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.stable_frame_route = stable_frame_route
         self.stable_frame_owner = stable_frame_owner or (lambda: None)
+        self.frame_routed = frame_routed or (
+            lambda _frame, _fingerprint, _route_kind, _character, _text: None
+        )
+        self.line_id_resolver = line_id_resolver or (lambda _character, _text: None)
         if stable_frame_minimum_seconds < 0:
             raise ValueError("stable_frame_minimum_seconds must not be negative")
         self.stable_frame_minimum_seconds = float(stable_frame_minimum_seconds)
@@ -966,6 +972,7 @@ class LiveDialogReader:
                     and not awaiting_post_advance_dialog
                 ):
                     character, text = cached_observation
+                    route_kind = "cached"
                     with self.state_lock:
                         metrics = self.pipeline_metrics
                         self.pipeline_metrics = replace(
@@ -986,12 +993,14 @@ class LiveDialogReader:
                     continue
                 if isinstance(frame_route, tuple) and len(frame_route) == 2:
                     character, text = frame_route
+                    route_kind = "canonical"
                     cached_fingerprint = fingerprint
                     cached_observation = (character, text)
                 elif frame_route is None and (
                     fingerprint != cached_fingerprint or awaiting_post_advance_dialog
                 ):
                     character, text = self.recognize_frame(frame)
+                    route_kind = "ocr"
                     cached_fingerprint = fingerprint
                     cached_observation = (character, text)
                     with self.state_lock:
@@ -1015,9 +1024,22 @@ class LiveDialogReader:
                         self.next_capture_interval = interval
                     continue
                 character, text = routed_observation
+                with self.state_lock:
+                    frame_already_routed = fingerprint == self.routed_frame_fingerprint
+                if route_kind != "cached" and not frame_already_routed:
+                    self.frame_routed(
+                        frame,
+                        fingerprint,
+                        route_kind,
+                        character,
+                        text,
+                    )
                 if self.stable_frame_route is not None:
                     self._accept_routed_frame(fingerprint)
                 chunks = tracker.observe(character, text)
+                line_id = self.line_id_resolver(character, text)
+                if line_id is not None:
+                    chunks = [replace(chunk, line_id=str(line_id)) for chunk in chunks]
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
                 self._update_dialog_ready(tracker)

@@ -148,15 +148,14 @@ numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
-      then add automatic advancement last. Retain the successful tracked smoke
-      and representative Rhiannon route replays. Extend the replay contract
-      with a checksum-bound sequence plan and mode,
-      run the production controller/cursor rather than a parallel simulator,
-      and report canonical event/line IDs, OCR-call count, bounded recoveries and
-      key-dispatch count. Cover long typewriter text, lost nameplates, `...`,
-      source/generated/missing-WAV routes, identical lines, choices, manual
-      skips, focus loss and stale work. Require both `shadow` and `audio-manual`
-      reports to pass before implementing automatic advancement.
+      then add automatic advancement last. The checksum-bound schema-v2 replay
+      gate now runs the production controller/cursor and passes tracked `shadow`
+      and `audio-manual` corpora with exact canonical identities, OCR/recovery
+      counts and key-dispatch counts; schema v1 and both earlier route corpora
+      remain compatibility gates. Next capture and review a real sequence-bound
+      gameplay corpus, then run the 100-event gate below. Do not implement real
+      sequence-owned key delivery until that evidence shows zero wrong-line,
+      duplicate, stale or app-skipped dialogue and safe focus/choice handling.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and 100-event real-game run show
       zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every

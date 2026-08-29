@@ -79,6 +79,20 @@ not control the game yet:
   Failed playback, desynchronization and branch/manual boundaries make recovery
   guidance durable and emphasize the story-position control; off and shadow
   modes do not present it as a manual action.
+- live replay schema version 2 binds the exact story index and sequence plan by
+  contained path and SHA-256, revalidates and snapshots both immediately before
+  execution, and drives the production `AppController`, cursor, route and
+  playback callbacks. Reports bind ordered canonical event/line IDs, distinct
+  OCR-routed frames, raw OCR invocations, bounded recoveries, key attempts and
+  confirmed keys. Every routed frame states whether OCR or the locked canonical
+  path supplied it.
+- the tracked shadow and audio-manual sequence corpora pass deterministically.
+  Together they cover typewriter prefixes, a lost nameplate, internal ellipsis,
+  original/generated/missing-WAV routes, focus loss, manual multi-line recovery
+  and duplicate/stale ledger protection. Focused tests additionally prove that a
+  pure `...` event advances without synthesis, identical ambiguous initial lines
+  produce no speech and branch/choice recovery selects only an explicit bounded
+  candidate.
 
 `vntts-artifacts` v0.7.0 introduced game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately
@@ -319,14 +333,15 @@ reason. They do not record dialogue text.
 Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
-The automated `shadow` and `audio-manual` phases are implemented. Shadow only
-records predictions. Audio-manual uses full OCR for its initial anchor, then the
-visibility/focus/ownership/render-settled gate can route deterministic
-successors without another OCR call while leaving all advancement to the
-player. Explicit manual resynchronization and the persistent cursor-status card
-are implemented. Branch selection, repeated-line recovery and automatic
-advancement remain gated on deterministic replay and real-game route
-correctness.
+The automated `shadow` and `audio-manual` phases and their deterministic replay
+gate are implemented. Shadow records predictions and exercises the production
+dispatch gate through a device-free key adapter. Audio-manual uses full OCR for
+its initial anchor, then the visibility/focus/ownership/render-settled gate can
+route deterministic successors without another OCR call while leaving all
+advancement to the player. Explicit manual resynchronization, bounded
+branch/skip recovery and the persistent cursor-status card are implemented.
+Automatic sequence-owned key delivery remains gated on real-game route
+correctness and the 100-event acceptance run.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV
