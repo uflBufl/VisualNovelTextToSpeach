@@ -307,9 +307,10 @@ locked.
       parser builders and handlers behind one thin dispatcher. Preserve command
       names, arguments, exit codes, JSON output and headless `-h/--help`
       behavior; require focused CLI compatibility tests plus the full suite.
-  - [ ] Move queue/workspace/generation and review/repair command families in
+  - [ ] Move the remaining generation and review/repair command families in
         dependency order, keeping errors translated by the top-level parser and
-        avoiding imports between sibling family modules.
+        avoiding imports between sibling family modules. Queue publication and
+        core immutable workspace creation/merge are already extracted.
   - [ ] Reduce `cli.py` to parser composition, shared error translation and the
         dispatcher; audit every command name/option/default against a captured
         parser manifest, then run formatting and the complete unittest suite.

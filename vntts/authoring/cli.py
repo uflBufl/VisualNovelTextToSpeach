@@ -55,6 +55,18 @@ from vntts.authoring.cli_delivery import (
     handle as handle_delivery_command,
 )
 from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
+from vntts.authoring.cli_generation_options import (
+    add_failure_repair_arguments as _add_failure_repair_arguments,
+)
+from vntts.authoring.cli_generation_options import (
+    add_missing_voice_policy_arguments as _add_missing_voice_policy_arguments,
+)
+from vntts.authoring.cli_generation_options import (
+    failure_repair_policy as _generation_failure_repair_policy,
+)
+from vntts.authoring.cli_generation_options import (
+    missing_voice_policy as _generation_missing_voice_policy,
+)
 from vntts.authoring.cli_legacy import (
     COMMANDS as LEGACY_COMMANDS,
 )
@@ -63,6 +75,24 @@ from vntts.authoring.cli_legacy import (
 )
 from vntts.authoring.cli_legacy import (
     handle as handle_legacy_command,
+)
+from vntts.authoring.cli_queue import (
+    COMMANDS as QUEUE_COMMANDS,
+)
+from vntts.authoring.cli_queue import (
+    configure_parsers as configure_queue_parsers,
+)
+from vntts.authoring.cli_queue import (
+    handle as handle_queue_command,
+)
+from vntts.authoring.cli_workspace import (
+    COMMANDS as WORKSPACE_COMMANDS,
+)
+from vntts.authoring.cli_workspace import (
+    configure_parsers as configure_workspace_parsers,
+)
+from vntts.authoring.cli_workspace import (
+    handle as handle_workspace_command,
 )
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
@@ -82,15 +112,12 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.delivery import (
-    LEGACY_ENGLISH_POLICY,
-    PRESERVE_DELIVERY_POLICY,
     DeliveryAnnotationError,
 )
 from vntts.authoring.experimental_composite_voice import (
     ExperimentalCompositeVoiceError,
     publish_experimental_composite_voice_input,
 )
-from vntts.authoring.explicit_fallback_merge import merge_explicit_live_fallbacks
 from vntts.authoring.failed_control_carry import (
     FailedControlCarryError,
     carry_failed_controls,
@@ -114,11 +141,7 @@ from vntts.authoring.failure_regeneration import (
     load_failure_regeneration_plan,
     write_failure_regeneration_plan,
 )
-from vntts.authoring.failure_repair import (
-    DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
-    FailureRepairPolicy,
-    FailureRepairPolicyError,
-)
+from vntts.authoring.failure_repair import DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.known_role_live_fallback import (
@@ -137,12 +160,6 @@ from vntts.authoring.listening_import import (
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
     authorize_missing_voice_live_fallback,
-)
-from vntts.authoring.missing_voice_policy import (
-    NARRATOR_ALL_UNRESOLVED,
-    NARRATOR_ROLES,
-    MissingVoicePolicy,
-    MissingVoicePolicyError,
 )
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
@@ -180,10 +197,7 @@ from vntts.authoring.portrait_aliases import (
 )
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
-    inspect_generation_queue,
-    publish_generation_queue,
 )
-from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     create_reference_render_listening,
@@ -279,12 +293,10 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_audio_event_composition_workspace,
     create_failure_reference_workspace,
-    create_resume_workspace,
     default_workspaces_root,
     failure_reference_runtime_binding,
     generation_control_bindings,
     generation_output_identity,
-    merge_workspace_outcomes,
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
@@ -336,201 +348,14 @@ def _vntts_version():
         return "0.1.0"
 
 
-def _generation_missing_voice_policy(arguments):
-    try:
-        if arguments.narrator_fallback_all:
-            return MissingVoicePolicy(NARRATOR_ALL_UNRESOLVED)
-        if arguments.narrator_fallback_roles:
-            return MissingVoicePolicy(
-                NARRATOR_ROLES, tuple(arguments.narrator_fallback_roles)
-            )
-        return MissingVoicePolicy()
-    except MissingVoicePolicyError as error:
-        raise BulkGenerationError(str(error)) from error
-
-
-def _add_missing_voice_policy_arguments(parser):
-    fallback = parser.add_mutually_exclusive_group()
-    fallback.add_argument(
-        "--narrator-fallback-role",
-        action="append",
-        dest="narrator_fallback_roles",
-        help=(
-            "Use Narrator only when this exact requested role still has no "
-            "configured reference; repeat for multiple roles"
-        ),
-    )
-    fallback.add_argument(
-        "--narrator-fallback-all",
-        action="store_true",
-        help="Use Narrator for every still-unresolved named role in this exact queue",
-    )
-
-
-def _generation_failure_repair_policy(arguments):
-    try:
-        return FailureRepairPolicy(
-            tuple(arguments.sentence_segment_failed or ()),
-            tuple(arguments.trim_edge_silence_failed or ()),
-            arguments.segment_pause_ms,
-            tuple(arguments.bounded_seed_failed or ()),
-            tuple(arguments.offline_fallback_failed or ()),
-            tuple(arguments.inline_pause_failed or ()),
-            arguments.inline_pause_ms,
-        )
-    except FailureRepairPolicyError as error:
-        raise BulkGenerationError(str(error)) from error
-
-
-def _add_failure_repair_arguments(parser):
-    parser.add_argument(
-        "--sentence-segment-failed",
-        action="append",
-        help=(
-            "Repair this exact current missed-EOS or internal-silence failure "
-            "at safe sentence boundaries"
-        ),
-    )
-    parser.add_argument(
-        "--trim-edge-silence-failed",
-        action="append",
-        help="Repair this exact current edge-only silence failure before validation",
-    )
-    parser.add_argument(
-        "--bounded-seed-failed",
-        action="append",
-        help="Retry this exact current missed-EOS failure up to three total attempts",
-    )
-    parser.add_argument(
-        "--offline-fallback-failed",
-        action="append",
-        help=(
-            "Generate this exact carried exhausted backend failure with the "
-            "config-addressed Pocket TTS fallback"
-        ),
-    )
-    parser.add_argument(
-        "--inline-pause-failed",
-        action="append",
-        help=(
-            "Compare one exact current internal-silence failure with a derived "
-            "MOSS inline pause prompt"
-        ),
-    )
-    parser.add_argument(
-        "--segment-pause-ms",
-        type=int,
-        default=180,
-        help="Bounded silence inserted only between authorized sentence segments",
-    )
-    parser.add_argument(
-        "--inline-pause-ms",
-        type=int,
-        default=180,
-        help="MOSS inline pause duration for exact authorized comparison items",
-    )
-
-
 def create_parser():
     parser = argparse.ArgumentParser(
         description="VNTTS offline pregeneration authoring"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     configure_legacy_parsers(subparsers)
-    for command, help_text in (
-        ("preflight-queue", "Summarize a collection-driven generation queue"),
-        ("build-queue", "Publish a validated collection-driven generation queue"),
-    ):
-        queue = subparsers.add_parser(command, help=help_text)
-        queue.add_argument("--story-index", type=Path, required=True)
-        queue.add_argument("--voice-manifest", type=Path, required=True)
-        queue.add_argument(
-            "--collection",
-            action="append",
-            dest="collection_ids",
-            help="Include one declared collection; repeat to include more",
-        )
-        queue.add_argument(
-            "--unknown-action",
-            choices=("resolve_audio", "manual_review"),
-            help="Required policy when a selected source-audio status is unknown",
-        )
-        queue.add_argument(
-            "--delivery-policy",
-            choices=(PRESERVE_DELIVERY_POLICY, LEGACY_ENGLISH_POLICY),
-            default=PRESERVE_DELIVERY_POLICY,
-            help="Preserve source annotations or opt into the legacy English heuristic",
-        )
-        if command == "build-queue":
-            queue.add_argument("--output", type=Path, required=True)
-    workspace = subparsers.add_parser(
-        "create-workspace",
-        help="Create an immutable config-addressed resume workspace",
-    )
-    workspace.add_argument("import_directory", type=Path)
-    workspace.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
-    workspace.add_argument("--story-index", type=Path)
-    workspace.add_argument("--voice-manifest", type=Path)
-    workspace.add_argument("--narrator-character")
-    workspace.add_argument(
-        "--backend", choices=("pocket-tts", "chatterbox-nano", "moss-tts")
-    )
-    workspace.add_argument("--model")
-    workspace.add_argument("--generation-profile")
-    workspace.add_argument("--carry-forward-from", type=Path)
-    workspace.add_argument(
-        "--carry-forward-character", action="append", dest="carry_forward_characters"
-    )
-    workspace.add_argument(
-        "--offline-fallback-authority",
-        action="append",
-        dest="offline_fallback_authorities",
-        type=Path,
-        help=(
-            "Canonical automatic-unresolved decision authorizing the exact "
-            "selected Pocket fallback items; repeat for multiple artifacts"
-        ),
-    )
-    _add_missing_voice_policy_arguments(workspace)
-    _add_failure_repair_arguments(workspace)
-    merge = subparsers.add_parser(
-        "merge-workspace-outcomes",
-        help="Create a successor from exact reviewed repair outcomes",
-    )
-    merge.add_argument("base_workspace", type=Path)
-    merge.add_argument(
-        "--source-workspace",
-        action="append",
-        dest="source_workspaces",
-        type=Path,
-        required=True,
-    )
-    merge.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
-    reconciled_merge = subparsers.add_parser(
-        "merge-reconciled-outcomes",
-        help="Create a successor from exact terminal outcomes in a reconciliation",
-    )
-    reconciled_merge.add_argument("base_workspace", type=Path)
-    reconciled_merge.add_argument("reconciliation", type=Path)
-    reconciled_merge.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
-    fallback_merge = subparsers.add_parser(
-        "merge-explicit-fallbacks",
-        help="Compose exact standalone live-fallback decisions into a successor",
-    )
-    fallback_merge.add_argument("base_workspace", type=Path)
-    fallback_merge.add_argument("source_workspace", type=Path)
-    fallback_merge.add_argument(
-        "--queue-id", action="append", dest="queue_ids", required=True
-    )
-    fallback_merge.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
+    configure_queue_parsers(subparsers)
+    configure_workspace_parsers(subparsers)
     known_role_fallback = subparsers.add_parser(
         "known-role-live-fallback",
         help="Route exact exhausted lines to a bound known-role Pocket voice",
@@ -1388,6 +1213,8 @@ def create_parser():
 
 COMMAND_FAMILIES = (
     CommandFamily(LEGACY_COMMANDS, handle_legacy_command),
+    CommandFamily(QUEUE_COMMANDS, handle_queue_command),
+    CommandFamily(WORKSPACE_COMMANDS, handle_workspace_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
 )
 
@@ -1398,93 +1225,6 @@ def main(argv=None):
         family_result = dispatch_command(arguments, COMMAND_FAMILIES)
         if family_result is not None:
             return family_result
-        if arguments.command == "create-workspace":
-            missing_voice_policy = _generation_missing_voice_policy(arguments)
-            failure_repair_policy = _generation_failure_repair_policy(arguments)
-            result = create_resume_workspace(
-                arguments.import_directory,
-                arguments.workspaces_root,
-                story_index=arguments.story_index,
-                voice_manifest=arguments.voice_manifest,
-                narrator_character=arguments.narrator_character,
-                backend=arguments.backend,
-                model=arguments.model,
-                generation_profile=arguments.generation_profile,
-                missing_voice_policy=missing_voice_policy,
-                failure_repair_policy=failure_repair_policy,
-                carry_forward_from=arguments.carry_forward_from,
-                carry_forward_characters=arguments.carry_forward_characters,
-                offline_fallback_authorities=arguments.offline_fallback_authorities,
-            )
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "created": result.created,
-                        "missing_voice_policy": missing_voice_policy.to_document(),
-                        "failure_repair_policy": failure_repair_policy.to_document(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "merge-workspace-outcomes":
-            result = merge_workspace_outcomes(
-                arguments.base_workspace,
-                arguments.source_workspaces,
-                arguments.workspaces_root,
-            )
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "created": result.created,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "merge-reconciled-outcomes":
-            result = merge_reconciled_terminal_outcomes(
-                arguments.base_workspace,
-                arguments.reconciliation,
-                arguments.workspaces_root,
-            )
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "created": result.created,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "merge-explicit-fallbacks":
-            result = merge_explicit_live_fallbacks(
-                arguments.base_workspace,
-                arguments.source_workspace,
-                arguments.queue_ids,
-                arguments.workspaces_root,
-            )
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "created": result.created,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
         if arguments.command == "known-role-live-fallback":
             result = create_known_role_live_fallback_workspace(
                 arguments.base_workspace,
@@ -2709,22 +2449,6 @@ def main(argv=None):
                 producers=producers,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command in {"preflight-queue", "build-queue"}:
-            plan = inspect_generation_queue(
-                arguments.story_index,
-                arguments.voice_manifest,
-                collection_ids=None
-                if arguments.collection_ids is None
-                else tuple(arguments.collection_ids),
-                unknown_action=arguments.unknown_action,
-                delivery_policy=arguments.delivery_policy,
-            )
-            payload = {"summary": plan.summary.to_dict()}
-            if arguments.command == "build-queue":
-                output = publish_generation_queue(plan, arguments.output)
-                payload["output"] = str(output)
-            print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
     except (
         AudioEventReviewError,
