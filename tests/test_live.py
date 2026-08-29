@@ -136,13 +136,14 @@ class RecordingCapturePolicy:
 
 
 class AutoAdvanceFakeFrameHarness:
-    def __init__(self, *, stable_frame_route=None):
+    def __init__(self, *, stable_frame_route=None, stable_frame_minimum_seconds=0.12):
         self.clock = FakeClock()
         self.completed_observations = Queue()
         self.speech_executor = QueuedExecutor()
         self.playback_executor = QueuedExecutor()
         self.timer_scheduler = ManualTimerScheduler()
         self.focused = True
+        self.frame_owner = "event-1"
         self.advance_calls = []
         self.played = []
         self.states = []
@@ -158,7 +159,11 @@ class AutoAdvanceFakeFrameHarness:
             read_snapshot=Mock(),
             capture_frame=Mock(),
             recognize_frame=self._recognize,
+            frame_presence=lambda frame: frame.get("visible", True),
             stable_frame_route=stable_frame_route,
+            stable_frame_owner=lambda: self.frame_owner,
+            stable_frame_minimum_seconds=stable_frame_minimum_seconds,
+            stable_frame_clock=self.clock,
             speak_chunk=Mock(),
             prepare_chunk=lambda chunk: f"audio:{chunk.text}",
             play_prepared=self._play,
@@ -203,16 +208,19 @@ class AutoAdvanceFakeFrameHarness:
         *,
         background,
         fingerprint="same-glyphs",
+        visible=True,
         expected=None,
     ):
         frame = {
             "character": character,
             "text": text,
             "background": background,
+            "visible": visible,
         }
         with self.reader.pause_condition:
             self.reader.latest_frame = frame
             self.reader.latest_frame_fingerprint = fingerprint
+            self.reader.latest_frame_visible = visible
             self.reader.frame_version += 1
             self.reader.pause_condition.notify_all()
         observed = self.completed_observations.get(timeout=1)
@@ -270,6 +278,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             fingerprint="second-glyphs",
             expected=("Ada", "First line."),
         )
+        harness.clock.advance(0.12)
         harness.push(
             "bad OCR",
             "still wrong",
@@ -284,6 +293,159 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             [("second-glyphs", False), ("second-glyphs", True)],
         )
         self.assertEqual(harness.errors, [])
+
+    def test_stable_frame_route_waits_for_minimum_settled_time(self):
+        route_calls = []
+
+        def stable_route(fingerprint, settled):
+            route_calls.append((fingerprint, settled))
+            return ("Bea", "Canonical second line.") if settled else False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-a",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.05)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-b",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.07)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-c",
+            fingerprint="second",
+            expected=("Bea", "Canonical second line."),
+        )
+
+        self.assertEqual(
+            route_calls,
+            [("second", False), ("second", False), ("second", True)],
+        )
+        self.assertEqual(len(harness.recognized_frames), 1)
+
+    def test_stable_frame_route_requires_visible_dialogue(self):
+        route_calls = []
+
+        def stable_route(fingerprint, settled):
+            route_calls.append((fingerprint, settled))
+            return ("Bea", "Canonical second line.") if settled else False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.clock.advance(0.2)
+        harness.push(
+            "bad OCR",
+            "popup",
+            background="popup-a",
+            fingerprint="popup",
+            visible=False,
+            expected=("Ada", "First line."),
+        )
+        harness.push(
+            "bad OCR",
+            "popup",
+            background="popup-b",
+            fingerprint="popup",
+            visible=False,
+            expected=("Ada", "First line."),
+        )
+
+        self.assertEqual(route_calls, [])
+        self.assertEqual(len(harness.recognized_frames), 1)
+
+    def test_stable_frame_route_resets_when_owner_changes(self):
+        route_calls = []
+
+        def stable_route(fingerprint, settled):
+            route_calls.append((fingerprint, settled))
+            return ("Bea", "Canonical second line.") if settled else False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-a",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.12)
+        harness.frame_owner = "event-9"
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-b",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.12)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-c",
+            fingerprint="second",
+            expected=("Bea", "Canonical second line."),
+        )
+
+        self.assertEqual(
+            route_calls,
+            [("second", False), ("second", False), ("second", True)],
+        )
+
+    def test_stable_frame_route_resets_while_game_is_unfocused(self):
+        route_calls = []
+
+        def stable_route(fingerprint, settled):
+            route_calls.append((fingerprint, settled))
+            return ("Bea", "Canonical second line.") if settled else False
+
+        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.focused = False
+        harness.clock.advance(0.2)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-a",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.focused = True
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-b",
+            fingerprint="second",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.12)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="second-c",
+            fingerprint="second",
+            expected=("Bea", "Canonical second line."),
+        )
+
+        self.assertEqual(route_calls, [("second", False), ("second", True)])
 
     def test_delayed_next_screen_confirms_after_playback_without_duplicate_press(self):
         harness = AutoAdvanceFakeFrameHarness()

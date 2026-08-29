@@ -19,6 +19,7 @@ from vntts.dialog_capture import (
     TTSInitializationError,
     analyze_dialog_snapshot,
     capture_live_frame,
+    dialog_glyphs_visible,
     fingerprint_dialog_frame,
     get_screenshot_directory,
     read_dialog_safely,
@@ -482,7 +483,9 @@ class AppController:
                 capture_frame=self._capture_live_frame,
                 recognize_frame=self._recognize_live_frame,
                 frame_fingerprint=fingerprint_dialog_frame,
+                frame_presence=dialog_glyphs_visible,
                 stable_frame_route=self._stable_live_frame_route,
+                stable_frame_owner=self._stable_live_frame_owner,
                 speak_chunk=self._speak_live_chunk,
                 prepare_chunk=self._prepare_live_chunk,
                 play_prepared=self._play_live_chunk,
@@ -1674,6 +1677,12 @@ class AppController:
         )
         self._publish_live_sequence_status()
         return (line.speaker, line.text)
+
+    def _stable_live_frame_owner(self):
+        cursor = self.story_cursor
+        if cursor is None or self.settings.live_sequence_mode != "audio-manual":
+            return None
+        return cursor.current_event_id
 
     def _begin_sequence_playback(self, chunk):
         cursor = self.story_cursor

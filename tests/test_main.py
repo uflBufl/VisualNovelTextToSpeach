@@ -44,6 +44,7 @@ from vntts.main import (
     capture_dialog,
     create_dialog_read_scheduler,
     create_screenshot_path,
+    dialog_glyphs_visible,
     fingerprint_dialog_frame,
     get_live_configuration,
     get_screenshot_directory,
@@ -217,6 +218,19 @@ class MainTest(unittest.TestCase):
             fingerprint_dialog_frame(CapturedDialogFrame(first, 0)),
             fingerprint_dialog_frame(CapturedDialogFrame(second, 0)),
         )
+
+    def test_dialog_glyph_presence_accepts_ellipsis_and_rejects_empty_crop(self):
+        empty = Image.new("RGB", (1200, 240), "#202020")
+        ellipsis = empty.copy()
+        ImageDraw.Draw(ellipsis).text((60, 100), "...", fill="white")
+
+        self.assertFalse(dialog_glyphs_visible(CapturedDialogFrame(empty, 0)))
+        self.assertTrue(dialog_glyphs_visible(CapturedDialogFrame(ellipsis, 0)))
+
+    def test_dialog_glyph_presence_rejects_overexposed_crop(self):
+        popup = Image.new("RGB", (1200, 240), "white")
+
+        self.assertFalse(dialog_glyphs_visible(CapturedDialogFrame(popup, 0)))
 
     def test_one_time_read_routes_text_by_detected_character(self):
         voice_router = Mock()

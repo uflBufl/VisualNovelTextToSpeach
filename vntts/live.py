@@ -441,7 +441,11 @@ class LiveDialogReader:
         capture_frame=None,
         recognize_frame=None,
         frame_fingerprint=None,
+        frame_presence=None,
         stable_frame_route=None,
+        stable_frame_owner=None,
+        stable_frame_minimum_seconds=0.12,
+        stable_frame_clock=monotonic,
         playback_executor=None,
         prepare_chunk=None,
         play_prepared=None,
@@ -472,7 +476,13 @@ class LiveDialogReader:
         self.capture_frame = capture_frame
         self.recognize_frame = recognize_frame
         self.frame_fingerprint = frame_fingerprint or (lambda _frame: None)
+        self.frame_presence = frame_presence or (lambda _frame: True)
         self.stable_frame_route = stable_frame_route
+        self.stable_frame_owner = stable_frame_owner or (lambda: None)
+        if stable_frame_minimum_seconds < 0:
+            raise ValueError("stable_frame_minimum_seconds must not be negative")
+        self.stable_frame_minimum_seconds = float(stable_frame_minimum_seconds)
+        self.stable_frame_clock = stable_frame_clock
         self.speak_chunk = speak_chunk
         self.prepare_chunk = prepare_chunk
         self.play_prepared = play_prepared
@@ -551,9 +561,12 @@ class LiveDialogReader:
         self.focus_probe_failed = False
         self.latest_frame = None
         self.latest_frame_fingerprint = None
+        self.latest_frame_visible = False
         self.routed_frame_fingerprint = None
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
+        self.candidate_frame_owner = None
+        self.candidate_frame_started_at = None
         self.frame_version = 0
         self.processed_frame_version = 0
         self.next_capture_interval = interval_seconds
@@ -604,9 +617,9 @@ class LiveDialogReader:
             self._cancel_auto_advance_locked()
             self.latest_frame = None
             self.latest_frame_fingerprint = None
+            self.latest_frame_visible = False
             self.routed_frame_fingerprint = None
-            self.candidate_frame_fingerprint = object()
-            self.candidate_frame_count = 0
+            self._reset_stable_frame_candidate()
             self.frame_version = 0
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
@@ -871,11 +884,13 @@ class LiveDialogReader:
             try:
                 frame = self.capture_frame()
                 fingerprint = self.frame_fingerprint(frame)
+                visible = bool(self.frame_presence(frame))
                 with self.pause_condition:
                     fingerprint_changed = fingerprint != self.latest_frame_fingerprint
                     replaced = self.frame_version > self.processed_frame_version
                     self.latest_frame = frame
                     self.latest_frame_fingerprint = fingerprint
+                    self.latest_frame_visible = visible
                     self.frame_version += 1
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
@@ -920,6 +935,7 @@ class LiveDialogReader:
                     break
                 frame = self.latest_frame
                 fingerprint = self.latest_frame_fingerprint
+                visible = self.latest_frame_visible
                 self.processed_frame_version = self.frame_version
             try:
                 with self.state_lock:
@@ -939,7 +955,10 @@ class LiveDialogReader:
                         )
                     frame_route = None
                 else:
-                    frame_route = self._stable_frame_route_decision(fingerprint)
+                    frame_route = self._stable_frame_route_decision(
+                        fingerprint,
+                        visible,
+                    )
                 if frame_route is False:
                     character, text = cached_observation
                     interval = policy.observe(character, text, focused=True)
@@ -995,27 +1014,44 @@ class LiveDialogReader:
         self._schedule(tracker.flush())
         self._update_dialog_ready(tracker)
 
-    def _stable_frame_route_decision(self, fingerprint):
+    def _stable_frame_route_decision(self, fingerprint, visible=True):
         if (
             self.stable_frame_route is None
             or self.routed_frame_fingerprint is None
             or fingerprint == self.routed_frame_fingerprint
         ):
             return None
-        if fingerprint == self.candidate_frame_fingerprint:
+        if not visible or not self._is_focused():
+            self._reset_stable_frame_candidate()
+            return False
+        owner = self.stable_frame_owner()
+        now = self.stable_frame_clock()
+        if (
+            fingerprint == self.candidate_frame_fingerprint
+            and owner == self.candidate_frame_owner
+        ):
             self.candidate_frame_count += 1
         else:
             self.candidate_frame_fingerprint = fingerprint
             self.candidate_frame_count = 1
+            self.candidate_frame_owner = owner
+            self.candidate_frame_started_at = now
+        settled_for = now - self.candidate_frame_started_at
         return self.stable_frame_route(
             fingerprint,
-            self.candidate_frame_count >= 2,
+            self.candidate_frame_count >= 2
+            and settled_for >= self.stable_frame_minimum_seconds,
         )
 
     def _accept_routed_frame(self, fingerprint):
         self.routed_frame_fingerprint = fingerprint
+        self._reset_stable_frame_candidate()
+
+    def _reset_stable_frame_candidate(self):
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
+        self.candidate_frame_owner = None
+        self.candidate_frame_started_at = None
 
     def _run(self, stop_event):
         tracker = self.tracker_factory(**self.tracker_options)

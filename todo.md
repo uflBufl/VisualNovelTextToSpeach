@@ -147,22 +147,14 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Replace full-frame recognition in ordinary locked transitions with a
-      stronger dialogue-presence/fingerprint/render-settled gate. The first
-      manual-audio slice already requires two equal changed fingerprints and no
-      second OCR call; add explicit dialogue visibility, ownership and minimum
-      settled-time checks before enabling keys. Advance only after audio (or a
-      silent event) completes, the game is focused and the same cursor event
-      still owns the generation.
 - [ ] Implement branches, repeated lines and manual advancement with an
       expected-candidate recognizer over explicit successors and a bounded
       monotonic lookahead. On conflict, stop auto advance and recover through
       lightweight anchors, then bounded current-chapter OCR, then explicit
       manual resync. Never speak or advance an unmatched OCR guess.
-- [ ] Add one consistent live-session UI card showing chapter/event progress,
-      canonical speaker/text preview, event/line ID, expected and actual audio
-      route, cursor state, next-candidate count, OCR activity and desync recovery
-      actions. Add cursor/transition/recovery fields to privacy-safe timelines.
+- [ ] Extend the implemented persistent live-session card with expected and
+      actual audio route plus explicit OCR activity. Add cursor transition,
+      readiness-gate and recovery fields to privacy-safe timelines.
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
       then add automatic advancement last. Cover long typewriter text, lost
       nameplates, `...`, source/generated/missing-WAV routes, identical lines,

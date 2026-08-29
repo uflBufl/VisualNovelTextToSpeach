@@ -23,6 +23,7 @@ from vntts.dialog_capture import (
     capture_dialog,
     capture_live_frame,
     create_screenshot_path,
+    dialog_glyphs_visible,
     fingerprint_dialog_frame,
     format_runtime_error,
     get_screenshot_directory,

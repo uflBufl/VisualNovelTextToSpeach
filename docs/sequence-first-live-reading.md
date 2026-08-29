@@ -203,11 +203,19 @@ therefore `audio complete or silent event`, plus `dialogue render settled`, plus
 `game focused`, plus `cursor still owns the same event`.
 
 In a linear successor step, a verified dialogue-region transition is enough to
-move to the one explicit successor. Full OCR is not run. When there are multiple
-successors, repeated identical lines, an early manual advance, or an unexpected
-fingerprint, use a small expected-candidate recognizer first. It compares only
-the allowed successor speakers and discriminating text anchors. Full OCR is a
-last recovery stage, never the default loop.
+move to the one explicit successor. Full OCR is not run. The implemented gate
+requires plausible bright glyphs in the lower dialogue band, rejects empty and
+mostly bright popup-like crops, waits for two equal changed fingerprints for at
+least 120 ms, rechecks game focus in the consuming worker, and binds the
+candidate to the cursor event that first observed it. Visibility loss, focus
+loss, a changed fingerprint or a changed owner resets the candidate. The
+three-pixel lower bound intentionally preserves a small anti-aliased `...` as a
+visible dialogue screen.
+
+When there are multiple successors, repeated identical lines, an early manual
+advance, or an unexpected fingerprint, use a small expected-candidate recognizer
+first. It compares only the allowed successor speakers and discriminating text
+anchors. Full OCR is a last recovery stage, never the default loop.
 
 ## Desynchronization and manual play
 
@@ -248,12 +256,13 @@ Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
 The automated `shadow` and `audio-manual` phases are implemented. Shadow only
-records predictions. Audio-manual uses full OCR for its initial anchor, then a
-two-frame stable visual transition can route deterministic successors without
-another OCR call while leaving all advancement to the player. Explicit manual
-resynchronization, branch selection, a stronger dialogue-presence/render gate
-and automatic advancement remain gated on deterministic replay and real-game
-route correctness.
+records predictions. Audio-manual uses full OCR for its initial anchor, then the
+visibility/focus/ownership/render-settled gate can route deterministic
+successors without another OCR call while leaving all advancement to the
+player. Explicit manual resynchronization and the persistent cursor-status card
+are implemented. Branch selection, repeated-line recovery and automatic
+advancement remain gated on deterministic replay and real-game route
+correctness.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV

@@ -192,6 +192,24 @@ def fingerprint_dialog_frame(frame):
     return blake2b(label + dialog, digest_size=16).digest()
 
 
+def dialog_glyphs_visible(frame):
+    """Return whether the dialogue band has plausible bright text pixels.
+
+    This deliberately remains a cheap, OCR-free fail-closed gate. Three pixels
+    are enough for an anti-aliased ellipsis in the smallest supported test font,
+    while a mostly bright crop is treated as a popup or calibration failure
+    rather than dialogue.
+    """
+    grayscale = frame.image.convert("L")
+    width, height = grayscale.size
+    dialog_top = min(height - 1, round(height * 0.25))
+    dialog = grayscale.crop((0, dialog_top, width, height))
+    histogram = dialog.histogram()
+    bright_pixels = sum(histogram[160:])
+    pixels = max(1, dialog.width * dialog.height)
+    return 3 <= bright_pixels <= round(pixels * 0.25)
+
+
 def recognize_live_frame(
     frame,
     voice_registry=None,
