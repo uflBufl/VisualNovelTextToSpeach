@@ -809,7 +809,9 @@ class LiveReplayRunner:
         controller.tts = live_backend
         controller.voice_router = live_backend
         controller.speech_backend = router
-        controller._auto_advance_dialog = frame_source.advance
+        controller._auto_advance_dialog = lambda **_guard_context: (
+            frame_source.advance()
+        )
 
         executors = [
             ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"replay-{name}")

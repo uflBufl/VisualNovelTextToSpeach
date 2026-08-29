@@ -12,6 +12,7 @@ from vntts.generated_audio import (
 from vntts.live import (
     AdaptiveCapturePolicy,
     AdaptiveSpeechBackpressure,
+    AutoAdvanceAttempt,
     IncrementalDialogTracker,
     LiveDialogReader,
     SilentDialogRoute,
@@ -1457,6 +1458,26 @@ class LiveDialogReaderTest(unittest.TestCase):
         with patch("vntts.live.Timer") as timer:
             reader._run_auto_advance(3)
 
+        timer.assert_called_once()
+        timer.return_value.start.assert_called_once_with()
+        self.assertIsNone(reader.failed_auto_advance_generation)
+        state_changed.assert_called_once_with("focus-wait", 3, 0)
+
+    def test_typed_focus_refusal_reschedules_without_an_ambiguous_second_probe(self):
+        state_changed = Mock()
+        focus_probe = Mock(return_value=True)
+        reader = self.create_reader(
+            auto_advance=Mock(return_value=AutoAdvanceAttempt(False, "focus-wait")),
+            focus_probe=focus_probe,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer") as timer:
+            reader._run_auto_advance(3)
+
+        focus_probe.assert_called_once_with()
         timer.assert_called_once()
         timer.return_value.start.assert_called_once_with()
         self.assertIsNone(reader.failed_auto_advance_generation)

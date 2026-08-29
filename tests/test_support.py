@@ -15,6 +15,7 @@ from vntts.support import (
     SupportBundleBuilder,
     collect_ocr_metrics,
     redact_text,
+    sequence_timeline_stages,
 )
 
 
@@ -141,6 +142,47 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertFalse(timelines.record("capture", 0, 1.0))
         with self.assertRaisesRegex(ValueError, "Unknown generation timeline stage"):
             timelines.record("dialogue-text", 1, 1.0)
+
+    def test_accepts_privacy_safe_sequence_control_evidence(self):
+        timelines = GenerationTimelineLog()
+
+        self.assertFalse(timelines.record("sequence-audio-auto", 0, 0.5))
+        timelines.record(
+            "sequence-audio-auto",
+            1,
+            1.0,
+            state="locked",
+            event_id="event-1",
+            line_id="reverse1999:1:1",
+            private_text="must not be retained",
+        )
+        timelines.record(
+            "sequence-key-dispatch-authorized",
+            1,
+            2.0,
+            event_id="event-1",
+            next_event_count=1,
+        )
+
+        events = timelines.snapshot()[0]["events"]
+
+        self.assertEqual(
+            [event["stage"] for event in events],
+            ["sequence-audio-auto", "sequence-key-dispatch-authorized"],
+        )
+        self.assertEqual(events[0]["event_id"], "event-1")
+        self.assertNotIn("private_text", str(events))
+
+    def test_accepts_every_declared_sequence_control_stage(self):
+        timelines = GenerationTimelineLog()
+
+        for offset, stage in enumerate(sequence_timeline_stages, start=1):
+            self.assertTrue(timelines.record(stage, 1, float(offset)))
+
+        self.assertEqual(
+            {event["stage"] for event in timelines.snapshot()[0]["events"]},
+            set(sequence_timeline_stages),
+        )
 
 
 class RuntimeSupportLogTest(unittest.TestCase):

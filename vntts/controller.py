@@ -42,6 +42,7 @@ from vntts.generated_audio import (
 from vntts.history import DialogueHistory
 from vntts.live import (
     AdaptiveSpeechBackpressure,
+    AutoAdvanceAttempt,
     IncrementalDialogTracker,
     LiveDialogReader,
     SilentDialogRoute,
@@ -2427,12 +2428,13 @@ class AppController:
                 cursor is None
                 or self.settings.live_sequence_mode != "audio-auto"
                 or not cursor.can_auto_advance
-                or not self._is_game_focused()
             ):
-                return False
-            advanced = self._auto_advance_dialog()
+                return AutoAdvanceAttempt(False, "cursor-not-auto-advance-eligible")
+            if not self._is_game_focused():
+                return AutoAdvanceAttempt(False, "focus-wait")
+            advanced = self._auto_advance_dialog(focus_verified=True)
             if advanced is False:
-                return False
+                return AutoAdvanceAttempt(False, "dispatch-disabled")
             snapshot = cursor.dispatch_advance()
             generation = (
                 self.live_reader.active_generation
@@ -2448,13 +2450,13 @@ class AppController:
                 next_event_count=len(snapshot.expected_successor_ids),
             )
             self._publish_live_sequence_status()
-            return True
+            return AutoAdvanceAttempt(True, "dispatched")
 
-    def _auto_advance_dialog(self):
+    def _auto_advance_dialog(self, *, focus_verified=False):
         if (
             not self.settings.auto_advance_enabled
             or self.settings.live_sequence_mode == "audio-manual"
-            or not self._is_game_focused()
+            or (not focus_verified and not self._is_game_focused())
         ):
             return False
         DialogueAdvancer(self.settings.auto_advance_key).advance()

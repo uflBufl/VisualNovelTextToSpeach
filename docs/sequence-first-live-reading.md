@@ -388,6 +388,12 @@ count, settled milliseconds and the final readiness boolean. Cursor observation
 and visual-transition events include previous/current event IDs and the cursor
 reason. They do not record dialogue text.
 
+Production timeline recording accepts the controller's declared sequence and
+speaker-announcement stages as well as generation stages. The accepted fields
+remain allow-listed; an observational event must never abort dialogue routing.
+`auto-advance-withheld` records a reason enum for focus, owned-frame visibility
+and callback/cursor refusal without retaining dialogue text.
+
 ## Migration and acceptance gates
 
 Implement behind a `sequence-first` feature flag and keep current OCR-driven
@@ -406,6 +412,12 @@ frame to remain visible, rechecks game focus under the cursor dispatch lock and
 sends at most one key. A changed stable frame confirms that pending key before
 the next event can advance. Choice, wait and manual boundaries retain the
 pending no-second-key state and expose bounded expected-event/resync actions.
+Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
+generation failure. It schedules another guarded attempt after focus returns.
+This avoids the former race where several consecutive macOS focus probes could
+observe `false` and then `true`, causing a focused dialogue to be permanently
+marked blocked, while still failing closed and never sending a key to an
+unfocused application.
 The mode and saved auto-advance toggle are both opt-in. Production enablement
 remains gated on a real-game focus/choice run even though complete chapter route
 and human acceptance are already 92/92.

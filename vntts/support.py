@@ -42,8 +42,27 @@ generation_timeline_stages = (
     "playback-outcome",
     "key-dispatch",
     "confirmed-next-dialogue",
+    "auto-advance-withheld",
     "auto-advance-timeout",
     "duplicate-chunk-suppressed",
+)
+
+# The production controller reports both audio-generation stages and guarded
+# sequence-control evidence through the same callback. Replay keeps the latter
+# in a separate evidence stream, but the desktop recorder must still accept it:
+# telemetry must never be able to abort dialog processing.
+sequence_timeline_stages = (
+    "sequence-candidate-miss",
+    "sequence-shadow",
+    "sequence-audio-manual",
+    "sequence-audio-auto",
+    "sequence-explicit-expected-selection",
+    "sequence-explicit-user-resync",
+    "sequence-visual-transition",
+    "sequence-playback-state",
+    "sequence-key-dispatch-authorized",
+    "speaker-announcement-route",
+    "speaker-announcement-outcome",
 )
 
 generation_timeline_detail_fields = (
@@ -64,6 +83,13 @@ generation_timeline_detail_fields = (
     "chunk_id",
     "chunk_ordinal",
     "chunk_characters",
+    "state",
+    "previous_event_id",
+    "event_id",
+    "candidate_event_ids",
+    "next_event_count",
+    "reason",
+    "route",
 )
 
 
@@ -77,7 +103,7 @@ class GenerationTimelineLog:
         self.lock = RLock()
 
     def record(self, stage, generation, occurred_at, **details):
-        if stage not in generation_timeline_stages:
+        if stage not in generation_timeline_stages + sequence_timeline_stages:
             raise ValueError(f"Unknown generation timeline stage: {stage}")
         try:
             generation = int(generation)
@@ -146,7 +172,9 @@ class GenerationTimelineLog:
             events,
             key=lambda value: (
                 value["occurred_at"],
-                generation_timeline_stages.index(value["stage"]),
+                (generation_timeline_stages + sequence_timeline_stages).index(
+                    value["stage"]
+                ),
             ),
         ):
             serialized.append(

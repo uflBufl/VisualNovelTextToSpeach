@@ -36,6 +36,17 @@ class SilentDialogRoute:
 
 
 @dataclass(frozen=True)
+class AutoAdvanceAttempt:
+    """Typed callback result so a safe wait is not mistaken for a hard block."""
+
+    dispatched: bool
+    reason: str
+
+    def __bool__(self):
+        return self.dispatched
+
+
+@dataclass(frozen=True)
 class LivePipelineMetrics:
     captured_frames: int = 0
     replaced_frames: int = 0
@@ -1712,6 +1723,11 @@ class LiveDialogReader:
                 )
                 self.auto_advance_focus_wait_generation = generation
             if report_focus_wait:
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    generation,
+                    reason="game-focus-not-owned",
+                )
                 self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
             return
@@ -1731,25 +1747,48 @@ class LiveDialogReader:
                 self.auto_advance_visual_wait_generation = generation
         if not visual_ready:
             if report_visual_wait:
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    generation,
+                    reason="owned-frame-not-visible-and-stable",
+                )
                 self._report_auto_advance_state("visual-wait", generation, 0)
             self._maybe_auto_advance()
             return
         try:
-            advanced = self.auto_advance()
+            attempt = self.auto_advance()
         except Exception as error:
             self.report_error(error)
             return
+        if isinstance(attempt, AutoAdvanceAttempt):
+            advanced = attempt.dispatched
+            refusal_reason = attempt.reason
+        else:
+            advanced = attempt
+            refusal_reason = None
         if advanced is False:
-            if not self._is_focused():
+            if refusal_reason == "focus-wait" or (
+                refusal_reason is None and not self._is_focused()
+            ):
                 with self.state_lock:
                     report_focus_wait = (
                         self.auto_advance_focus_wait_generation != generation
                     )
                     self.auto_advance_focus_wait_generation = generation
                 if report_focus_wait:
+                    self._report_pipeline_event(
+                        "auto-advance-withheld",
+                        generation,
+                        reason="game-focus-lost-before-dispatch",
+                    )
                     self._report_auto_advance_state("focus-wait", generation, 0)
                 self._maybe_auto_advance()
             else:
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    generation,
+                    reason=refusal_reason or "callback-blocked",
+                )
                 with self.state_lock:
                     if generation == self.active_generation:
                         self.failed_auto_advance_generation = generation

@@ -1653,7 +1653,7 @@ class MainTest(unittest.TestCase):
             StoryCursorState.WAITING_TRANSITION,
         )
         self.assertFalse(callback())
-        controller._auto_advance_dialog.assert_called_once_with()
+        controller._auto_advance_dialog.assert_called_once_with(focus_verified=True)
         self.assertEqual(pipeline[-1][0][0], "sequence-key-dispatch-authorized")
 
         controller.story_cursor.reset()
@@ -1664,7 +1664,11 @@ class MainTest(unittest.TestCase):
         controller.capture_target.is_focused.return_value = False
         controller._auto_advance_dialog.reset_mock()
 
-        self.assertFalse(callback())
+        refusal = callback()
+
+        self.assertFalse(refusal)
+        self.assertEqual(refusal.reason, "focus-wait")
+        controller.capture_target.is_focused.assert_called_once_with()
         controller._auto_advance_dialog.assert_not_called()
 
     def test_sequence_audio_manual_rejects_unexpected_known_line_and_stays_closed(self):
