@@ -392,6 +392,7 @@ class LiveReplayRunner:
         if not corpus.dialogue:
             raise ValueError("Live replay corpus has no dialogue frames")
         self.corpus = corpus
+        self.uses_default_recognizer = recognizer is None
         self.recognizer = recognizer or _recognize_replay_frame
         self.interval_seconds = float(interval_seconds)
         self.timeout_seconds = float(timeout_seconds)
@@ -717,7 +718,11 @@ class LiveReplayRunner:
         played = []
 
         def recognize(frame):
-            result = self.recognizer(frame)
+            result = (
+                _recognize_replay_frame(frame, ellipsis_speaker_resolver=resolver)
+                if self.uses_default_recognizer
+                else self.recognizer(frame)
+            )
             recognized_frames.append(
                 {
                     "character": str(result[0]),
@@ -1156,11 +1161,14 @@ def _load_frame(root, frame_spec, region):
     return CapturedDialogFrame(image, 0.0), relative, digest, recognition_source
 
 
-def _recognize_replay_frame(frame):
+def _recognize_replay_frame(frame, *, ellipsis_speaker_resolver=None):
     observation = frame.image.info.get("vntts_replay_observation")
     if observation is not None:
         return observation
-    return recognize_live_frame(frame, minimum_confidence=0)
+    return recognize_live_frame(
+        frame,
+        ellipsis_speaker_resolver=ellipsis_speaker_resolver,
+    )
 
 
 def _fingerprint_replay_frame(frame):

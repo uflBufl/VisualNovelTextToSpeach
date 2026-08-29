@@ -25,11 +25,16 @@ nameplates or fading text as dialogue boundaries. Every distinct frame is first
 written to the immutable observation ledger. A separate dialogue view promotes
 only an exact canonical story line or a standalone ellipsis observation;
 unmatched text stays explicitly unresolved. Repeated observations of the same
-canonical line are grouped by line ID. Without a story index, the compatibility
-path still groups same-speaker prefix-related text and records inferred
-boundaries for review. Saved frame specifications contain path and SHA only:
-replay reruns OCR on the real pixels and never treats capture-time text as a
-declared observation fixture.
+canonical line are grouped by line ID. Once the first canonical line identifies
+a chapter, later exact matches are restricted to that chapter, so short OCR such
+as `He` or `who` cannot jump to an unrelated chapter. A visually isolated
+three-dot glyph is recognized even when OCR reads only its nameplate or animated
+background. For that special case, the nameplate may restore a speaker only from
+the checksum-bound story index's configured speaker names. Without a story index,
+the compatibility path still groups same-speaker prefix-related text and records
+inferred boundaries for review. Saved frame specifications contain path and SHA
+only: replay reruns OCR on the real pixels and never treats capture-time text as
+a declared observation fixture.
 
 Example:
 
@@ -51,7 +56,7 @@ uv run vntts-seal-live-replay \
   "$HOME/vntts-evidence/rhiannon-sealed" \
   --story-index /path/to/story-index.jsonl \
   --sequence-plan /path/to/live-sequence.json \
-  --generated-audio-manifest /path/to/generated-audio.json \
+  --no-generated-audio-manifest \
   --mode audio-manual
 
 uv run vntts-replay-live \
@@ -64,16 +69,23 @@ audio-device behavior or the 20-line acceptance target.
 
 Recovery is non-destructive and fail-closed. It validates the raw corpus,
 capture report, observation ledger, frames, story index and sequence plan by
-checksum. It publishes a new replayable raw corpus only when exact canonical
-observations form one explicit branch-free successor path meeting the requested
-event count and silent-event gate. An unresolved observation may be absorbed
-only when its normalized text is an exact prefix of the adjacent canonical line;
-the report records that inference. Every other unresolved or uncertain
-observation breaks the candidate run. Arbitrary unresolved text is never
-converted to a silent event; only standalone `...` or `…` may bind the unique
-explicit silent frontier. An insufficient run produces `recovery-report.json` only,
-including the longest recovered run and the exact shortest branch-free event
-segment to capture next. The original directory is never rewritten.
+checksum. It publishes a new replayable raw corpus only when observations form
+one explicit branch-free successor path meeting the requested event count and
+silent-event gate. Besides exact canonical observations, OCR drift may resolve
+only against speech line IDs declared by that exact plan: one sufficiently long
+unique canonical prefix, a bounded OCR suffix, or a high-similarity candidate
+with a clear margin. A short candidate is rejected when it is also the prefix of
+another authorized line. Intervening typewriter/background noise may be
+absorbed only when the next accepted observation is the current event again or
+its one explicit successor; a skipped event, branch, manual boundary,
+uncertainty or ambiguity breaks the run. The report records every absorbed
+observation. Only the best representative frame is retained for each recovered
+event, while duplicate/typewriter frames remain bound in provenance. Arbitrary
+unresolved text is never converted to a silent event; only a standalone visual
+or textual `...`/`…` may bind the unique explicit silent frontier. An
+insufficient run produces `recovery-report.json` only, including the longest
+recovered run and the exact shortest branch-free event segment to capture next.
+The original directory is never rewritten.
 
 The sealing command is the required bridge from raw capture schema version 1
 to sequence replay schema version 2. The raw capture directory is never
@@ -99,7 +111,10 @@ software evidence, not a human verdict: review every flagged inferred boundary
 or text-only/silent mapping against the playthrough before using the corpus as
 acceptance evidence. `replay-report.json` is the passing sealed replay report.
 The configured story index, sequence plan, generated manifest and audio-source
-policy are used when their command-line options are omitted.
+policy are used when their command-line options are omitted. Use
+`--no-generated-audio-manifest` to override an inherited manifest explicitly;
+this is required for an isolated `live-tts-only` acceptance run and prevents a
+configured generated fallback decision from silently changing the probe.
 
 `vntts-replay-live` exercises the production split capture/OCR state machine,
 incremental dialogue tracker, exact story resolver, generated-audio verifier,
@@ -108,7 +123,24 @@ Capture frames advance only after OCR consumes that exact image; a dropped or
 replaced capture therefore cannot silently skip a fixture state. A route may
 finish early, but its auto-advance callback waits until OCR has acknowledged
 every declared frame for that dialogue. Final success additionally requires the
-full corpus frame ledger to be consumed.
+full corpus frame ledger to be consumed. Real-pixel replay uses the production
+OCR confidence threshold and preprocessing-profile search. A zero threshold is
+not used because it would stop at the first non-empty noisy preprocessing pass
+instead of exercising production recognition.
+
+### Repaired chapter 314601 capture evidence
+
+The 2026-08-29 repaired Rhiannon capture retained 86 distinct real frames. The
+fail-closed recovery selected 21 consecutive visible events, sequences 4-23 and
+25, including the separate Hotelier and Rhiannon silent events at sequences 18
+and 19. It retained one representative frame per event and absorbed the other
+typewriter/background observations in provenance. The production sealer then
+passed two consecutive `audio-manual`, `live-tts-only` runs with all 21 frame
+identities consumed, all 21 canonical event identities reproduced, 19 speech
+routes, two silent routes, zero skipped frames and zero key dispatches. OCR was
+invoked for all 21 representative frames and 18 observations used bounded
+recovery. This closes the 20-event software replay gate; operator mapping review
+and the separate 100-event real-game acceptance gate remain human evidence.
 
 An original-game route must declare `source_audio_duration_seconds` when replay
 is expected to advance automatically. Without observable completion, production

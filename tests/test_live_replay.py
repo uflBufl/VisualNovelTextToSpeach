@@ -14,16 +14,45 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live_replay import (
     LiveReplayRunner,
     ReplayFrameSource,
     _load_frame,
+    _recognize_replay_frame,
     load_live_replay_corpus,
     main,
 )
 
 
 class LiveReplayTest(unittest.TestCase):
+    def test_ocr_replay_uses_production_confidence_profile_search(self):
+        frame = CapturedDialogFrame(Image.new("RGB", (80, 40), "black"), 0.0)
+        with patch(
+            "vntts.live_replay.recognize_live_frame",
+            return_value=("Rhiannon", "Stop it."),
+        ) as recognize:
+            result = _recognize_replay_frame(frame)
+
+        self.assertEqual(result, ("Rhiannon", "Stop it."))
+        recognize.assert_called_once_with(frame, ellipsis_speaker_resolver=None)
+
+        resolver = object()
+        with patch(
+            "vntts.live_replay.recognize_live_frame",
+            return_value=("Rhiannon", "..."),
+        ) as recognize:
+            result = _recognize_replay_frame(
+                frame,
+                ellipsis_speaker_resolver=resolver,
+            )
+
+        self.assertEqual(result, ("Rhiannon", "..."))
+        recognize.assert_called_once_with(
+            frame,
+            ellipsis_speaker_resolver=resolver,
+        )
+
     def create_corpus(self, directory):
         directory = Path(directory)
         first = Image.new("RGB", (320, 120), "black")

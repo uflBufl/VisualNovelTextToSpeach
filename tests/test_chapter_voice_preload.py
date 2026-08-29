@@ -215,6 +215,82 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertIsNone(line)
         self.assertEqual(result, "expected-ambiguous")
 
+    def test_bounded_resolution_accepts_unique_prefix_and_ocr_drift(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story.jsonl"
+            path.write_text(story_index_document(), encoding="utf-8")
+            preloader = ChapterVoicePreloader.load_optional(path)
+
+            prefix, prefix_result = preloader.resolve_bounded_among(
+                "Narrator",
+                "Kamuta These old ones are enough to carry",
+                ("test:0", "test:1"),
+            )
+            drifted, drifted_result = preloader.resolve_bounded_among(
+                "Fatutu",
+                "Besides, brother, you will dive in after hem!",
+                ("test:1", "test:2"),
+            )
+
+        self.assertEqual(prefix.line_id, "test:0")
+        self.assertEqual(prefix_result, "expected-bounded-prefix")
+        self.assertEqual(drifted.line_id, "test:1")
+        self.assertEqual(drifted_result, "expected-bounded-similarity")
+
+    def test_bounded_resolution_rejects_short_or_ambiguous_prefix(self):
+        text = "The same repeated dialogue continues for a while."
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": sequence,
+                        "line_id": f"line-{sequence}",
+                        "speaker_name": "Ada",
+                        "text": text,
+                        "text_sha256": digest,
+                    }
+                    for sequence in (1, 2)
+                ]
+            }
+        )
+
+        ambiguous, ambiguous_result = preloader.resolve_bounded_among(
+            "Ada", "The same repeated dialogue", ("line-1", "line-2")
+        )
+        short, short_result = preloader.resolve_bounded_among("Ada", "The", ("line-1",))
+
+        self.assertIsNone(ambiguous)
+        self.assertEqual(ambiguous_result, "expected-ambiguous")
+        self.assertIsNone(short)
+        self.assertEqual(short_result, "expected-no-match")
+
+    def test_bounded_resolution_does_not_select_short_line_before_longer_prefix(self):
+        rows = []
+        for sequence, text in (
+            (1, "You know."),
+            (2, "You know, this is a substantially longer story."),
+        ):
+            rows.append(
+                {
+                    "chapter": "1",
+                    "sequence": sequence,
+                    "line_id": f"line-{sequence}",
+                    "speaker_name": "Ada",
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+            )
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+
+        line, result = preloader.resolve_bounded_among(
+            "Narrator", "notelier You know", ("line-1", "line-2")
+        )
+
+        self.assertIsNone(line)
+        self.assertEqual(result, "expected-no-match")
+
     def test_unique_prefix_resolves_full_indexed_dialogue(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "story.jsonl"

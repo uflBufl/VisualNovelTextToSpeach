@@ -18,6 +18,8 @@ from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
     capture_live_frame,
+    detect_standalone_ellipsis_frame,
+    ellipsis_speaker_hint,
     fingerprint_dialog_frame,
     get_screenshot_directory,
     recognize_screenshot_result,
@@ -82,6 +84,8 @@ class LiveReplayCaptureSession:
             selected_story.resolve() if selected_story is not None else None
         )
         self.story_index_sha256 = story_index_sha256
+        self.story_chapter = None
+        self.story_chapter_line_ids = ()
         self.dialogue = []
         self.active = None
         self.frame_count = 0
@@ -131,9 +135,7 @@ class LiveReplayCaptureSession:
             return False
         self.recognized_observation_count += 1
         if self.story_resolver is not None:
-            line, match_result = self.story_resolver.resolve_exact_with_result(
-                character, text
-            )
+            line, match_result = self._resolve_story_line(character, text)
             if line is not None:
                 self._record_observation(
                     frame_spec,
@@ -202,6 +204,32 @@ class LiveReplayCaptureSession:
         self._finalize_active("inferred-observation-replacement")
         self.active = self._new_dialogue(character, text, frame_spec)
         return True
+
+    def _resolve_story_line(self, character, text):
+        if self.story_chapter_line_ids and hasattr(
+            self.story_resolver, "resolve_exact_among"
+        ):
+            line, match_result = self.story_resolver.resolve_exact_among(
+                character,
+                text,
+                self.story_chapter_line_ids,
+            )
+        else:
+            line, match_result = self.story_resolver.resolve_exact_with_result(
+                character, text
+            )
+        if line is None:
+            return None, match_result
+        chapter = getattr(line, "chapter", None)
+        if self.story_chapter is not None and chapter != self.story_chapter:
+            return None, "outside-capture-chapter"
+        if self.story_chapter is None and chapter is not None:
+            self.story_chapter = chapter
+            rows = getattr(self.story_resolver, "by_chapter", {}).get(chapter, ())
+            self.story_chapter_line_ids = tuple(
+                row.line_id for row in rows if getattr(row, "line_id", None)
+            )
+        return line, match_result
 
     def _observe_resolved_group(
         self,
@@ -613,6 +641,11 @@ def main(argv=None):
             # later exact story/sequence recovery can accept or reject it. The
             # capture session only promotes exact canonical text or standalone
             # punctuation to dialogue groups.
+            if detect_standalone_ellipsis_frame(frame.image):
+                return (
+                    ellipsis_speaker_hint(result.character, result.text, resolver),
+                    "...",
+                )
             return result.character or "Narrator", result.text
 
         print("Capturing accepted OCR frames; press Ctrl+C to finish and validate")
@@ -659,5 +692,7 @@ __all__ = [
     "LiveReplayCaptureSession",
     "build_parser",
     "capture_replay_session",
+    "detect_standalone_ellipsis_frame",
+    "ellipsis_speaker_hint",
     "main",
 ]

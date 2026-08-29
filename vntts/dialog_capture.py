@@ -210,6 +210,84 @@ def dialog_glyphs_visible(frame):
     return 3 <= bright_pixels <= round(pixels * 0.25)
 
 
+def detect_standalone_ellipsis_frame(image):
+    """Detect three isolated dialogue-band dots without relying on OCR text."""
+    if not isinstance(image, Image.Image):
+        return False
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    right = min(width, max(30, round(width * 0.12)))
+    top = min(height - 1, round(height * 0.38))
+    bottom = min(height, max(top + 1, round(height * 0.88)))
+    pixels = rgb.load()
+    bright = set()
+    for y in range(top, bottom):
+        for x in range(right):
+            red, green, blue = pixels[x, y]
+            if (
+                min(red, green, blue) >= 150
+                and max(red, green, blue) - min(red, green, blue) <= 45
+            ):
+                bright.add((x, y))
+    if not 6 <= len(bright) <= 30:
+        return False
+    components = []
+    remaining = set(bright)
+    while remaining:
+        pending = [remaining.pop()]
+        component = []
+        while pending:
+            point = pending.pop()
+            component.append(point)
+            x, y = point
+            for neighbor in (
+                (x - 1, y - 1),
+                (x, y - 1),
+                (x + 1, y - 1),
+                (x - 1, y),
+                (x + 1, y),
+                (x - 1, y + 1),
+                (x, y + 1),
+                (x + 1, y + 1),
+            ):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    pending.append(neighbor)
+        components.append(component)
+    if len(components) != 3:
+        return False
+    centers = []
+    for component in components:
+        xs = [point[0] for point in component]
+        ys = [point[1] for point in component]
+        if (
+            not 2 <= len(component) <= 12
+            or max(xs) - min(xs) > 3
+            or max(ys) - min(ys) > 3
+        ):
+            return False
+        centers.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+    centers.sort()
+    gaps = [centers[index + 1][0] - centers[index][0] for index in range(2)]
+    return max(center[1] for center in centers) - min(
+        center[1] for center in centers
+    ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
+
+
+def ellipsis_speaker_hint(character, raw_text, story_resolver):
+    """Recover an ellipsis nameplate only from checksum-bound story speakers."""
+    observed = str(character or "Narrator").strip() or "Narrator"
+    if observed.casefold() not in {"narrator", "unknown", "???"}:
+        return observed
+    prefix = str(raw_text or "").strip().casefold()
+    speaker_names = getattr(story_resolver, "speaker_names", {})
+    for name in sorted(set(speaker_names.values()), key=len, reverse=True):
+        normalized = str(name).strip()
+        if normalized and prefix.startswith(normalized.casefold()):
+            return normalized
+    return observed
+
+
 def recognize_live_frame(
     frame,
     voice_registry=None,
@@ -220,6 +298,7 @@ def recognize_live_frame(
     voice_resolver=None,
     ocr_language="eng",
     correction_dictionary=None,
+    ellipsis_speaker_resolver=None,
     *,
     clock=monotonic,
 ):
@@ -231,15 +310,25 @@ def recognize_live_frame(
         ocr_language,
         correction_dictionary,
     )
+    recognized_text = (
+        "..." if detect_standalone_ellipsis_frame(frame.image) else result.text
+    )
+    recognized_character = result.character
+    if recognized_text == "..." and ellipsis_speaker_resolver is not None:
+        recognized_character = ellipsis_speaker_hint(
+            result.character,
+            result.text,
+            ellipsis_speaker_resolver,
+        )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
         image=frame.image,
-        character=result.character or "Narrator",
-        text=result.text,
+        character=recognized_character or "Narrator",
+        text=recognized_text,
         confidence=result.confidence,
         preprocessing_profile=result.profile,
         voice=(
-            voice_resolver(result.character)
+            voice_resolver(recognized_character)
             if voice_resolver is not None
             else "Not loaded"
         ),
@@ -249,7 +338,11 @@ def recognize_live_frame(
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
-    if result.text and not result.is_confident(minimum_confidence):
+    if (
+        recognized_text != "..."
+        and result.text
+        and not result.is_confident(minimum_confidence)
+    ):
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(
                 frame.image,
@@ -261,7 +354,7 @@ def recognize_live_frame(
         return None, ""
     if uncertain_frame_recorder is not None:
         uncertain_frame_recorder.reset()
-    return result.character, result.text
+    return recognized_character, recognized_text
 
 
 def recognize_screenshot(

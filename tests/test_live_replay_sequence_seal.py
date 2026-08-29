@@ -4,6 +4,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
@@ -16,11 +17,41 @@ from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
 from vntts.live_replay_capture import LiveReplayCaptureSession
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
+    _generated_audio_manifest_for_run,
+    build_parser,
     seal_sequence_replay,
 )
 
 
 class LiveReplaySequenceSealTest(unittest.TestCase):
+    def test_generated_audio_manifest_cli_options_are_explicit_and_exclusive(self):
+        without_generated = build_parser().parse_args(
+            ["capture.json", "sealed", "--no-generated-audio-manifest"]
+        )
+        self.assertTrue(without_generated.no_generated_audio_manifest)
+        self.assertIsNone(without_generated.generated_audio_manifest)
+        configured = SimpleNamespace(generated_audio_manifest=Path("configured.json"))
+        self.assertIsNone(
+            _generated_audio_manifest_for_run(without_generated, configured)
+        )
+
+        inherited = build_parser().parse_args(["capture.json", "sealed"])
+        self.assertEqual(
+            _generated_audio_manifest_for_run(inherited, configured),
+            Path("configured.json"),
+        )
+
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                [
+                    "capture.json",
+                    "sealed",
+                    "--generated-audio-manifest",
+                    "generated.json",
+                    "--no-generated-audio-manifest",
+                ]
+            )
+
     @staticmethod
     def write_story(root, lines):
         story = root / "story.jsonl"

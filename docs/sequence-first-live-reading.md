@@ -97,10 +97,18 @@ not control the game yet:
   observation ledger before deriving dialogue groups. With a story authority,
   typewriter prefixes, transient nameplates and corrupted OCR remain unresolved
   evidence; only exact canonical identities and standalone ellipses are
-  promoted. This prevents animation states from becoming false boundaries;
+  promoted. Exact capture binding locks to the first canonical chapter. A
+  visual three-dot detector recovers `...` even when OCR sees only the
+  nameplate/background, and the nameplate speaker may be restored only from the
+  bound story's speaker names. This prevents animation states from becoming
+  false boundaries and prevents short text from escaping to another chapter;
 - `vntts-recover-live-replay-capture` validates and copies a branch-free exact
-  run into a separate raw corpus without changing the source capture. It never
-  crosses a branch or numeric gap, and it emits an exact next-capture segment
+  run into a separate raw corpus without changing the source capture. Bounded
+  prefix, OCR-suffix and high-margin similarity recovery is limited to the
+  checksum-bound plan line IDs. Intervening noise is absorbed only across the
+  current event or its unique explicit successor, and only one best
+  representative frame is retained per event. It never crosses a branch,
+  skipped event or numeric gap, and it emits an exact next-capture segment
   instead of hiding unresolved evidence when the gate is insufficient;
 - raw real-game capture remains immutable schema version 1 evidence. The
   `vntts-seal-live-replay` bridge publishes a separate schema-version-2 bundle
@@ -163,7 +171,13 @@ run is therefore one speech event, with no silent event. It correctly did not
 publish a sealable 20-event corpus. The recovery report identifies sequences
 4-23 as the shortest explicit 20-visible-event follow-up, including silent
 sequences 18 and 19. This is evidence for the grouping repair, not a passed
-real-game acceptance gate.
+real-game acceptance gate. The repaired follow-up capture retained 86 distinct
+frames and recovered 21 consecutive visible events, sequences 4-23 and 25,
+including the separate Hotelier and Rhiannon silent events at sequences 18 and
+19. Its production `audio-manual`, `live-tts-only` seal passed twice with 21/21
+frame and event identities, 19 speech routes, two silent routes, zero skipped
+frames and zero key dispatches. This closes the 20-event software replay gate;
+operator mapping review and the 100-event gameplay gate remain separate.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through

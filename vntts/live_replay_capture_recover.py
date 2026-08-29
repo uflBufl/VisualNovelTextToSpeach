@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
+
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
+from vntts.dialog_capture import (
+    detect_standalone_ellipsis_frame,
+    ellipsis_speaker_hint,
+)
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     _decode_json,
@@ -64,6 +72,7 @@ class _MappedEvent:
     mapping_method: str
     observed_character: str
     observed_text: str
+    absorbed_observation_indices: list[int]
 
 
 def recover_live_replay_capture(
@@ -142,12 +151,15 @@ def recover_live_replay_capture(
                 f"Story index and sequence plan are incompatible: {error}"
             ) from error
 
-        observations, ledger_authority, ledger_payload = _load_observations(
-            capture_path,
-            capture,
-            raw_dialogue,
+        observations, ledger_authority, ledger_payload, visual_ellipses = (
+            _load_observations(
+                capture_path,
+                capture,
+                raw_dialogue,
+                resolver,
+            )
         )
-        candidates, absorbed = _candidate_events(observations, resolver, plan)
+        candidates = _candidate_events(observations, resolver, plan)
         selected = _longest_explicit_run(candidates, plan)
         contains_silent = any(item.event.kind == "silent" for item in selected)
         sufficient = len(selected) >= minimum_events and (
@@ -173,12 +185,23 @@ def recover_live_replay_capture(
             "raw_dialogue_count": len(raw_dialogue),
             "raw_observation_count": len(observations),
             "candidate_count": sum(
-                event is not _BLOCKED_OBSERVATION for _observation, event in candidates
+                event is not _BLOCKED_OBSERVATION
+                for _observation, event, _method in candidates
             ),
             "blocked_observation_count": sum(
-                event is _BLOCKED_OBSERVATION for _observation, event in candidates
+                event is _BLOCKED_OBSERVATION
+                for _observation, event, _method in candidates
             ),
-            "absorbed_transient_observations": absorbed,
+            "visually_classified_ellipsis_observations": visual_ellipses,
+            "absorbed_transient_observations": [
+                {
+                    "observation_index": observation_index,
+                    "event_id": item.event.event_id,
+                    "reason": "intervening-noise-before-explicit-successor",
+                }
+                for item in selected
+                for observation_index in item.absorbed_observation_indices
+            ],
             "minimum_event_count": minimum_events,
             "silent_event_required": bool(require_silent),
             "selected_event_count": len(selected),
@@ -222,7 +245,7 @@ def recover_live_replay_capture(
         raise
 
 
-def _load_observations(capture_path, capture, raw_dialogue):
+def _load_observations(capture_path, capture, raw_dialogue, resolver):
     binding = capture["capture"].get("observation_ledger")
     if binding is None:
         observations = []
@@ -243,12 +266,12 @@ def _load_observations(capture_path, capture, raw_dialogue):
                     "legacy-dialogue",
                 )
             )
-        return tuple(observations), None, None
+        return tuple(observations), None, None, []
     if not isinstance(binding, dict):
         raise LiveReplayCaptureRecoveryError(
             "Raw capture observation ledger binding is invalid"
         )
-    relative, payload = _read_contained(
+    _relative, payload = _read_contained(
         capture_path.parent,
         binding.get("path"),
         "Capture observation ledger",
@@ -275,138 +298,155 @@ def _load_observations(capture_path, capture, raw_dialogue):
             "Capture observation ledger authority is invalid"
         )
     observations = []
+    visual_ellipses = []
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict) or entry.get("observation_index") != index:
             raise LiveReplayCaptureRecoveryError(
                 "Capture observation ledger order is invalid"
             )
         frame = entry.get("frame")
-        _validate_frames(capture_path.parent, [frame])
+        frame_payload = _validated_frame_payload(capture_path.parent, frame)
+        character = _optional_text(entry.get("observed_character"))
+        text = _optional_text(entry.get("observed_text"))
+        status = str(entry.get("status") or "unknown")
+        if status in {"unresolved", "uncertain"}:
+            try:
+                with Image.open(io.BytesIO(frame_payload)) as image:
+                    visual_ellipsis = detect_standalone_ellipsis_frame(image)
+            except OSError as error:
+                raise LiveReplayCaptureRecoveryError(
+                    "Capture observation frame is not a valid image"
+                ) from error
+            if visual_ellipsis:
+                character = ellipsis_speaker_hint(character, text, resolver)
+                text = "..."
+                status = "visual-ellipsis"
+                visual_ellipses.append(
+                    {
+                        "observation_index": index,
+                        "speaker_hint": character,
+                        "method": "isolated-three-dot-glyph",
+                    }
+                )
         observations.append(
             _Observation(
                 index,
                 (frame,),
-                _optional_text(entry.get("observed_character")),
-                _optional_text(entry.get("observed_text")),
+                character,
+                text,
                 _optional_text(entry.get("story_line_id")),
-                str(entry.get("status") or "unknown"),
+                status,
             )
         )
-    return tuple(observations), digest, payload
+    return tuple(observations), digest, payload, visual_ellipses
 
 
 def _validate_frames(root, frames):
     for frame in frames:
-        if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
-            raise LiveReplayCaptureRecoveryError(
-                "Capture observation frame must bind only path and sha256"
-            )
-        _relative, payload = _read_contained(
-            root, frame.get("path"), "Capture observation frame"
+        _validated_frame_payload(root, frame)
+
+
+def _validated_frame_payload(root, frame):
+    if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
+        raise LiveReplayCaptureRecoveryError(
+            "Capture observation frame must bind only path and sha256"
         )
-        digest = _required_sha256(
-            frame.get("sha256"), "Capture observation frame sha256"
+    _relative, payload = _read_contained(
+        root, frame.get("path"), "Capture observation frame"
+    )
+    digest = _required_sha256(frame.get("sha256"), "Capture observation frame sha256")
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise LiveReplayCaptureRecoveryError(
+            "Capture observation frame checksum changed"
         )
-        if hashlib.sha256(payload).hexdigest() != digest:
-            raise LiveReplayCaptureRecoveryError(
-                "Capture observation frame checksum changed"
-            )
+    return payload
 
 
 def _candidate_events(observations, resolver, plan):
-    absorbed = _absorbed_transient_observations(observations, resolver)
     candidates = []
     for observation in observations:
-        if observation.observation_index in absorbed:
-            continue
         if (
-            observation.status in {"punctuation-only", "legacy-dialogue"}
+            observation.status
+            in {"punctuation-only", "visual-ellipsis", "legacy-dialogue"}
             and observation.text
             and _standalone_ellipsis(observation.text)
         ):
-            candidates.append((observation, None))
+            candidates.append((observation, None, observation.status))
             continue
-        if observation.status not in {"canonical", "legacy-dialogue"}:
-            candidates.append((observation, _BLOCKED_OBSERVATION))
-            continue
-        if not observation.line_id:
-            candidates.append((observation, _BLOCKED_OBSERVATION))
-            continue
-        line = resolver.line_for_id(observation.line_id)
-        event = plan.event_for_line(observation.line_id)
-        if line is None or event is None or not observation.text:
-            candidates.append((observation, _BLOCKED_OBSERVATION))
-            continue
-        matched, _result = resolver.resolve_exact_with_result(
-            observation.character,
-            observation.text,
-        )
-        if matched is None or matched.line_id != line.line_id:
-            candidates.append((observation, _BLOCKED_OBSERVATION))
-            continue
-        candidates.append((observation, event))
-    return tuple(candidates), [absorbed[index] for index in sorted(absorbed)]
+        if observation.status in {"canonical", "legacy-dialogue"}:
+            line = resolver.line_for_id(observation.line_id)
+            event = plan.event_for_line(observation.line_id)
+            if (
+                line is not None
+                and event is not None
+                and observation.text
+                and _normalized_text(observation.text) == _normalized_text(line.text)
+                and _normalized_text(observation.character)
+                == _normalized_text(line.speaker)
+            ):
+                candidates.append((observation, event, "exact-canonical-observation"))
+                continue
+        bounded = _bounded_plan_match(observation, resolver, plan)
+        if bounded is None:
+            candidates.append(
+                (observation, _BLOCKED_OBSERVATION, "unresolved-observation")
+            )
+        else:
+            event, method = bounded
+            candidates.append((observation, event, method))
+    return tuple(candidates)
 
 
-def _absorbed_transient_observations(observations, resolver):
-    canonical = {}
-    for position, observation in enumerate(observations):
-        if observation.status != "canonical" or not observation.line_id:
-            continue
-        line = resolver.line_for_id(observation.line_id)
-        if line is not None:
-            canonical[position] = line
-    absorbed = {}
-    for position, observation in enumerate(observations):
-        if observation.status != "unresolved" or not observation.text:
-            continue
-        adjacent = []
-        for step in (-1, 1):
-            cursor = position + step
-            while 0 <= cursor < len(observations):
-                candidate = observations[cursor]
-                if candidate.status == "unresolved":
-                    cursor += step
-                    continue
-                line = canonical.get(cursor)
-                if line is not None:
-                    adjacent.append(("previous" if step < 0 else "next", line))
-                break
-        observed_text = _normalized_text(observation.text)
-        for relation, line in adjacent:
-            canonical_text = _normalized_text(line.text)
-            if not observed_text or not canonical_text.startswith(observed_text):
-                continue
-            character = (observation.character or "Narrator").casefold()
-            if character not in {
-                line.speaker.casefold(),
-                "narrator",
-                "unknown",
-                "???",
-            }:
-                continue
-            absorbed[observation.observation_index] = {
-                "observation_index": observation.observation_index,
-                "reason": f"exact-{relation}-canonical-prefix",
-                "canonical_line_id": line.line_id,
-            }
-            break
-    return absorbed
+def _bounded_plan_match(observation, resolver, plan):
+    if not observation.text or observation.status == "uncertain":
+        return None
+    line, method = resolver.resolve_bounded_among(
+        observation.character,
+        observation.text,
+        (
+            event.line_id
+            for event in plan.events.values()
+            if event.kind == "speech" and event.line_id
+        ),
+    )
+    if line is None:
+        return None
+    event = plan.event_for_line(line.line_id)
+    if event is None:
+        return None
+    return event, method
 
 
 def _longest_explicit_run(candidates, plan):
     best = []
-    for start, (observation, event) in enumerate(candidates):
+    for start, (observation, event, method) in enumerate(candidates):
         if event is None or event is _BLOCKED_OBSERVATION:
             continue
-        run = [_mapped_event(observation, event, "exact-canonical-observation")]
+        run = [_mapped_event(observation, event, method)]
         current = event
-        for next_observation, next_event in candidates[start + 1 :]:
+        pending = []
+        for next_observation, next_event, next_method in candidates[start + 1 :]:
             if next_event is _BLOCKED_OBSERVATION:
-                break
+                pending.append(next_observation.observation_index)
+                continue
             if next_event is not None and next_event.event_id == current.event_id:
-                run[-1].frames.extend(next_observation.frames)
-                run[-1].observation_indices.append(next_observation.observation_index)
+                _merge_mapped_observation(
+                    run[-1],
+                    next_observation,
+                    next_method,
+                    pending,
+                )
+                pending = []
+                continue
+            if (
+                next_event is None
+                and current.kind == "silent"
+                and _same_silent_observation(run[-1], next_observation)
+            ):
+                run[-1].absorbed_observation_indices.extend(
+                    [*pending, next_observation.observation_index]
+                )
+                pending = []
                 continue
             visible = _next_visible_events(plan, current)
             if len(visible) != 1:
@@ -417,9 +457,11 @@ def _longest_explicit_run(candidates, plan):
                     _mapped_event(
                         next_observation,
                         next_event,
-                        "exact-canonical-observation",
+                        next_method,
+                        absorbed=pending,
                     )
                 )
+                pending = []
                 current = next_event
                 continue
             if next_event is None and expected.kind == "silent":
@@ -428,14 +470,55 @@ def _longest_explicit_run(candidates, plan):
                         next_observation,
                         expected,
                         "unique-punctuation-frontier",
+                        absorbed=pending,
                     )
                 )
+                pending = []
                 current = expected
                 continue
             break
         if len(run) > len(best):
             best = run
     return best
+
+
+def _same_silent_observation(current, observation):
+    current_speaker = _normalized_text(current.observed_character)
+    observed_speaker = _normalized_text(observation.character)
+    unknown = {"", "narrator", "unknown"}
+    if current_speaker in unknown or observed_speaker in unknown:
+        return True
+    return current_speaker == observed_speaker
+
+
+def _merge_mapped_observation(current, observation, method, pending):
+    incoming_rank = _mapping_rank(method)
+    current_rank = _mapping_rank(current.mapping_method)
+    if incoming_rank >= current_rank:
+        current.absorbed_observation_indices.extend(
+            [*current.observation_indices, *pending]
+        )
+        current.frames = list(observation.frames)
+        current.observation_indices = [observation.observation_index]
+        current.mapping_method = method
+        current.observed_character = observation.character or "Narrator"
+        current.observed_text = observation.text or "..."
+    else:
+        current.absorbed_observation_indices.extend(
+            [*pending, observation.observation_index]
+        )
+
+
+def _mapping_rank(method):
+    return {
+        "exact-canonical-observation": 4,
+        "expected-exact": 4,
+        "expected-normalized-exact": 4,
+        "expected-text-only": 4,
+        "expected-bounded-similarity": 3,
+        "expected-bounded-ocr-suffix": 3,
+        "expected-bounded-prefix": 2,
+    }.get(str(method), 1)
 
 
 def _recommended_capture_segment(plan, minimum_events, *, require_silent):
@@ -491,7 +574,7 @@ def _event_wire(event):
     }
 
 
-def _mapped_event(observation, event, method):
+def _mapped_event(observation, event, method, *, absorbed=()):
     return _MappedEvent(
         event,
         list(observation.frames),
@@ -499,6 +582,7 @@ def _mapped_event(observation, event, method):
         method,
         observation.character or "Narrator",
         observation.text or "...",
+        list(absorbed),
     )
 
 
@@ -509,6 +593,7 @@ def _mapped_wire(item):
         "line_id": item.event.line_id,
         "mapping_method": item.mapping_method,
         "observation_indices": item.observation_indices,
+        "absorbed_observation_indices": item.absorbed_observation_indices,
         "frame_count": len(item.frames),
     }
 
@@ -678,7 +763,7 @@ def _optional_text(value):
 
 
 def _normalized_text(value):
-    return " ".join(str(value or "").split()).casefold()
+    return " ".join(re.findall(r"\w+", str(value or "").casefold()))
 
 
 def build_parser():

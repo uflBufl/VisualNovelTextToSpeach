@@ -4,43 +4,68 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from vntts.dialog_capture import CapturedDialogFrame
+from vntts.dialog_capture import (
+    CapturedDialogFrame,
+    detect_standalone_ellipsis_frame,
+    recognize_live_frame,
+)
 from vntts.live_replay import load_live_replay_corpus
 from vntts.live_replay_capture import (
     LiveReplayCaptureError,
     LiveReplayCaptureSession,
     capture_replay_session,
 )
+from vntts.ocr import OCRResult
 
 
 class FakeStoryResolver:
     def __init__(self):
         self.calls = []
+        self.known = {
+            ("Rhiannon", "Hello there."): self._line(
+                "story:1", "1", "Rhiannon", "Hello there."
+            ),
+            ("Hotelier", "A room?"): self._line("story:2", "1", "Hotelier", "A room?"),
+            ("Narrator", "He"): self._line("other:1", "2", "Narrator", "He"),
+        }
+        self.by_chapter = {
+            chapter: [line for line in self.known.values() if line.chapter == chapter]
+            for chapter in {line.chapter for line in self.known.values()}
+        }
+        self.speaker_names = {
+            "rhiannon": "Rhiannon",
+            "hotelier": "Hotelier",
+            "narrator": "Narrator",
+        }
+
+    @staticmethod
+    def _line(line_id, chapter, speaker, text):
+        return SimpleNamespace(
+            speaker=speaker,
+            text=text,
+            line_id=line_id,
+            chapter=chapter,
+            source_audio_status="available",
+            source_audio_id=f"event:{line_id[-1]}",
+            source_audio_duration_seconds=1.25,
+        )
 
     def resolve_exact_with_result(self, character, text):
         self.calls.append((character, text))
-        known = {
-            ("Rhiannon", "Hello there."): ("story:1", "Rhiannon", "Hello there."),
-            ("Hotelier", "A room?"): ("story:2", "Hotelier", "A room?"),
-        }
-        identity = known.get((character, text))
-        if identity is None:
+        line = self.known.get((character, text))
+        if line is None:
             return None, "no-match"
-        line_id, speaker, canonical_text = identity
-        return (
-            SimpleNamespace(
-                speaker=speaker,
-                text=canonical_text,
-                line_id=line_id,
-                source_audio_status="available",
-                source_audio_id=f"event:{line_id[-1]}",
-                source_audio_duration_seconds=1.25,
-            ),
-            "exact",
-        )
+        return line, "exact"
+
+    def resolve_exact_among(self, character, text, line_ids):
+        line, result = self.resolve_exact_with_result(character, text)
+        if line is None or line.line_id not in set(line_ids):
+            return None, "expected-no-match"
+        return line, result
 
 
 def frame(color):
@@ -99,6 +124,57 @@ class LiveReplayCaptureTest(unittest.TestCase):
                     self.assertEqual(
                         hashlib.sha256(payload).hexdigest(), specification["sha256"]
                     )
+
+    def test_capture_locks_exact_resolution_to_first_canonical_chapter(self):
+        with TemporaryDirectory() as directory:
+            session = LiveReplayCaptureSession(
+                Path(directory) / "capture", story_resolver=FakeStoryResolver()
+            )
+            session.observe(frame("green"), "Rhiannon", "Hello there.")
+            session.observe(frame("red"), "Narrator", "He")
+            result = session.finish()
+            ledger = json.loads(result.observation_ledger.read_text(encoding="utf-8"))
+
+            self.assertEqual(result.dialogue_count, 1)
+            self.assertEqual(
+                [entry["status"] for entry in ledger["observations"]],
+                ["canonical", "unresolved"],
+            )
+
+    def test_visual_ellipsis_detector_rejects_other_glyph_counts(self):
+        image = Image.new("RGB", (100, 60), "black")
+        draw = ImageDraw.Draw(image)
+        for left in (2, 8, 14):
+            draw.rectangle((left, 34, left + 1, 35), fill="white")
+
+        self.assertTrue(detect_standalone_ellipsis_frame(image))
+        self.assertFalse(detect_standalone_ellipsis_frame(frame("black").image))
+        draw.rectangle((20, 34, 21, 35), fill="white")
+        self.assertFalse(detect_standalone_ellipsis_frame(image))
+
+    def test_visual_ellipsis_preserves_checksum_bound_nameplate_speaker(self):
+        image = Image.new("RGB", (100, 60), "black")
+        draw = ImageDraw.Draw(image)
+        for left in (2, 8, 14):
+            draw.rectangle((left, 34, left + 1, 35), fill="white")
+        frame_value = CapturedDialogFrame(image, 0.0)
+        with patch(
+            "vntts.dialog_capture.recognize_screenshot_result",
+            return_value=OCRResult(
+                "Narrator",
+                "Rhiannon nameplate noise",
+                90.0,
+                "balanced",
+                1,
+            ),
+        ):
+            character, text = recognize_live_frame(
+                frame_value,
+                minimum_confidence=60,
+                ellipsis_speaker_resolver=FakeStoryResolver(),
+            )
+
+        self.assertEqual((character, text), ("Rhiannon", "..."))
 
     def test_capture_loop_counts_duplicates_and_uncertain_observations(self):
         with TemporaryDirectory() as directory:

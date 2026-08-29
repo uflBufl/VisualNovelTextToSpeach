@@ -254,6 +254,40 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected, match_result
 
+    def resolve_bounded_among(self, character, text, line_ids):
+        """Resolve OCR drift only among explicit cursor-authorized line IDs."""
+        allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
+        line, match_result = self.resolve_exact_among(character, text, allowed)
+        if line is not None or not allowed:
+            return line, match_result
+        ranked = []
+        for line_id in allowed:
+            candidate = self.by_line_id.get(line_id)
+            if candidate is None or not candidate.text_sha256:
+                continue
+            match = _bounded_text_match(text, candidate.text)
+            if match is not None:
+                score, method = match
+                if method == "expected-bounded-ocr-suffix":
+                    normalized = _normalize(candidate.text)
+                    if any(
+                        other_id != line_id
+                        and (other := self.by_line_id.get(other_id)) is not None
+                        and _normalize(other.text).startswith(f"{normalized} ")
+                        for other_id in allowed
+                    ):
+                        continue
+                ranked.append((score, line_id, candidate, method))
+        if not ranked:
+            return None, "expected-no-match"
+        ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
+        best = ranked[0]
+        if len(ranked) > 1 and best[0] - ranked[1][0] < 0.08:
+            return None, "expected-ambiguous"
+        selected = best[2]
+        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        return selected, best[3]
+
     def resolve_unique_prefix(
         self,
         character,
@@ -469,6 +503,37 @@ class ChapterVoicePreloader:
         if best_row is None or best_score < minimum:
             return None
         return ChapterMatch(best_row.chapter, best_row.sequence, best_score)
+
+
+def _bounded_text_match(observed, canonical):
+    canonical_text = _normalize(str(canonical).replace("_", " "))
+    tokens = _normalize(str(observed).replace("_", " ")).split()
+    if not canonical_text or not tokens:
+        return None
+    best = None
+    for dropped in range(min(3, len(tokens))):
+        candidate = " ".join(tokens[dropped:])
+        if canonical_text.startswith(candidate) and len(candidate) >= 20:
+            coverage = min(1.0, len(candidate) / len(canonical_text))
+            match = (1.0 + coverage / 10, "expected-bounded-prefix")
+        elif (
+            candidate.startswith(canonical_text)
+            and len(canonical_text) >= 7
+            and len(candidate) - len(canonical_text)
+            <= max(16, round(len(canonical_text) * 0.5))
+        ):
+            match = (1.05, "expected-bounded-ocr-suffix")
+        else:
+            coverage = min(len(candidate), len(canonical_text)) / max(
+                len(candidate), len(canonical_text)
+            )
+            similarity = SequenceMatcher(None, candidate, canonical_text).ratio()
+            if len(candidate) < 20 or coverage < 0.65 or similarity < 0.88:
+                continue
+            match = (similarity, "expected-bounded-similarity")
+        if best is None or match[0] > best[0]:
+            best = match
+    return best
 
 
 def _source_audio_status(entry):

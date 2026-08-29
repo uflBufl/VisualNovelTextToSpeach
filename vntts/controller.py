@@ -1297,6 +1297,7 @@ class AppController:
             self._resolve_voice_label,
             self.settings.ocr_language,
             self.correction_dictionary,
+            ellipsis_speaker_resolver=self.chapter_voice_preloader,
         )
         return self._canonical_observed_character(character, text), text
 
@@ -1703,10 +1704,13 @@ class AppController:
                     for event_id in candidate_event_ids
                     if self.live_sequence_plan.events[event_id].line_id is not None
                 )
-                line, match_result = self.chapter_voice_preloader.resolve_exact_among(
-                    character,
-                    text,
-                    candidate_line_ids,
+                resolve_bounded = getattr(
+                    self.chapter_voice_preloader,
+                    "resolve_bounded_among",
+                    self.chapter_voice_preloader.resolve_exact_among,
+                )
+                line, match_result = resolve_bounded(
+                    character, text, candidate_line_ids
                 )
                 snapshot = (
                     None

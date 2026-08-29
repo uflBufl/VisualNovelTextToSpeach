@@ -923,7 +923,16 @@ def build_parser():
     parser.add_argument("output", type=Path)
     parser.add_argument("--story-index", type=Path)
     parser.add_argument("--sequence-plan", type=Path)
-    parser.add_argument("--generated-audio-manifest", type=Path)
+    generated_audio = parser.add_mutually_exclusive_group()
+    generated_audio.add_argument("--generated-audio-manifest", type=Path)
+    generated_audio.add_argument(
+        "--no-generated-audio-manifest",
+        action="store_true",
+        help=(
+            "Ignore the generated-audio manifest from app settings. This is "
+            "required for an isolated live-tts-only acceptance run."
+        ),
+    )
     parser.add_argument(
         "--mode", choices=("shadow", "audio-manual"), default="audio-manual"
     )
@@ -935,14 +944,18 @@ def build_parser():
     return parser
 
 
+def _generated_audio_manifest_for_run(arguments, settings):
+    if arguments.no_generated_audio_manifest:
+        return None
+    return arguments.generated_audio_manifest or settings.generated_audio_manifest
+
+
 def main(argv=None):
     arguments = build_parser().parse_args(argv)
     settings = load_app_settings()
     story_index = arguments.story_index or settings.story_index
     sequence_plan = arguments.sequence_plan or settings.live_sequence_plan
-    generated_manifest = (
-        arguments.generated_audio_manifest or settings.generated_audio_manifest
-    )
+    generated_manifest = _generated_audio_manifest_for_run(arguments, settings)
     audio_policy = arguments.audio_source_policy or settings.audio_source_policy
     if not story_index:
         return cli_error("Configure or pass --story-index")
