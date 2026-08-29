@@ -2,12 +2,12 @@
 
 ## Implemented foundation
 
-The first runtime-safe slice landed on 2026-08-29. It deliberately does not
-control speech or the game yet:
+The first two runtime-safe slices landed on 2026-08-29. They deliberately do
+not control the game yet:
 
-- `vntts.live_sequence` reads and writes schema version 1 standalone sequence
-  documents, binds them to the exact story-index file SHA-256 and retains the
-  source-extract SHA-256 and producer identity;
+- released `vntts-artifacts` v0.7.0 owns the schema-version-1 sequence reader
+  and writer, exact story-index SHA-256 binding, source-extract provenance and
+  producer identity. VNTTS retains only its runtime cursor;
 - validation rejects unknown or duplicated story line bindings, speech lines
   from another chapter, dangling successors, unreachable events, invalid
   automatic/choice/terminal control, cross-chapter edges and unguarded
@@ -29,12 +29,25 @@ control speech or the game yet:
   background, effect or title step and VNTTS observes the successor without
   sending a key. This is distinct from an automatic `speech` or `silent` event,
   where VNTTS may eventually send exactly one configured advance key.
+- `audio-manual` uses an exact allowed line observation to update the cursor,
+  then replaces OCR speaker/text with the checksum-bound story-index record
+  before existing original/generated/live routing. Once locked, an unmatched,
+  unplanned or desynchronized observation is not spoken. The mode forces whole
+  dialogue chunks and suppresses auto advance even if the saved general toggle
+  is enabled; the player remains responsible for every transition.
 
-The current `vntts-artifacts` v0.6.2 game-pack schema rejects unknown core
-components. Importing a v0.6.2 pack therefore clears any standalone sequence
-plan that was bound to a previously selected pack. The standalone schema is the
-compatibility-safe proving ground; it must be promoted into a versioned
-`live_sequence_plan` game-pack component in the next shared contract release.
+`vntts-artifacts` v0.7.0 publishes game-pack schema version 2 with an optional
+checksum-bound `live_sequence_plan` core component. Its loader deliberately
+retains schema-v1 compatibility, while schema v1 still rejects the new component
+because its v0.6.x readers cannot understand it. Reverse: 1999 source-pack
+export can include the plan, and VNTTS pack import selects that exact path or
+clears a stale plan when the imported pack has none.
+
+The cross-repository acceptance fixture for chapter `314601` contains 104
+events (89 speech, 3 silent ellipses, 11 passive transitions and 1 terminal
+event). A real source pack with 13 voice references was published by the
+extractor and accepted through `vntts-preflight-game-pack`, proving the shared
+writer, version-2 manifest and VNTTS consumer against the same files.
 
 The Reverse: 1999 producer now preserves explicit raw choice targets, treats
 only a present `sequence + 1` record as a linear successor and exposes multiple
@@ -209,10 +222,12 @@ logs.
 Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
-First run the new cursor in shadow mode: it predicts event IDs and routes but
-does not speak or advance. Compare it with reviewed capture/replay corpora and a
-real Character Story run. Then allow audio routing while leaving advancement
-manual. Enable automatic advancement only after route correctness passes.
+The automated `shadow` and `audio-manual` phases are implemented. Shadow only
+records predictions. Audio-manual canonicalizes an allowed exact observation
+before speech while leaving all advancement to the player. Both still use full
+OCR for each observed speech transition; removing that ordinary locked-mode OCR
+dependency and enabling automatic advancement remain gated on deterministic
+replay and real-game route correctness.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV

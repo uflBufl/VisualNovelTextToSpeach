@@ -292,6 +292,9 @@ class SettingsDialog(QDialog):
         self.live_sequence_mode.addItem(
             "Shadow diagnostics (does not control speech)", "shadow"
         )
+        self.live_sequence_mode.addItem(
+            "Canonical audio routing (manual advancement)", "audio-manual"
+        )
         self.live_sequence_mode.setCurrentIndex(
             max(0, self.live_sequence_mode.findData(settings.live_sequence_mode))
         )
@@ -605,6 +608,9 @@ class SettingsDialog(QDialog):
             self.update_ocr_diagnostics_controls
         )
         self.auto_advance.toggled.connect(self.update_auto_advance_controls)
+        self.live_sequence_mode.currentIndexChanged.connect(
+            self.update_auto_advance_controls
+        )
         self.section_navigation.currentIndexChanged.connect(self.scroll_to_section)
         self._connect_validation_updates()
         self.update_capture_controls()
@@ -796,13 +802,13 @@ class SettingsDialog(QDialog):
             ("Generated audio manifest", self.generated_audio_manifest),
         ):
             add(2, field, self._file_validation_error(label, field.text()))
-        if self.live_sequence_mode.currentData() == "shadow":
+        if self.live_sequence_mode.currentData() != "off":
             if not self.live_sequence_plan.text().strip():
                 add(
                     2,
                     self.live_sequence_plan,
                     "Sequence-first rollout: choose a live sequence plan for "
-                    "shadow diagnostics.",
+                    "the selected mode.",
                 )
             if not self.story_index.text().strip():
                 add(
@@ -864,7 +870,15 @@ class SettingsDialog(QDialog):
         self.diagnostics_browse_button.setEnabled(enabled)
 
     def update_auto_advance_controls(self):
-        enabled = self.auto_advance.isChecked()
+        manual_sequence = self.live_sequence_mode.currentData() == "audio-manual"
+        self.auto_advance.setEnabled(not manual_sequence)
+        self.auto_advance.setToolTip(
+            "Sequence-first canonical routing never sends advance keys in the "
+            "manual rollout phase."
+            if manual_sequence
+            else ""
+        )
+        enabled = self.auto_advance.isChecked() and not manual_sequence
         self.auto_advance_key.setEnabled(enabled)
         self.auto_advance_delay.setEnabled(enabled)
 

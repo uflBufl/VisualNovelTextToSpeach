@@ -1,11 +1,13 @@
 # Final game-pack publication
 
 `vntts.authoring.publish_final_game_pack` is the final, non-destructive
-authoring boundary. It creates a portable `vntts.game-pack` version 1 directory
+authoring boundary. It currently creates a portable `vntts.game-pack` version 1 directory
 from a fully reviewed bulk-generation state plus the exact queue, story index
 and voice manifest that produced it. The implementation uses only the released
-vntts-artifacts v0.6.2 game-pack, binding and lossless generated-audio APIs;
-review authority remains in generation state.
+vntts-artifacts v0.7.0 game-pack, binding and lossless generated-audio APIs;
+review authority remains in generation state. Version 2 publication is reserved
+for a checksum-bound live-sequence component and is not inferred from story
+records alone.
 
 ## Publication gates
 

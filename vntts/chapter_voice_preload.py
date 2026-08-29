@@ -44,6 +44,7 @@ class ChapterVoicePreloader:
         self.dialogue = tuple(dialogue)
         self.lookahead_rows = max(1, int(lookahead_rows))
         self.by_speaker = defaultdict(list)
+        self.by_line_id = {}
         self.by_chapter = defaultdict(list)
         self.by_chapter_speaker = defaultdict(list)
         self.by_exact_dialogue = defaultdict(list)
@@ -51,6 +52,8 @@ class ChapterVoicePreloader:
         self.normalized_text = {}
         self.speaker_names = {}
         for row in self.dialogue:
+            if row.line_id:
+                self.by_line_id[row.line_id] = row
             speaker_key = _normalize(row.speaker)
             self.by_speaker[speaker_key].append(row)
             self.speaker_names.setdefault(speaker_key, row.speaker)
@@ -155,6 +158,9 @@ class ChapterVoicePreloader:
         """Resolve an OCR line without fuzzy text substitution."""
         line, _result = self.resolve_exact_with_result(character, text)
         return line
+
+    def line_for_id(self, line_id):
+        return self.by_line_id.get(str(line_id))
 
     def resolve_exact_with_result(self, character, text):
         """Return an exact line plus an explicit match result for diagnostics."""

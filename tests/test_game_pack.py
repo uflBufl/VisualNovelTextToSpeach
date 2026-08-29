@@ -11,6 +11,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.live_sequence import write_live_sequence_plan
 from vntts_artifacts.story_index import write_story_index
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
@@ -21,7 +22,7 @@ from vntts.settings import AppSettings, load_app_settings
 from vntts.voices import CharacterVoiceRegistry
 
 
-def write_synthetic_game_pack(root, *, include_generated=True):
+def write_synthetic_game_pack(root, *, include_generated=True, include_sequence=False):
     line_id = "synthetic:chapter-1:line-7"
     text = "Keep this exact line intact."
     text_hash = text_sha256(text)
@@ -90,6 +91,34 @@ def write_synthetic_game_pack(root, *, include_generated=True):
     components = {"story_index": story, "voice_manifest": voices}
     if generated is not None:
         components["generated_audio"] = generated
+    if include_sequence:
+        sequence = root / "live-sequence.json"
+        write_live_sequence_plan(
+            sequence,
+            {
+                "game_id": "synthetic-game",
+                "producer": {"name": "synthetic-extractor", "version": "0.7.0"},
+                "source_extract_sha256": "1" * 64,
+                "chapters": [
+                    {
+                        "chapter": "chapter-1",
+                        "entry_event_ids": ["event-7"],
+                        "events": [
+                            {
+                                "event_id": "event-7",
+                                "sequence": 7,
+                                "kind": "speech",
+                                "line_id": line_id,
+                                "control": "terminal",
+                                "successors": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            story,
+        )
+        components["live_sequence_plan"] = sequence
     write_game_pack(
         pack_path,
         {
@@ -186,6 +215,22 @@ class GamePackImportTest(unittest.TestCase):
 
         self.assertIsNone(settings.live_sequence_plan)
         self.assertEqual(settings.live_sequence_mode, "off")
+
+    def test_pack_import_applies_its_checksum_bound_sequence_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(root, include_sequence=True)
+
+            settings = apply_game_pack(
+                AppSettings(
+                    live_sequence_plan="stale-plan.json",
+                    live_sequence_mode="audio-manual",
+                ),
+                pack_path,
+            )
+
+        self.assertEqual(Path(settings.live_sequence_plan).name, "live-sequence.json")
+        self.assertEqual(settings.live_sequence_mode, "audio-manual")
 
     def test_preflight_rejects_modified_referenced_wav(self):
         with TemporaryDirectory() as directory:

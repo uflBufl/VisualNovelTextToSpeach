@@ -101,6 +101,11 @@ class SettingsTest(unittest.TestCase):
             "story/live-sequence.json",
         )
 
+    def test_sequence_audio_manual_can_be_selected(self):
+        settings = AppSettings.from_mapping({"live_sequence_mode": "audio-manual"})
+
+        self.assertEqual(settings.live_sequence_mode, "audio-manual")
+
     def test_unknown_sequence_mode_fails_closed(self):
         warnings = []
 

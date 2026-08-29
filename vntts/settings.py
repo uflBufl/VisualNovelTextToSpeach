@@ -22,7 +22,7 @@ speaker_announcement_modes = {
     "all-speakers",
     "narrator-fallback-roles",
 }
-live_sequence_modes = {"off", "shadow"}
+live_sequence_modes = {"off", "shadow", "audio-manual"}
 restart_required_setting_names = (
     "speech_backend",
     "tts_model",

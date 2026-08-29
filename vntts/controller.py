@@ -44,7 +44,7 @@ from vntts.live import (
     IncrementalDialogTracker,
     LiveDialogReader,
 )
-from vntts.live_sequence import LiveSequencePlan, StoryCursor
+from vntts.live_sequence import LiveSequencePlan, StoryCursor, StoryCursorState
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
@@ -465,11 +465,7 @@ class AppController:
                 focus_probe=self._is_game_focused,
                 capture_state_changed=self._capture_state_changed,
                 tracker_factory=IncrementalDialogTracker,
-                auto_advance=(
-                    self._auto_advance_dialog
-                    if self.settings.auto_advance_enabled
-                    else None
-                ),
+                auto_advance=self._live_auto_advance_callback(),
                 auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
                 auto_advance_state_changed=self._auto_advance_state_changed,
                 pipeline_event_handler=self.pipeline_event_handler,
@@ -672,13 +668,17 @@ class AppController:
     def set_auto_advance_enabled(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
         if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
-            self.speech_backend.require_source_audio_completion = bool(enabled)
-        if self.live_reader is not None:
-            self.live_reader.set_auto_advance(
-                self._auto_advance_dialog if enabled else None
+            self.speech_backend.require_source_audio_completion = bool(
+                enabled and self.settings.live_sequence_mode != "audio-manual"
             )
+        if self.live_reader is not None:
+            self.live_reader.set_auto_advance(self._live_auto_advance_callback())
         self.status_handler(
-            "Auto advance enabled" if enabled else "Auto advance disabled"
+            "Auto advance saved but suppressed by sequence-first manual mode"
+            if enabled and self.settings.live_sequence_mode == "audio-manual"
+            else "Auto advance enabled"
+            if enabled
+            else "Auto advance disabled"
         )
         return bool(enabled)
 
@@ -1078,9 +1078,7 @@ class AppController:
         live_configuration = self._get_live_configuration()
         self.live_reader.interval_seconds = live_configuration["interval_seconds"]
         self.live_reader.tracker_options = live_configuration["tracker_options"]
-        self.live_reader.set_auto_advance(
-            self._auto_advance_dialog if self.settings.auto_advance_enabled else None
-        )
+        self.live_reader.set_auto_advance(self._live_auto_advance_callback())
         self.live_reader.auto_advance_delay_seconds = (
             self.settings.auto_advance_delay_ms / 1000
         )
@@ -1105,8 +1103,9 @@ class AppController:
     def _get_live_configuration(self):
         configuration = get_live_configuration(self.settings)
         tracker_options = dict(configuration["tracker_options"])
-        tracker_options["complete_dialogue_only"] = (
+        tracker_options["complete_dialogue_only"] = bool(
             self.settings.audio_source_policy != "live-tts-only"
+            or self.settings.live_sequence_mode == "audio-manual"
         )
         if tracker_options["complete_dialogue_only"] and self.settings.story_index:
             tracker_options["incomplete_dialogue_probe"] = (
@@ -1181,8 +1180,9 @@ class AppController:
             "audio_source_policy": policy,
         }
         if policy == "prefer-game-audio":
-            backend_options["require_source_audio_completion"] = (
+            backend_options["require_source_audio_completion"] = bool(
                 self.settings.auto_advance_enabled
+                and self.settings.live_sequence_mode != "audio-manual"
             )
         self.speech_backend = self.generated_audio_backend_factory(
             live_backend,
@@ -1325,14 +1325,40 @@ class AppController:
             self.dialog_handler("Narrator", "")
             return True
         character = self._canonical_observed_character(character, text)
-        self._observe_live_sequence_shadow(character, text)
+        sequence_observation = self._observe_live_sequence(character, text)
+        canonical_routing = False
+        if self.settings.live_sequence_mode == "audio-manual":
+            if self.story_cursor is None:
+                return False
+            if sequence_observation is None:
+                if self.story_cursor.state in {
+                    StoryCursorState.LOCKED,
+                    StoryCursorState.MANUAL,
+                    StoryCursorState.DESYNCHRONIZED,
+                }:
+                    return False
+            else:
+                snapshot, line, _match_result = sequence_observation
+                if snapshot.state == StoryCursorState.DESYNCHRONIZED:
+                    return False
+                event = self.live_sequence_plan.events.get(snapshot.current_event_id)
+                if (
+                    event is None
+                    or not event.is_speech
+                    or event.line_id != line.line_id
+                ):
+                    return False
+                character, text = line.speaker, line.text
+                canonical_routing = True
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
         self.history.add(character, text)
         preview = text if len(text) <= 100 else f"{text[:97]}..."
         self.dialog_handler(character or "Narrator", preview)
-        return not speech_deferred
+        if speech_deferred:
+            return False
+        return (character, text) if canonical_routing else True
 
     def _load_live_sequence_plan(self):
         self.live_sequence_plan = None
@@ -1341,12 +1367,12 @@ class AppController:
             return False
         if not self.settings.live_sequence_plan:
             self.status_handler(
-                "Sequence-first shadow disabled: configure a live sequence plan"
+                "Sequence-first rollout disabled: configure a live sequence plan"
             )
             return False
         if not self.settings.story_index:
             self.status_handler(
-                "Sequence-first shadow disabled: configure its story index"
+                "Sequence-first rollout disabled: configure its story index"
             )
             return False
         try:
@@ -1356,18 +1382,19 @@ class AppController:
             )
             cursor = StoryCursor(plan)
         except Exception as error:
-            self.status_handler(f"Sequence-first shadow disabled: {error}")
+            self.status_handler(f"Sequence-first rollout disabled: {error}")
             return False
         self.live_sequence_plan = plan
         self.story_cursor = cursor
         self.status_handler(
-            f"Sequence-first shadow ready: {len(plan.events)} planned events"
+            f"Sequence-first {self.settings.live_sequence_mode} ready: "
+            f"{len(plan.events)} planned events"
         )
         return True
 
-    def _observe_live_sequence_shadow(self, character, text):
+    def _observe_live_sequence(self, character, text):
         cursor = self.story_cursor
-        if cursor is None or self.settings.live_sequence_mode != "shadow":
+        if cursor is None or self.settings.live_sequence_mode == "off":
             return None
         resolve = getattr(
             self.chapter_voice_preloader,
@@ -1386,7 +1413,11 @@ class AppController:
             self.live_reader.active_generation if self.live_reader is not None else 0
         )
         self.pipeline_event_handler(
-            "sequence-shadow",
+            (
+                "sequence-shadow"
+                if self.settings.live_sequence_mode == "shadow"
+                else "sequence-audio-manual"
+            ),
             generation,
             monotonic(),
             state=snapshot.state.value,
@@ -1396,7 +1427,7 @@ class AppController:
             reason=snapshot.reason,
             match_result=match_result,
         )
-        return snapshot
+        return snapshot, line, match_result
 
     def _canonical_observed_character(self, character, text=None):
         original = str(character or "Narrator").strip() or "Narrator"
@@ -1551,7 +1582,11 @@ class AppController:
         resolved_text = self._resolve_early_indexed_dialogue(character, text)
         if resolved_text is not None:
             text = resolved_text
-        self._dialog_observed(character, text)
+        decision = self._dialog_observed(character, text)
+        if decision is False:
+            return False
+        if isinstance(decision, tuple) and len(decision) == 2:
+            character, text = decision
         return self.live_reader.enqueue(character, text)
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence):
@@ -1571,8 +1606,20 @@ class AppController:
             return True
         return self.capture_target.is_focused()
 
+    def _live_auto_advance_callback(self):
+        if (
+            not self.settings.auto_advance_enabled
+            or self.settings.live_sequence_mode == "audio-manual"
+        ):
+            return None
+        return self._auto_advance_dialog
+
     def _auto_advance_dialog(self):
-        if not self.settings.auto_advance_enabled or not self._is_game_focused():
+        if (
+            not self.settings.auto_advance_enabled
+            or self.settings.live_sequence_mode == "audio-manual"
+            or not self._is_game_focused()
+        ):
             return False
         DialogueAdvancer(self.settings.auto_advance_key).advance()
         return True

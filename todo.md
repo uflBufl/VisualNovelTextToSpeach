@@ -147,21 +147,13 @@ missing ranges and no successor/choice metadata. Do not infer key presses from
 numeric gaps and do not let OCR text remain authoritative while a cursor is
 locked.
 
-- [ ] Extend the extractor/game-pack contract with a checksum-bound
-      `live_sequence_plan`. Include every advanceable dialogue box, including
-      silent `...`, typed events and intentional omissions; bind speakable
-      events to exact story-index line IDs; encode explicit successors, entry
-      and terminal events, choices and manual-only waits. Publication must reject
-      dangling or ambiguous control flow and unexplained visible-event gaps.
-      Promote the validated standalone document into a core component in the
-      next `vntts-artifacts` game-pack schema release rather than emitting a
-      manifest that v0.6.2 rejects.
-- [ ] Add a validated session `StoryCursor` with unsynchronized, anchoring,
-      locked, playing, waiting-transition, desynchronized and manual states.
-      Bootstrap from one exact/unique OCR anchor or an explicit chapter/event
-      choice, then route expected canonical line IDs directly. Missing approved
-      WAVs use one full canonical live fallback; OCR text and OCR speaker names
-      must never enter speech routing while locked.
+- [ ] Promote `audio-manual` from exact OCR confirmation on each speech line to
+      a truly locked cursor. Bootstrap from one exact/unique OCR anchor or an
+      explicit chapter/event choice, then route the expected canonical line ID
+      directly. Missing approved WAVs must use one full canonical live fallback;
+      OCR text and OCR speaker names must never enter speech routing while
+      locked. Add an explicit manual resync action for desynchronization rather
+      than recovering from later observations implicitly.
 - [ ] Replace full-frame recognition in ordinary locked transitions with a
       dialogue-presence/fingerprint/render-settled gate. Advance only after
       audio (or a silent event) completes, rendering settles, the game is
@@ -176,11 +168,10 @@ locked.
       canonical speaker/text preview, event/line ID, expected and actual audio
       route, cursor state, next-candidate count, OCR activity and desync recovery
       actions. Add cursor/transition/recovery fields to privacy-safe timelines.
-- [ ] Roll out behind a feature flag: shadow event/route prediction first,
-      sequence-first audio with manual advancement second, and automatic
-      advancement last. Cover long typewriter text, lost nameplates, `...`,
-      source/generated/missing-WAV routes, identical lines, choices, manual
-      skips, focus loss and stale work in deterministic replay.
+- [ ] Validate the implemented shadow and manual-audio feature flags on replay,
+      then add automatic advancement last. Cover long typewriter text, lost
+      nameplates, `...`, source/generated/missing-WAV routes, identical lines,
+      choices, manual skips, focus loss and stale work in deterministic replay.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and 100-event real-game run show
       zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every

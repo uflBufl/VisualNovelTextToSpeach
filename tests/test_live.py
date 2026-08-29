@@ -1513,6 +1513,22 @@ class LiveDialogReaderTest(unittest.TestCase):
             ],
         )
 
+    def test_observation_callback_can_replace_ocr_identity_before_tracking(self):
+        dialog_observed = Mock(return_value=("Canonical", "Complete sentence."))
+        reader = self.create_reader(dialog_observed=dialog_observed)
+
+        first = reader._report_observation("OCR name", "Complete sentnce.")
+        repeated = reader._report_observation("OCR name", "Complete sentnce.")
+
+        self.assertEqual(first, ("Canonical", "Complete sentence."))
+        self.assertEqual(repeated, first)
+        dialog_observed.assert_called_once_with("OCR name", "Complete sentnce.")
+
+    def test_rejected_observation_has_no_tracker_identity(self):
+        reader = self.create_reader(dialog_observed=Mock(return_value=False))
+
+        self.assertIsNone(reader._report_observation("OCR name", "Unsafe guess."))
+
     def test_clearing_dialog_reports_session_boundary_once(self):
         dialog_observed = Mock()
         reader = self.create_reader(dialog_observed=dialog_observed)

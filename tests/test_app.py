@@ -989,6 +989,21 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(settings.live_sequence_plan, str(plan))
         dialog.deleteLater()
 
+    def test_sequence_audio_manual_disables_auto_advance_controls(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                live_sequence_mode="audio-manual",
+                auto_advance_enabled=True,
+            )
+        )
+
+        self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-manual")
+        self.assertFalse(dialog.auto_advance.isEnabled())
+        self.assertFalse(dialog.auto_advance_key.isEnabled())
+        self.assertFalse(dialog.auto_advance_delay.isEnabled())
+        self.assertIn("never sends advance keys", dialog.auto_advance.toolTip())
+        dialog.deleteLater()
+
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
             AppSettings(

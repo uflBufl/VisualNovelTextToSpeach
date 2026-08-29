@@ -230,9 +230,9 @@ class StoryCursorTest(unittest.TestCase):
         successor = cursor.observe_line("synthetic:chapter-1:3")
 
         self.assertEqual(first.current_event_id, "event-1")
-        self.assertEqual(repeated.reason, "shadow-current-event")
+        self.assertEqual(repeated.reason, "observation-current-event")
         self.assertEqual(successor.state, StoryCursorState.LOCKED)
-        self.assertEqual(successor.reason, "shadow-successor-chain")
+        self.assertEqual(successor.reason, "observation-successor-chain")
 
     def test_shadow_observation_of_unplanned_line_fails_closed(self):
         temporary, cursor = self.create_cursor()

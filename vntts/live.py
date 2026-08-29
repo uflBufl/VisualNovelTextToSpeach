@@ -535,6 +535,7 @@ class LiveDialogReader:
         self.paused = False
         self.emergency_stopped = False
         self.last_observation = None
+        self.last_accepted_observation = None
         self.deferred_observation = None
         self.dialog_ready_generation = None
         self.last_auto_advance_dispatched_generation = None
@@ -583,6 +584,7 @@ class LiveDialogReader:
             self.active_generation = 0
             self.suppressed_generation = None
             self.last_observation = None
+            self.last_accepted_observation = None
             self.deferred_observation = None
             self.prepared_chunk_ids.clear()
             self.dialog_ready_generation = None
@@ -931,12 +933,13 @@ class LiveDialogReader:
                             last_ocr_at=now,
                             last_speaker_resolved_at=now,
                         )
-                observation_accepted = self._report_observation(character, text)
-                if not observation_accepted:
+                routed_observation = self._report_observation(character, text)
+                if routed_observation is None:
                     interval = policy.observe(character, text, focused=True)
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
+                character, text = routed_observation
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
@@ -968,11 +971,13 @@ class LiveDialogReader:
                 continue
             try:
                 character, text = self.read_snapshot()
-                if not self._report_observation(character, text):
+                routed_observation = self._report_observation(character, text)
+                if routed_observation is None:
                     interval = policy.observe(character, text, focused=True)
                     self.capture_state_changed(True, interval)
                     stop_event.wait(interval)
                     continue
+                character, text = routed_observation
                 chunks = tracker.observe(character, text)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)
@@ -1292,21 +1297,31 @@ class LiveDialogReader:
             if self.last_observation is not None:
                 self.dialog_observed("Narrator", "")
             self.last_observation = None
+            self.last_accepted_observation = None
             self.deferred_observation = None
-            return True
+            return (None, "")
         observation = (character, " ".join((text or "").split()))
         if (
             observation == self.last_observation
             and observation != self.deferred_observation
         ):
-            return True
+            return self.last_accepted_observation or observation
         self.last_observation = observation
         if text:
             with self.state_lock:
                 self._record_speech_metrics_locked(text_visible=True)
-        accepted = self.dialog_observed(*observation) is not False
-        self.deferred_observation = None if accepted else observation
-        return accepted
+        decision = self.dialog_observed(*observation)
+        if decision is False:
+            self.deferred_observation = observation
+            self.last_accepted_observation = None
+            return None
+        if isinstance(decision, tuple) and len(decision) == 2:
+            routed = (decision[0], " ".join((decision[1] or "").split()))
+        else:
+            routed = observation
+        self.deferred_observation = None
+        self.last_accepted_observation = routed
+        return routed
 
     def _interrupt_speech(self):
         try:

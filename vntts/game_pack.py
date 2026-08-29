@@ -16,16 +16,23 @@ class GamePackImport:
     story_index: Path
     voice_manifest: Path
     generated_audio_manifest: Path | None
+    live_sequence_plan: Path | None
 
     def apply_to(self, settings):
         """Return settings routed to this pack without modifying app or pack data."""
         return settings.updated(
             game_pack=str(self.pack.manifest_path),
             story_index=str(self.story_index),
-            # vntts-artifacts v0.6.2 has no sequence-plan component. Never let
-            # a plan bound to a previously selected pack survive this import.
-            live_sequence_plan=None,
-            live_sequence_mode="off",
+            live_sequence_plan=(
+                str(self.live_sequence_plan)
+                if self.live_sequence_plan is not None
+                else None
+            ),
+            live_sequence_mode=(
+                settings.live_sequence_mode
+                if self.pack.live_sequence_plan is not None
+                else "off"
+            ),
             voice_manifest=str(self.voice_manifest),
             generated_audio_manifest=(
                 str(self.generated_audio_manifest)
@@ -44,6 +51,11 @@ def import_game_pack(path):
         voice_manifest=pack.voice_manifest.path,
         generated_audio_manifest=(
             pack.generated_audio.path if pack.generated_audio is not None else None
+        ),
+        live_sequence_plan=(
+            pack.live_sequence_plan.path
+            if pack.live_sequence_plan is not None
+            else None
         ),
     )
 
@@ -78,6 +90,11 @@ def main(argv=None):
                 "generated_audio_manifest": (
                     str(imported.generated_audio_manifest)
                     if imported.generated_audio_manifest is not None
+                    else None
+                ),
+                "live_sequence_plan": (
+                    str(imported.live_sequence_plan)
+                    if imported.live_sequence_plan is not None
                     else None
                 ),
             },

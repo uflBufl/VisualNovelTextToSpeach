@@ -21,6 +21,7 @@ from vntts.generated_audio import (
     GeneratedAudioRoute,
     LiveFallbackDecision,
     LiveFallbackRoute,
+    LiveTTSRoute,
     PlaybackOutcome,
     PlaybackStatus,
     PreparedGeneratedAudio,
@@ -1449,6 +1450,166 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
         self.assertEqual(pipeline[-1][0][0], "sequence-shadow")
         self.assertEqual(pipeline[-1][1]["line_id"], "reverse1999:1:1")
+
+    def test_sequence_audio_manual_replaces_ocr_with_checksum_bound_line(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "reverse1999:1:1",
+                        "speaker_name": "Rhiannon",
+                        "text": "Known canonical line.",
+                        "text_sha256": text_sha256("Known canonical line."),
+                    }
+                ]
+            }
+        )
+        event = LiveSequenceEvent(
+            "event-1",
+            "1",
+            1,
+            "speech",
+            "terminal",
+            (),
+            "reverse1999:1:1",
+        )
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), ("event-1",)),),
+            {"event-1": event},
+            {"reverse1999:1:1": "event-1"},
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+                auto_advance_enabled=True,
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+
+        routed = controller._dialog_observed(
+            "Rhiannon",
+            "Known canonical line",
+        )
+
+        self.assertEqual(routed, ("Rhiannon", "Known canonical line."))
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+        self.assertEqual(pipeline[-1][0][0], "sequence-audio-manual")
+        self.assertIsNone(controller._live_auto_advance_callback())
+        with patch("vntts.controller.DialogueAdvancer") as advancer:
+            self.assertFalse(controller._auto_advance_dialog())
+        advancer.assert_not_called()
+        live_backend = Mock()
+        live_backend.name = "typed-test"
+        live_backend.capabilities = SpeechBackendCapabilities(True, False, True)
+        live_backend.prepare_playback.return_value = PreparedPlayback(
+            SimpleNamespace(),
+            1.0,
+            None,
+            "fresh-generation",
+            "live:typed-test",
+        )
+        fallback = GeneratedAudioFallbackBackend(
+            live_backend,
+            None,
+            preloader,
+            audio_output=Mock(),
+        )
+
+        route = fallback.prepare_route(*routed)
+
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertEqual(route.trace.line_id, "reverse1999:1:1")
+        live_backend.prepare_playback.assert_called_once_with(
+            "Rhiannon",
+            "Known canonical line.",
+        )
+
+    def test_sequence_audio_manual_rejects_unexpected_known_line_and_stays_closed(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": "Rhiannon",
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, text in (
+                (1, "Expected line."),
+                (9, "Unrelated known line."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            f"event-{sequence}": LiveSequenceEvent(
+                f"event-{sequence}",
+                "1",
+                sequence,
+                "speech",
+                "terminal",
+                (),
+                f"reverse1999:1:{sequence}",
+            )
+            for sequence in (1, 9)
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (
+                LiveSequenceChapter(
+                    "1",
+                    ("event-1", "event-9"),
+                    ("event-1", "event-9"),
+                ),
+            ),
+            events,
+            {f"reverse1999:1:{sequence}": f"event-{sequence}" for sequence in (1, 9)},
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+
+        self.assertEqual(
+            controller._dialog_observed("Rhiannon", "Expected line."),
+            ("Rhiannon", "Expected line."),
+        )
+        self.assertFalse(
+            controller._dialog_observed("Rhiannon", "Unrelated known line.")
+        )
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.DESYNCHRONIZED,
+        )
+        self.assertFalse(controller._dialog_observed("Rhiannon", "Expected line."))
 
     def test_controller_identifies_live_scope_without_speaking_or_history(self):
         dialogs = []
