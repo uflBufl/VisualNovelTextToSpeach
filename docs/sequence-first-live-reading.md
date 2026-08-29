@@ -177,7 +177,8 @@ including the separate Hotelier and Rhiannon silent events at sequences 18 and
 19. Its production `audio-manual`, `live-tts-only` seal passed twice with 21/21
 frame and event identities, 19 speech routes, two silent routes, zero skipped
 frames and zero key dispatches. This closes the 20-event software replay gate;
-operator mapping review and the 100-event gameplay gate remain separate.
+the Hotelier and Rhiannon silent mappings received human approval on 2026-08-29.
+The 100-event gameplay gate remains separate.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through

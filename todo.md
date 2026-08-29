@@ -154,11 +154,11 @@ locked.
       counts and key-dispatch counts; schema v1 and both earlier route corpora
       remain compatibility gates. The repaired real chapter `314601` capture
       passes the production sealer twice with all 21 events/frames, including
-      silent events 18 and 19, and no skipped dialogue or key dispatch. Review
-      the two explicit silent-frontier mappings in its `sequence-review.json`,
-      then run the 100-event real-game gate below. Do not implement real
-      sequence-owned key delivery until that evidence shows zero wrong-line,
-      duplicate, stale or app-skipped dialogue and safe focus/choice handling.
+      silent events 18 and 19, and no skipped dialogue or key dispatch. The two
+      explicit silent-frontier mappings have human approval. Run the 100-event
+      real-game gate below. Do not implement real sequence-owned key delivery
+      until that evidence shows zero wrong-line, duplicate, stale or app-skipped
+      dialogue and safe focus/choice handling.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
       to recovery-only after a reviewed replay and 100-event real-game run show
       zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every

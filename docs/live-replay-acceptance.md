@@ -140,7 +140,8 @@ identities consumed, all 21 canonical event identities reproduced, 19 speech
 routes, two silent routes, zero skipped frames and zero key dispatches. OCR was
 invoked for all 21 representative frames and 18 observations used bounded
 recovery. This closes the 20-event software replay gate; operator mapping review
-and the separate 100-event real-game acceptance gate remain human evidence.
+of the Hotelier and Rhiannon silent events was accepted on 2026-08-29. The
+separate 100-event real-game acceptance gate remains human evidence.
 
 An original-game route must declare `source_audio_duration_seconds` when replay
 is expected to advance automatically. Without observable completion, production
