@@ -1640,11 +1640,96 @@ class MainTest(unittest.TestCase):
         self.assertFalse(
             controller._dialog_observed("Rhiannon", "Unrelated known line.")
         )
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(
-            controller.story_cursor.state,
-            StoryCursorState.DESYNCHRONIZED,
+            controller._dialog_observed("Rhiannon", "Expected line."),
+            ("Rhiannon", "Expected line."),
         )
-        self.assertFalse(controller._dialog_observed("Rhiannon", "Expected line."))
+
+    def test_sequence_manual_branch_uses_only_unique_expected_candidate(self):
+        branch_rows = []
+        for sequence, speaker, text in (
+            (2, "Ada", "The left branch."),
+            (3, "Bea", "The right branch."),
+        ):
+            branch_rows.append(
+                {
+                    "chapter": "1",
+                    "sequence": sequence,
+                    "line_id": f"reverse1999:1:{sequence}",
+                    "speaker_name": speaker,
+                    "text": text,
+                    "text_sha256": text_sha256(text),
+                }
+            )
+        preloader = ChapterVoicePreloader.from_document({"dialogue": branch_rows})
+        events = {
+            "choice": LiveSequenceEvent(
+                "choice",
+                "1",
+                1,
+                "choice",
+                "manual",
+                ("left", "right"),
+                None,
+            ),
+            "left": LiveSequenceEvent(
+                "left",
+                "1",
+                2,
+                "speech",
+                "automatic",
+                (),
+                "reverse1999:1:2",
+            ),
+            "right": LiveSequenceEvent(
+                "right",
+                "1",
+                3,
+                "speech",
+                "automatic",
+                (),
+                "reverse1999:1:3",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("choice",), tuple(events)),),
+            events,
+            {"reverse1999:1:2": "left", "reverse1999:1:3": "right"},
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        controller.story_cursor.anchor_event("choice")
+
+        self.assertIsNone(controller._stable_live_frame_route("changed", True))
+        routed = controller._dialog_observed(
+            "corrupted nameplate",
+            "The right branch.",
+        )
+
+        self.assertEqual(routed, ("Bea", "The right branch."))
+        self.assertEqual(controller.story_cursor.current_event_id, "right")
+        self.assertEqual(pipeline[-1][1]["match_result"], "expected-text-only")
+        self.assertNotIn("text", pipeline[-1][1])
 
     def test_sequence_audio_manual_routes_stable_successor_without_ocr_text(self):
         rows = [

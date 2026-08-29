@@ -204,6 +204,48 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected, match_result
 
+    def resolve_exact_among(self, character, text, line_ids):
+        """Resolve one OCR observation only among explicit cursor candidates."""
+        allowed = {str(line_id) for line_id in line_ids if line_id}
+        if not allowed:
+            return None, "no-expected-candidates"
+        exact_text = _normalize_exact_text(text)
+        normalized_text = _normalize(text)
+        speaker_key = _normalize(character)
+        candidates = [
+            row
+            for line_id in allowed
+            if (row := self.by_line_id.get(line_id)) is not None
+            and row.text_sha256
+            and _normalize_exact_text(row.text) == exact_text
+            and _normalize(row.speaker) == speaker_key
+        ]
+        match_result = "expected-exact"
+        if not candidates:
+            candidates = [
+                row
+                for line_id in allowed
+                if (row := self.by_line_id.get(line_id)) is not None
+                and row.text_sha256
+                and _normalize(row.text) == normalized_text
+                and _normalize(row.speaker) == speaker_key
+            ]
+            match_result = "expected-normalized-exact"
+        if not candidates:
+            candidates = [
+                row
+                for line_id in allowed
+                if (row := self.by_line_id.get(line_id)) is not None
+                and row.text_sha256
+                and _normalize_exact_text(row.text) == exact_text
+            ]
+            match_result = "expected-text-only"
+        if len(candidates) != 1:
+            return None, "expected-ambiguous" if candidates else "expected-no-match"
+        selected = candidates[0]
+        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        return selected, match_result
+
     def resolve_unique_prefix(
         self,
         character,

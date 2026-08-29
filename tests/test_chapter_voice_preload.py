@@ -141,6 +141,68 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.line_id, "test:0")
         self.assertEqual(result, "normalized-exact")
 
+    def test_expected_resolution_allows_one_text_only_nameplate_recovery(self):
+        text = "Only the explicit branch candidate may match."
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "line_id": "line-a",
+                        "speaker_name": "Ada",
+                        "text": text,
+                        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    },
+                    {
+                        "chapter": "1",
+                        "sequence": 2,
+                        "line_id": "line-b",
+                        "speaker_name": "Bea",
+                        "text": "Another branch.",
+                        "text_sha256": hashlib.sha256(b"Another branch.").hexdigest(),
+                    },
+                ]
+            }
+        )
+
+        line, result = preloader.resolve_exact_among(
+            "corrupted nameplate",
+            text,
+            ("line-a", "line-b"),
+        )
+
+        self.assertEqual(line.line_id, "line-a")
+        self.assertEqual(result, "expected-text-only")
+
+    def test_expected_resolution_rejects_ambiguous_repeated_text(self):
+        text = "The same repeated line."
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": sequence,
+                        "line_id": f"line-{sequence}",
+                        "speaker_name": "Ada",
+                        "text": text,
+                        "text_sha256": digest,
+                    }
+                    for sequence in (1, 2)
+                ]
+            }
+        )
+
+        line, result = preloader.resolve_exact_among(
+            "Ada",
+            text,
+            ("line-1", "line-2"),
+        )
+
+        self.assertIsNone(line)
+        self.assertEqual(result, "expected-ambiguous")
+
     def test_unique_prefix_resolves_full_indexed_dialogue(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "story.jsonl"

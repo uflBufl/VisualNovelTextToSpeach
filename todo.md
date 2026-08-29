@@ -149,9 +149,15 @@ locked.
 
 - [ ] Implement branches, repeated lines and manual advancement with an
       expected-candidate recognizer over explicit successors and a bounded
-      monotonic lookahead. On conflict, stop auto advance and recover through
-      lightweight anchors, then bounded current-chapter OCR, then explicit
-      manual resync. Never speak or advance an unmatched OCR guess.
+      monotonic lookahead. The settled recovery OCR is implemented and restricted
+      to current plus explicit graph candidates; unique text-only nameplate
+      recovery, ambiguous-repeat rejection, bounded desync recovery and
+      privacy-safe evidence are covered. Add an explicit one-expected-next
+      action for identical consecutive lines whose fingerprint cannot change,
+      plus a compact expected-candidate chooser for true branches/manual
+      multi-skips. Cover stale UI candidate rejection and keep full chapter
+      resync as the final fallback. Never speak or advance an unmatched OCR
+      guess.
 - [ ] Validate the implemented shadow and manual-audio feature flags on replay,
       then add automatic advancement last. Cover long typewriter text, lost
       nameplates, `...`, source/generated/missing-WAV routes, identical lines,

@@ -217,6 +217,16 @@ advance, or an unexpected fingerprint, use a small expected-candidate recognizer
 first. It compares only the allowed successor speakers and discriminating text
 anchors. Full OCR is a last recovery stage, never the default loop.
 
+The bounded recovery recognizer is implemented for settled branch, manual and
+desynchronized frames. It searches only the current speech event and visible
+events reachable through declared graph edges, capped at three visible events
+and 24 total nodes. Exact speaker/text is preferred; a corrupted or missing
+nameplate may be ignored only when canonical text selects exactly one allowed
+line. The cursor can then recover directly to that explicit event. Ambiguous
+repeated text and observations outside the bounded set remain silent and leave
+the cursor closed. Candidate misses record event IDs and a match-result enum,
+never OCR or canonical dialogue text.
+
 ## Desynchronization and manual play
 
 Fail closed rather than speaking an OCR guess. A mismatch must stop automatic

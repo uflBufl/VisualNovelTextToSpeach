@@ -281,6 +281,33 @@ class StoryCursorTest(unittest.TestCase):
 
         self.assertEqual(snapshot.state, StoryCursorState.DESYNCHRONIZED)
 
+    def test_bounded_visible_successors_cross_only_explicit_graph_edges(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+
+        candidates = cursor.bounded_visible_successors()
+
+        self.assertEqual(
+            [candidate.event_id for candidate in candidates],
+            ["event-2", "event-3"],
+        )
+
+    def test_bounded_observation_can_recover_a_declared_lookahead_line(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+        cursor.desynchronize("test-recovery")
+
+        snapshot = cursor.observe_bounded_line(
+            "synthetic:chapter-1:3",
+            ("event-2", "event-3"),
+        )
+
+        self.assertEqual(snapshot.current_event_id, "event-3")
+        self.assertEqual(snapshot.state, StoryCursorState.LOCKED)
+        self.assertEqual(snapshot.reason, "observation-bounded-lookahead")
+
     def test_shadow_observation_cannot_implicitly_recover_after_desync(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)

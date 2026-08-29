@@ -1594,20 +1594,70 @@ class AppController:
         cursor = self.story_cursor
         if cursor is None or self.settings.live_sequence_mode == "off":
             return None
-        resolve = getattr(
-            self.chapter_voice_preloader,
-            "resolve_exact_with_result",
-            None,
-        )
-        if callable(resolve):
-            line, match_result = resolve(character, text)
-        else:
-            line = self.chapter_voice_preloader.resolve_exact(character, text)
-            match_result = "exact" if line is not None else "no-match"
-        if line is None or line.line_id is None:
-            return None
         previous_event_id = cursor.current_event_id
-        snapshot = cursor.observe_line(line.line_id)
+        candidate_events = ()
+        if previous_event_id is None or cursor.state in {
+            StoryCursorState.UNSYNCHRONIZED,
+            StoryCursorState.ANCHORING,
+        }:
+            resolve = getattr(
+                self.chapter_voice_preloader,
+                "resolve_exact_with_result",
+                None,
+            )
+            if callable(resolve):
+                line, match_result = resolve(character, text)
+            else:
+                line = self.chapter_voice_preloader.resolve_exact(character, text)
+                match_result = "exact" if line is not None else "no-match"
+            snapshot = None if line is None else cursor.observe_line(line.line_id)
+        else:
+            current = cursor.current_event
+            candidate_events = cursor.bounded_visible_successors()
+            candidate_event_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            (current.event_id,)
+                            if current is not None and current.is_speech
+                            else ()
+                        ),
+                        *(event.event_id for event in candidate_events),
+                    )
+                )
+            )
+            candidate_line_ids = tuple(
+                self.live_sequence_plan.events[event_id].line_id
+                for event_id in candidate_event_ids
+                if self.live_sequence_plan.events[event_id].line_id is not None
+            )
+            line, match_result = self.chapter_voice_preloader.resolve_exact_among(
+                character,
+                text,
+                candidate_line_ids,
+            )
+            snapshot = (
+                None
+                if line is None
+                else cursor.observe_bounded_line(line.line_id, candidate_event_ids)
+            )
+        if line is None or line.line_id is None:
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
+            )
+            self.pipeline_event_handler(
+                "sequence-candidate-miss",
+                generation,
+                monotonic(),
+                state=cursor.state.value,
+                event_id=previous_event_id,
+                candidate_event_ids=tuple(event.event_id for event in candidate_events),
+                match_result=match_result,
+            )
+            self._publish_live_sequence_status()
+            return None
         generation = (
             self.live_reader.active_generation if self.live_reader is not None else 0
         )
@@ -1712,12 +1762,19 @@ class AppController:
             StoryCursorState.ANCHORING,
         }:
             return None
-        if not settled or not cursor.can_confirm_visual_transition:
+        if not settled:
+            return False
+        if cursor.state in {
+            StoryCursorState.MANUAL,
+            StoryCursorState.DESYNCHRONIZED,
+        }:
+            return None
+        if not cursor.can_confirm_visual_transition:
             return False
         previous_event_id = cursor.current_event_id
         event = cursor.confirm_visual_transition()
         if event is None:
-            return False
+            return None
         generation = (
             self.live_reader.active_generation if self.live_reader is not None else 0
         )

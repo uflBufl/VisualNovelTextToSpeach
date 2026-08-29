@@ -252,6 +252,53 @@ class StoryCursor:
             f"observation-unexpected:{current.event_id}->{event.event_id}"
         )
 
+    def bounded_visible_successors(self, *, maximum_visible_depth=3, maximum_nodes=24):
+        """Return explicit visible lookahead without inferring undeclared edges."""
+        current = self.current_event
+        if current is None or maximum_visible_depth < 1 or maximum_nodes < 1:
+            return ()
+        pending = [(event_id, 0) for event_id in current.successors]
+        visited_depth = {}
+        visible = []
+        visited_nodes = 0
+        while pending and visited_nodes < maximum_nodes:
+            event_id, visible_depth = pending.pop(0)
+            previous_depth = visited_depth.get(event_id)
+            if previous_depth is not None and previous_depth <= visible_depth:
+                continue
+            visited_depth[event_id] = visible_depth
+            visited_nodes += 1
+            event = self.plan.events[event_id]
+            next_visible_depth = visible_depth
+            if event.kind in {"speech", "silent"}:
+                next_visible_depth += 1
+                visible.append(event)
+                if next_visible_depth >= maximum_visible_depth:
+                    continue
+            if event.kind == "wait":
+                continue
+            pending.extend(
+                (successor_id, next_visible_depth) for successor_id in event.successors
+            )
+        return tuple(visible)
+
+    def observe_bounded_line(self, line_id, allowed_event_ids):
+        """Recover only to a line proven to be in the supplied graph window."""
+        event = self.plan.event_for_line(str(line_id))
+        if event is None:
+            return self.desynchronize(f"unplanned-line:{line_id}")
+        current = self.current_event
+        if current is not None and event.event_id == current.event_id:
+            self.state = self._resting_state(event)
+            self.reason = "observation-current-event"
+            return self.snapshot()
+        allowed = {str(event_id) for event_id in allowed_event_ids}
+        if event.event_id not in allowed:
+            return self.desynchronize(
+                f"observation-outside-bounded-window:{event.event_id}"
+            )
+        return self.anchor_event(event.event_id, "observation-bounded-lookahead")
+
     def desynchronize(self, reason):
         self.state = StoryCursorState.DESYNCHRONIZED
         self.reason = _required_text(reason, "desynchronization reason")
