@@ -33,17 +33,49 @@ Example:
 
 ```bash
 uv run vntts-capture-live-replay \
-  "$HOME/vntts-evidence/rhiannon-20-lines" \
+  "$HOME/vntts-evidence/rhiannon-raw" \
   --name "Rhiannon Character Story real capture" \
   --story-index /path/to/story-index.jsonl
 
+uv run vntts-seal-live-replay \
+  "$HOME/vntts-evidence/rhiannon-raw/corpus.json" \
+  "$HOME/vntts-evidence/rhiannon-sealed" \
+  --story-index /path/to/story-index.jsonl \
+  --sequence-plan /path/to/live-sequence.json \
+  --generated-audio-manifest /path/to/generated-audio.json \
+  --mode audio-manual
+
 uv run vntts-replay-live \
-  "$HOME/vntts-evidence/rhiannon-20-lines/corpus.json"
+  "$HOME/vntts-evidence/rhiannon-sealed/corpus.json"
 ```
 
 The capture command makes the real-game gate reproducible; it does not itself
 prove OCR quality, correct dialogue boundaries, source/generated route choice,
 audio-device behavior or the 20-line acceptance target.
+
+The sealing command is the required bridge from raw capture schema version 1
+to sequence replay schema version 2. The raw capture directory is never
+modified. The command creates a new contained directory and copies the exact
+frames, story index, sequence plan and only generated WAVs referenced by the
+captured canonical lines. It rejects changed bytes, symlinks, non-monotonic or
+skipped visible events, an unresolved first anchor, and any choice/branch whose
+next visible event is not unique. A lost nameplate may be ignored only when the
+full normalized text selects the one explicit next speech event. A captured
+`...` or `…` may bind a line-less silent event only when that event is the one
+explicit next visible event; it is retained in sequence metrics but never sent
+to TTS.
+
+Sealing first runs the production-controller replay as a measurement probe,
+writes its exact route, OCR/recovery and attempted/confirmed-key counts into the
+corpus, and reruns the sealed corpus. Publication fails unless the second run
+reproduces the exact identities, counters, routes and byte authorities.
+`sequence-review.json` preserves every capture-to-event mapping, the original
+boundary reason and both raw and sealed authorities. Its measured baseline is
+software evidence, not a human verdict: review every flagged inferred boundary
+or text-only/silent mapping against the playthrough before using the corpus as
+acceptance evidence. `replay-report.json` is the passing sealed replay report.
+The configured story index, sequence plan, generated manifest and audio-source
+policy are used when their command-line options are omitted.
 
 `vntts-replay-live` exercises the production split capture/OCR state machine,
 incremental dialogue tracker, exact story resolver, generated-audio verifier,
@@ -97,10 +129,11 @@ snapshot immediately before execution, so changed bytes, symlinks, mismatched
 canonical speaker/text or a plan that no longer binds the declared line IDs
 fail the replay instead of changing its authority.
 
-Every version-2 dialogue record binds a canonical `line_id`. A record that
-plays audio must declare its exact `expected_source`; a visible silent event can
-set `expect_playback` to false and must not declare a source. The expected block
-binds the ordered event IDs and line IDs plus exact counts for distinct
+Every version-2 dialogue record binds a canonical sequence `event_id`. A speech
+record also binds its exact story-index `line_id`; a line-less silent event uses
+`line_id: null`, sets `expect_playback` to false and must not declare a source.
+A record that plays audio must declare its exact `expected_source`. The expected
+block binds the ordered event IDs and nullable line IDs plus exact counts for distinct
 OCR-routed frame identities, bounded recoveries, attempted key dispatches and
 confirmed key dispatches. The report also retains raw OCR invocations, which
 may be higher when automatic-transition confirmation rechecks the same frame.
@@ -121,6 +154,14 @@ separate simulated player action and the expected key count remains zero. An
 ambiguous initial observation, including identical repeated canonical lines,
 fails closed without speech; it requires explicit position selection or a later
 unambiguous recovery rather than an OCR guess.
+
+When the current explicit successor is a line-less silent event, exact ellipsis
+OCR can acknowledge it in both shadow and audio-manual mode. This special case
+does not generalize punctuation into a story line: the successor must be unique,
+must be typed `silent` by the plan and contributes a nullable line identity to
+the replay report. Audio-manual replay models the player's next click separately;
+shadow replay counts the silent event's confirmed dispatch like any other
+automatic visible event.
 
 The tracked sequence corpora are:
 

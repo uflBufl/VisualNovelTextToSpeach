@@ -126,6 +126,9 @@ class LiveReplayTest(unittest.TestCase):
         dialogue = []
         for dialogue_index, line_id in enumerate(dialogue_line_ids):
             line = by_id[line_id]
+            event_id = next(
+                event["event_id"] for event in events if event.get("line_id") == line_id
+            )
             frames = []
             for frame_index, (speaker, text) in enumerate(observation_values[line_id]):
                 image = Image.new("RGB", (80, 40), "black")
@@ -148,6 +151,7 @@ class LiveReplayTest(unittest.TestCase):
                     "frames": frames,
                     "character": line["speaker"],
                     "text": line["text"],
+                    "event_id": event_id,
                     "line_id": line_id,
                     "expect_playback": line.get("expect_playback", True),
                     "source_audio_status": line.get("source_audio_status", "absent"),
@@ -619,6 +623,12 @@ class LiveReplayTest(unittest.TestCase):
             document["dialogue"][0].pop("expected_source")
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "must declare expected_source"):
+                load_live_replay_corpus(path)
+
+            document["dialogue"][0]["expected_source"] = "live:replay-live-tts"
+            document["dialogue"][0].pop("event_id")
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no sequence event_id"):
                 load_live_replay_corpus(path)
 
     def test_sequence_story_and_plan_remain_bound_after_corpus_load(self):

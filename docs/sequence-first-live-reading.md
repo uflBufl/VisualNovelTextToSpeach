@@ -93,6 +93,19 @@ not control the game yet:
   pure `...` event advances without synthesis, identical ambiguous initial lines
   produce no speech and branch/choice recovery selects only an explicit bounded
   candidate.
+- raw real-game capture remains immutable schema version 1 evidence. The
+  `vntts-seal-live-replay` bridge publishes a separate schema-version-2 bundle
+  only after copying and hashing its exact story/plan authorities, mapping every
+  captured screen to the unique next explicit event, snapshotting only referenced
+  generated WAVs, measuring the production controller and reproducing the sealed
+  counters in a second run. Its review report never records a human acceptance
+  automatically.
+- schema-version-2 dialogue identity is event-first. Speech binds both event ID
+  and story line ID; a visible line-less silent event binds the event ID with a
+  null line ID and cannot declare playback. Exact ellipsis OCR may acknowledge
+  such an event only when it is the unique explicit successor. This closes the
+  real chapter's previously unrepresentable sequences 18, 19 and 78 without
+  pronouncing punctuation or inferring numeric gaps.
 
 `vntts-artifacts` v0.7.0 introduced game-pack schema version 2 with an optional
 checksum-bound `live_sequence_plan` core component. Its loader deliberately

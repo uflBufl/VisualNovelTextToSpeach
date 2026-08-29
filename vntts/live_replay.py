@@ -60,7 +60,8 @@ class ReplayDialogue:
     frame_recognition_sources: tuple[str, ...]
     character: str
     text: str
-    line_id: str
+    event_id: str | None
+    line_id: str | None
     expect_playback: bool
     expected_source: str | None
 
@@ -92,7 +93,7 @@ class ReplayFileBinding:
 @dataclass(frozen=True)
 class LiveReplaySequenceExpectation:
     event_ids: tuple[str, ...]
-    line_ids: tuple[str, ...]
+    line_ids: tuple[str | None, ...]
     ocr_calls: int
     bounded_recoveries: int
     key_dispatch_attempts: int
@@ -413,9 +414,12 @@ class LiveReplayRunner:
             if generated_audio_index is not None
             else None
         )
+        live_backend = ReplayLiveSpeechBackend(
+            _replay_voice_characters(self.corpus.dialogue, library)
+        )
         audio_output = ReplayAudioOutput()
         router = GeneratedAudioFallbackBackend(
-            ReplayLiveSpeechBackend(),
+            live_backend,
             library,
             resolver,
             audio_source_policy=self.audio_source_policy,
@@ -684,13 +688,13 @@ class LiveReplayRunner:
             self.corpus.dialogue,
             focus_probes=binding.focus_probes,
         )
-        live_backend = ReplayLiveSpeechBackend(
-            item.character for item in self.corpus.dialogue
-        )
         library = (
             GeneratedAudioLibrary(generated_audio_index)
             if generated_audio_index is not None
             else None
+        )
+        live_backend = ReplayLiveSpeechBackend(
+            _replay_voice_characters(self.corpus.dialogue, library)
         )
         audio_output = ReplayAudioOutput()
         router = GeneratedAudioFallbackBackend(
@@ -741,6 +745,12 @@ class LiveReplayRunner:
                     **ledger_event,
                 }
             )
+            if mode == "audio-manual":
+                with controller.story_cursor_lock:
+                    event = controller.story_cursor.current_event
+                    silent_event = event is not None and event.kind == "silent"
+                if silent_event:
+                    frame_source.manual_advance()
 
         def record_route(trace):
             routes.append(trace.support_fields())
@@ -1018,8 +1028,18 @@ def load_live_replay_corpus(path):
                 f"Live replay dialogue {index} must declare expected_source when "
                 "playback is enabled in schema version 2"
             )
-        line_id = str(item.get("line_id") or f"replay:{index}").strip()
-        if not line_id:
+        raw_line_id = item.get("line_id")
+        if schema_version == 1:
+            line_id = str(raw_line_id or f"replay:{index}").strip()
+            event_id = None
+        else:
+            line_id = None if raw_line_id is None else str(raw_line_id).strip() or None
+            event_id = str(item.get("event_id") or "").strip() or None
+            if event_id is None:
+                raise ValueError(
+                    f"Live replay dialogue {index} has no sequence event_id"
+                )
+        if schema_version == 1 and not line_id:
             raise ValueError(f"Live replay dialogue {index} has no line_id")
         dialogue.append(
             ReplayDialogue(
@@ -1029,6 +1049,7 @@ def load_live_replay_corpus(path):
                 frame_recognition_sources,
                 character,
                 text,
+                event_id,
                 line_id,
                 expect_playback,
                 expected_source,
@@ -1310,23 +1331,50 @@ def _live_sequence_binding(
     except Exception as error:
         raise ValueError(f"Live replay sequence binding is invalid: {error}") from error
     resolver = ChapterVoicePreloader.load_optional(story_index.path)
+    dialogue_event_ids = tuple(item.event_id for item in dialogue)
     dialogue_line_ids = tuple(item.line_id for item in dialogue)
+    if expectation.event_ids != dialogue_event_ids:
+        raise ValueError(
+            "Live replay expected event_ids must exactly match dialogue event_id order"
+        )
     if expectation.line_ids != dialogue_line_ids:
         raise ValueError(
             "Live replay expected line_ids must exactly match dialogue line_id order"
         )
     mapped_event_ids = []
     for index, item in enumerate(dialogue, start=1):
-        line = resolver.line_for_id(item.line_id)
-        event = plan.event_for_line(item.line_id)
-        if line is None or event is None:
+        event = plan.events.get(item.event_id)
+        if event is None:
             raise ValueError(
-                f"Live replay dialogue {index} line_id is not bound by the exact story "
-                "index and sequence plan"
+                f"Live replay dialogue {index} event_id is not bound by the exact "
+                "sequence plan"
             )
-        if (line.speaker, line.text) != (item.character, item.text):
+        if item.line_id is None:
+            if event.line_id is not None or event.kind != "silent":
+                raise ValueError(
+                    f"Live replay dialogue {index} without line_id must bind a "
+                    "line-less silent event"
+                )
+            if item.expect_playback:
+                raise ValueError(
+                    f"Live replay dialogue {index} silent event cannot expect playback"
+                )
+        else:
+            line = resolver.line_for_id(item.line_id)
+            if line is None or event.line_id != item.line_id:
+                raise ValueError(
+                    f"Live replay dialogue {index} line_id is not bound by its exact "
+                    "story index and sequence event"
+                )
+            if (line.speaker, line.text) != (item.character, item.text):
+                raise ValueError(
+                    f"Live replay dialogue {index} disagrees with its canonical story "
+                    "line"
+                )
+        if item.line_id is None and item.expected_source is not None:
             raise ValueError(
-                f"Live replay dialogue {index} disagrees with its canonical story line"
+                f"Live replay dialogue {index} silent event cannot expect an audio "
+                "source"
             )
         mapped_event_ids.append(event.event_id)
     if expectation.event_ids != tuple(mapped_event_ids):
@@ -1371,18 +1419,22 @@ def _live_sequence_expectation(value, dialogue_count):
             "all counters"
         )
 
-    def identities(name):
+    def identities(name, *, nullable=False):
         raw = value.get(name)
         if (
             not isinstance(raw, list)
             or len(raw) != dialogue_count
-            or any(not isinstance(item, str) or not item.strip() for item in raw)
+            or any(
+                item is not None and (not isinstance(item, str) or not item.strip())
+                for item in raw
+            )
+            or (not nullable and any(item is None for item in raw))
         ):
             raise ValueError(
                 f"Live replay sequence expected {name} must contain one identity per "
                 "dialogue"
             )
-        return tuple(item.strip() for item in raw)
+        return tuple(None if item is None else item.strip() for item in raw)
 
     def count(name):
         raw = value.get(name)
@@ -1394,7 +1446,7 @@ def _live_sequence_expectation(value, dialogue_count):
 
     return LiveReplaySequenceExpectation(
         identities("event_ids"),
-        identities("line_ids"),
+        identities("line_ids", nullable=True),
         count("ocr_calls"),
         count("bounded_recoveries"),
         count("key_dispatch_attempts"),
@@ -1530,22 +1582,45 @@ def _group_played_dialogue(played):
     ]
 
 
+def _replay_voice_characters(dialogue, library):
+    characters = [item.character for item in dialogue]
+    if library is not None:
+        characters.extend(
+            decision.requested_voice_character
+            for decision in library.live_fallbacks.values()
+        )
+    return tuple(dict.fromkeys(characters))
+
+
 def _sequence_replay_metrics(mode, events, recognized_frames, advance_states):
     if mode == "shadow":
         identity_events = [
-            event for event in events if event["stage"] == "sequence-shadow"
+            event
+            for event in events
+            if event["stage"] in {"sequence-shadow", "sequence-visual-transition"}
         ]
     else:
         identity_events = [
             event
             for event in events
-            if event["stage"] == "sequence-playback-state"
-            and event.get("outcome") == "completed"
+            if (
+                event["stage"] == "sequence-playback-state"
+                and event.get("outcome") == "completed"
+            )
+            or (
+                event["stage"] == "sequence-visual-transition"
+                and event.get("route") == "silent"
+            )
+            or (
+                event["stage"] == "sequence-audio-manual"
+                and event.get("line_id") is None
+                and event.get("match_result") == "expected-silent-ellipsis"
+            )
         ]
     identities = []
     for event in identity_events:
         identity = event.get("event_id"), event.get("line_id")
-        if all(identity) and (not identities or identities[-1] != identity):
+        if identity[0] and (not identities or identities[-1] != identity):
             identities.append(identity)
     recovered_event_ids = {
         event.get("event_id")

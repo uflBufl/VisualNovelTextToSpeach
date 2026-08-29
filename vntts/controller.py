@@ -88,6 +88,29 @@ from vntts.voices import (
 from vntts.window_capture import WindowCaptureTarget
 
 
+def _is_silent_sequence_text(value):
+    return "".join(str(value).split()) in {"...", "…"}
+
+
+def _unique_silent_sequence_successor(cursor):
+    current = cursor.current_event
+    visited = set()
+    while (
+        current is not None
+        and current.event_id not in visited
+        and current.control in {"automatic", "passive"}
+        and len(current.successors) == 1
+    ):
+        visited.add(current.event_id)
+        candidate = cursor.plan.events[current.successors[0]]
+        if candidate.kind in {"speech", "silent"}:
+            return candidate if candidate.kind == "silent" else None
+        if candidate.kind in {"choice", "wait"} or candidate.control == "manual":
+            return None
+        current = candidate
+    return None
+
+
 @dataclass(frozen=True)
 class LiveSequenceStatus:
     mode: str
@@ -1395,9 +1418,12 @@ class AppController:
                     event = self.live_sequence_plan.events.get(
                         snapshot.current_event_id
                     )
+                    if event is not None and event.kind == "silent" and line is None:
+                        return (None, "")
                     if (
                         event is None
                         or not event.is_speech
+                        or line is None
                         or event.line_id != line.line_id
                     ):
                         return False
@@ -1644,34 +1670,52 @@ class AppController:
         else:
             current = cursor.current_event
             candidate_events = cursor.bounded_visible_successors()
-            candidate_event_ids = tuple(
-                dict.fromkeys(
-                    (
-                        *(
-                            (current.event_id,)
-                            if current is not None and current.is_speech
-                            else ()
-                        ),
-                        *(event.event_id for event in candidate_events),
+            silent_event = cursor.deterministic_visual_successor()
+            if silent_event is None and self.settings.live_sequence_mode == "shadow":
+                silent_event = _unique_silent_sequence_successor(cursor)
+            if (
+                silent_event is not None
+                and silent_event.kind == "silent"
+                and _is_silent_sequence_text(text)
+            ):
+                snapshot = cursor.anchor_event(
+                    silent_event.event_id,
+                    "visual-transition-confirmed",
+                )
+                line = None
+                match_result = "expected-silent-ellipsis"
+                candidate_events = (silent_event,)
+            else:
+                candidate_event_ids = tuple(
+                    dict.fromkeys(
+                        (
+                            *(
+                                (current.event_id,)
+                                if current is not None and current.is_speech
+                                else ()
+                            ),
+                            *(event.event_id for event in candidate_events),
+                        )
                     )
                 )
-            )
-            candidate_line_ids = tuple(
-                self.live_sequence_plan.events[event_id].line_id
-                for event_id in candidate_event_ids
-                if self.live_sequence_plan.events[event_id].line_id is not None
-            )
-            line, match_result = self.chapter_voice_preloader.resolve_exact_among(
-                character,
-                text,
-                candidate_line_ids,
-            )
-            snapshot = (
-                None
-                if line is None
-                else cursor.observe_bounded_line(line.line_id, candidate_event_ids)
-            )
-        if line is None or line.line_id is None:
+                candidate_line_ids = tuple(
+                    self.live_sequence_plan.events[event_id].line_id
+                    for event_id in candidate_event_ids
+                    if self.live_sequence_plan.events[event_id].line_id is not None
+                )
+                line, match_result = self.chapter_voice_preloader.resolve_exact_among(
+                    character,
+                    text,
+                    candidate_line_ids,
+                )
+                snapshot = (
+                    None
+                    if line is None
+                    else cursor.observe_bounded_line(line.line_id, candidate_event_ids)
+                )
+        if line is None and snapshot is not None:
+            pass
+        elif line is None or line.line_id is None:
             generation = (
                 self.live_reader.active_generation
                 if self.live_reader is not None
@@ -1702,7 +1746,7 @@ class AppController:
             state=snapshot.state.value,
             previous_event_id=previous_event_id,
             event_id=snapshot.current_event_id,
-            line_id=snapshot.current_line_id,
+            line_id=None if line is None else snapshot.current_line_id,
             next_event_count=len(snapshot.expected_successor_ids),
             reason=snapshot.reason,
             match_result=match_result,

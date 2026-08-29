@@ -51,6 +51,7 @@
       ],
       "character": "Rhiannon",
       "text": "I, erhm ...",
+      "event_id": "fixture-event-1",
       "line_id": "fixture:rhiannon:1",
       "source_audio_status": "available",
       "source_audio_duration_seconds": 0.001,
@@ -73,6 +74,7 @@
       ],
       "character": "Hotelier",
       "text": "A single room will be four coins per night.",
+      "event_id": "fixture-event-2",
       "line_id": "fixture:hotelier:1",
       "source_audio_status": "absent",
       "expected_source": "live:replay-live-tts"
@@ -88,6 +90,7 @@
       ],
       "character": "Adar Llwch Gwin Fledgling",
       "text": "The old forest remembers every footstep.",
+      "event_id": "fixture-event-3",
       "line_id": "fixture:fledgling:1",
       "source_audio_status": "absent",
       "expected_source": "generated"
@@ -103,6 +106,7 @@
       ],
       "character": "Narrator",
       "text": "Night settles over the lake.",
+      "event_id": "fixture-event-4",
       "line_id": "fixture:narrator:1",
       "source_audio_status": "absent",
       "expected_source": "live:replay-live-tts"
