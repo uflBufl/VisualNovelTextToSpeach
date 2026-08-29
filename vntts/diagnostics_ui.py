@@ -24,6 +24,9 @@ class DiagnosticsDialog(QDialog):
         self.refresh_generation = 0
         self.concealed_for_capture = False
         self.source_pixmap = None
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.timeout.connect(self._current_refresh_timed_out)
 
         self.preview = QLabel("Waiting for a captured dialog region...")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -108,10 +111,13 @@ class DiagnosticsDialog(QDialog):
         self.refresh_button.setEnabled(False)
         self.refresh_status.setText("Capturing and inspecting the current dialogue...")
         self.refresh_requested.emit()
-        QTimer.singleShot(
-            self.refresh_timeout_ms,
-            lambda: self._refresh_timed_out(generation),
-        )
+        self.refresh_timer.setProperty("refresh_generation", generation)
+        self.refresh_timer.start(self.refresh_timeout_ms)
+
+    def _current_refresh_timed_out(self):
+        generation = self.refresh_timer.property("refresh_generation")
+        if generation is not None:
+            self._refresh_timed_out(int(generation))
 
     def _refresh_timed_out(self, generation):
         if not self.refresh_in_flight or generation != self.refresh_generation:
@@ -121,10 +127,17 @@ class DiagnosticsDialog(QDialog):
         )
 
     def _finish_refresh(self, message):
+        self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
         self.refresh_button.setEnabled(True)
         self.refresh_status.setText(message)
+
+    def closeEvent(self, event):
+        self.refresh_timer.stop()
+        self.refresh_in_flight = False
+        self.refresh_generation += 1
+        super().closeEvent(event)
 
     def conceal_for_capture(self):
         if not self.isVisible():

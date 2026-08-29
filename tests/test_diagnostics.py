@@ -154,6 +154,19 @@ class DiagnosticsTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_closing_dialog_cancels_pending_refresh_timeout(self):
+        dialog = DiagnosticsDialog(refresh_timeout_ms=1)
+        dialog.request_refresh()
+        generation = dialog.refresh_generation
+
+        dialog.close()
+        dialog.deleteLater()
+        self.application.processEvents()
+
+        self.assertFalse(dialog.refresh_timer.isActive())
+        self.assertFalse(dialog.refresh_in_flight)
+        self.assertGreater(dialog.refresh_generation, generation)
+
     def test_macos_permission_warnings_explain_both_permissions(self):
         warnings = macos_permission_warnings(
             platform="darwin",
