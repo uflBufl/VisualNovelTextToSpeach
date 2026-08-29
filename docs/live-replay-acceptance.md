@@ -49,7 +49,7 @@ uv run vntts-recover-live-replay-capture \
   "$HOME/vntts-evidence/rhiannon-recovered" \
   --story-index /path/to/story-index.jsonl \
   --sequence-plan /path/to/live-sequence.json \
-  --minimum-events 20
+  --complete-visible-chapter
 
 uv run vntts-seal-live-replay \
   "$HOME/vntts-evidence/rhiannon-recovered/corpus.json" \
@@ -65,7 +65,7 @@ uv run vntts-replay-live \
 
 The capture command makes the real-game gate reproducible; it does not itself
 prove OCR quality, correct dialogue boundaries, source/generated route choice,
-audio-device behavior or the 20-line acceptance target.
+audio-device behavior or complete visible-chapter coverage.
 
 Recovery is non-destructive and fail-closed. It validates the raw corpus,
 capture report, observation ledger, frames, story index and sequence plan by
@@ -73,10 +73,14 @@ checksum. It publishes a new replayable raw corpus only when observations form
 one explicit branch-free successor path meeting the requested event count and
 silent-event gate. Besides exact canonical observations, OCR drift may resolve
 only against speech line IDs declared by that exact plan: one sufficiently long
-unique canonical prefix, a bounded OCR suffix, or a high-similarity candidate
-with a clear margin. A short candidate is rejected when it is also the prefix of
-another authorized line. Intervening typewriter/background noise may be
-absorbed only when the next accepted observation is the current event again or
+unique canonical prefix, a bounded OCR suffix, a high-similarity candidate with
+a clear margin or, after an exact cursor anchor, weak OCR evidence against the
+one and only plan-authorized visible successor. The latter accepts nameplates
+captured in the text crop, truncated short lines and bounded OCR drift, but
+never chooses among multiple successor candidates. A short candidate is
+rejected when it is also the prefix of another authorized line. Intervening
+typewriter/background noise may be absorbed only when the next accepted
+observation is the current event again or
 its one explicit successor; a skipped event, branch, manual boundary,
 uncertainty or ambiguity breaks the run. The report records every absorbed
 observation. Only the best representative frame is retained for each recovered
@@ -85,7 +89,32 @@ unresolved text is never converted to a silent event; only a standalone visual
 or textual `...`/`…` may bind the unique explicit silent frontier. An
 insufficient run produces `recovery-report.json` only, including the longest
 recovered run and the exact shortest branch-free event segment to capture next.
-The original directory is never rewritten.
+The original directory is never rewritten. Representative recovery frames must
+pass the same dialogue-presence gate as production; a bright partial frame is
+preferred to a more complete frame already fading out.
+
+`--complete-visible-chapter` derives the gate from the plan instead of an
+arbitrary number. Transitions that cannot appear in the dialogue box do not
+inflate the target. For chapter `314601`, the contract is therefore 92 visible
+events (89 speech and 3 silent), not 100 of the plan's 104 total events.
+
+If the first or last frame of one capture is not production-replayable, recover
+an overlapping segment with `--start-event-id` and optionally `--end-event-id`,
+seal it independently, and audit the checksum-bound union with:
+
+```bash
+uv run vntts-audit-live-replay-coverage \
+  "$HOME/vntts-evidence/full-visible-coverage.json" \
+  --story-index /path/to/story-index.jsonl \
+  --sequence-plan /path/to/live-sequence.json \
+  --review "$HOME/vntts-evidence/first-sealed/sequence-review.json" \
+  --review "$HOME/vntts-evidence/suffix-sealed/sequence-review.json"
+```
+
+The union audit rejects failed seals, authority checksum mismatches, unknown,
+duplicated or out-of-order mappings, and non-deterministic visible chapter
+paths. It reports technical coverage separately from human listening approval;
+the latter is never inferred from a passing replay.
 
 The sealing command is the required bridge from raw capture schema version 1
 to sequence replay schema version 2. The raw capture directory is never
@@ -141,7 +170,10 @@ routes, two silent routes, zero skipped frames and zero key dispatches. OCR was
 invoked for all 21 representative frames and 18 observations used bounded
 recovery. This closes the 20-event software replay gate; operator mapping review
 of the Hotelier and Rhiannon silent events was accepted on 2026-08-29. The
-separate 100-event real-game acceptance gate remains human evidence.
+later full capture recovered all 92 visible chapter events. Its stable 91-event
+suffix passed the production sealer twice, and the checksum-bound union with
+this accepted 21-event seal proves 92/92 technical coverage. Only silent event
+78 remains pending explicit human mapping acceptance.
 
 An original-game route must declare `source_audio_duration_seconds` when replay
 is expected to advance automatically. Without observable completion, production
@@ -231,7 +263,8 @@ The tracked sequence corpora are:
 
 Both must pass before automatic sequence-owned key dispatch is implemented.
 They prove the deterministic software gate, not real game focus, input delivery,
-audio hardware or the required 100-event gameplay acceptance run.
+audio hardware or the required complete-visible-chapter gameplay acceptance
+run.
 Focused synthetic tests separately cover a pure `...` event with no synthesis,
 identical ambiguous lines, branch selection and a bounded multi-line skip.
 

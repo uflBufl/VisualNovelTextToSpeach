@@ -10,7 +10,10 @@ from vntts_artifacts.story_index import StoryIndexError, load_story_index
 
 
 def _normalize(value):
-    return " ".join(re.findall(r"[\w']+", str(value).casefold()))
+    # OCR engines disagree on whether an apostrophe is straight, curly, or a
+    # word boundary. Treat every form as a boundary so captured ``it's`` and
+    # ``it’s`` compare identically.
+    return " ".join(re.findall(r"\w+", str(value).casefold()))
 
 
 def _normalize_exact_text(value):
@@ -254,7 +257,14 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected, match_result
 
-    def resolve_bounded_among(self, character, text, line_ids):
+    def resolve_bounded_among(
+        self,
+        character,
+        text,
+        line_ids,
+        *,
+        allow_speaker_evidence=True,
+    ):
         """Resolve OCR drift only among explicit cursor-authorized line IDs."""
         allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
         line, match_result = self.resolve_exact_among(character, text, allowed)
@@ -266,6 +276,13 @@ class ChapterVoicePreloader:
             if candidate is None or not candidate.text_sha256:
                 continue
             match = _bounded_text_match(text, candidate.text)
+            if match is None and allow_speaker_evidence:
+                match = _speaker_bounded_text_match(
+                    character,
+                    text,
+                    candidate.speaker,
+                    candidate.text,
+                )
             if match is not None:
                 score, method = match
                 if method == "expected-bounded-ocr-suffix":
@@ -511,7 +528,10 @@ def _bounded_text_match(observed, canonical):
     if not canonical_text or not tokens:
         return None
     best = None
-    for dropped in range(min(3, len(tokens))):
+    # A dialogue crop occasionally includes the nameplate plus a few decorative
+    # OCR fragments before the actual line. Long canonical prefixes remain
+    # strong evidence after discarding that bounded leading noise.
+    for dropped in range(min(8, len(tokens))):
         candidate = " ".join(tokens[dropped:])
         if canonical_text.startswith(candidate) and len(candidate) >= 20:
             coverage = min(1.0, len(candidate) / len(canonical_text))
@@ -534,6 +554,71 @@ def _bounded_text_match(observed, canonical):
         if best is None or match[0] > best[0]:
             best = match
     return best
+
+
+def _speaker_bounded_text_match(
+    observed_character,
+    observed_text,
+    canonical_speaker,
+    canonical_text,
+):
+    """Match nameplate-contaminated or truncated OCR in a bounded frontier."""
+    observed = _normalize(observed_text)
+    canonical = _normalize(canonical_text)
+    speaker = _normalize(canonical_speaker)
+    observed_speaker = _normalize(observed_character)
+    if not observed or not canonical or not speaker:
+        return None
+    speaker_in_text = f" {speaker} " in f" {observed} "
+    speaker_matches = observed_speaker == speaker
+    if not (speaker_in_text or speaker_matches):
+        return None
+    specific_speaker = speaker != "narrator" and (speaker_in_text or speaker_matches)
+    if speaker_in_text:
+        observed = " ".join(observed.replace(speaker, " ", 1).split())
+    best = None
+    tokens = observed.split()
+    for dropped in range(min(8, len(tokens))):
+        candidate = " ".join(tokens[dropped:])
+        if not candidate:
+            continue
+        if canonical in candidate and (len(canonical) >= 7 or specific_speaker):
+            match = (1.2, "expected-bounded-speaker-text")
+        else:
+            prefix_length = _common_prefix_length(candidate, canonical)
+            if (
+                specific_speaker
+                and len(canonical) <= 12
+                and prefix_length >= 3
+                and prefix_length / len(canonical) >= 0.6
+            ):
+                match = (
+                    1.1 + prefix_length / len(canonical) / 100,
+                    "expected-bounded-speaker-prefix",
+                )
+            elif len(canonical) > 12 and prefix_length >= 12:
+                match = (
+                    1.05 + min(1.0, prefix_length / len(canonical)) / 100,
+                    "expected-bounded-speaker-prefix",
+                )
+            else:
+                coverage = min(len(candidate), len(canonical)) / max(
+                    len(candidate), len(canonical)
+                )
+                similarity = SequenceMatcher(None, candidate, canonical).ratio()
+                if len(candidate) < 20 or coverage < 0.65 or similarity < 0.8:
+                    continue
+                match = (similarity, "expected-bounded-speaker-similarity")
+        if best is None or match[0] > best[0]:
+            best = match
+    return best
+
+
+def _common_prefix_length(left, right):
+    for index, (left_character, right_character) in enumerate(zip(left, right)):
+        if left_character != right_character:
+            return index
+    return min(len(left), len(right))
 
 
 def _source_audio_status(entry):

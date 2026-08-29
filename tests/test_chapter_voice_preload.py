@@ -237,6 +237,99 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(drifted.line_id, "test:1")
         self.assertEqual(drifted_result, "expected-bounded-similarity")
 
+    def test_bounded_resolution_normalizes_curly_apostrophe_and_leading_noise(self):
+        rows = []
+        for sequence, speaker, text in (
+            (
+                1,
+                "Hotelier",
+                "You know, pragmatism, it's all the rage with those big shots in London.",
+            ),
+            (2, "Narrator", "The old woman raises a finger to her lips."),
+        ):
+            rows.append(
+                {
+                    "chapter": "1",
+                    "sequence": sequence,
+                    "line_id": f"line-{sequence}",
+                    "speaker_name": speaker,
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+            )
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+
+        apostrophe, apostrophe_result = preloader.resolve_bounded_among(
+            "Hotelier",
+            "You know, pragmatism, it’s all the r",
+            ("line-1", "line-2"),
+        )
+        noisy, noisy_result = preloader.resolve_bounded_among(
+            "Narrator",
+            "7 r RPA The old woman raises a fin",
+            ("line-1", "line-2"),
+        )
+
+        self.assertEqual(apostrophe.line_id, "line-1")
+        self.assertEqual(apostrophe_result, "expected-bounded-prefix")
+        self.assertEqual(noisy.line_id, "line-2")
+        self.assertEqual(noisy_result, "expected-bounded-prefix")
+
+    def test_bounded_resolution_uses_nameplate_for_unique_short_line(self):
+        rows = []
+        for sequence, speaker, text in (
+            (1, "Rhiannon", "I, erhm ..."),
+            (2, "Narrator", "He pushes the coins back to her."),
+            (3, "Hotelier", "Best you go home before dark."),
+        ):
+            rows.append(
+                {
+                    "chapter": "1",
+                    "sequence": sequence,
+                    "line_id": f"line-{sequence}",
+                    "speaker_name": speaker,
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+            )
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+
+        line, result = preloader.resolve_bounded_among(
+            "Narrator",
+            "Rhiannon a on I, erhm ... i",
+            ("line-1", "line-2", "line-3"),
+        )
+
+        self.assertEqual(line.line_id, "line-1")
+        self.assertEqual(result, "expected-bounded-speaker-text")
+
+    def test_bounded_resolution_accepts_unique_long_narrator_ocr_drift(self):
+        rows = []
+        for sequence, text in (
+            (1, "Mrs. Owen catches herself a moment too late."),
+            (2, "The hotelier turns away without another word."),
+        ):
+            rows.append(
+                {
+                    "chapter": "1",
+                    "sequence": sequence,
+                    "line_id": f"line-{sequence}",
+                    "speaker_name": "Narrator",
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+            )
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+
+        line, result = preloader.resolve_bounded_among(
+            "Narrator",
+            "Mrs. Owen catches herself a momei",
+            ("line-1", "line-2"),
+        )
+
+        self.assertEqual(line.line_id, "line-1")
+        self.assertEqual(result, "expected-bounded-speaker-prefix")
+
     def test_bounded_resolution_rejects_short_or_ambiguous_prefix(self):
         text = "The same repeated dialogue continues for a while."
         digest = hashlib.sha256(text.encode()).hexdigest()

@@ -155,13 +155,18 @@ locked.
       remain compatibility gates. The repaired real chapter `314601` capture
       passes the production sealer twice with all 21 events/frames, including
       silent events 18 and 19, and no skipped dialogue or key dispatch. The two
-      explicit silent-frontier mappings have human approval. Run the 100-event
-      real-game gate below. Do not implement real sequence-owned key delivery
-      until that evidence shows zero wrong-line, duplicate, stale or app-skipped
-      dialogue and safe focus/choice handling.
+      explicit silent-frontier mappings have human approval. The full immutable
+      capture plus the prior accepted overlap now pass checksum-bound technical
+      coverage for all 92/92 visible chapter events: the 91-event suffix passed
+      the production sealer twice with no missing frame or event. Obtain explicit
+      human acceptance for the remaining unique silent-frontier mapping at event
+      78, then republish the union report with human acceptance complete. Do not
+      implement real sequence-owned key delivery until the reviewed evidence also
+      shows safe focus/choice handling.
 - [ ] Remove OCR text from locked-mode speech and retire the incremental tracker
-      to recovery-only after a reviewed replay and 100-event real-game run show
-      zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue; every
+      to recovery-only after a reviewed replay and full-visible-chapter real-game
+      run shows zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue;
+      every
       eligible visited WAV is used; ordinary linear transitions run no full
       OCR; and exactly one automatic key is sent per cursor event.
 

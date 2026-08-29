@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from PIL import Image
@@ -17,7 +18,9 @@ from PIL import Image
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
+    CapturedDialogFrame,
     detect_standalone_ellipsis_frame,
+    dialog_glyphs_visible,
     ellipsis_speaker_hint,
 )
 from vntts.live_replay_sequence_seal import (
@@ -62,6 +65,8 @@ class _Observation:
     text: str | None
     line_id: str | None
     status: str
+    dialog_visible: bool
+    bright_dialog_pixels: int
 
 
 @dataclass
@@ -73,6 +78,8 @@ class _MappedEvent:
     observed_character: str
     observed_text: str
     absorbed_observation_indices: list[int]
+    dialog_visible: bool
+    bright_dialog_pixels: int
 
 
 def recover_live_replay_capture(
@@ -83,6 +90,9 @@ def recover_live_replay_capture(
     sequence_plan,
     minimum_events=20,
     require_silent=True,
+    start_event_id=None,
+    end_event_id=None,
+    complete_visible_chapter=False,
 ):
     """Publish a new raw corpus only when one explicit capture path meets its gate."""
     if isinstance(minimum_events, bool) or minimum_events < 1:
@@ -151,6 +161,29 @@ def recover_live_replay_capture(
                 f"Story index and sequence plan are incompatible: {error}"
             ) from error
 
+        requested_start = str(start_event_id or "").strip() or None
+        requested_end = str(end_event_id or "").strip() or None
+        if complete_visible_chapter and (
+            requested_start is not None or requested_end is not None
+        ):
+            raise LiveReplayCaptureRecoveryError(
+                "Complete visible chapter recovery cannot select a partial segment"
+            )
+        for label, requested_event_id in (
+            ("start", requested_start),
+            ("end", requested_end),
+        ):
+            if requested_event_id is None:
+                continue
+            requested_event = plan.events.get(requested_event_id)
+            if requested_event is None or requested_event.kind not in {
+                "speech",
+                "silent",
+            }:
+                raise LiveReplayCaptureRecoveryError(
+                    f"Recovery {label} event must name a visible event in the plan"
+                )
+
         observations, ledger_authority, ledger_payload, visual_ellipses = (
             _load_observations(
                 capture_path,
@@ -160,16 +193,57 @@ def recover_live_replay_capture(
             )
         )
         candidates = _candidate_events(observations, resolver, plan)
-        selected = _longest_explicit_run(candidates, plan)
+        selected = _longest_explicit_run(
+            candidates,
+            plan,
+            resolver,
+            start_event_id=requested_start,
+        )
+        if requested_end is not None:
+            end_index = next(
+                (
+                    index
+                    for index, item in enumerate(selected)
+                    if item.event.event_id == requested_end
+                ),
+                None,
+            )
+            selected = [] if end_index is None else selected[: end_index + 1]
+        expected_visible = tuple(
+            sorted(
+                (
+                    event
+                    for event in plan.events.values()
+                    if event.kind in {"speech", "silent"}
+                ),
+                key=lambda event: (str(event.chapter), event.sequence, event.event_id),
+            )
+        )
+        if (
+            complete_visible_chapter
+            and len({event.chapter for event in expected_visible}) != 1
+        ):
+            raise LiveReplayCaptureRecoveryError(
+                "Complete visible chapter recovery requires a one-chapter plan"
+            )
+        expected_visible_ids = tuple(event.event_id for event in expected_visible)
+        selected_ids = tuple(item.event.event_id for item in selected)
+        selected_id_set = set(selected_ids)
+        effective_minimum_events = (
+            len(expected_visible) if complete_visible_chapter else minimum_events
+        )
         contains_silent = any(item.event.kind == "silent" for item in selected)
-        sufficient = len(selected) >= minimum_events and (
-            contains_silent or not require_silent
+        complete_visible = selected_ids == expected_visible_ids
+        sufficient = (
+            len(selected) >= effective_minimum_events
+            and (contains_silent or not require_silent)
+            and (complete_visible or not complete_visible_chapter)
         )
         follow_up = None
         if not sufficient:
             follow_up = _recommended_capture_segment(
                 plan,
-                minimum_events,
+                effective_minimum_events,
                 require_silent=require_silent,
             )
         analysis = {
@@ -202,7 +276,24 @@ def recover_live_replay_capture(
                 for item in selected
                 for observation_index in item.absorbed_observation_indices
             ],
-            "minimum_event_count": minimum_events,
+            "minimum_event_count": effective_minimum_events,
+            "requested_start_event_id": requested_start,
+            "requested_end_event_id": requested_end,
+            "acceptance_gate": {
+                "kind": (
+                    "complete-visible-chapter"
+                    if complete_visible_chapter
+                    else "minimum-visible-events"
+                ),
+                "expected_visible_event_count": len(expected_visible),
+                "selected_visible_event_count": len(selected),
+                "complete_visible_chapter": complete_visible,
+                "missing_event_ids": [
+                    event_id
+                    for event_id in expected_visible_ids
+                    if event_id not in selected_id_set
+                ],
+            },
             "silent_event_required": bool(require_silent),
             "selected_event_count": len(selected),
             "selected_contains_silent": contains_silent,
@@ -256,6 +347,9 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
                     f"Raw replay dialogue {index} has no exact frames"
                 )
             _validate_frames(capture_path.parent, frames)
+            dialog_visible, bright_dialog_pixels = _frame_visibility(
+                _validated_frame_payload(capture_path.parent, frames[0])
+            )
             observations.append(
                 _Observation(
                     index,
@@ -264,6 +358,8 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
                     " ".join(str(record.get("text") or "").split()) or None,
                     str(record.get("line_id") or "").strip() or None,
                     "legacy-dialogue",
+                    dialog_visible,
+                    bright_dialog_pixels,
                 )
             )
         return tuple(observations), None, None, []
@@ -306,6 +402,7 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
             )
         frame = entry.get("frame")
         frame_payload = _validated_frame_payload(capture_path.parent, frame)
+        dialog_visible, bright_dialog_pixels = _frame_visibility(frame_payload)
         character = _optional_text(entry.get("observed_character"))
         text = _optional_text(entry.get("observed_text"))
         status = str(entry.get("status") or "unknown")
@@ -336,6 +433,8 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
                 text,
                 _optional_text(entry.get("story_line_id")),
                 status,
+                dialog_visible,
+                bright_dialog_pixels,
             )
         )
     return tuple(observations), digest, payload, visual_ellipses
@@ -360,6 +459,23 @@ def _validated_frame_payload(root, frame):
             "Capture observation frame checksum changed"
         )
     return payload
+
+
+def _frame_visibility(payload):
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            grayscale = image.convert("L")
+    except OSError as error:
+        raise LiveReplayCaptureRecoveryError(
+            "Capture observation frame is not a valid image"
+        ) from error
+    width, height = grayscale.size
+    dialog_top = min(height - 1, round(height * 0.25))
+    histogram = grayscale.crop((0, dialog_top, width, height)).histogram()
+    return (
+        dialog_glyphs_visible(CapturedDialogFrame(grayscale, 0.0)),
+        sum(histogram[160:]),
+    )
 
 
 def _candidate_events(observations, resolver, plan):
@@ -408,6 +524,7 @@ def _bounded_plan_match(observation, resolver, plan):
             for event in plan.events.values()
             if event.kind == "speech" and event.line_id
         ),
+        allow_speaker_evidence=False,
     )
     if line is None:
         return None
@@ -417,18 +534,30 @@ def _bounded_plan_match(observation, resolver, plan):
     return event, method
 
 
-def _longest_explicit_run(candidates, plan):
+def _longest_explicit_run(candidates, plan, resolver, *, start_event_id=None):
     best = []
     for start, (observation, event, method) in enumerate(candidates):
         if event is None or event is _BLOCKED_OBSERVATION:
+            continue
+        if start_event_id is not None and event.event_id != start_event_id:
             continue
         run = [_mapped_event(observation, event, method)]
         current = event
         pending = []
         for next_observation, next_event, next_method in candidates[start + 1 :]:
             if next_event is _BLOCKED_OBSERVATION:
-                pending.append(next_observation.observation_index)
-                continue
+                visible = _next_visible_events(plan, current)
+                expected = visible[0] if len(visible) == 1 else None
+                recovered_method = _frontier_bounded_match(
+                    next_observation,
+                    resolver,
+                    expected,
+                )
+                if recovered_method is None:
+                    pending.append(next_observation.observation_index)
+                    continue
+                next_event = expected
+                next_method = recovered_method
             if next_event is not None and next_event.event_id == current.event_id:
                 _merge_mapped_observation(
                     run[-1],
@@ -482,6 +611,67 @@ def _longest_explicit_run(candidates, plan):
     return best
 
 
+def _frontier_bounded_match(observation, resolver, expected):
+    """Match weak OCR only to the one plan-authorized visible successor.
+
+    The immutable frame still supplies the evidence. Sequence context merely
+    narrows the candidate to one event, allowing short lines and truncated text
+    that would be unsafe to resolve across the whole chapter.
+    """
+    if (
+        expected is None
+        or expected.kind != "speech"
+        or not expected.line_id
+        or not observation.text
+        or observation.status == "uncertain"
+    ):
+        return None
+    line = resolver.line_for_id(expected.line_id)
+    if line is None:
+        return None
+    observed = _normalized_text(observation.text)
+    canonical = _normalized_text(line.text)
+    speaker = _normalized_text(line.speaker)
+    observed_character = _normalized_text(observation.character)
+    if not observed or not canonical or not speaker:
+        return None
+    padded_observed = f" {observed} "
+    speaker_in_text = f" {speaker} " in padded_observed
+    speaker_matches = observed_character == speaker
+    if not (speaker_matches or speaker_in_text):
+        return None
+    if speaker_in_text:
+        observed = " ".join(observed.replace(speaker, " ", 1).split())
+    tokens = observed.split()
+    for dropped in range(min(8, len(tokens))):
+        candidate = " ".join(tokens[dropped:])
+        if not candidate:
+            continue
+        if canonical in candidate:
+            return "expected-frontier-speaker-text"
+        prefix_length = _common_prefix_length(candidate, canonical)
+        if len(canonical) <= 12:
+            if prefix_length >= 3 and prefix_length / len(canonical) >= 0.6:
+                return "expected-frontier-short-prefix"
+            continue
+        if prefix_length >= 12:
+            return "expected-frontier-prefix"
+        coverage = min(len(candidate), len(canonical)) / max(
+            len(candidate), len(canonical)
+        )
+        similarity = SequenceMatcher(None, candidate, canonical).ratio()
+        if len(candidate) >= 20 and coverage >= 0.65 and similarity >= 0.8:
+            return "expected-frontier-similarity"
+    return None
+
+
+def _common_prefix_length(left, right):
+    for index, (left_character, right_character) in enumerate(zip(left, right)):
+        if left_character != right_character:
+            return index
+    return min(len(left), len(right))
+
+
 def _same_silent_observation(current, observation):
     current_speaker = _normalized_text(current.observed_character)
     observed_speaker = _normalized_text(observation.character)
@@ -492,8 +682,16 @@ def _same_silent_observation(current, observation):
 
 
 def _merge_mapped_observation(current, observation, method, pending):
-    incoming_rank = _mapping_rank(method)
-    current_rank = _mapping_rank(current.mapping_method)
+    incoming_rank = (
+        observation.dialog_visible,
+        _mapping_rank(method),
+        observation.bright_dialog_pixels,
+    )
+    current_rank = (
+        current.dialog_visible,
+        _mapping_rank(current.mapping_method),
+        current.bright_dialog_pixels,
+    )
     if incoming_rank >= current_rank:
         current.absorbed_observation_indices.extend(
             [*current.observation_indices, *pending]
@@ -503,6 +701,8 @@ def _merge_mapped_observation(current, observation, method, pending):
         current.mapping_method = method
         current.observed_character = observation.character or "Narrator"
         current.observed_text = observation.text or "..."
+        current.dialog_visible = observation.dialog_visible
+        current.bright_dialog_pixels = observation.bright_dialog_pixels
     else:
         current.absorbed_observation_indices.extend(
             [*pending, observation.observation_index]
@@ -518,6 +718,13 @@ def _mapping_rank(method):
         "expected-bounded-similarity": 3,
         "expected-bounded-ocr-suffix": 3,
         "expected-bounded-prefix": 2,
+        "expected-bounded-speaker-text": 3,
+        "expected-bounded-speaker-similarity": 3,
+        "expected-bounded-speaker-prefix": 2,
+        "expected-frontier-speaker-text": 3,
+        "expected-frontier-short-prefix": 2,
+        "expected-frontier-prefix": 2,
+        "expected-frontier-similarity": 2,
     }.get(str(method), 1)
 
 
@@ -583,6 +790,8 @@ def _mapped_event(observation, event, method, *, absorbed=()):
         observation.character or "Narrator",
         observation.text or "...",
         list(absorbed),
+        observation.dialog_visible,
+        observation.bright_dialog_pixels,
     )
 
 
@@ -595,6 +804,8 @@ def _mapped_wire(item):
         "observation_indices": item.observation_indices,
         "absorbed_observation_indices": item.absorbed_observation_indices,
         "frame_count": len(item.frames),
+        "representative_dialog_visible": item.dialog_visible,
+        "representative_bright_dialog_pixels": item.bright_dialog_pixels,
     }
 
 
@@ -777,6 +988,22 @@ def build_parser():
     parser.add_argument("--story-index", type=Path)
     parser.add_argument("--sequence-plan", type=Path)
     parser.add_argument("--minimum-events", type=int, default=20)
+    parser.add_argument(
+        "--start-event-id",
+        help="Require the recovered segment to start at this visible plan event",
+    )
+    parser.add_argument(
+        "--end-event-id",
+        help="Stop the recovered segment after this visible plan event",
+    )
+    parser.add_argument(
+        "--complete-visible-chapter",
+        action="store_true",
+        help=(
+            "Require every speech and silent event in the plan, instead of an "
+            "arbitrary minimum count"
+        ),
+    )
     parser.add_argument("--allow-no-silent", action="store_true")
     return parser
 
@@ -798,6 +1025,9 @@ def main(argv=None):
             sequence_plan=sequence_plan,
             minimum_events=arguments.minimum_events,
             require_silent=not arguments.allow_no_silent,
+            start_event_id=arguments.start_event_id,
+            end_event_id=arguments.end_event_id,
+            complete_visible_chapter=arguments.complete_visible_chapter,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         return cli_error(error)

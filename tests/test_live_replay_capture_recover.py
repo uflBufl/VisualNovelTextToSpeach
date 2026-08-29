@@ -186,6 +186,13 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                 sequence_plan=plan,
                 minimum_events=4,
             )
+            complete = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered-complete",
+                story_index=story,
+                sequence_plan=plan,
+                complete_visible_chapter=True,
+            )
             document = json.loads(recovered.corpus.read_text(encoding="utf-8"))
             analysis = json.loads(recovered.report.read_text(encoding="utf-8"))
             sealed = seal_sequence_replay(
@@ -199,6 +206,20 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
             )
 
             self.assertTrue(recovered.sufficient)
+            self.assertTrue(complete.sufficient)
+            self.assertEqual(complete.event_count, 4)
+            self.assertEqual(
+                json.loads(complete.report.read_text(encoding="utf-8"))[
+                    "acceptance_gate"
+                ],
+                {
+                    "kind": "complete-visible-chapter",
+                    "expected_visible_event_count": 4,
+                    "selected_visible_event_count": 4,
+                    "complete_visible_chapter": True,
+                    "missing_event_ids": [],
+                },
+            )
             self.assertTrue(recovered.contains_silent)
             self.assertEqual(recovered.event_count, 4)
             self.assertEqual(
@@ -223,6 +244,108 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
             )
             self.assertEqual(sha256_file(captured.corpus), raw_sha256)
             self.assertTrue(sealed.corpus.is_file())
+
+    def test_recovers_plan_frontier_from_nameplate_and_truncated_ocr(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = [
+                {
+                    "line_id": "story:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "First line.",
+                },
+                {
+                    "line_id": "story:2",
+                    "chapter": "1",
+                    "sequence": 2,
+                    "speaker": "Bea",
+                    "text": "Huh.",
+                },
+                {
+                    "line_id": "story:3",
+                    "chapter": "1",
+                    "sequence": 3,
+                    "speaker": "Narrator",
+                    "text": "The old woman raises a finger to her lips.",
+                },
+            ]
+            story = self.write_story(root, lines)
+            plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": f"event-{sequence}",
+                        "sequence": sequence,
+                        "kind": "speech",
+                        "control": "terminal" if sequence == 3 else "automatic",
+                        "successors": []
+                        if sequence == 3
+                        else [f"event-{sequence + 1}"],
+                        "line_id": f"story:{sequence}",
+                    }
+                    for sequence in (1, 2, 3)
+                ],
+            )
+            captured, _recognize = self.capture(
+                root,
+                story,
+                (
+                    ((255, 0, 0), "Ada", "First line."),
+                    ((0, 255, 0), "Narrator", "Bea Huh."),
+                    (
+                        (0, 0, 255),
+                        "Narrator",
+                        "7 r RPA The old woman raises a fin",
+                    ),
+                ),
+            )
+
+            recovered = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered-frontier",
+                story_index=story,
+                sequence_plan=plan,
+                minimum_events=3,
+                require_silent=False,
+            )
+            suffix = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered-frontier-suffix",
+                story_index=story,
+                sequence_plan=plan,
+                minimum_events=1,
+                require_silent=False,
+                start_event_id="event-3",
+                end_event_id="event-3",
+            )
+            report = json.loads(recovered.report.read_text(encoding="utf-8"))
+
+            self.assertTrue(recovered.sufficient)
+            self.assertEqual(recovered.event_count, 3)
+            self.assertEqual(
+                [item["mapping_method"] for item in report["selected"]],
+                [
+                    "exact-canonical-observation",
+                    "expected-frontier-speaker-text",
+                    "expected-bounded-prefix",
+                ],
+            )
+            self.assertEqual(suffix.event_count, 1)
+            self.assertEqual(
+                json.loads(suffix.report.read_text(encoding="utf-8"))[
+                    "requested_start_event_id"
+                ],
+                "event-3",
+            )
+            self.assertEqual(
+                json.loads(suffix.report.read_text(encoding="utf-8"))[
+                    "requested_end_event_id"
+                ],
+                "event-3",
+            )
 
     def test_insufficient_branch_capture_publishes_only_analysis(self):
         with TemporaryDirectory() as directory:

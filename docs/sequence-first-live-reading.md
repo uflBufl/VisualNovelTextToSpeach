@@ -178,7 +178,19 @@ including the separate Hotelier and Rhiannon silent events at sequences 18 and
 frame and event identities, 19 speech routes, two silent routes, zero skipped
 frames and zero key dispatches. This closes the 20-event software replay gate;
 the Hotelier and Rhiannon silent mappings received human approval on 2026-08-29.
-The 100-event gameplay gate remains separate.
+The later full-chapter capture proved that an arbitrary 100-visible-event gate
+was impossible: the plan has 104 total events but only 92 dialogue-box events
+(89 speech and three silent). Recovery now derives a complete-visible-chapter
+gate from the plan. The immutable full capture recovered all 92 events after
+bounded fixes for nameplate-contaminated text, curly apostrophes, truncated
+short lines and faded representative frames. Its first frame was already
+fading and therefore correctly failed the production presence gate; the prior
+accepted seal supplies event 4, while a new overlapping suffix seal passed
+twice for all 91 events from 5 through 101. The checksum-bound union report at
+`rhiannon-visible-chapter-coverage-2026-08-29-v2.json` proves 92/92 technical
+coverage with no missing event. Only the unique silent frontier at event 78
+still requires explicit human mapping acceptance; events 18 and 19 were already
+accepted.
 
 The existing story index is useful but not yet sufficient to drive the game
 blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through
@@ -389,7 +401,7 @@ route deterministic successors without another OCR call while leaving all
 advancement to the player. Explicit manual resynchronization, bounded
 branch/skip recovery and the persistent cursor-status card are implemented.
 Automatic sequence-owned key delivery remains gated on real-game route
-correctness and the 100-event acceptance run.
+correctness and the complete-visible-chapter acceptance run.
 
 Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV
@@ -400,7 +412,7 @@ Production acceptance requires:
 
 - zero speech from OCR text while locked;
 - zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue in the
-  reviewed replay corpus and a 100-event real-game run;
+  reviewed replay corpus and a complete-visible-chapter real-game run;
 - every visited line with an eligible approved WAV routes to that WAV;
 - no full OCR during ordinary linear locked transitions, with full-OCR rate and
   recovery reasons reported explicitly;
