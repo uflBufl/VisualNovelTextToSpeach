@@ -99,6 +99,16 @@ rejected WAV published. Every decision is validated against its exact plan,
 cohort, policy, target identities, sample and reviewed evidence before immutable
 review evidence is created.
 
+Cohort commit cost is scoped to the decision, not to the workspace's inherited
+history. The transaction revalidates every exact target WAV whose approval it
+introduces before staging and again before manifest publication. Unrelated
+approved entries are projected from their checksum-bound state records without
+reopening and decoding all historical WAVs. This does not weaken delivery:
+explicit manifest rebuild, immutable game-pack publication and pack preflight
+still validate every approved file against its recorded checksum and PCM
+quality. An unrelated damaged historical WAV therefore cannot corrupt the
+current decision, but it still blocks publication until repaired.
+
 An optional `vntts.authoring.reference_selection` voice-manifest extension is
 validated against every copied candidate WAV before workspace publication. See
 [authoring-reference-selection.md](authoring-reference-selection.md). This

@@ -1020,7 +1020,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with self.assertRaisesRegex(BulkGenerationError, "authority changed"):
                 bulk_module._assert_review_authorities(state_path, authorities, queue)
 
-    def test_cohort_commit_still_validates_every_approved_manifest_wav(self):
+    def test_cohort_commit_validates_only_newly_approved_wavs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first = queue_item("first")
@@ -1043,10 +1043,18 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = json.loads(result.state.read_text(encoding="utf-8"))
             first_wav = result.state.parent / state["items"][first["queue_id"]]["path"]
             write_pcm16_wav(first_wav, audio_samples() * 0.5, 16_000)
-            state_before = result.state.read_bytes()
-            manifest_before = result.manifest.read_bytes()
+            checked = []
+            original_validate = bulk_module._validate_success_file
 
-            with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
+            def track_validation(queue_id, item, audio):
+                checked.append(queue_id)
+                return original_validate(queue_id, item, audio)
+
+            with patch.object(
+                bulk_module,
+                "_validate_success_file",
+                side_effect=track_validation,
+            ):
                 bulk_module._review_generation_cohort(
                     result.state,
                     queue,
@@ -1054,9 +1062,18 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "approved",
                     provenance={"test": "approved-manifest-integrity"},
                 )
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            manifest = GeneratedAudioIndex.load(result.manifest)
 
-            self.assertEqual(result.state.read_bytes(), state_before)
-            self.assertEqual(result.manifest.read_bytes(), manifest_before)
+            with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
+                publish_generated_manifest(result.state)
+
+        self.assertEqual(set(checked), {second["queue_id"]})
+        self.assertEqual(checked.count(second["queue_id"]), 2)
+        self.assertEqual(
+            state["items"][second["queue_id"]]["review_status"], "approved"
+        )
+        self.assertEqual(len(manifest.entries), 2)
 
     def test_mixed_cohort_commit_projects_each_item_and_only_approved_manifest(self):
         with TemporaryDirectory() as directory:
@@ -1256,6 +1273,47 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(state["items"][first["queue_id"]]["review_status"], "rejected")
         self.assertEqual(
             state["items"][second["queue_id"]]["review_status"], "approved"
+        )
+        self.assertEqual(manifest.entries, ())
+
+    def test_cohort_approval_wav_change_after_state_keeps_manifest_conservative(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item("cohort-race")
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authority = generation_review_authority(result.state, item["queue_id"])
+            state = load_generation_state(result.state, queue)
+            audio = result.state.parent / state["items"][item["queue_id"]]["path"]
+            original_replace = os.replace
+
+            def mutate_after_state_replace(source, destination):
+                replaced = original_replace(source, destination)
+                if Path(destination).resolve() == result.state.resolve():
+                    write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
+                return replaced
+
+            with (
+                patch.object(
+                    bulk_module.os,
+                    "replace",
+                    side_effect=mutate_after_state_replace,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
+            ):
+                bulk_module._review_generation_cohort(
+                    result.state,
+                    queue,
+                    {item["queue_id"]: authority},
+                    "approved",
+                    provenance={"test": "cohort-wav-race"},
+                )
+
+            committed = json.loads(result.state.read_text(encoding="utf-8"))
+            manifest = GeneratedAudioIndex.load(result.manifest)
+
+        self.assertEqual(
+            committed["items"][item["queue_id"]]["review_status"], "approved"
         )
         self.assertEqual(manifest.entries, ())
 

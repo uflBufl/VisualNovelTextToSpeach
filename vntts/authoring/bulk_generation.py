@@ -2316,6 +2316,7 @@ def review_generation_cohort(
             state_path.parent,
             validate_files=False,
         )
+        _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
         transaction_id = secrets.token_hex(16)
         staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
         staged_manifest = manifest_path.with_name(
@@ -2352,7 +2353,7 @@ def review_generation_cohort(
             validated_entries = _approved_manifest_entries(
                 proposed,
                 state_path.parent,
-                validate_files=True,
+                validate_files=False,
             )
             if validated_entries != entries:
                 raise BulkGenerationError(
@@ -2387,10 +2388,13 @@ def review_generation_cohort(
                         raise BulkGenerationError(
                             "Cohort review queue changed before manifest publication"
                         )
+                    _validate_cohort_approved_wavs(
+                        proposed, state_path.parent, decisions
+                    )
                     current_entries = _approved_manifest_entries(
                         proposed,
                         state_path.parent,
-                        validate_files=True,
+                        validate_files=False,
                     )
                     if current_entries != entries:
                         raise BulkGenerationError(
@@ -2427,6 +2431,9 @@ def review_generation_cohort(
                     ) from error
                 try:
                     lease.assert_owned()
+                    _validate_cohort_approved_wavs(
+                        proposed, state_path.parent, decisions
+                    )
                 except BulkGenerationError as error:
                     raise BulkGenerationError(
                         "Cohort review decision was saved, but manifest rebuild was "
@@ -2464,6 +2471,17 @@ def review_generation_cohort(
         for queue_id, authority in authorities.items()
         if decisions[queue_id] != "pending_review"
     )
+
+
+def _validate_cohort_approved_wavs(state, output_directory, decisions):
+    """Validate only WAVs whose approval is introduced by this transaction."""
+    for queue_id, decision in decisions.items():
+        if decision != "approved":
+            continue
+        item = state["items"][queue_id]
+        relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+        audio = _within(output_directory, relative, "Generated WAV")
+        _validate_success_file(queue_id, item, audio)
 
 
 _review_generation_cohort = review_generation_cohort

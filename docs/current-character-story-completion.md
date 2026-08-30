@@ -1873,3 +1873,11 @@ quality gate. Afterwards only exact approved WAVs may be merged into the
 606-item authority; rejected candidates need an explicit live-fallback route.
 The semantic pack remains unpublished until all 14 added identities are
 terminal and preflight proves complete coverage.
+
+The first six decisions exposed a cohort-save scaling regression: the additive
+authority had 480 inherited approved WAVs, and each transaction revalidated all
+of them more than once. On the same real workspace one full manifest file pass
+took 2.5548 seconds while validation of the exact changed WAV took 0.0076
+seconds. Cohort commits now validate only WAVs approved by that transaction and
+derive unrelated entries from checksum-bound state. Full-file validation remains
+mandatory at explicit manifest rebuild, game-pack publication and preflight.
