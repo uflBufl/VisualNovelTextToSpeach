@@ -1581,13 +1581,8 @@ def _validate_seed_application(result, queue_id):
         raise BulkGenerationError(
             f"State item {queue_id!r} seed_applied must be boolean"
         )
-    repair = result.get("failure_repair")
-    unseeded_pocket_fallback = (
-        result.get("provider") == "pocket-tts"
-        and isinstance(repair, dict)
-        and repair.get("strategy") == OFFLINE_FALLBACK_BACKEND
-    )
-    if applied == unseeded_pocket_fallback:
+    expected = result.get("provider") != "pocket-tts"
+    if applied != expected:
         raise BulkGenerationError(
             f"State item {queue_id!r} seed application conflicts with its backend"
         )

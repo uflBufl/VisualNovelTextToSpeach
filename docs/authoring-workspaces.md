@@ -316,8 +316,9 @@ reference controls. A missing or incompatible selected voice/reference blocks
 readiness before backend construction and leaves the immutable MOSS failure for
 manual resolution. `attempts` remains the cumulative history across providers,
 while `attempts_by_provider` gives each backend its own attempt sequence.
-Pocket does not expose deterministic seeded generation, so the
-fallback sends `seed=None` to the backend and records `seed_applied=false`.
+Pocket does not expose deterministic seeded generation, so ordinary Pocket
+pregeneration and cross-backend fallback both send `seed=None` to the backend
+and record `seed_applied=false`.
 The integer `seed` in state remains a monotonic provider-attempt identity; it
 must not be represented as an applied sampling seed. One config-addressed
 fallback permits exactly one Pocket attempt (`--retries 0`), including across

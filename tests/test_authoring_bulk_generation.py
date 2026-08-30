@@ -730,6 +730,47 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(renderer.requests[0].seed, 5)
         self.assertEqual(resumed["items"][item["queue_id"]]["attempts"], 2)
 
+    def test_pocket_generation_is_one_unseeded_attempt(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer(diagnostics_backend="pocket-tts")
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+
+            result = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+                seed=17,
+            )
+            state = load_generation_state(result.state, queue)
+            generated = state["items"][item["queue_id"]]
+
+            with self.assertRaisesRegex(
+                BulkGenerationError, "unseeded and permits exactly one attempt"
+            ):
+                run_bulk_generation(
+                    queue,
+                    root / "retry-output",
+                    renderer,
+                    provider="pocket-tts",
+                    model="pocket-tts",
+                    generation_profile="default",
+                    retries=1,
+                    seed=17,
+                )
+
+        self.assertIsNone(renderer.requests[0].seed)
+        self.assertEqual(generated["seed"], 17)
+        self.assertFalse(generated["seed_applied"])
+        self.assertEqual(generated["attempts_by_provider"], {"pocket-tts": 1})
+
     def test_crash_after_wav_replace_preserves_orphan_before_regeneration(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

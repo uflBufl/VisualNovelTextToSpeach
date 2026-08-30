@@ -1825,3 +1825,31 @@ queue/workspace must add those 14 exact identities, terminalize their generated
 or explicit live-fallback routes and only then publish the evidence-bearing v4
 pack. The active timed v3 pack and external live-sequence setting remain
 unchanged.
+
+### Partial-continuation generation checkpoint
+
+The additive partial-only queue contains exactly the 14 semantic continuation
+identities and has SHA-256
+`c5ba8d852aa8b7fe5bcfb21fbf2fc74a47cb8a9adceee4b4eb27575fffb7aac8`.
+Its minimal immutable voice control retains the accepted Centurion and Rhiannon
+reference banks, aliases the accepted Mrs. Owen source-reference voice to
+`Mrs. Owen`, and routes only Hotelier through the explicit Centurion narrator
+fallback.
+
+The bounded MOSS run produced ten pending-review WAVs and retained three typed
+`missed_eos_audio_limit` failures after at most three provider attempts. Its
+state SHA-256 is
+`660b6af5225c870c776dc5c9c4007a0ca80ab6312d068b4f92ec1690bcb7320e`.
+The exact exhausted identities are Hotelier sequences 13 and 15 and Rhiannon
+sequence 16. A separate one-attempt Pocket run produced pending-review WAVs for
+those three identities with `seed_applied=false`; its state SHA-256 is
+`11513924f46a3a2184edc47e8583d5f80c8941ff942393e7d364667c5b5ee871`.
+Neither provider's candidates are approved automatically.
+
+Sequence 100 remains intentionally absent from both outputs. Its typed mixed
+event plan projects speech as `I can't believe she'd...` and keeps `*sigh*` as
+an unsupported event requiring an explicit composition or projection route;
+the literal marker was never sent to TTS. Therefore the v4 gate remains open:
+13 playable candidates require review, sequence 100 requires a terminal event
+route, and the accepted results still need an additive 606-item workspace
+successor before immutable pack publication.

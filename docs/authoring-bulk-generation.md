@@ -111,7 +111,11 @@ from ordinary TTS through the typed policy documented in
 reviewed composition; the marker is never sent as pronounceable text. For MOSS
 only, one/two-word trailing ellipses are transformed to a terminal period; both
 the original queue text hash and exact transformed synthesis-text hash are
-persisted. Negative limits or retries are rejected.
+persisted. Negative limits or retries are rejected. Pocket TTS does not expose
+deterministic sampling seeds, so every Pocket generation run is restricted to
+one attempt (`--retries 0`), sends `seed=None` to the backend and records
+`seed_applied=false`. The integer state `seed` remains the monotonic attempt
+identity used by authoring; it is not represented as an applied model seed.
 
 Review, recover a manifest and inspect state:
 

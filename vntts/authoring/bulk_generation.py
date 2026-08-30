@@ -1393,6 +1393,11 @@ def run_bulk_generation(
         raise BulkGenerationError(
             "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
         )
+    if provider == "pocket-tts" and retries != 0:
+        raise BulkGenerationError(
+            "Pocket TTS generation is unseeded and permits exactly one attempt; "
+            "set retries to 0"
+        )
     if repair_policy.inline_pause_queue_ids and (
         retries != 0 or provider != "moss-tts"
     ):
@@ -1735,12 +1740,7 @@ def run_bulk_generation(
                 attempts_by_provider[provider] = provider_attempts
                 run_attempts += 1
                 attempt_seed = seed + provider_attempts - 1
-                request_seed = (
-                    None
-                    if repair_strategy == OFFLINE_FALLBACK_BACKEND
-                    and provider == "pocket-tts"
-                    else attempt_seed
-                )
+                request_seed = None if provider == "pocket-tts" else attempt_seed
                 attempt_repair = None
                 if repair_document is not None:
                     attempt_repair = copy.deepcopy(repair_document)

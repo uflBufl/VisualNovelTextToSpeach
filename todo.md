@@ -163,7 +163,10 @@ while one-sentence controls remained below 0.25 seconds.
       continuations can be rendered/reviewed without mixing in ordinary absent
       or recoverable-source work. Pin the compatible shared artifact revision
       that admits only `available + partial + generate`, then rebuild the
-      selected Character Story queue and prove all 14
+      selected Character Story queue. Derive a minimal immutable voice control
+      for that subset rather than carrying unrelated queue-ID-specific bindings;
+      bind the already accepted Mrs. Owen source reference by alias and Hotelier
+      to the existing Centurion fallback policy. Prove all 14
       partial lines have a full generated-or-authorized-live continuation, and
       do not publish the semantic pack until that gate passes.
 - [ ] Publish a new immutable Character Story pack from the timed/completeness
