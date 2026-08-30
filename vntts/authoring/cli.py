@@ -47,11 +47,7 @@ from vntts.authoring.cli_audio_events import (
 from vntts.authoring.cli_cohort_reviews import (
     COMMANDS as COHORT_REVIEW_COMMANDS,
 )
-from vntts.authoring.cli_cohort_reviews import (
-    CohortReviewError,
-    load_cohort_review_decision,
-    load_cohort_review_plan,
-)
+from vntts.authoring.cli_cohort_reviews import CohortReviewError
 from vntts.authoring.cli_cohort_reviews import (
     configure_decision_parsers as configure_cohort_decision_parsers,
 )
@@ -150,6 +146,19 @@ from vntts.authoring.cli_terminal_conflicts import (
 )
 from vntts.authoring.cli_terminal_conflicts import (
     handle as handle_terminal_conflict_command,
+)
+from vntts.authoring.cli_voice_quality import (
+    COMMANDS as VOICE_QUALITY_COMMANDS,
+)
+from vntts.authoring.cli_voice_quality import (
+    VoiceQualityGateError,
+    VoiceRepairComparisonError,
+)
+from vntts.authoring.cli_voice_quality import (
+    configure_parsers as configure_voice_quality_parsers,
+)
+from vntts.authoring.cli_voice_quality import (
+    handle as handle_voice_quality_command,
 )
 from vntts.authoring.cli_workspace import (
     COMMANDS as WORKSPACE_COMMANDS,
@@ -276,21 +285,6 @@ from vntts.authoring.source_reference_review import (
 from vntts.authoring.specialist_failure_plan import (
     build_specialist_failure_plan,
     write_specialist_failure_plan,
-)
-from vntts.authoring.voice_quality_gate import (
-    VoiceQualityGateError,
-    build_voice_quality_gate,
-    inspect_voice_quality_gate,
-    load_voice_quality_gate,
-    write_voice_quality_gate,
-)
-from vntts.authoring.voice_repair_comparison import (
-    VoiceRepairComparisonError,
-    build_voice_repair_candidate_command,
-    build_voice_repair_comparison_plan,
-    load_voice_repair_comparison_plan,
-    prepare_voice_repair_candidate_workspace,
-    write_voice_repair_comparison_plan,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -573,52 +567,7 @@ def create_parser():
     )
     reference_binding.add_argument("audit", type=Path)
     reference_binding.add_argument("--output", type=Path, required=True)
-    voice_gate = subparsers.add_parser(
-        "voice-quality-gate",
-        help="Publish a reusable accepted voice-control quality gate",
-    )
-    voice_gate.add_argument("workspace", type=Path)
-    voice_gate.add_argument("plan", type=Path)
-    voice_gate.add_argument("decision", type=Path)
-    voice_gate.add_argument("--output", type=Path, required=True)
-    voice_gate_check = subparsers.add_parser(
-        "voice-quality-check",
-        help="Compare one later pending item with a reusable voice-quality gate",
-    )
-    voice_gate_check.add_argument("gate", type=Path)
-    voice_gate_check.add_argument("workspace", type=Path)
-    voice_gate_check.add_argument("queue_id")
-    voice_repair = subparsers.add_parser(
-        "voice-repair-comparison-plan",
-        help="Plan a checksum-bound profile comparison for one unresolved voice",
-    )
-    voice_repair.add_argument("workspace", type=Path)
-    voice_repair.add_argument("character")
-    voice_repair.add_argument(
-        "--generation-profile",
-        action="append",
-        dest="generation_profiles",
-        help="Bounded profile to compare; repeat for each candidate",
-    )
-    voice_repair.add_argument("--output", type=Path, required=True)
-    voice_repair_workspace = subparsers.add_parser(
-        "voice-repair-candidate-workspace",
-        help="Create one self-contained candidate workspace from an immutable plan",
-    )
-    voice_repair_workspace.add_argument("plan", type=Path)
-    voice_repair_workspace.add_argument("candidate_id")
-    voice_repair_workspace.add_argument("import_directory", type=Path)
-    voice_repair_workspace.add_argument("--inputs-root", type=Path, required=True)
-    voice_repair_workspace.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
-    voice_repair_command = subparsers.add_parser(
-        "voice-repair-candidate-command",
-        help="Validate and print one exact sample-only generation command",
-    )
-    voice_repair_command.add_argument("plan", type=Path)
-    voice_repair_command.add_argument("candidate_id")
-    voice_repair_command.add_argument("workspace", type=Path)
+    configure_voice_quality_parsers(subparsers)
     missing_voice_reuse = subparsers.add_parser(
         "missing-voice-reuse-plan",
         help="Plan bounded existing-voice comparisons for known unbound roles",
@@ -930,6 +879,7 @@ COMMAND_FAMILIES = (
     CommandFamily(SILENCE_COMPARISON_COMMANDS, handle_silence_comparison_command),
     CommandFamily(SPEECH_ROBUSTNESS_COMMANDS, handle_speech_robustness_command),
     CommandFamily(TERMINAL_CONFLICT_COMMANDS, handle_terminal_conflict_command),
+    CommandFamily(VOICE_QUALITY_COMMANDS, handle_voice_quality_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
 )
 
@@ -1397,60 +1347,6 @@ def main(argv=None):
                     sort_keys=True,
                 )
             )
-            return 0
-        if arguments.command == "voice-quality-gate":
-            gate = build_voice_quality_gate(
-                arguments.workspace,
-                load_cohort_review_plan(arguments.plan),
-                load_cohort_review_decision(arguments.decision),
-            )
-            write_voice_quality_gate(gate, arguments.output)
-            print(json.dumps(gate.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "voice-quality-check":
-            result = inspect_voice_quality_gate(
-                load_voice_quality_gate(arguments.gate),
-                arguments.workspace,
-                arguments.queue_id,
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "voice-repair-comparison-plan":
-            plan = build_voice_repair_comparison_plan(
-                arguments.workspace,
-                arguments.character,
-                generation_profiles=(
-                    ("stable", "natural")
-                    if arguments.generation_profiles is None
-                    else tuple(arguments.generation_profiles)
-                ),
-            )
-            write_voice_repair_comparison_plan(plan, arguments.output)
-            print(
-                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-            )
-            return 0
-        if arguments.command == "voice-repair-candidate-workspace":
-            result = prepare_voice_repair_candidate_workspace(
-                load_voice_repair_comparison_plan(arguments.plan),
-                arguments.candidate_id,
-                arguments.import_directory,
-                arguments.inputs_root,
-                arguments.workspaces_root,
-            )
-            print(
-                json.dumps(
-                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
-            return 0
-        if arguments.command == "voice-repair-candidate-command":
-            command = build_voice_repair_candidate_command(
-                load_voice_repair_comparison_plan(arguments.plan),
-                arguments.candidate_id,
-                arguments.workspace,
-            )
-            print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
             return 0
         if arguments.command == "missing-voice-reuse-plan":
             plan = build_missing_voice_reuse_plan(

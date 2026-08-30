@@ -277,11 +277,11 @@ flags, while focused tests bind their JSON and implementation call contracts.
 decision and atomic projection commands. Its planning and decision parser
 builders preserve the two historical help-order positions, and its family
 handler preserves fail-fast queue-selection validation before any artifact I/O.
-The boundary also re-exports the plan and decision loaders used by the remaining
-voice-quality commands; this keeps `cli.py` free of concrete `cohort_bundle` and
-`cohort_review` imports until those consumers move. A normalized parser digest,
-single-owner dispatch test and focused validation/output tests bind this
-contract.
+Plan and decision loaders remain private to the family handler. Voice-quality
+consumers load their evidence inside their own family boundary, so `cli.py`
+remains free of concrete `cohort_bundle` and `cohort_review` imports. A
+normalized parser digest, single-owner dispatch test and focused
+validation/output tests bind this contract.
 
 `cli_silence_comparison` owns the checksum-bound comparison publication,
 integrity inspection and blind-listening session commands. It also owns the
@@ -298,6 +298,13 @@ modules out of `cli.py`. Its contract tests bind the contiguous parser position,
 workspace-root default and the intentionally distinct document, raw-progress
 and workspace-result JSON forms.
 
+`cli_voice_quality` owns the reusable cohort-backed quality gate and bounded
+voice-repair comparison, candidate-workspace and exact-command operations. It
+loads cohort evidence directly instead of coupling `cli.py` to either the
+concrete cohort workflow or the sibling cohort CLI family. Its parser contract
+binds the default `stable,natural` comparison profiles and workspace-root
+default; focused tests separately preserve document and argv JSON outputs.
+
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by the remaining generation parser
 without coupling it back to the workspace family. These family modules depend
@@ -307,7 +314,7 @@ JSON behavior; the complete suite remains the final compatibility gate for each
 extraction slice. The audio-event slice additionally binds a normalized SHA-256
 of every option, positional, type, required flag, choice, default and help text,
 and rejects renewed concrete audio-event workflow imports from `cli.py`. The
-render-review, cohort-review, silence-comparison and terminal-conflict families
-apply the same digest and concrete-import boundary gates.
+render-review, cohort-review, silence-comparison, terminal-conflict and
+voice-quality families apply the same digest and concrete-import boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.
