@@ -14,6 +14,12 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
+from vntts.authoring.asr_model import (
+    ManagedAsrModelError,
+    install_managed_asr_model,
+    managed_asr_status,
+    resolve_managed_asr_model,
+)
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,
@@ -707,16 +713,39 @@ def create_parser():
     robustness_check.add_argument("directory", type=Path)
     robustness_asr = subparsers.add_parser(
         "speech-robustness-asr",
-        help="Compare a v2 robustness corpus with one local ASR model",
+        help="Compare a v2 robustness corpus with managed or explicit local ASR",
     )
     robustness_asr.add_argument("corpus", type=Path)
-    robustness_asr.add_argument("model", type=Path)
+    robustness_asr.add_argument(
+        "model",
+        nargs="?",
+        type=Path,
+        help="Optional explicit local model; managed Whisper is used by default",
+    )
     robustness_asr.add_argument("--output", type=Path, required=True)
     robustness_asr.add_argument("--device", default="cpu")
+    robustness_asr.add_argument(
+        "--offline",
+        action="store_true",
+        help="Require an already installed managed model; never download it",
+    )
     robustness_asr.add_argument(
         "--progress",
         type=Path,
         help="Checksum-bound resumable per-sample progress document",
+    )
+    asr_model_install = subparsers.add_parser(
+        "asr-model-install",
+        help="Atomically install and verify the pinned authoring Whisper model",
+    )
+    asr_model_install.add_argument(
+        "--source",
+        type=Path,
+        help="Import an existing snapshot instead of downloading it",
+    )
+    subparsers.add_parser(
+        "asr-model-status",
+        help="Inspect the pinned authoring Whisper model without downloading it",
     )
     specialist_failures = subparsers.add_parser(
         "specialist-failure-plan",
@@ -1856,9 +1885,16 @@ def main(argv=None):
                 raise SpeechRobustnessAsrError(
                     "ASR report must be outside the immutable corpus directory"
                 )
+            model = arguments.model
+            if model is None:
+                model = (
+                    resolve_managed_asr_model()
+                    if arguments.offline
+                    else Path(install_managed_asr_model()["model_directory"])
+                )
             report = build_speech_robustness_asr_report(
                 arguments.corpus,
-                arguments.model,
+                model,
                 device=arguments.device,
                 progress_path=(
                     arguments.progress
@@ -1880,6 +1916,18 @@ def main(argv=None):
                     sort_keys=True,
                 )
             )
+            return 0
+        if arguments.command == "asr-model-install":
+            print(
+                json.dumps(
+                    install_managed_asr_model(source=arguments.source),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if arguments.command == "asr-model-status":
+            print(json.dumps(managed_asr_status(), indent=2, sort_keys=True))
             return 0
         if arguments.command == "specialist-failure-plan":
             plan = build_specialist_failure_plan(arguments.workspace)
@@ -2512,6 +2560,7 @@ def main(argv=None):
         MissingVoiceReuseBindingError,
         MissingVoiceReuseReviewError,
         MissingVoiceLiveFallbackError,
+        ManagedAsrModelError,
         KnownRoleReuseError,
         PortraitAliasError,
         QueueExtensionError,

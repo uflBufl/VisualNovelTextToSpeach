@@ -4,6 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -393,6 +394,19 @@ class GamePackImportTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["game_id"], "synthetic-game")
         self.assertEqual(payload["game_pack"], str(pack_path.resolve()))
+
+    def test_runtime_pack_import_never_installs_authoring_asr(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(root)
+            with patch(
+                "vntts.authoring.asr_model.install_managed_asr_model",
+                side_effect=AssertionError("runtime attempted an authoring download"),
+            ) as install:
+                imported = import_game_pack(pack_path)
+
+        self.assertEqual(imported.pack.game_id, "synthetic-game")
+        install.assert_not_called()
 
 
 if __name__ == "__main__":

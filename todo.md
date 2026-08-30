@@ -139,13 +139,6 @@ while one-sentence controls remained below 0.25 seconds.
 
 ## Live mode
 
-### P1 - Restore automatic advance for original game audio
-
-- [ ] Make optional local ASR a managed authoring dependency rather than a model
-      path the operator must configure. Pin the Whisper model revision, checksum
-      and license notice, then either bundle it in the authoring distribution or
-      download it on demand into application data with integrity verification.
-      Published-pack playback must not require Whisper or network access.
 ### P0 - Replace OCR-driven playback with a sequence-first story cursor
 
 Follow the architecture and rollout gates in

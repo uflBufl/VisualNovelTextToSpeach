@@ -65,14 +65,41 @@ uv run --no-sync vntts-pregenerate speech-robustness-check \
 An identical republish is idempotent. Changed source authority or a conflicting
 destination fails closed.
 
-Run the optional local, offline ASR comparison with an explicit model snapshot:
+Run the optional local ASR comparison without configuring a model path:
 
 ```bash
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 uv run --no-sync vntts-pregenerate speech-robustness-asr \
-  /path/to/v2-corpus /path/to/local-whisper-snapshot \
+  /path/to/v2-corpus \
   --output /path/to/asr-report.json --device cpu
 ```
+
+The first online run downloads only the exact allowlisted files from pinned
+`openai/whisper-tiny.en` revision
+`87c7102498dcde7456f24cfd30239ca606ed9063`, verifies model-tree SHA-256
+`d69d7c69a342b4cf4274fe974559249fdb240d14813cd7d03cb9094955a7240b`
+and atomically publishes it under the VNTTS authoring data directory. The
+managed installation records the Hugging Face snapshot's Apache-2.0 notice and
+the upstream OpenAI Whisper MIT notice. Inspect it without network access with:
+
+```bash
+uv run --no-sync vntts-pregenerate asr-model-status
+```
+
+Use `--offline` on `speech-robustness-asr` to require that verified installation
+and prohibit a download. An existing snapshot can be imported without network:
+
+```bash
+uv run --no-sync vntts-pregenerate asr-model-install \
+  --source /path/to/openai-whisper-tiny.en-snapshot
+```
+
+The former explicit positional model path remains supported for experiments,
+but is no longer part of the normal operator flow. A corrupted or partial
+managed installation is never overwritten automatically; status reports the
+integrity failure so the operator can inspect and remove that exact model
+directory. The installer is authoring-only. Pack publication embeds semantic
+evidence, and game-pack import/live playback neither imports the installer nor
+requires Whisper or network access.
 
 The command maintains a checksum-bound `.progress.json` beside the requested
 output and resumes its exact completed prefix after interruption. The final

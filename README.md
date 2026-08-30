@@ -516,8 +516,11 @@ self-contained, checksum-bound speech robustness corpus with
 are calibrated against the human labels; see the
 [speech robustness corpus contract](docs/speech-robustness-corpus.md).
 Corpus v2 binds exact requested text, and `speech-robustness-asr` can produce a
-resumable offline Whisper comparison without granting ASR automatic rejection
-authority. Future corpus v3 publications also preserve explicit human defect
+resumable Whisper comparison through a pinned, checksum-verified authoring
+model that is installed on demand without a user-configured path. `--offline`
+prohibits downloads, and published packs/live playback never require the model
+or network. ASR has no automatic rejection authority. Future corpus v3
+publications also preserve explicit human defect
 reasons from version-2 cohort decisions; older evidence is never relabelled.
 
 For a large history with parallel repair workspaces and retained old review
