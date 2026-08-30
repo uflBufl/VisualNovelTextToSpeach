@@ -126,6 +126,7 @@ def plan_generation_queue(
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
     delivery_policy: str | None = None,
+    partial_source_audio_only: bool = False,
     generated_at: str | None = None,
 ):
     """Plan a queue from typed shared artifacts without reading producer JSON."""
@@ -154,6 +155,13 @@ def plan_generation_queue(
         if selected_collection_ids is None
         or record.collection_id in selected_collection_ids
     )
+    if partial_source_audio_only:
+        selected = tuple(
+            record
+            for record in selected
+            if record.source_audio_status == "available"
+            and record.producer_fields.get("source_audio_completeness") == "partial"
+        )
     voice_index = _voice_index(entries)
     manifest_directory = voice_manifest_path.parent
     reference_availability = {
@@ -283,6 +291,7 @@ def plan_generation_queue(
             if selected_collection_ids is None
             else sorted(selected_collection_ids),
             "unknown_action": unknown_action,
+            "partial_source_audio_only": bool(partial_source_audio_only),
         },
         "source_story_index_document_sha256": _json_sha256(
             {
@@ -331,6 +340,7 @@ def inspect_generation_queue(
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
     delivery_policy: str | None = None,
+    partial_source_audio_only: bool = False,
     generated_at: str | None = None,
 ):
     """Load public shared artifacts and return a non-mutating queue plan."""
@@ -353,6 +363,7 @@ def inspect_generation_queue(
         collection_ids=collection_ids,
         unknown_action=unknown_action,
         delivery_policy=delivery_policy,
+        partial_source_audio_only=partial_source_audio_only,
         generated_at=generated_at,
     )
 

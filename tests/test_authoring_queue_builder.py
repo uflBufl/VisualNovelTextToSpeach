@@ -160,6 +160,11 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             )
 
             plan = inspect_generation_queue(story_path, manifest_path)
+            partial_only = inspect_generation_queue(
+                story_path,
+                manifest_path,
+                partial_source_audio_only=True,
+            )
 
         self.assertEqual(len(plan.items), 1)
         self.assertEqual(plan.items[0]["action"], "generate")
@@ -170,6 +175,8 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         self.assertEqual(plan.summary.ready, 1)
         self.assertEqual(plan.summary.skipped_available, 2)
         self.assertEqual(plan.metadata["partial_source_audio_count"], 1)
+        self.assertEqual([item["line_id"] for item in partial_only.items], ["line-1"])
+        self.assertTrue(partial_only.metadata["filters"]["partial_source_audio_only"])
 
     def test_inline_audio_event_plan_is_additive_and_canonical(self):
         with TemporaryDirectory() as directory:

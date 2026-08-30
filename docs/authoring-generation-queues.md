@@ -98,6 +98,10 @@ uv run vntts-pregenerate build-queue \
   --output /path/to/generation-queue.jsonl
 ```
 
+Use `--partial-source-audio-only` on either command to isolate exact
+complete-text continuations for semantically partial installed cues. This does
+not include `full`, `unknown`, absent or recoverable-source records.
+
 Omit `--collection` to include all story-index records. If any selected record
 has `unknown` source status, omitting `--unknown-action` fails before output is
 created. Queue IDs remain `line_id:text_sha256[:16]`, with the hash calculated

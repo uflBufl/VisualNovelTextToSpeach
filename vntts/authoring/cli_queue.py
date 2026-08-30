@@ -40,6 +40,11 @@ def configure_parsers(subparsers) -> None:
             default=PRESERVE_DELIVERY_POLICY,
             help="Preserve source annotations or opt into the legacy English heuristic",
         )
+        queue.add_argument(
+            "--partial-source-audio-only",
+            action="store_true",
+            help="Include only available cues whose displayed text needs continuation",
+        )
         if command == "build-queue":
             queue.add_argument("--output", type=Path, required=True)
 
@@ -53,6 +58,7 @@ def handle(arguments: argparse.Namespace) -> int:
         else tuple(arguments.collection_ids),
         unknown_action=arguments.unknown_action,
         delivery_policy=arguments.delivery_policy,
+        partial_source_audio_only=arguments.partial_source_audio_only,
     )
     payload = {"summary": plan.summary.to_dict()}
     if arguments.command == "build-queue":
