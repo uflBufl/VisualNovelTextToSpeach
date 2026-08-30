@@ -117,6 +117,16 @@ from vntts.authoring.cli_render_reviews import (
 from vntts.authoring.cli_render_reviews import (
     handle as handle_render_review_command,
 )
+from vntts.authoring.cli_silence_comparison import (
+    COMMANDS as SILENCE_COMPARISON_COMMANDS,
+)
+from vntts.authoring.cli_silence_comparison import SilenceComparisonError
+from vntts.authoring.cli_silence_comparison import (
+    configure_parsers as configure_silence_comparison_parsers,
+)
+from vntts.authoring.cli_silence_comparison import (
+    handle as handle_silence_comparison_command,
+)
 from vntts.authoring.cli_speech_robustness import (
     COMMANDS as SPEECH_ROBUSTNESS_COMMANDS,
 )
@@ -167,7 +177,6 @@ from vntts.authoring.failure_regeneration import (
     load_failure_regeneration_plan,
     write_failure_regeneration_plan,
 )
-from vntts.authoring.failure_repair import DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.known_role_live_fallback import (
@@ -235,13 +244,6 @@ from vntts.authoring.reviewed_rejection_fallback import (
 )
 from vntts.authoring.reviewed_waveform_publication import (
     create_reviewed_waveform_publication_workspace,
-)
-from vntts.authoring.silence_comparison import (
-    SilenceComparisonError,
-    create_silence_comparison_session,
-    load_silence_comparison,
-    load_silence_comparison_input_plan,
-    publish_silence_comparison,
 )
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
@@ -794,30 +796,7 @@ def create_parser():
     )
     repairs.add_argument("--state", type=Path, required=True)
     repairs.add_argument("--queue", type=Path, required=True)
-    silence_publish = subparsers.add_parser(
-        "silence-comparison-publish",
-        help="Publish a checksum-bound segmentation/compression comparison",
-    )
-    silence_publish.add_argument("plan", type=Path)
-    silence_publish.add_argument("--output", type=Path, required=True)
-    silence_publish.add_argument(
-        "--target-seconds",
-        type=float,
-        default=DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
-        help="Silent boundary retained in the comparison-only compressed candidate",
-    )
-    silence_check = subparsers.add_parser(
-        "silence-comparison-check",
-        help="Validate a published comparison and every bound artifact",
-    )
-    silence_check.add_argument("comparison", type=Path)
-    silence_session = subparsers.add_parser(
-        "silence-comparison-session",
-        help="Create a blinded A/B session from a verified comparison",
-    )
-    silence_session.add_argument("comparison", type=Path)
-    silence_session.add_argument("--output", type=Path, required=True)
-    silence_session.add_argument("--seed", type=int, default=0)
+    configure_silence_comparison_parsers(subparsers)
     configure_cohort_planning_parsers(subparsers)
     pending_resolution = subparsers.add_parser(
         "pending-resolution-plan",
@@ -982,6 +961,7 @@ COMMAND_FAMILIES = (
     CommandFamily(AUDIO_EVENT_COMMANDS, handle_audio_event_command),
     CommandFamily(COHORT_REVIEW_COMMANDS, handle_cohort_review_command),
     CommandFamily(RENDER_REVIEW_COMMANDS, handle_render_review_command),
+    CommandFamily(SILENCE_COMPARISON_COMMANDS, handle_silence_comparison_command),
     CommandFamily(SPEECH_ROBUSTNESS_COMMANDS, handle_speech_robustness_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
 )
@@ -1734,61 +1714,6 @@ def main(argv=None):
                         batch_size=arguments.batch_size,
                     ).to_dict(),
                     ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "silence-comparison-publish":
-            plan = load_silence_comparison_input_plan(arguments.plan)
-            result = publish_silence_comparison(
-                plan.samples,
-                arguments.output,
-                target_seconds=arguments.target_seconds,
-                input_plan_sha256=plan.sha256,
-            )
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "input_plan": str(plan.path),
-                        "input_plan_sha256": plan.sha256,
-                        "sample_count": result.sample_count,
-                        "reports": [str(path) for path in result.report_paths],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "silence-comparison-check":
-            document = load_silence_comparison(arguments.comparison)
-            print(
-                json.dumps(
-                    {
-                        "comparison": str(arguments.comparison.expanduser().resolve()),
-                        "input_plan_sha256": document.get("input_plan_sha256"),
-                        "production_enabled": document["policy"]["production_enabled"],
-                        "requires_blind_review": document["policy"][
-                            "requires_blind_review"
-                        ],
-                        "sample_count": len(document["samples"]),
-                        "target_seconds": document["policy"]["target_seconds"],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "silence-comparison-session":
-            session = create_silence_comparison_session(
-                arguments.comparison,
-                arguments.output,
-                seed=arguments.seed,
-            )
-            print(
-                json.dumps(
-                    {"session": str(session), "comparison": str(arguments.comparison)},
                     indent=2,
                     sort_keys=True,
                 )

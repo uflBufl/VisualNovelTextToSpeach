@@ -283,6 +283,13 @@ voice-quality commands; this keeps `cli.py` free of concrete `cohort_bundle` and
 single-owner dispatch test and focused validation/output tests bind this
 contract.
 
+`cli_silence_comparison` owns the checksum-bound comparison publication,
+integrity inspection and blind-listening session commands. It also owns the
+comparison-only target-silence default and re-exports the domain error, so
+`cli.py` does not import either `silence_comparison` or `failure_repair` for this
+workflow. Its normalized parser digest and focused tests bind all three distinct
+JSON result schemas in addition to parser order and implementation calls.
+
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by the remaining generation parser
 without coupling it back to the workspace family. These family modules depend
@@ -292,7 +299,7 @@ JSON behavior; the complete suite remains the final compatibility gate for each
 extraction slice. The audio-event slice additionally binds a normalized SHA-256
 of every option, positional, type, required flag, choice, default and help text,
 and rejects renewed concrete audio-event workflow imports from `cli.py`. The
-render-review and cohort-review families apply the same digest and
+render-review, cohort-review and silence-comparison families apply the same digest and
 concrete-import boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.
