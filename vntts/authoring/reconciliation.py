@@ -61,6 +61,9 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_config import (
+    workspace_audio_event_spoken_projection_queue_ids,
+)
 
 
 class AuthoringReconciliationError(RuntimeError):
@@ -106,6 +109,7 @@ def build_authoring_reconciliation(
     bundle_reports = []
     bundle_actions = {}
     bundle_workspace_queue_ids = {}
+    bundle_queue_ids = set()
     if bundle_root.is_dir():
         paths = (
             sorted(bundle_root.glob("*.json"))
@@ -165,6 +169,7 @@ def build_authoring_reconciliation(
                 workspace_id = source["workspace_id"]
                 for cohort in source["plan"]["cohorts"]:
                     for item in cohort["items"]:
+                        bundle_queue_ids.add(item["queue_id"])
                         bundle_workspace_queue_ids.setdefault(workspace_id, set()).add(
                             item["queue_id"]
                         )
@@ -323,16 +328,41 @@ def build_authoring_reconciliation(
         else:
             _remember_absence(snapshots, manifest)
 
-        spoken = [
+        scoped_queue_ids = (
+            None
+            if workspace["workspace_id"] == primary.name
+            else bundle_workspace_queue_ids.get(workspace["workspace_id"], set())
+        )
+        reportable = [
             item
             for item in queue.items
-            if item.action == "generate" and is_spoken_queue_item(item)
+            if item.action == "generate"
+            and (
+                (scoped_queue_ids is not None and item.queue_id in scoped_queue_ids)
+                or (
+                    scoped_queue_ids is None
+                    and (
+                        item.queue_id in bundle_queue_ids or is_spoken_queue_item(item)
+                    )
+                )
+            )
         ]
-        spoken_ids = {item.queue_id for item in spoken}
+        reportable_ids = {item.queue_id for item in reportable}
+        projection_ids = set(
+            workspace_audio_event_spoken_projection_queue_ids(
+                workspace,
+                error_type=AuthoringReconciliationError,
+            )
+        )
+        generation_eligible_ids = {
+            item.queue_id
+            for item in reportable
+            if is_spoken_queue_item(item) or item.queue_id in projection_ids
+        }
         relevant = {
             queue_id: value
             for queue_id, value in state["items"].items()
-            if queue_id in spoken_ids
+            if queue_id in reportable_ids
         }
         approved_ids = {
             queue_id
@@ -365,7 +395,7 @@ def build_authoring_reconciliation(
         completed_ids = (
             approved_ids | rejected_ids | generated_ids | failed_ids | live_fallback_ids
         )
-        candidates = [item for item in spoken if item.queue_id not in completed_ids]
+        candidates = [item for item in reportable if item.queue_id not in completed_ids]
         missing, _voice_reasons = inspect_voice_readiness(
             workspace,
             candidates,
@@ -374,10 +404,13 @@ def build_authoring_reconciliation(
             directory=directory,
         )
         missing = set(missing)
-        pending_ids = spoken_ids - completed_ids - missing
+        pending_ids = reportable_ids - completed_ids - missing
         selectable_pending_ids = tuple(
-            item.queue_id for item in spoken if item.queue_id in pending_ids
+            item.queue_id
+            for item in reportable
+            if item.queue_id in pending_ids and item.queue_id in generation_eligible_ids
         )
+        unconfigured_projection_ids = pending_ids - generation_eligible_ids
         selected_blocked_reasons = ()
         if selectable_pending_ids:
             try:
@@ -401,16 +434,7 @@ def build_authoring_reconciliation(
             selected_blocked_reasons = selected_readiness.blocked_reasons
         action_counts = Counter()
         terminal_counts = Counter()
-        scoped_queue_ids = (
-            None
-            if workspace["workspace_id"] == primary.name
-            else bundle_workspace_queue_ids.get(workspace["workspace_id"], set())
-        )
-        for item in queue.items:
-            if item.action != "generate" or not is_spoken_queue_item(item):
-                continue
-            if scoped_queue_ids is not None and item.queue_id not in scoped_queue_ids:
-                continue
+        for item in reportable:
             result = state["items"].get(item.queue_id)
             if isinstance(result, dict):
                 status = result.get("status")
@@ -510,6 +534,12 @@ def build_authoring_reconciliation(
             if item.queue_id in missing:
                 action = "source_reference_or_explicit_fallback"
                 reason = "selected workspace manifest has no usable voice"
+            elif item.queue_id in unconfigured_projection_ids:
+                action = "workspace_blocked"
+                reason = (
+                    "bundle-scoped mixed audio-event item requires an exact "
+                    "spoken-projection workspace configuration"
+                )
             elif selected_blocked_reasons:
                 action = "workspace_blocked"
                 reason = "; ".join(selected_blocked_reasons)
@@ -543,11 +573,9 @@ def build_authoring_reconciliation(
                     if scoped_queue_ids is None
                     else "original_bundle_items_only"
                 ),
-                "reported_queue_item_count": (
-                    len(spoken) if scoped_queue_ids is None else len(scoped_queue_ids)
-                ),
+                "reported_queue_item_count": (len(reportable)),
                 "authoritative_counts": {
-                    "eligible": len(spoken),
+                    "eligible": len(reportable),
                     "pending": len(pending_ids),
                     "generated": len(generated_ids),
                     "approved": len(approved_ids),

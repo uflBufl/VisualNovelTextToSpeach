@@ -1881,3 +1881,45 @@ took 2.5548 seconds while validation of the exact changed WAV took 0.0076
 seconds. Cohort commits now validate only WAVs approved by that transaction and
 derive unrelated entries from checksum-bound state. Full-file validation remains
 mandatory at explicit manifest rebuild, game-pack publication and preflight.
+
+### Semantic v4 publication and activation
+
+The operator completed all 14 partial-source continuation decisions: 13 were
+approved and `reverse1999:314601:16:3cf884ee4c744e9c` was rejected. Exact
+reconciliation report
+`current-character-story-20260830-partial-continuations.json` has report ID
+`fa7f7a77912073c207a31019394e5810315bf9a32e2da7e3caf11301efd058ff`
+and composed five reviewed branches without a conflict. The rejected item has
+an explicit Pocket live-fallback route; it is not silently omitted.
+
+The reconciliation work added narrowly scoped compatibility for an exact
+reviewed mixed audio-event spoken projection, an ordinary manifest-bound route
+that has no historical config-rebase item, checksum-bound downstream rejection
+overlays, and additive-queue restoration of inherited fallback authorities.
+Every exception remains bound to its dedicated workspace ledger and validator;
+unrelated state changes still fail closed.
+
+Final workspace `resume-395a5e5eec0327a3a793b66d-8cecffe7a1e59436`
+contains all 606 queue identities: 485 approved, 91 rejected generated results
+with live fallback, 23 standalone live fallbacks and seven intentional
+omissions. Reviewed waveform batch
+`e5f660c91dc81b825347c5263087db3ab3eb739c6bc3b6297ab223e2cb38bfb6`
+binds the complete 485-WAV approved subset.
+
+Immutable pack `current-character-story-3.7-v4-semantic` was published with
+game-pack SHA-256
+`2a59dd4e62c5017f6dc82694ed4c3ba8f7c505ecfe4ef627bf7f63b508095098`.
+It contains 485 pregenerated WAVs, 114 explicit live-fallback routes and seven
+omissions, plus the semantic source-audio evidence for story-index SHA-256
+`86beb8102454dbeb69ec08e4aa18ab434f045c9d22391064451abfdab725b0d6`.
+`vntts-preflight-game-pack` passed against the published manifest.
+
+The previous external sequence plan was already bound to obsolete story bytes.
+It was replaced by
+`rhiannon-live-sequence-314601-semantic-2026-08-30.json`, SHA-256
+`4d06f11ae911d0e4949db955dac8f39502de211ae15aa9ea24fe1c7d35394d42`.
+The plan validates against semantic v4 and contains 104 events: 89 speech,
+three silent cues and 12 transitions. Settings were atomically switched to the
+new pack and plan while retaining `audio-auto`; no application process was
+started. The only Character Story completion gate left is the documented
+real-game acceptance run.

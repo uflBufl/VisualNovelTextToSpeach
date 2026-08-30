@@ -4864,6 +4864,21 @@ def _validate_workspace_outcome_merge(directory, workspace):
         if isinstance(audio_event_config, dict)
         else None
     )
+    reviewed_rejection = workspace.get("reviewed_rejection_live_fallback")
+    reviewed_rejection_items = (
+        reviewed_rejection.get("items")
+        if isinstance(reviewed_rejection, dict)
+        else None
+    )
+    reviewed_rejection_queue_ids = (
+        {
+            value.get("queue_id")
+            for value in reviewed_rejection_items
+            if isinstance(value, dict) and isinstance(value.get("queue_id"), str)
+        }
+        if isinstance(reviewed_rejection_items, list)
+        else set()
+    )
     queue_ids = []
     counts = Counter()
     try:
@@ -4920,6 +4935,30 @@ def _validate_workspace_outcome_merge(directory, workspace):
         source_result.pop("outcome_merge", None)
         if queue_id in terminal_queue_ids:
             source_result.pop("terminal_conflict_resolution", None)
+        if queue_id in reviewed_rejection_queue_ids:
+            fallback = source_result.pop("live_fallback", None)
+            evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
+            base_result = (
+                copy.deepcopy(evidence.get("base_result"))
+                if isinstance(evidence, dict)
+                and isinstance(evidence.get("base_result"), dict)
+                else None
+            )
+            if base_result is None:
+                raise AuthoringWorkbenchError(
+                    f"Workspace merged fallback evidence changed for {queue_id!r}"
+                )
+            base_result.pop("outcome_merge", None)
+            if queue_id in terminal_queue_ids:
+                base_result.pop("terminal_conflict_resolution", None)
+            if "updated_at" in base_result:
+                source_result["updated_at"] = base_result["updated_at"]
+            else:
+                source_result.pop("updated_at", None)
+            if source_result != base_result:
+                raise AuthoringWorkbenchError(
+                    f"Workspace merged fallback base changed for {queue_id!r}"
+                )
         if canonical_document_sha256(source_result) != source_item_sha256:
             raise AuthoringWorkbenchError(
                 f"Workspace merged source item changed for {queue_id!r}"

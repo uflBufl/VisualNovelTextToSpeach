@@ -552,6 +552,46 @@ class AuthoringReconciliationTest(unittest.TestCase):
             ("approved", "approved"),
         )
 
+    def test_completed_scoped_nonspoken_bundle_projects_terminal_merge(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, queue_id, _bundles, _publication = (
+                self.create_parallel_fixture(root)
+            )
+            bundles = root / "nonspoken-bundles"
+            bundles.mkdir()
+            publication = bundles / "secondary.json"
+            write_cohort_review_bundle(
+                build_cohort_review_bundle((secondary,)), publication
+            )
+            self.decide_parallel_bundle(
+                publication,
+                ((secondary.name, "accepted"),),
+            )
+
+            with patch.object(
+                reconciliation_module,
+                "is_spoken_queue_item",
+                return_value=False,
+            ):
+                report = build_authoring_reconciliation(primary, bundles)
+                validated = reconciliation_module._validated_report(report)
+
+        action = next(
+            value
+            for value in validated["actions"]
+            if value["workspace_id"] == primary.name and value["queue_id"] == queue_id
+        )
+        secondary_report = next(
+            value
+            for value in validated["workspaces"]
+            if value["workspace_id"] == secondary.name
+        )
+        self.assertEqual(action["action"], "terminal_merge_required")
+        self.assertEqual(action["terminal_source"]["workspace_id"], secondary.name)
+        self.assertEqual(secondary_report["reported_queue_item_count"], 1)
+        self.assertEqual(secondary_report["terminal_counts"], {"approved": 1})
+
     def test_explicit_fallback_conflicts_with_parallel_approval(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

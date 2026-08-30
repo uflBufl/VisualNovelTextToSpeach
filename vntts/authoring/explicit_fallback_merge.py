@@ -41,7 +41,7 @@ from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 SCHEMA = "vntts.authoring-explicit-fallback-merge"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def merge_explicit_live_fallbacks(
@@ -90,12 +90,21 @@ def merge_explicit_live_fallbacks(
     base_queue_path = base_directory / "queue.jsonl"
     source_queue_path = source_directory / "queue.jsonl"
     base_queue_sha256 = sha256_file(base_queue_path)
-    if (
-        sha256_file(source_queue_path) != base_queue_sha256
-        or source_queue.metadata != base_queue.metadata
-        or [item.document for item in source_queue.items]
-        != [item.document for item in base_queue.items]
-    ):
+    source_queue_sha256 = sha256_file(source_queue_path)
+    same_queue = (
+        source_queue_sha256 == base_queue_sha256
+        and source_queue.metadata == base_queue.metadata
+        and [item.document for item in source_queue.items]
+        == [item.document for item in base_queue.items]
+    )
+    additive_source = not same_queue and _is_additive_source_queue(
+        base_document,
+        base_queue,
+        source_queue,
+        base_queue_sha256,
+        source_queue_sha256,
+    )
+    if not same_queue and not additive_source:
         raise AuthoringWorkbenchError(
             "Explicit fallback source queue differs from its base"
         )
@@ -144,7 +153,7 @@ def merge_explicit_live_fallbacks(
 
     merge = {
         "schema": SCHEMA,
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": 1 if same_queue else SCHEMA_VERSION,
         "base_workspace_id": base_document["workspace_id"],
         "base_workspace_sha256": base_workspace_sha256,
         "base_state_sha256": base_state_sha256,
@@ -152,9 +161,17 @@ def merge_explicit_live_fallbacks(
         "source_workspace_sha256": source_workspace_sha256,
         "source_config_fingerprint": source_document["config_fingerprint"],
         "source_state_sha256": source_state_sha256,
-        "queue_sha256": base_queue_sha256,
         "items": ledgers,
     }
+    if same_queue:
+        merge["queue_sha256"] = base_queue_sha256
+    else:
+        merge.update(
+            {
+                "base_queue_sha256": base_queue_sha256,
+                "source_queue_sha256": source_queue_sha256,
+            }
+        )
     config_fingerprint = workspace_config_fingerprint(
         base_document["source"]["import_id"],
         base_document.get("story_index"),
@@ -201,7 +218,7 @@ def merge_explicit_live_fallbacks(
             source_directory / "generated-audio/generation-state.json",
             source_state_sha256,
         ),
-        (source_queue_path, base_queue_sha256),
+        (source_queue_path, source_queue_sha256),
     ]
     try:
         for tree_name in ("provenance", "inputs"):
@@ -222,9 +239,10 @@ def merge_explicit_live_fallbacks(
         for ledger in ledgers:
             queue_id = ledger["queue_id"]
             copied = copy.deepcopy(selected_items[queue_id])
-            copied["explicit_fallback_merge"] = {
-                key: value for key, value in ledger.items() if key != "queue_id"
-            }
+            if merge["schema_version"] == 1:
+                copied["explicit_fallback_merge"] = {
+                    key: value for key, value in ledger.items() if key != "queue_id"
+                }
             target_state["items"][queue_id] = copied
         target_state["active"] = None
         atomic_write_json(
@@ -256,7 +274,7 @@ def merge_explicit_live_fallbacks(
             with generation_publication_leases(
                 (
                     (base_directory / "generated-audio", base_queue_sha256),
-                    (source_directory / "generated-audio", base_queue_sha256),
+                    (source_directory / "generated-audio", source_queue_sha256),
                 ),
                 process_checker=process_is_alive,
             ) as held_leases:
@@ -315,6 +333,7 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
     merge = workspace.get("explicit_fallback_merge")
     if merge is None:
         return
+    version = merge.get("schema_version") if isinstance(merge, dict) else None
     fields = {
         "schema",
         "schema_version",
@@ -325,29 +344,41 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
         "source_workspace_sha256",
         "source_config_fingerprint",
         "source_state_sha256",
-        "queue_sha256",
         "items",
     }
+    fields.add("queue_sha256" if version == 1 else "base_queue_sha256")
+    if version == 2:
+        fields.add("source_queue_sha256")
     if (
         not isinstance(merge, dict)
         or set(merge) != fields
         or merge.get("schema") != SCHEMA
-        or merge.get("schema_version") != SCHEMA_VERSION
+        or version not in {1, 2}
     ):
         raise AuthoringWorkbenchError(
             "Workspace explicit fallback merge provenance is malformed"
         )
-    for field in (
+    digest_fields = [
         "base_workspace_sha256",
         "base_state_sha256",
         "source_workspace_sha256",
         "source_config_fingerprint",
         "source_state_sha256",
-        "queue_sha256",
-    ):
+    ]
+    digest_fields.extend(
+        ["queue_sha256"]
+        if version == 1
+        else ["base_queue_sha256", "source_queue_sha256"]
+    )
+    for field in digest_fields:
         require_workspace_sha256(
             merge.get(field), f"Explicit fallback {field.replace('_', ' ')}"
         )
+    expected_queue_sha256 = (
+        merge["queue_sha256"] if version == 1 else merge["base_queue_sha256"]
+    )
+    if sha256_file(Path(directory) / "queue.jsonl") != expected_queue_sha256:
+        raise AuthoringWorkbenchError("Explicit fallback base queue changed")
     items = merge.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Explicit fallback merge item ledger is empty")
@@ -390,7 +421,6 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
             not isinstance(result, dict)
             or (result.get("status"), result.get("review_status"))
             != ("live_fallback", "live_fallback")
-            or result.get("explicit_fallback_merge") != expected_overlay
             or not isinstance(result.get("live_fallback"), dict)
             or canonical_document_sha256(result["live_fallback"]) != decision_sha256
         ):
@@ -398,7 +428,12 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
                 f"Explicit fallback result changed for {queue_id!r}"
             )
         source_result = copy.deepcopy(result)
-        source_result.pop("explicit_fallback_merge", None)
+        if version == 1:
+            if result.get("explicit_fallback_merge") != expected_overlay:
+                raise AuthoringWorkbenchError(
+                    f"Explicit fallback result changed for {queue_id!r}"
+                )
+            source_result.pop("explicit_fallback_merge", None)
         if canonical_document_sha256(source_result) != source_item_sha256:
             raise AuthoringWorkbenchError(
                 f"Explicit fallback source item changed for {queue_id!r}"
@@ -406,6 +441,27 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
         queue_ids.append(queue_id)
     if queue_ids != sorted(set(queue_ids)):
         raise AuthoringWorkbenchError("Explicit fallback merge items are not canonical")
+
+
+def _is_additive_source_queue(
+    base_document,
+    base_queue,
+    source_queue,
+    base_queue_sha256,
+    source_queue_sha256,
+):
+    extension = base_document.get("queue_extension")
+    base_items = {item.queue_id: item.document for item in base_queue.items}
+    return (
+        isinstance(extension, dict)
+        and extension.get("base_queue_sha256") == source_queue_sha256
+        and extension.get("queue_sha256") == base_queue_sha256
+        and len(source_queue.items) < len(base_queue.items)
+        and all(
+            base_items.get(item.queue_id) == item.document
+            for item in source_queue.items
+        )
+    )
 
 
 def _copy_base_wavs(base_directory, output, state, snapshots):

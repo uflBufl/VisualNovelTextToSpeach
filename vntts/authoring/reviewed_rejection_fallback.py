@@ -51,6 +51,7 @@ from vntts.authoring.workspace_config import (
 )
 from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.voices import synthesis_character_for_line
 
 SCHEMA = "vntts.authoring-reviewed-rejection-live-fallback-batch"
 SCHEMA_VERSION = 1
@@ -125,18 +126,12 @@ def create_reviewed_rejection_fallback_workspace(
             references = sorted(set(rebase["target_reference_sha256s"]))
         else:
             route_source = "voice_manifest"
-            synthesis_character = base_result.get("voice_character")
-            if overrides.get(queue_id) != synthesis_character:
-                raise AuthoringWorkbenchError(
-                    f"Reviewed-rejection manifest route changed: {queue_id!r}"
-                )
-            references = reference_sha256s.get(
-                normalize_character_name(synthesis_character), []
+            synthesis_character, references = _manifest_route(
+                queue_item,
+                base_result,
+                overrides,
+                reference_sha256s,
             )
-            if not references:
-                raise AuthoringWorkbenchError(
-                    f"Reviewed-rejection voice references are unavailable: {queue_id!r}"
-                )
         ledgers.append(
             {
                 "queue_id": queue_id,
@@ -470,11 +465,15 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
                 f"Reviewed-rejection result changed for {queue_id!r}"
             )
         if ledger["route_source"] == "voice_manifest":
-            character = ledger["synthesis_character"]
+            character, references = _manifest_route(
+                queue_item,
+                base_result,
+                overrides,
+                reference_sha256s,
+            )
             if (
-                overrides.get(queue_id) != character
-                or reference_sha256s.get(normalize_character_name(character))
-                != ledger["route_reference_sha256s"]
+                character != ledger["synthesis_character"]
+                or references != ledger["route_reference_sha256s"]
             ):
                 raise AuthoringWorkbenchError(
                     f"Reviewed-rejection manifest route changed for {queue_id!r}"
@@ -484,14 +483,20 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
         raise AuthoringWorkbenchError(
             "Reviewed-rejection fallback item coverage changed"
         )
-    if {key: value for key, value in state.items() if key != "items"} != {
+    state_metadata = {key: value for key, value in state.items() if key != "items"}
+    if workspace.get("reviewed_waveform_publication") is not None:
+        state_metadata.pop("reviewed_waveform_publication", None)
+    if state_metadata != {
         key: value for key, value in base_state.items() if key != "items"
     }:
         raise AuthoringWorkbenchError("Reviewed-rejection state metadata changed")
     observed_set = set(observed)
+    downstream_queue_ids = _downstream_overlay_queue_ids(workspace)
     for queue_id, result in state["items"].items():
         base_result = base_state["items"].get(queue_id)
         if queue_id not in observed_set:
+            if queue_id in downstream_queue_ids:
+                continue
             if result != base_result:
                 raise AuthoringWorkbenchError(
                     f"Reviewed-rejection unrelated result changed for {queue_id!r}"
@@ -524,6 +529,49 @@ def _voice_reference_sha256s(voice_path, entries):
             digests.append(sha256_file(source))
         for name in (entry.character, *entry.aliases):
             result[normalize_character_name(name)] = sorted(set(digests))
+    return result
+
+
+def _manifest_route(queue_item, result, overrides, reference_sha256s):
+    requested = synthesis_character_for_line(
+        queue_item.speaker, queue_item.voice_character
+    )
+    expected = overrides.get(queue_item.queue_id)
+    if expected is None:
+        fallback = result.get("synthesis_fallback")
+        expected = (
+            fallback.get("synthesis_voice_character")
+            if isinstance(fallback, dict)
+            else requested
+        )
+    synthesis_character = result.get("voice_character")
+    if synthesis_character != expected:
+        raise AuthoringWorkbenchError(
+            f"Reviewed-rejection manifest route changed: {queue_item.queue_id!r}"
+        )
+    references = reference_sha256s.get(
+        normalize_character_name(synthesis_character), []
+    )
+    if not references:
+        raise AuthoringWorkbenchError(
+            "Reviewed-rejection voice references are unavailable: "
+            f"{queue_item.queue_id!r}"
+        )
+    return synthesis_character, references
+
+
+def _downstream_overlay_queue_ids(workspace):
+    result = set()
+    for field in ("explicit_fallback_merge", "audio_event_omission"):
+        config = workspace.get(field)
+        items = config.get("items") if isinstance(config, dict) else None
+        if not isinstance(items, list):
+            continue
+        result.update(
+            item["queue_id"]
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("queue_id"), str)
+        )
     return result
 
 

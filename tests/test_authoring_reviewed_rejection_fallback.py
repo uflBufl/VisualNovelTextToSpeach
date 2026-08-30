@@ -12,11 +12,13 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from tests import test_authoring_audio_event_projection_fallback
+from tests.test_authoring_workbench import create_test_workspace
 from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _live_fallback_records
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.reviewed_rejection_fallback import (
+    _downstream_overlay_queue_ids,
     create_reviewed_rejection_fallback_workspace,
 )
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
@@ -145,6 +147,53 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
+
+    def test_new_identity_uses_ordinary_manifest_character_route(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, workspace = create_test_workspace(root / "source")
+            base = workspace.directory
+            queue_item = VoiceGenerationQueue.load(base / "queue.jsonl").items[0]
+            state_path = base / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["active"] = None
+            state["items"][queue_item.queue_id].update(
+                {
+                    "status": "generated",
+                    "review_status": "rejected",
+                    "speaker": "Rhiannon",
+                    "requested_voice_character": "Rhiannon",
+                    "voice_character": "Rhiannon",
+                }
+            )
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            write_generated_manifest_from_state(
+                state, state_path.parent, state_path.parent / "manifest.json"
+            )
+
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads(
+                (result.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            ledger = workspace["reviewed_rejection_live_fallback"]["items"][0]
+
+        self.assertEqual(ledger["queue_id"], queue_item.queue_id)
+        self.assertEqual(ledger["route_source"], "voice_manifest")
+        self.assertEqual(ledger["synthesis_character"], "Rhiannon")
+        self.assertEqual(len(ledger["route_reference_sha256s"]), 2)
+
+    def test_only_declared_downstream_overlay_ids_are_exempt(self):
+        workspace = {
+            "explicit_fallback_merge": {"items": [{"queue_id": "fallback-id"}]},
+            "audio_event_omission": {"items": [{"queue_id": "omission-id"}]},
+        }
+
+        self.assertEqual(
+            _downstream_overlay_queue_ids(workspace),
+            {"fallback-id", "omission-id"},
+        )
 
 
 if __name__ == "__main__":

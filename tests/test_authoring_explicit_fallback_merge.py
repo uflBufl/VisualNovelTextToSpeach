@@ -3,12 +3,22 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
+
+import vntts.authoring.explicit_fallback_merge as fallback_merge_module
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import authorize_live_fallback
 from vntts.authoring.explicit_fallback_merge import (
     merge_explicit_live_fallbacks,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -68,6 +78,30 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
         )
         return base_directory, source, queue_id
 
+    def _additive_queues(self, root):
+        _legacy_base, source, _queue_id = self._fixture(root)
+        source_queue = VoiceGenerationQueue.load(source / "queue.jsonl")
+        original = source_queue.items[0]
+        text = "An additive line."
+        line_id = "reverse1999:315401:8"
+        text_hash = text_sha256(text)
+        added = {
+            **original.document,
+            "queue_id": expected_voice_generation_queue_id(line_id, text_hash),
+            "line_id": line_id,
+            "text_sha256": text_hash,
+            "text": text,
+            "sequence": 8,
+            "story_order": 1008,
+        }
+        extension = write_voice_generation_queue(
+            root / "extension.jsonl", source_queue.metadata, [added]
+        )
+        combined = publish_additive_generation_queue(
+            source / "queue.jsonl", extension, root / "combined.jsonl"
+        )
+        return source_queue, VoiceGenerationQueue.load(combined), source, combined
+
     def test_exact_fallback_merge_is_valid_and_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -125,6 +159,38 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             with self.assertRaises(AuthoringWorkbenchError):
                 inspect_workspace(result.directory)
+
+    def test_additive_source_requires_exact_immutable_base_item_set(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_queue, additive_queue, source, combined = self._additive_queues(root)
+            source_sha256 = sha256_file(source / "queue.jsonl")
+            additive_sha256 = sha256_file(combined)
+            workspace = {
+                "queue_extension": {
+                    "base_queue_sha256": source_sha256,
+                    "queue_sha256": additive_sha256,
+                }
+            }
+
+            compatible = fallback_merge_module._is_additive_source_queue(
+                workspace,
+                additive_queue,
+                source_queue,
+                additive_sha256,
+                source_sha256,
+            )
+            workspace["queue_extension"]["base_queue_sha256"] = "0" * 64
+            incompatible = fallback_merge_module._is_additive_source_queue(
+                workspace,
+                additive_queue,
+                source_queue,
+                additive_sha256,
+                source_sha256,
+            )
+
+        self.assertTrue(compatible)
+        self.assertFalse(incompatible)
 
 
 if __name__ == "__main__":

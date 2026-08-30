@@ -29,11 +29,13 @@ The reconciled baseline and exact remaining identities are recorded in
 
 Follow the authorities and acceptance boundaries in
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md).
-The reviewed Aderyn, Poacher II and Dobharchú outcomes and all pure-event
-omissions are composed in immutable baseline `...-bc27ca69bfa40f01`. Do not
-regenerate or repeat review merely to combine them.
+The reviewed Aderyn, Poacher II and Dobharchú outcomes, partial-source
+continuations and all pure-event omissions are composed in immutable semantic
+pack `current-character-story-3.7-v4-semantic`. It is active with the matching
+104-event external live-sequence plan. Do not regenerate or repeat review merely
+to combine them.
 
-- [ ] Run the real Character Story acceptance with that pack: verify generated
+- [ ] Run the real Character Story acceptance with semantic v4: verify generated
       routing, original-audio precedence, Centurion narration, `Aderyn` and
       `Unknown` fallback announcements, no literal event markup, and no stale,
       duplicate or early-advanced dialogue. This is the remaining human gate.
@@ -139,36 +141,11 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Restore automatic advance for original game audio
 
-- [ ] Ship the authoring-owned source-cue classification in the next immutable
-      game pack after its partial-text continuations are terminal. Final-pack
-      publication/import already copies and validates the exact semantic
-      evidence under `story/` and runtime never asks the player to classify a
-      cue. Keep unseen or still-unknown pairs fail-closed: wait for exact source
-      duration and then read the complete displayed text, accepting possible
-      repetition over silently omitted text.
 - [ ] Make optional local ASR a managed authoring dependency rather than a model
       path the operator must configure. Pin the Whisper model revision, checksum
       and license notice, then either bundle it in the authoring distribution or
       download it on demand into application data with integrity verification.
       Published-pack playback must not require Whisper or network access.
-- [ ] Review and terminalize the 14 complete-text continuations for semantically
-      `partial` source cues in the selected Character Story. Apply each
-      checksum-bound decision from the published 14-sample/11-cohort bundle to
-      its source workspace, merge only approved WAVs into the strict 606-item
-      additive authority, and give every rejected candidate an explicit live
-      fallback rather than silently losing the displayed-text continuation.
-      Prove that all 14 added identities are terminal and have a complete
-      generated-or-authorized-live route before semantic-pack publication.
-- [ ] Publish a new immutable Character Story pack from the timed/completeness
-      story index; do not mutate reviewed v2 in place. The final real-game gate
-      must prove that original cues never overlap TTS, every displayed line is
-      fully read, unknown cues stay manual, and exactly one automatic advance
-      follows the final audible route. Rebase unchanged terminal identities onto
-      the semantic story hash, restore typed fallback/omission authorities,
-      republish the reviewed-waveform ledger, verify all newly partial lines
-      have a full generated-or-live continuation, preflight the successor pack,
-      then activate it without discarding the external live-sequence plan.
-
 ### P0 - Replace OCR-driven playback with a sequence-first story cursor
 
 Follow the architecture and rollout gates in

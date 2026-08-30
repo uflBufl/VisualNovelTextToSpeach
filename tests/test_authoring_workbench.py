@@ -2150,6 +2150,34 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 workbench_module._validate_workspace_outcome_merge(
                     merged.directory, stacked_workspace
                 )
+
+                fallback_state = json.loads(json.dumps(merged_state))
+                fallback_item = fallback_state["items"][fixture["queue_id"]]
+                fallback_item["live_fallback"] = {
+                    "evidence": {"base_result": json.loads(json.dumps(item))}
+                }
+                fallback_item["updated_at"] = "2026-08-30T00:00:00+00:00"
+                fallback_workspace = json.loads(json.dumps(workspace))
+                fallback_workspace["reviewed_rejection_live_fallback"] = {
+                    "items": [{"queue_id": fixture["queue_id"]}]
+                }
+                with patch.object(
+                    workbench_module,
+                    "load_generation_state",
+                    return_value=fallback_state,
+                ):
+                    workbench_module._validate_workspace_outcome_merge(
+                        merged.directory, fallback_workspace
+                    )
+                    fallback_state["items"][fixture["queue_id"]]["provider"] = (
+                        "tampered"
+                    )
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "fallback base changed"
+                    ):
+                        workbench_module._validate_workspace_outcome_merge(
+                            merged.directory, fallback_workspace
+                        )
             self.assertEqual(source_state_path.read_bytes(), source_state_before)
             self.assertEqual(repair_state_path.read_bytes(), repair_state_before)
 
