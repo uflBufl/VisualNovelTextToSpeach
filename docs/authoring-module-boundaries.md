@@ -262,6 +262,17 @@ but exposes one immutable command inventory and one dispatch handler. The
 top-level CLI imports only that family boundary while retaining shared
 translation of its review/composition domain errors.
 
+`cli_render_reviews` similarly owns the four checksum-bound render-hypothesis
+review commands plus the three reference-render comparison, blind-listening and
+preference-import commands. It exposes separate hypothesis and reference parser
+registration functions at the two historical composition points, while one
+immutable command inventory prevents split or overlapping dispatch ownership.
+The family re-exports both workflow error types for top-level parser translation;
+`cli.py` must not import `reference_render_comparison` or
+`render_hypothesis_review` directly. A normalized parser-contract digest binds
+all seven commands' help, action order, types, choices, defaults and required
+flags, while focused tests bind their JSON and implementation call contracts.
+
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by the remaining generation parser
 without coupling it back to the workspace family. These family modules depend
@@ -270,6 +281,7 @@ tests bind their parser defaults, ordering, single-owner dispatch and existing
 JSON behavior; the complete suite remains the final compatibility gate for each
 extraction slice. The audio-event slice additionally binds a normalized SHA-256
 of every option, positional, type, required flag, choice, default and help text,
-and rejects renewed concrete audio-event workflow imports from `cli.py`.
+and rejects renewed concrete audio-event workflow imports from `cli.py`. The
+render-review family applies the same digest and concrete-import boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

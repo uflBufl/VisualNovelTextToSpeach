@@ -84,6 +84,22 @@ from vntts.authoring.cli_queue import (
 from vntts.authoring.cli_queue import (
     handle as handle_queue_command,
 )
+from vntts.authoring.cli_render_reviews import (
+    COMMANDS as RENDER_REVIEW_COMMANDS,
+)
+from vntts.authoring.cli_render_reviews import (
+    ReferenceRenderComparisonError,
+    RenderHypothesisReviewError,
+)
+from vntts.authoring.cli_render_reviews import (
+    configure_hypothesis_parsers as configure_render_hypothesis_parsers,
+)
+from vntts.authoring.cli_render_reviews import (
+    configure_reference_parsers as configure_reference_render_parsers,
+)
+from vntts.authoring.cli_render_reviews import (
+    handle as handle_render_review_command,
+)
 from vntts.authoring.cli_speech_robustness import (
     COMMANDS as SPEECH_ROBUSTNESS_COMMANDS,
 )
@@ -208,24 +224,10 @@ from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
 )
 from vntts.authoring.queue_extension import QueueExtensionError
-from vntts.authoring.reference_render_comparison import (
-    ReferenceRenderComparisonError,
-    create_reference_render_listening,
-    import_reference_render_preference,
-    load_reference_render_plan,
-    publish_reference_render_comparison,
-)
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     inspect_voice_reference_candidates,
     select_voice_reference,
-)
-from vntts.authoring.render_hypothesis_review import (
-    RenderHypothesisReviewError,
-    import_accepted_render_hypothesis,
-    load_render_hypothesis_review,
-    publish_render_hypothesis_review,
-    record_render_hypothesis_decision,
 )
 from vntts.authoring.reviewed_rejection_fallback import (
     create_reviewed_rejection_fallback_workspace,
@@ -571,35 +573,7 @@ def create_parser():
     status.add_argument("--state", type=Path, required=True)
     status.add_argument("--queue", type=Path)
     configure_audio_event_review_parsers(subparsers)
-    render_hypothesis_publish = subparsers.add_parser(
-        "render-hypothesis-review-publish",
-        help="Publish one immutable unmatched render/reference review",
-    )
-    render_hypothesis_publish.add_argument("comparison", type=Path)
-    render_hypothesis_publish.add_argument("queue_id")
-    render_hypothesis_publish.add_argument("arm_id")
-    render_hypothesis_publish.add_argument("--output", type=Path, required=True)
-    render_hypothesis_decide = subparsers.add_parser(
-        "render-hypothesis-review-decide",
-        help="Accept one exact render hypothesis or require a different one",
-    )
-    render_hypothesis_decide.add_argument("directory", type=Path)
-    render_hypothesis_decide.add_argument(
-        "decision", choices=("accept_hypothesis", "need_different")
-    )
-    render_hypothesis_status = subparsers.add_parser(
-        "render-hypothesis-review-status",
-        help="Validate and inspect one unmatched render/reference review",
-    )
-    render_hypothesis_status.add_argument("directory", type=Path)
-    render_hypothesis_import = subparsers.add_parser(
-        "render-hypothesis-review-import",
-        help="Bind one accepted render hypothesis to one fresh exact audit",
-    )
-    render_hypothesis_import.add_argument("audit", type=Path)
-    render_hypothesis_import.add_argument("comparison", type=Path)
-    render_hypothesis_import.add_argument("review", type=Path)
-    render_hypothesis_import.add_argument("queue_id")
+    configure_render_hypothesis_parsers(subparsers)
     failures = subparsers.add_parser(
         "failure-report",
         help="Group failed generation outcomes into stable typed cohorts",
@@ -623,32 +597,7 @@ def create_parser():
     reference_audit.add_argument("--output", type=Path, required=True)
     reference_audit.add_argument("--seed", type=int, default=0)
     reference_audit.add_argument("--queue-id", action="append")
-    reference_render = subparsers.add_parser(
-        "failure-reference-render-comparison",
-        help="Render an immutable comparison from exact failed-reference arms",
-    )
-    reference_render.add_argument("plan", type=Path)
-    reference_render.add_argument("--output", type=Path, required=True)
-    reference_render_listen = subparsers.add_parser(
-        "failure-reference-render-session",
-        help="Create a blind session for complete matched reference renders",
-    )
-    reference_render_listen.add_argument("comparison", type=Path)
-    reference_render_listen.add_argument("--output", type=Path, required=True)
-    reference_render_listen.add_argument("--seed", type=int, default=0)
-    reference_render_listen.add_argument(
-        "--arm-id",
-        action="append",
-        help="Select exactly two complete comparison arms without rerendering",
-    )
-    reference_render_import = subparsers.add_parser(
-        "failure-reference-import-listening",
-        help="Bind one completed blind reference preference to a fresh audit",
-    )
-    reference_render_import.add_argument("audit", type=Path)
-    reference_render_import.add_argument("comparison", type=Path)
-    reference_render_import.add_argument("session", type=Path)
-    reference_render_import.add_argument("queue_id")
+    configure_reference_render_parsers(subparsers)
     reference_binding = subparsers.add_parser(
         "failure-reference-binding",
         help="Publish terminal selected references as an immutable exact-ID overlay",
@@ -1123,6 +1072,7 @@ COMMAND_FAMILIES = (
     CommandFamily(QUEUE_COMMANDS, handle_queue_command),
     CommandFamily(WORKSPACE_COMMANDS, handle_workspace_command),
     CommandFamily(AUDIO_EVENT_COMMANDS, handle_audio_event_command),
+    CommandFamily(RENDER_REVIEW_COMMANDS, handle_render_review_command),
     CommandFamily(SPEECH_ROBUSTNESS_COMMANDS, handle_speech_robustness_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
 )
@@ -1592,34 +1542,6 @@ def main(argv=None):
                 )
             )
             return 0
-        if arguments.command == "render-hypothesis-review-publish":
-            result = publish_render_hypothesis_review(
-                arguments.comparison,
-                arguments.queue_id,
-                arguments.arm_id,
-                arguments.output,
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "render-hypothesis-review-decide":
-            result = record_render_hypothesis_decision(
-                arguments.directory, arguments.decision
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "render-hypothesis-review-status":
-            result = load_render_hypothesis_review(arguments.directory)
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "render-hypothesis-review-import":
-            result = import_accepted_render_hypothesis(
-                arguments.audit,
-                arguments.comparison,
-                arguments.review,
-                arguments.queue_id,
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
         if arguments.command == "specialist-failure-plan":
             plan = build_specialist_failure_plan(arguments.workspace)
             if arguments.output is not None:
@@ -1634,50 +1556,6 @@ def main(argv=None):
                 arguments.output,
                 seed=arguments.seed,
                 queue_ids=arguments.queue_id,
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "failure-reference-render-comparison":
-            plan = load_reference_render_plan(arguments.plan)
-            result = publish_reference_render_comparison(plan, arguments.output)
-            print(
-                json.dumps(
-                    {
-                        "directory": str(result.directory),
-                        "comparison_id": result.comparison_id,
-                        "arm_count": result.arm_count,
-                        "sample_count": result.sample_count,
-                        "complete_pair_count": result.complete_pair_count,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "failure-reference-render-session":
-            session = create_reference_render_listening(
-                arguments.comparison,
-                arguments.output,
-                seed=arguments.seed,
-                arm_ids=arguments.arm_id,
-            )
-            print(
-                json.dumps(
-                    {
-                        "comparison": str(arguments.comparison),
-                        "session": str(session),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "failure-reference-import-listening":
-            result = import_reference_render_preference(
-                arguments.audit,
-                arguments.comparison,
-                arguments.session,
-                arguments.queue_id,
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
