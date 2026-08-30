@@ -273,6 +273,16 @@ The family re-exports both workflow error types for top-level parser translation
 all seven commands' help, action order, types, choices, defaults and required
 flags, while focused tests bind their JSON and implementation call contracts.
 
+`cli_cohort_reviews` owns the five checksum-bound plan, cross-workspace bundle,
+decision and atomic projection commands. Its planning and decision parser
+builders preserve the two historical help-order positions, and its family
+handler preserves fail-fast queue-selection validation before any artifact I/O.
+The boundary also re-exports the plan and decision loaders used by the remaining
+voice-quality commands; this keeps `cli.py` free of concrete `cohort_bundle` and
+`cohort_review` imports until those consumers move. A normalized parser digest,
+single-owner dispatch test and focused validation/output tests bind this
+contract.
+
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by the remaining generation parser
 without coupling it back to the workspace family. These family modules depend
@@ -282,6 +292,7 @@ JSON behavior; the complete suite remains the final compatibility gate for each
 extraction slice. The audio-event slice additionally binds a normalized SHA-256
 of every option, positional, type, required flag, choice, default and help text,
 and rejects renewed concrete audio-event workflow imports from `cli.py`. The
-render-review family applies the same digest and concrete-import boundary gates.
+render-review and cohort-review families apply the same digest and
+concrete-import boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

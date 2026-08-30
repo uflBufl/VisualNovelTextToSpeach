@@ -44,6 +44,23 @@ from vntts.authoring.cli_audio_events import (
 from vntts.authoring.cli_audio_events import (
     handle as handle_audio_event_command,
 )
+from vntts.authoring.cli_cohort_reviews import (
+    COMMANDS as COHORT_REVIEW_COMMANDS,
+)
+from vntts.authoring.cli_cohort_reviews import (
+    CohortReviewError,
+    load_cohort_review_decision,
+    load_cohort_review_plan,
+)
+from vntts.authoring.cli_cohort_reviews import (
+    configure_decision_parsers as configure_cohort_decision_parsers,
+)
+from vntts.authoring.cli_cohort_reviews import (
+    configure_planning_parsers as configure_cohort_planning_parsers,
+)
+from vntts.authoring.cli_cohort_reviews import (
+    handle as handle_cohort_review_command,
+)
 from vntts.authoring.cli_delivery import (
     COMMANDS as DELIVERY_COMMANDS,
 )
@@ -118,22 +135,6 @@ from vntts.authoring.cli_workspace import (
 )
 from vntts.authoring.cli_workspace import (
     handle as handle_workspace_command,
-)
-from vntts.authoring.cohort_bundle import (
-    build_cohort_review_bundle,
-    execute_cohort_bundle_decision,
-    load_cohort_review_bundle,
-    write_cohort_review_bundle,
-)
-from vntts.authoring.cohort_review import (
-    CohortReviewError,
-    apply_cohort_review_decision,
-    build_cohort_review_decision,
-    build_cohort_review_plan,
-    load_cohort_review_decision,
-    load_cohort_review_plan,
-    write_cohort_review_decision,
-    write_cohort_review_plan,
 )
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.delivery import (
@@ -817,71 +818,7 @@ def create_parser():
     silence_session.add_argument("comparison", type=Path)
     silence_session.add_argument("--output", type=Path, required=True)
     silence_session.add_argument("--seed", type=int, default=0)
-    cohort_review = subparsers.add_parser(
-        "cohort-review-plan",
-        help="Plan checksum-bound technical-attention and clean review samples",
-    )
-    cohort_review.add_argument("workspace", type=Path)
-    cohort_review.add_argument(
-        "--clean-samples-per-bucket",
-        type=int,
-        default=1,
-        help="Deterministic clean samples for each short/medium/long bucket",
-    )
-    cohort_review.add_argument(
-        "--output",
-        type=Path,
-        help="Publish the immutable plan without replacing an existing file",
-    )
-    cohort_review.add_argument(
-        "--queue-id",
-        action="append",
-        default=None,
-        dest="queue_ids",
-        help="Restrict the plan to one exact pending queue ID; repeat as needed",
-    )
-    cohort_bundle = subparsers.add_parser(
-        "cohort-review-bundle",
-        help="Plan one checksum-bound review inventory across workspaces",
-    )
-    cohort_bundle.add_argument(
-        "--workspace",
-        action="append",
-        type=Path,
-        required=True,
-        help="Immutable source workspace; repeat for each source",
-    )
-    cohort_bundle.add_argument(
-        "--clean-samples-per-bucket",
-        type=int,
-        default=1,
-        help="Deterministic clean samples for each short/medium/long bucket",
-    )
-    cohort_bundle.add_argument(
-        "--workspace-queue-id",
-        action="append",
-        nargs=2,
-        default=[],
-        metavar=("WORKSPACE", "QUEUE_ID"),
-        help=(
-            "Select one exact pending queue ID from one --workspace; repeat as "
-            "needed. When used, every workspace requires at least one selection"
-        ),
-    )
-    cohort_bundle.add_argument("--output", type=Path)
-    cohort_bundle_apply = subparsers.add_parser(
-        "cohort-review-bundle-apply",
-        help="Apply one exact source-local cohort decision from a bundle",
-    )
-    cohort_bundle_apply.add_argument("bundle", type=Path)
-    cohort_bundle_apply.add_argument("workspace_id")
-    cohort_bundle_apply.add_argument("cohort_id")
-    cohort_bundle_apply.add_argument(
-        "decision", choices=("accepted", "rejected", "split", "expand")
-    )
-    cohort_bundle_apply.add_argument("--reviewed-queue-id", action="append", default=[])
-    cohort_bundle_apply.add_argument("--bad-queue-id", action="append", default=[])
-    cohort_bundle_apply.add_argument("--next-clean-samples-per-bucket", type=int)
+    configure_cohort_planning_parsers(subparsers)
     pending_resolution = subparsers.add_parser(
         "pending-resolution-plan",
         help="Bind cohort-blocked pending WAVs to conservative next actions",
@@ -914,36 +851,7 @@ def create_parser():
     failure_command.add_argument("plan", type=Path)
     failure_command.add_argument("--batch-index", type=int, required=True)
     failure_command.add_argument("--batch-size", type=int, default=10)
-    cohort_decision = subparsers.add_parser(
-        "cohort-review-decision",
-        help="Record an immutable human decision over one exact cohort sample",
-    )
-    cohort_decision.add_argument("plan", type=Path)
-    cohort_decision.add_argument("cohort_id")
-    cohort_decision.add_argument(
-        "decision", choices=("accepted", "rejected", "split", "expand")
-    )
-    cohort_decision.add_argument(
-        "--reviewed-queue-id",
-        action="append",
-        default=[],
-        help="Exact sampled queue ID actually reviewed; repeat for each WAV",
-    )
-    cohort_decision.add_argument(
-        "--bad-queue-id",
-        action="append",
-        default=[],
-        help="Reviewed queue ID marked bad; repeat as needed",
-    )
-    cohort_decision.add_argument("--next-clean-samples-per-bucket", type=int)
-    cohort_decision.add_argument("--output", type=Path, required=True)
-    cohort_apply = subparsers.add_parser(
-        "cohort-review-apply",
-        help="Atomically project one recorded terminal cohort decision",
-    )
-    cohort_apply.add_argument("workspace", type=Path)
-    cohort_apply.add_argument("plan", type=Path)
-    cohort_apply.add_argument("decision", type=Path)
+    configure_cohort_decision_parsers(subparsers)
     references = subparsers.add_parser(
         "reference-report",
         help="Inspect immutable objective metrics for one character's references",
@@ -1072,6 +980,7 @@ COMMAND_FAMILIES = (
     CommandFamily(QUEUE_COMMANDS, handle_queue_command),
     CommandFamily(WORKSPACE_COMMANDS, handle_workspace_command),
     CommandFamily(AUDIO_EVENT_COMMANDS, handle_audio_event_command),
+    CommandFamily(COHORT_REVIEW_COMMANDS, handle_cohort_review_command),
     CommandFamily(RENDER_REVIEW_COMMANDS, handle_render_review_command),
     CommandFamily(SPEECH_ROBUSTNESS_COMMANDS, handle_speech_robustness_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
@@ -1779,91 +1688,6 @@ def main(argv=None):
                 )
             )
             return 0
-        if arguments.command == "cohort-review-plan":
-            plan = build_cohort_review_plan(
-                arguments.workspace,
-                clean_samples_per_bucket=arguments.clean_samples_per_bucket,
-                queue_ids=arguments.queue_ids,
-            )
-            if arguments.output is not None:
-                write_cohort_review_plan(plan, arguments.output)
-            print(
-                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-            )
-            return 0
-        if arguments.command == "cohort-review-bundle":
-            selections = None
-            if arguments.workspace_queue_id:
-                selections = {
-                    Path(workspace).expanduser().resolve(): []
-                    for workspace in arguments.workspace
-                }
-                for workspace_value, queue_id in arguments.workspace_queue_id:
-                    workspace = Path(workspace_value).expanduser().resolve()
-                    if workspace not in selections:
-                        raise CohortReviewError(
-                            "Review bundle queue selection references an unknown "
-                            f"workspace: {workspace}"
-                        )
-                    if not queue_id.strip():
-                        raise CohortReviewError(
-                            "Review bundle selected queue ID must be non-empty"
-                        )
-                    if queue_id in selections[workspace]:
-                        raise CohortReviewError(
-                            "Review bundle selected queue ID is duplicated for "
-                            f"{workspace}: {queue_id}"
-                        )
-                    selections[workspace].append(queue_id)
-                missing = sorted(
-                    str(workspace)
-                    for workspace, queue_ids in selections.items()
-                    if not queue_ids
-                )
-                if missing:
-                    raise CohortReviewError(
-                        "Every review bundle workspace requires an exact queue "
-                        f"selection: {missing}"
-                    )
-            bundle = build_cohort_review_bundle(
-                arguments.workspace,
-                clean_samples_per_bucket=arguments.clean_samples_per_bucket,
-                queue_ids_by_workspace=selections,
-            )
-            if arguments.output is not None:
-                write_cohort_review_bundle(bundle, arguments.output)
-            print(
-                json.dumps(
-                    bundle.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
-            return 0
-        if arguments.command == "cohort-review-bundle-apply":
-            bad = set(arguments.bad_queue_id)
-            unexpected = sorted(bad - set(arguments.reviewed_queue_id))
-            if unexpected:
-                raise CohortReviewError(
-                    f"Bad queue IDs were not reviewed: {unexpected}"
-                )
-            assessments = {
-                queue_id: "bad" if queue_id in bad else "acceptable"
-                for queue_id in arguments.reviewed_queue_id
-            }
-            projection = execute_cohort_bundle_decision(
-                load_cohort_review_bundle(arguments.bundle),
-                arguments.workspace_id,
-                arguments.cohort_id,
-                arguments.decision,
-                reviewed_queue_ids=arguments.reviewed_queue_id,
-                sample_assessments=assessments,
-                next_clean_samples_per_bucket=(arguments.next_clean_samples_per_bucket),
-            )
-            print(
-                json.dumps(
-                    projection.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
-            return 0
         if arguments.command == "pending-resolution-plan":
             plan = build_pending_resolution_plan(arguments.workspace)
             if arguments.output is not None:
@@ -1967,47 +1791,6 @@ def main(argv=None):
                     {"session": str(session), "comparison": str(arguments.comparison)},
                     indent=2,
                     sort_keys=True,
-                )
-            )
-            return 0
-        if arguments.command == "cohort-review-decision":
-            bad = set(arguments.bad_queue_id)
-            unexpected = sorted(bad - set(arguments.reviewed_queue_id))
-            if unexpected:
-                raise CohortReviewError(
-                    f"Bad queue IDs were not reviewed: {unexpected}"
-                )
-            decision = build_cohort_review_decision(
-                load_cohort_review_plan(arguments.plan),
-                arguments.cohort_id,
-                arguments.decision,
-                reviewed_queue_ids=arguments.reviewed_queue_id,
-                sample_assessments=(
-                    {
-                        queue_id: "bad" if queue_id in bad else "acceptable"
-                        for queue_id in arguments.reviewed_queue_id
-                    }
-                    if bad or arguments.decision == "split"
-                    else None
-                ),
-                next_clean_samples_per_bucket=(arguments.next_clean_samples_per_bucket),
-            )
-            write_cohort_review_decision(decision, arguments.output)
-            print(
-                json.dumps(
-                    decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
-            return 0
-        if arguments.command == "cohort-review-apply":
-            result = apply_cohort_review_decision(
-                arguments.workspace,
-                load_cohort_review_plan(arguments.plan),
-                load_cohort_review_decision(arguments.decision),
-            )
-            print(
-                json.dumps(
-                    result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
                 )
             )
             return 0
