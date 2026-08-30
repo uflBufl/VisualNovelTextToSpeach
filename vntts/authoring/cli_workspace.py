@@ -41,6 +41,20 @@ def configure_parsers(subparsers) -> None:
     )
     workspace.add_argument("--story-index", type=Path)
     workspace.add_argument("--voice-manifest", type=Path)
+    workspace.add_argument(
+        "--generation-queue",
+        type=Path,
+        help="Use one strict additive queue successor instead of the imported queue",
+    )
+    workspace.add_argument(
+        "--audio-event-spoken-projection",
+        action="append",
+        dest="audio_event_spoken_projection_queue_ids",
+        help=(
+            "Pregenerate only the spoken projection of this exact mixed audio-event "
+            "queue item; repeat for multiple IDs"
+        ),
+    )
     workspace.add_argument("--narrator-character")
     workspace.add_argument(
         "--backend", choices=("pocket-tts", "chatterbox-nano", "moss-tts")
@@ -134,6 +148,10 @@ def handle(arguments: argparse.Namespace) -> int:
             carry_forward_from=arguments.carry_forward_from,
             carry_forward_characters=arguments.carry_forward_characters,
             offline_fallback_authorities=arguments.offline_fallback_authorities,
+            generation_queue=arguments.generation_queue,
+            audio_event_spoken_projection_queue_ids=(
+                arguments.audio_event_spoken_projection_queue_ids
+            ),
         )
         _print_workspace_result(
             result,

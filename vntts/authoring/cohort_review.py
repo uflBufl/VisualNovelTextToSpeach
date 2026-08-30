@@ -528,6 +528,7 @@ def _load_bound_review_workspace(workspace_directory, plan_document):
             workspace.get("audio_event_projection_fallback"),
             workspace.get("reviewed_waveform_publication"),
             workspace.get("reviewed_rejection_live_fallback"),
+            queue_extension=workspace.get("queue_extension"),
         )
     except (TypeError, ValueError) as error:
         raise CohortReviewError("Workspace configuration is malformed") from error

@@ -26,6 +26,10 @@ from vntts.authoring.publication import (
     generation_publication_leases,
     rename_directory_no_replace,
 )
+from vntts.authoring.queue_extension import (
+    QueueExtensionError,
+    validate_additive_generation_queue,
+)
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_BINDING_FIELD,
     SourceReferenceBindingError,
@@ -55,8 +59,8 @@ from vntts.authoring.workspace_voice_runtime import (
 )
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
-CONFIG_REBASE_VERSION = 3
-SUPPORTED_CONFIG_REBASE_VERSIONS = frozenset({1, 2, CONFIG_REBASE_VERSION})
+CONFIG_REBASE_VERSION = 4
+SUPPORTED_CONFIG_REBASE_VERSIONS = frozenset({1, 2, 3, CONFIG_REBASE_VERSION})
 REBASE_CARRIED_TERMINAL = "carried_terminal"
 REBASE_PENDING_KNOWN_ROLE_REUSE = "pending_after_known_role_reuse"
 _WORKFLOW_FIELDS = {
@@ -87,9 +91,16 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
     target_queue_payload = read_workspace_file_bytes(
         target_queue, "config rebase target queue"
     )
+    source_queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
+    target_queue_sha256 = hashlib.sha256(target_queue_payload).hexdigest()
     if source_queue_payload != target_queue_payload:
-        raise AuthoringWorkbenchError("Config rebase queues are not byte-identical")
-    queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
+        try:
+            validate_additive_generation_queue(target_queue, base_queue=source_queue)
+        except QueueExtensionError as error:
+            raise AuthoringWorkbenchError(
+                "Config rebase target queue is not an exact additive successor: "
+                f"{error}"
+            ) from error
     source_output = source_directory / "generated-audio"
     target_output = target_directory / "generated-audio"
 
@@ -98,7 +109,10 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
     staging = None
     try:
         with generation_publication_leases(
-            ((source_output, queue_sha256), (target_output, queue_sha256)),
+            (
+                (source_output, source_queue_sha256),
+                (target_output, target_queue_sha256),
+            ),
             process_checker=process_is_alive,
         ) as leases:
             # Both authorities were fully validated immediately before the
@@ -351,7 +365,8 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 "target_workspace_sha256": target_workspace_sha256,
                 "target_state_sha256": target_state_sha256,
                 "target_voice_manifest_sha256": sha256_file(target_voice),
-                "queue_sha256": queue_sha256,
+                "source_queue_sha256": source_queue_sha256,
+                "target_queue_sha256": target_queue_sha256,
                 "items": records,
             }
             config_fingerprint = workspace_config_fingerprint(
@@ -380,6 +395,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 reviewed_rejection_live_fallback=target_document.get(
                     "reviewed_rejection_live_fallback"
                 ),
+                queue_extension=target_document.get("queue_extension"),
             )
             workspace_id = (
                 "resume-"
@@ -397,7 +413,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 (
                     (source_directory / "workspace.json", source_workspace_sha256),
                     (source_state_path, source_state_sha256),
-                    (source_queue, queue_sha256),
+                    (source_queue, source_queue_sha256),
                     (target_directory / "workspace.json", target_workspace_sha256),
                     (target_state_path, target_state_sha256),
                 )
@@ -417,7 +433,7 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 target_directory / "provenance", staging / "provenance", snapshots
             )
             (staging / "queue.jsonl").write_bytes(target_queue_payload)
-            snapshots.append((target_queue, queue_sha256))
+            snapshots.append((target_queue, target_queue_sha256))
             source_root = staging / "provenance" / "config-rebase" / "source-root"
             _copy_tree(source_directory / "inputs", source_root / "inputs", snapshots)
             (source_root / "queue.jsonl").parent.mkdir(parents=True, exist_ok=True)
@@ -593,9 +609,13 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         "target_workspace_sha256",
         "target_state_sha256",
         "target_voice_manifest_sha256",
-        "queue_sha256",
         "items",
     }
+    version = rebase.get("schema_version") if isinstance(rebase, dict) else None
+    if version == 4:
+        required |= {"source_queue_sha256", "target_queue_sha256"}
+    else:
+        required.add("queue_sha256")
     if (
         not isinstance(rebase, dict)
         or set(rebase) != required
@@ -603,22 +623,34 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         or rebase.get("schema_version") not in SUPPORTED_CONFIG_REBASE_VERSIONS
     ):
         raise AuthoringWorkbenchError("Workspace config rebase ledger is malformed")
-    for field in (
+    digest_fields = [
         "source_workspace_sha256",
         "source_state_sha256",
         "source_voice_manifest_sha256",
         "target_workspace_sha256",
         "target_state_sha256",
         "target_voice_manifest_sha256",
-        "queue_sha256",
-    ):
+    ]
+    digest_fields.extend(
+        ("source_queue_sha256", "target_queue_sha256")
+        if version == 4
+        else ("queue_sha256",)
+    )
+    for field in digest_fields:
         require_workspace_sha256(rebase.get(field), f"Config rebase {field}")
     directory = Path(directory).resolve()
     queue_path = directory / "queue.jsonl"
-    if sha256_file(queue_path) != rebase["queue_sha256"]:
+    target_queue_sha256 = (
+        rebase["target_queue_sha256"] if version == 4 else rebase["queue_sha256"]
+    )
+    source_queue_sha256 = (
+        rebase["source_queue_sha256"] if version == 4 else rebase["queue_sha256"]
+    )
+    if sha256_file(queue_path) != target_queue_sha256:
         raise AuthoringWorkbenchError("Config rebase queue was modified")
     source_root = directory / "provenance" / "config-rebase" / "source-root"
     source_workspace = source_root / "workspace.json"
+    source_queue = source_root / "queue.jsonl"
     source_state_path = source_root / "generated-audio" / "generation-state.json"
     target_root = directory / "provenance" / "config-rebase" / "target-root"
     target_workspace = target_root / "workspace.json"
@@ -628,6 +660,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         (source_state_path, rebase["source_state_sha256"], "source state"),
         (target_workspace, rebase["target_workspace_sha256"], "target workspace"),
         (target_state, rebase["target_state_sha256"], "target state"),
+        (source_queue, source_queue_sha256, "source queue"),
     ):
         if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
             raise AuthoringWorkbenchError(f"Config rebase {label} snapshot changed")
@@ -642,6 +675,13 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         or target_document.get("workspace_id") != rebase["target_workspace_id"]
     ):
         raise AuthoringWorkbenchError("Config rebase workspace identity changed")
+    if version == 4 and source_queue_sha256 != target_queue_sha256:
+        try:
+            validate_additive_generation_queue(queue_path, base_queue=source_queue)
+        except QueueExtensionError as error:
+            raise AuthoringWorkbenchError(
+                f"Config rebase additive queue changed: {error}"
+            ) from error
     source_voice = selected_voice_manifest_path(
         source_root,
         source_document,

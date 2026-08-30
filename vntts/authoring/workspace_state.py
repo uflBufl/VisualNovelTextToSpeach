@@ -13,7 +13,8 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
     validate_generation_state_document,
 )
-from vntts.authoring.workspace_foundation import read_regular_file, require_sha256
+from vntts.authoring.workspace_config import workspace_queue_sha256
+from vntts.authoring.workspace_foundation import read_regular_file
 
 
 def load_stable_workspace_generation_state(
@@ -25,19 +26,7 @@ def load_stable_workspace_generation_state(
 ):
     """Capture one inactive queue-bound state and its exact payload identity."""
     directory = Path(directory).expanduser().resolve()
-    queue_digest = next(
-        (
-            value.get("sha256")
-            for value in workspace.get("seed_inventory", [])
-            if isinstance(value, dict) and value.get("path") == "queue.jsonl"
-        ),
-        None,
-    )
-    expected_queue_sha256 = require_sha256(
-        queue_digest,
-        "Workspace queue SHA-256",
-        error_type=error_type,
-    )
+    expected_queue_sha256 = workspace_queue_sha256(workspace, error_type=error_type)
     queue_path = directory / "queue.jsonl"
     if queue_path.is_symlink() or not queue_path.is_file():
         raise error_type("Workspace queue is missing or unsafe")

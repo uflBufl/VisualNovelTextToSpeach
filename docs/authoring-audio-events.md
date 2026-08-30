@@ -37,6 +37,18 @@ not spend a TTS attempt, write a WAV, infer review, or change a canonical queue
 identity. A later composition publisher must retain separate speech/event WAV
 hashes, ordering and mix parameters before producing one reviewable result.
 
+There is one narrower authoring route for a semantically partial original-game
+cue: the game cue remains responsible for its typed event, while a following
+continuation WAV may read only the plan's non-empty spoken projection. This is
+never inferred globally. `create-workspace --audio-event-spoken-projection`
+binds an explicit sorted set of queue IDs into the workspace fingerprint, and
+`generate --audio-event-spoken-projection` must match that exact set. State
+records the transform name and spoken-text SHA-256; validation recomputes the
+typed plan from canonical queue text. A missing/mismatched authorization,
+event-only text, changed projection, or pre-existing full-text seed result is
+rejected. The literal event marker is therefore never sent to TTS or mistaken
+for a synthesized effect.
+
 A read-only scan of composed Character Story workspace
 `resume-395a5e5eec0327a3a793b66d-9ec4454f35d082e4` found ten exact event lines:
 seven pure effects (`whimper`, `yelp`, `pop`, three `bang` lines and `buzzzzz`),

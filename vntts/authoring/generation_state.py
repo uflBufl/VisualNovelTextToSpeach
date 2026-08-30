@@ -1115,6 +1115,7 @@ def _validate_synthesis_identity(result, queue_id, queue_item=None):
     fallback = result.get("synthesis_fallback")
     source_binding = result.get("source_reference_binding")
     configuration = _validate_synthesis_configuration(result, queue_id)
+    _validate_audio_event_spoken_projection(result, queue_id, queue_item, configuration)
     if requested is not None:
         requested = _required_text(
             requested, f"State item {queue_id!r} requested_voice_character"
@@ -1234,11 +1235,15 @@ def _validate_synthesis_configuration(result, queue_id):
         "synthesis_character_overrides",
     }
     current_fields = legacy_fields | {"failure_repair_policy"}
+    projection_fields = current_fields | {"audio_event_spoken_projection_queue_ids"}
     binding_fields = current_fields | {"queue_voice_overrides_sha256"}
+    projection_binding_fields = projection_fields | {"queue_voice_overrides_sha256"}
     if not isinstance(configuration, dict) or frozenset(configuration) not in {
         frozenset(legacy_fields),
         frozenset(current_fields),
+        frozenset(projection_fields),
         frozenset(binding_fields),
+        frozenset(projection_binding_fields),
     }:
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis configuration is malformed"
@@ -1284,12 +1289,61 @@ def _validate_synthesis_configuration(result, queue_id):
         "synthesis_character_overrides": canonical,
         "failure_repair_policy": repair_policy.to_document(),
     }
+    if "audio_event_spoken_projection_queue_ids" in configuration:
+        projection_ids = configuration["audio_event_spoken_projection_queue_ids"]
+        if (
+            not isinstance(projection_ids, list)
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in projection_ids
+            )
+            or projection_ids != sorted(set(projection_ids))
+            or not projection_ids
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} audio-event projections are malformed"
+            )
+        result["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
     if "queue_voice_overrides_sha256" in configuration:
         result["queue_voice_overrides_sha256"] = _required_sha256(
             configuration.get("queue_voice_overrides_sha256"),
             f"State item {queue_id!r} queue voice override SHA-256",
         )
     return result
+
+
+def _validate_audio_event_spoken_projection(
+    result, queue_id, queue_item, configuration
+):
+    transform = result.get("text_transform")
+    projection_ids = (
+        configuration.get("audio_event_spoken_projection_queue_ids", ())
+        if isinstance(configuration, dict)
+        else ()
+    )
+    if queue_id not in projection_ids:
+        if transform == "audio-event-spoken-projection-v1":
+            raise BulkGenerationError(
+                f"State item {queue_id!r} has an unauthorized audio-event projection"
+            )
+        return
+    if queue_item is None:
+        return
+    try:
+        plan = audio_event_plan_for_record(queue_item)
+    except ValueError as error:
+        raise BulkGenerationError(str(error)) from error
+    if (
+        transform != "audio-event-spoken-projection-v1"
+        or not isinstance(plan, dict)
+        or not plan.get("requires_composition")
+        or not plan.get("events")
+        or not plan.get("spoken_text")
+        or result.get("synthesis_text_sha256") != plan.get("spoken_text_sha256")
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} audio-event spoken projection changed"
+        )
 
 
 def _validate_failure_repair_record(result, queue_id, queue_item):
@@ -1672,6 +1726,7 @@ def _validate_active_attempt(active, queue_by_id):
             "narrator_character",
             "failure_repair",
             "synthesis_text_sha256",
+            "text_transform",
             "attempts",
             "attempts_by_provider",
             "seed_applied",

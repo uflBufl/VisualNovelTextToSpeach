@@ -35,6 +35,7 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_selection import select_voice_reference
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
@@ -550,6 +551,179 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(workspace["source"]["import_id"], imported.name)
         self.assertEqual(imported_hashes, imported_hashes_after)
         self.assertEqual(workspace_queue_hash, fixture_queue_hash)
+
+    def test_resume_workspace_accepts_only_a_bound_additive_queue(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            source_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            source_state["active"] = None
+            fixture["state"].write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "imports"
+            ).destination
+            text = "A newly classified partial source cue."
+            text_hash = text_sha256(text)
+            added = {
+                "record_type": "generation_item",
+                "queue_id": expected_voice_generation_queue_id(
+                    "reverse1999:315401:8", text_hash
+                ),
+                "line_id": "reverse1999:315401:8",
+                "text_sha256": text_hash,
+                "text": text,
+                "speaker": "Rhiannon",
+                "voice_character": "Rhiannon",
+                "action": "generate",
+                "sequence": 8,
+                "story_order": 1008,
+                "source_audio_status": "available",
+                "source_audio_reason": "resolved_local_media",
+                "source_audio_completeness": "partial",
+                "source_audio_completeness_reason": "duration-too-short",
+            }
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl",
+                {"game": "Reverse: 1999", "language": "en"},
+                [added],
+            )
+            combined = publish_additive_generation_queue(
+                fixture["queue"], extension, root / "combined.jsonl"
+            )
+            first = create_resume_workspace(
+                imported,
+                root / "extended-workspaces",
+                generation_queue=combined,
+            )
+            repeated = create_resume_workspace(
+                imported,
+                root / "extended-workspaces",
+                generation_queue=combined,
+            )
+            inspected = inspect_workspace(first.directory)
+            queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
+            state = json.loads(
+                (first.directory / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            workspace = json.loads(
+                (first.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            combined_sha256 = sha256_file(combined)
+
+        self.assertTrue(first.created)
+        self.assertFalse(repeated.created)
+        self.assertEqual(first.directory, repeated.directory)
+        self.assertEqual(len(queue.items), 2)
+        self.assertEqual(state["queue_sha256"], combined_sha256)
+        self.assertNotIn(added["queue_id"], state["items"])
+        self.assertEqual(workspace["queue_extension"]["added_item_count"], 1)
+        self.assertEqual(inspected.directory, first.directory)
+        self.assertEqual(inspected.queue_items, 2)
+
+    def test_workspace_binds_mixed_audio_event_spoken_projection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            source_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            source_state["active"] = None
+            fixture["state"].write_text(
+                json.dumps(source_state, sort_keys=True), encoding="utf-8"
+            )
+            (root / "legacy/rhiannon.wav").write_bytes(b"voice-reference")
+            Path(fixture["job"]["voice_manifest"]).write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Rhiannon",
+                                "speaker": "Rhiannon",
+                                "reference": "rhiannon.wav",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "imports"
+            ).destination
+            text = "I can't believe she'd ... *sigh*"
+            text_hash = text_sha256(text)
+            queue_id = expected_voice_generation_queue_id(
+                "reverse1999:315401:8", text_hash
+            )
+            extension = write_voice_generation_queue(
+                root / "projection-extension.jsonl",
+                {"game": "Reverse: 1999", "language": "en"},
+                [
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": queue_id,
+                        "line_id": "reverse1999:315401:8",
+                        "text_sha256": text_hash,
+                        "text": text,
+                        "speaker": "Narrator",
+                        "voice_character": "Narrator",
+                        "action": "generate",
+                        "sequence": 8,
+                        "story_order": 1008,
+                        "source_audio_status": "available",
+                        "source_audio_reason": "resolved_local_media",
+                        "source_audio_completeness": "partial",
+                        "source_audio_completeness_reason": "duration-too-short",
+                    }
+                ],
+            )
+            combined = publish_additive_generation_queue(
+                fixture["queue"], extension, root / "combined.jsonl"
+            )
+            projection = create_resume_workspace(
+                imported,
+                root / "projection-workspaces",
+                generation_queue=combined,
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=fixture["job"]["voice_manifest"],
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                audio_event_spoken_projection_queue_ids=(queue_id,),
+            )
+
+            readiness = inspect_generation_readiness(projection.directory)
+            command = generation_command(projection.directory)
+            workspace = json.loads(
+                (projection.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(readiness.selected, 1)
+        self.assertEqual(readiness.ready, 1)
+        self.assertEqual(readiness.queue_ids, (queue_id,))
+        self.assertEqual(
+            workspace["run_config"]["audio_event_spoken_projection_queue_ids"],
+            [queue_id],
+        )
+        self.assertEqual(command.count("--audio-event-spoken-projection"), 1)
+        self.assertIn(queue_id, command)
+
+    def test_workspace_rejects_spoken_projection_for_ordinary_dialogue(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, _seed = create_test_workspace(root)
+
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, "requires mixed speech"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "projection-workspaces",
+                    audio_event_spoken_projection_queue_ids=(fixture["queue_id"],),
+                )
 
     def test_carry_forward_preserves_exact_seed_review_and_is_idempotent(self):
         with TemporaryDirectory() as directory:

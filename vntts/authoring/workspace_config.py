@@ -30,10 +30,12 @@ def normalize_workspace_run_config(run_config, *, error_type=ValueError):
     legacy_fields = {"backend", "model", "generation_profile"}
     fallback_fields = legacy_fields | {"missing_voice_policy"}
     current_fields = fallback_fields | {"failure_repair_policy"}
+    projection_fields = current_fields | {"audio_event_spoken_projection_queue_ids"}
     if frozenset(run_config) not in {
         frozenset(legacy_fields),
         frozenset(fallback_fields),
         frozenset(current_fields),
+        frozenset(projection_fields),
     }:
         raise error_type("Workspace run configuration is malformed")
     try:
@@ -45,13 +47,35 @@ def normalize_workspace_run_config(run_config, *, error_type=ValueError):
         )
     except (MissingVoicePolicyError, FailureRepairPolicyError) as error:
         raise error_type(str(error)) from error
-    return {
+    projection_ids = run_config.get("audio_event_spoken_projection_queue_ids", [])
+    if (
+        not isinstance(projection_ids, list)
+        or any(
+            not isinstance(value, str) or not value.strip() for value in projection_ids
+        )
+        or projection_ids != sorted(set(projection_ids))
+    ):
+        raise error_type("Workspace audio-event spoken projections are malformed")
+    normalized = {
         "backend": run_config.get("backend"),
         "model": run_config.get("model"),
         "generation_profile": run_config.get("generation_profile"),
         "missing_voice_policy": policy.to_document(),
         "failure_repair_policy": repair_policy.to_document(),
     }
+    if projection_ids:
+        normalized["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
+    return normalized
+
+
+def workspace_audio_event_spoken_projection_queue_ids(
+    workspace, *, error_type=ValueError
+):
+    """Return exact mixed-event IDs authorized for spoken-only pregeneration."""
+    config = normalize_workspace_run_config(
+        workspace.get("run_config"), error_type=error_type
+    )
+    return tuple(config.get("audio_event_spoken_projection_queue_ids", ()))
 
 
 def workspace_missing_voice_policy(workspace, *, error_type=ValueError):
@@ -88,6 +112,7 @@ def workspace_config_fingerprint(
     audio_event_projection_fallback=None,
     reviewed_waveform_publication=None,
     reviewed_rejection_live_fallback=None,
+    queue_extension=None,
 ):
     """Return the canonical SHA-256 identity of one workspace configuration."""
     fingerprint = {
@@ -123,6 +148,8 @@ def workspace_config_fingerprint(
         fingerprint["reviewed_rejection_live_fallback"] = (
             reviewed_rejection_live_fallback
         )
+    if queue_extension is not None:
+        fingerprint["queue_extension"] = queue_extension
     payload = json.dumps(
         fingerprint,
         ensure_ascii=False,
@@ -130,6 +157,28 @@ def workspace_config_fingerprint(
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def workspace_queue_sha256(workspace, *, error_type=ValueError):
+    """Return the current immutable queue identity for old and extended workspaces."""
+    extension = workspace.get("queue_extension")
+    if extension is not None:
+        if not isinstance(extension, dict):
+            raise error_type("Workspace queue extension is malformed")
+        return require_sha256(
+            extension.get("queue_sha256"),
+            "Workspace extended queue SHA-256",
+            error_type=error_type,
+        )
+    digest = next(
+        (
+            value.get("sha256")
+            for value in workspace.get("seed_inventory", [])
+            if isinstance(value, dict) and value.get("path") == "queue.jsonl"
+        ),
+        None,
+    )
+    return require_sha256(digest, "Workspace queue SHA-256", error_type=error_type)
 
 
 def selected_voice_manifest_path(
@@ -185,7 +234,9 @@ def selected_voice_manifest_path(
 __all__ = [
     "normalize_workspace_run_config",
     "selected_voice_manifest_path",
+    "workspace_audio_event_spoken_projection_queue_ids",
     "workspace_config_fingerprint",
     "workspace_failure_repair_policy",
     "workspace_missing_voice_policy",
+    "workspace_queue_sha256",
 ]

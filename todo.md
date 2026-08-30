@@ -151,24 +151,14 @@ while one-sentence controls remained below 0.25 seconds.
       and license notice, then either bundle it in the authoring distribution or
       download it on demand into application data with integrity verification.
       Published-pack playback must not require Whisper or network access.
-- [ ] Pregenerate the complete displayed text for every `partial` source cue in
-      the selected Character Story. Include these source-available lines in a
-      checksum-bound queue instead of treating the short game cue as coverage;
-      generated audio should follow the cue, with approved live TTS only as the
-      fallback when a reviewed WAV is unavailable. Update the queue builder so
-      exact `available + partial` story records become `generate` items while
-      `full` remains source-only and `unknown` remains fail-closed; preserve the
-      semantic provenance fields in each queue item and report the partial-cue
-      count explicitly. Provide a partial-only authoring filter so these exact
-      continuations can be rendered/reviewed without mixing in ordinary absent
-      or recoverable-source work. Pin the compatible shared artifact revision
-      that admits only `available + partial + generate`, then rebuild the
-      selected Character Story queue. Derive a minimal immutable voice control
-      for that subset rather than carrying unrelated queue-ID-specific bindings;
-      bind the already accepted Mrs. Owen source reference by alias and Hotelier
-      to the existing Centurion fallback policy. Prove all 14
-      partial lines have a full generated-or-authorized-live continuation, and
-      do not publish the semantic pack until that gate passes.
+- [ ] Review and terminalize the 14 complete-text continuations for semantically
+      `partial` source cues in the selected Character Story. Apply each
+      checksum-bound decision from the published 14-sample/11-cohort bundle to
+      its source workspace, merge only approved WAVs into the strict 606-item
+      additive authority, and give every rejected candidate an explicit live
+      fallback rather than silently losing the displayed-text continuation.
+      Prove that all 14 added identities are terminal and have a complete
+      generated-or-authorized-live route before semantic-pack publication.
 - [ ] Publish a new immutable Character Story pack from the timed/completeness
       story index; do not mutate reviewed v2 in place. The final real-game gate
       must prove that original cues never overlap TTS, every displayed line is

@@ -1826,7 +1826,7 @@ or explicit live-fallback routes and only then publish the evidence-bearing v4
 pack. The active timed v3 pack and external live-sequence setting remain
 unchanged.
 
-### Partial-continuation generation checkpoint
+### Partial-continuation generation and review gate
 
 The additive partial-only queue contains exactly the 14 semantic continuation
 identities and has SHA-256
@@ -1836,20 +1836,40 @@ reference banks, aliases the accepted Mrs. Owen source-reference voice to
 `Mrs. Owen`, and routes only Hotelier through the explicit Centurion narrator
 fallback.
 
-The bounded MOSS run produced ten pending-review WAVs and retained three typed
-`missed_eos_audio_limit` failures after at most three provider attempts. Its
-state SHA-256 is
-`660b6af5225c870c776dc5c9c4007a0ca80ab6312d068b4f92ec1690bcb7320e`.
-The exact exhausted identities are Hotelier sequences 13 and 15 and Rhiannon
-sequence 16. A separate one-attempt Pocket run produced pending-review WAVs for
-those three identities with `seed_applied=false`; its state SHA-256 is
-`11513924f46a3a2184edc47e8583d5f80c8941ff942393e7d364667c5b5ee871`.
-Neither provider's candidates are approved automatically.
+Strict additive queue
+`current-character-story-3.7-semantic-additive-v1.jsonl` has SHA-256
+`fccb4da03ccf202caa7fce95ef4a82a5fe6ed9b8ed78277929f66a548d0f8523`.
+It contains the exact 592 base item documents plus the 14 continuation items.
+Workspace `resume-395a5e5eec0327a3a793b66d-854a58add3370252`
+is the immutable additive rebase authority. Rebase carried 562 terminal base
+decisions; three nonterminal base results remained nonterminal, and all 14
+added identities initially had no state. The 592 base queue size must not be
+confused with the terminal-decision count.
 
-Sequence 100 remains intentionally absent from both outputs. Its typed mixed
-event plan projects speech as `I can't believe she'd...` and keeps `*sigh*` as
-an unsupported event requiring an explicit composition or projection route;
-the literal marker was never sent to TTS. Therefore the v4 gate remains open:
-13 playable candidates require review, sequence 100 requires a terminal event
-route, and the accepted results still need an additive 606-item workspace
-successor before immutable pack publication.
+Bounded rendering produced exactly 14 pending-review candidates without
+automatically approving any of them:
+
+- nine ordinary MOSS candidates in the additive rebase authority;
+- one MOSS sentence-boundary repair for sequence 87 in workspace
+  `resume-395a5e5eec0327a3a793b66d-fea122b13c3ae69c`;
+- Pocket fallbacks for Hotelier sequence 15 and Rhiannon sequence 16 in
+  workspace `resume-395a5e5eec0327a3a793b66d-a7a78df3772f50c8`, plus
+  Hotelier sequence 13 in
+  `resume-395a5e5eec0327a3a793b66d-a1facc373603b2a2`, all with
+  `seed_applied=false` because Pocket does not implement seeded sampling;
+- one Rhiannon MOSS candidate for sequence 100 in workspace
+  `resume-395a5e5eec0327a3a793b66d-36c0d7a9f9c09712`.
+
+Sequence 100 is an explicit config-bound spoken projection. MOSS received only
+`I can't believe she'd...`; the typed `*sigh*` marker was never sent to TTS.
+Generation state binds the authorized queue ID, transform and exact projected
+text hash, and rejects a full-text seed result as incompatible authority.
+
+All candidates are collected in immutable bundle
+`current-character-story-3.7-partial-source-continuations-v1.json`, SHA-256
+`2966a69e442d31e89f73660928cb49b9e881782ccad2c41e22d515ef72eab8cd`.
+It contains 14 items/samples in 11 cohorts. Human review is the remaining
+quality gate. Afterwards only exact approved WAVs may be merged into the
+606-item authority; rejected candidates need an explicit live-fallback route.
+The semantic pack remains unpublished until all 14 added identities are
+terminal and preflight proves complete coverage.

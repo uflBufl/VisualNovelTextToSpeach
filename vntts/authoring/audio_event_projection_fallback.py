@@ -177,6 +177,7 @@ def create_audio_event_projection_fallback_workspace(
         batch,
         base_document.get("reviewed_waveform_publication"),
         base_document.get("reviewed_rejection_live_fallback"),
+        queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"

@@ -48,6 +48,7 @@ from vntts.authoring.audio_event_workspace import (
     composition_item_ledger,
     validate_audio_event_composition_workspace,
 )
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     NO_PROMPT_SHA256,
@@ -104,6 +105,17 @@ from vntts.authoring.offline_fallback_authority import (
     validate_offline_fallback_authority_records,
 )
 from vntts.authoring.publication import generation_publication_leases
+from vntts.authoring.queue_extension import (
+    WORKSPACE_SCHEMA as QUEUE_EXTENSION_WORKSPACE_SCHEMA,
+)
+from vntts.authoring.queue_extension import (
+    WORKSPACE_VERSION as QUEUE_EXTENSION_WORKSPACE_VERSION,
+)
+from vntts.authoring.queue_extension import (
+    QueueExtensionError,
+    validate_additive_generation_queue,
+    workspace_queue_extension,
+)
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
     validate_reference_selection_provenance,
@@ -121,9 +133,11 @@ from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workspace_config import (
     normalize_workspace_run_config,
     selected_voice_manifest_path,
+    workspace_audio_event_spoken_projection_queue_ids,
     workspace_config_fingerprint,
     workspace_failure_repair_policy,
     workspace_missing_voice_policy,
+    workspace_queue_sha256,
 )
 from vntts.authoring.workspace_foundation import (
     contained_path,
@@ -456,6 +470,8 @@ def create_resume_workspace(
     carry_forward_from=None,
     carry_forward_characters=None,
     offline_fallback_authorities=None,
+    generation_queue=None,
+    audio_event_spoken_projection_queue_ids=None,
 ):
     """Copy one immutable import into a separate mutable resume workspace."""
     source = Path(import_directory).expanduser().resolve()
@@ -527,6 +543,16 @@ def create_resume_workspace(
                 raise AuthoringWorkbenchError(
                     f"Imported artifact changed during workspace copy: {relative}"
                 )
+        seed_state = _preserve_seed_generation_state(staging, state_artifact)
+        queue_extension = None
+        selected_queue_source = None
+        if generation_queue is not None:
+            selected_queue_source = Path(generation_queue).expanduser().resolve()
+            queue_extension = _install_extended_generation_queue(
+                staging,
+                selected_queue_source,
+                imported_queue_sha256=queue_artifact["sha256"],
+            )
         narrator = _required_text(
             narrator_character or _legacy_narrator(manifest), "Narrator character"
         )
@@ -557,6 +583,56 @@ def create_resume_workspace(
             )
         except FailureRepairPolicyError as error:
             raise AuthoringWorkbenchError(str(error)) from error
+        projection_ids = tuple(
+            sorted(
+                _required_text(value, "Audio-event spoken projection queue ID")
+                for value in (audio_event_spoken_projection_queue_ids or ())
+            )
+        )
+        if len(projection_ids) != len(set(projection_ids)):
+            raise AuthoringWorkbenchError(
+                "Audio-event spoken projection queue IDs must be unique"
+            )
+        if projection_ids and not repair_policy.is_empty:
+            raise AuthoringWorkbenchError(
+                "Audio-event spoken projection cannot mix with failure repair"
+            )
+        queue_by_id = {item.queue_id: item for item in queue_snapshot.items}
+        for queue_id in projection_ids:
+            item = queue_by_id.get(queue_id)
+            if item is None or item.action != "generate":
+                raise AuthoringWorkbenchError(
+                    f"Audio-event spoken projection item is unavailable: {queue_id!r}"
+                )
+            try:
+                plan = audio_event_plan_for_record(item)
+            except ValueError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
+            if (
+                not isinstance(plan, dict)
+                or not plan.get("requires_composition")
+                or not plan.get("events")
+                or not plan.get("spoken_text")
+            ):
+                raise AuthoringWorkbenchError(
+                    f"Audio-event spoken projection requires mixed speech: {queue_id!r}"
+                )
+        if projection_ids:
+            try:
+                seed_projection_state = load_generation_state(
+                    staging / "generated-audio/generation-state.json",
+                    staging / "queue.jsonl",
+                )
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
+            already_rendered = sorted(
+                set(projection_ids) & set(seed_projection_state["items"])
+            )
+            if already_rendered:
+                raise AuthoringWorkbenchError(
+                    "Audio-event spoken projection requires items without seed state: "
+                    + ", ".join(already_rendered)
+                )
         run_config = {
             "backend": _optional_text(backend),
             "model": _optional_text(model),
@@ -564,6 +640,8 @@ def create_resume_workspace(
             "missing_voice_policy": policy.to_document(),
             "failure_repair_policy": repair_policy.to_document(),
         }
+        if projection_ids:
+            run_config["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
         failure_reference_binding, binding_sources = (
             _copy_carry_forward_failure_reference_binding(
                 staging,
@@ -572,7 +650,6 @@ def create_resume_workspace(
             )
         )
         selected_sources = (*selected_sources, *binding_sources)
-        seed_state = _preserve_seed_generation_state(staging, state_artifact)
         carry_forward, authority_sources = _carry_forward_review_outcomes(
             carry_forward_from,
             staging,
@@ -586,6 +663,15 @@ def create_resume_workspace(
             offline_fallback_authorities=offline_fallback_authorities,
         )
         selected_sources = (*selected_sources, *authority_sources)
+        if selected_queue_source is not None:
+            selected_sources = (
+                *selected_sources,
+                (
+                    selected_queue_source,
+                    queue_extension["queue_sha256"],
+                    "generation queue",
+                ),
+            )
         config_fingerprint = _workspace_config_fingerprint(
             import_id,
             story_config,
@@ -594,6 +680,7 @@ def create_resume_workspace(
             run_config,
             carry_forward,
             failure_reference_binding=failure_reference_binding,
+            queue_extension=queue_extension,
         )
         workspace_id = (
             f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
@@ -630,6 +717,7 @@ def create_resume_workspace(
             "seed_generation_state": seed_state,
             "carry_forward": carry_forward,
             "failure_reference_binding": failure_reference_binding,
+            "queue_extension": queue_extension,
             "config_fingerprint": config_fingerprint,
             "seed_inventory": [
                 {"path": "provenance/import.json", "sha256": import_sha256},
@@ -812,6 +900,7 @@ def create_failure_reference_workspace(
             base_document.get("audio_event_projection_fallback"),
             base_document.get("reviewed_waveform_publication"),
             base_document.get("reviewed_rejection_live_fallback"),
+            queue_extension=base_document.get("queue_extension"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1016,6 +1105,7 @@ def create_audio_event_composition_workspace(
             base_document.get("audio_event_projection_fallback"),
             base_document.get("reviewed_waveform_publication"),
             base_document.get("reviewed_rejection_live_fallback"),
+            queue_extension=base_document.get("queue_extension"),
         )
         workspace_id = (
             f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -1441,6 +1531,7 @@ def _merge_workspace_outcomes(
         base_document.get("audio_event_projection_fallback"),
         base_document.get("reviewed_waveform_publication"),
         base_document.get("reviewed_rejection_live_fallback"),
+        queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
         f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
@@ -2119,6 +2210,12 @@ def inspect_generation_readiness(
             "Workspace regeneration requires explicit queue IDs"
         )
     summary = inspect_workspace(workspace_directory)
+    loaded_directory, loaded_workspace = _load_workspace(workspace_directory)
+    projection_ids = set(
+        workspace_audio_event_spoken_projection_queue_ids(
+            loaded_workspace, error_type=AuthoringWorkbenchError
+        )
+    )
     queue = VoiceGenerationQueue.load(summary.queue)
     state_items = {}
     if summary.state is not None:
@@ -2139,7 +2236,9 @@ def inspect_generation_readiness(
     for item in queue.items:
         if selected is not None and item.queue_id not in selected:
             continue
-        if item.action != "generate" or not is_spoken_queue_item(item):
+        if item.action != "generate" or not (
+            is_spoken_queue_item(item) or item.queue_id in projection_ids
+        ):
             continue
         result = state_items.get(item.queue_id)
         status = result.get("status") if isinstance(result, dict) else None
@@ -2156,7 +2255,6 @@ def inspect_generation_readiness(
         ):
             candidates.append(item)
     manifest = summary.voice_manifest
-    loaded_directory, loaded_workspace = _load_workspace(workspace_directory)
     missing, reasons = _voice_readiness(
         loaded_workspace,
         candidates,
@@ -2346,17 +2444,10 @@ def _load_bound_story_document(directory, workspace):
 
 
 def _load_bound_workspace_queue(directory, workspace):
-    queue_digest = next(
-        (
-            value.get("sha256")
-            for value in workspace.get("seed_inventory", [])
-            if isinstance(value, dict) and value.get("path") == "queue.jsonl"
-        ),
-        None,
-    )
+    queue_digest = workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
     payload = _read_bound_bytes(
         directory / "queue.jsonl",
-        _require_sha256(queue_digest, "Workspace queue SHA-256"),
+        queue_digest,
         "Workspace queue",
     )
     with tempfile.TemporaryDirectory(prefix="vntts-queue-snapshot-") as temporary:
@@ -2462,12 +2553,22 @@ def generation_command(
     configured_profile = run_config.get("generation_profile")
     policy = _workspace_missing_voice_policy(workspace)
     repair_policy = _workspace_failure_repair_policy(workspace)
+    projection_ids = workspace_audio_event_spoken_projection_queue_ids(
+        workspace, error_type=AuthoringWorkbenchError
+    )
     if not repair_policy.is_empty:
         if queue_ids is None:
             queue_ids = repair_policy.queue_ids
         elif set(queue_ids) != set(repair_policy.queue_ids):
             raise AuthoringWorkbenchError(
                 "Generation queue IDs differ from workspace failure-repair policy"
+            )
+    if projection_ids:
+        if queue_ids is None:
+            queue_ids = projection_ids
+        elif set(queue_ids) != set(projection_ids):
+            raise AuthoringWorkbenchError(
+                "Generation queue IDs differ from workspace audio-event projections"
             )
     if repair_policy.offline_fallback_queue_ids and retries != 0:
         raise AuthoringWorkbenchError(
@@ -2552,6 +2653,8 @@ def generation_command(
         command.extend(("--offline-fallback-failed", queue_id))
     for queue_id in repair_policy.inline_pause_queue_ids:
         command.extend(("--inline-pause-failed", queue_id))
+    for queue_id in projection_ids:
+        command.extend(("--audio-event-spoken-projection", queue_id))
     if repair_policy.segment_pause_ms != 180:
         command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
     if repair_policy.inline_pause_ms != 180:
@@ -2576,6 +2679,7 @@ def generation_control_bindings(
     narrator_character,
     missing_voice_policy=None,
     failure_repair_policy=None,
+    audio_event_spoken_projection_queue_ids=None,
 ):
     directory, workspace = _load_workspace(workspace_directory)
     expected_queue = (directory / "queue.jsonl").resolve()
@@ -2616,6 +2720,18 @@ def generation_control_bindings(
         "missing_voice_policy": policy.to_document(),
         "failure_repair_policy": repair_policy.to_document(),
     }
+    projection_ids = tuple(
+        sorted(
+            _required_text(value, "Audio-event spoken projection queue ID")
+            for value in (audio_event_spoken_projection_queue_ids or ())
+        )
+    )
+    if len(projection_ids) != len(set(projection_ids)):
+        raise AuthoringWorkbenchError(
+            "Audio-event spoken projection queue IDs must be unique"
+        )
+    if projection_ids:
+        expected["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
     if _workspace_run_config_with_policy(run_config) != expected:
         raise AuthoringWorkbenchError("Generation run config differs from workspace")
     if narrator_character != workspace["narrator_character"]:
@@ -2661,6 +2777,44 @@ def _preserve_seed_generation_state(staging, state_artifact):
     if sha256_file(target) != expected:
         raise AuthoringWorkbenchError("Unable to preserve seed generation state")
     return {"path": relative.as_posix(), "sha256": expected}
+
+
+def _install_extended_generation_queue(
+    staging, selected_queue, *, imported_queue_sha256
+):
+    base_queue = staging / "queue.jsonl"
+    if sha256_file(base_queue) != _require_sha256(
+        imported_queue_sha256, "Imported queue SHA-256"
+    ):
+        raise AuthoringWorkbenchError("Imported queue changed before extension")
+    try:
+        config = workspace_queue_extension(selected_queue, base_queue=base_queue)
+    except QueueExtensionError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    payload, digest = _read_source_bytes(selected_queue, "generation queue")
+    if digest != config["queue_sha256"]:
+        raise AuthoringWorkbenchError(
+            "Selected generation queue changed while it was validated"
+        )
+    snapshot = staging / config["queue_path"]
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(payload)
+    base_snapshot = staging / config["base_queue_path"]
+    base_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    base_snapshot.write_bytes(base_queue.read_bytes())
+    base_queue.write_bytes(payload)
+
+    state_path = staging / "generated-audio/generation-state.json"
+    state = _load_json(state_path, "imported generation state")
+    if state.get("active") is not None:
+        raise AuthoringWorkbenchError("Queue extension source has an active attempt")
+    state["queue_sha256"] = digest
+    atomic_write_json(state_path, state, sort_keys=True)
+    try:
+        load_generation_state(state_path, base_queue)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return config
 
 
 def _carry_forward_review_outcomes(
@@ -3212,9 +3366,18 @@ def _validate_full_carry_forward_item(
         ),
         "synthesis_provenance_sha256": source_provenance,
     }
+    projection_ids = set(run_config.get("audio_event_spoken_projection_queue_ids", ()))
     synthesis_text = queue_item.text
     text_transform = None
-    if run_config.get("backend") == "moss-tts":
+    if queue_item.queue_id in projection_ids:
+        plan = audio_event_plan_for_record(queue_item)
+        if not isinstance(plan, dict) or not plan.get("spoken_text"):
+            raise AuthoringWorkbenchError(
+                f"Carry-forward audio-event projection changed for {queue_item.queue_id!r}"
+            )
+        synthesis_text = plan["spoken_text"]
+        text_transform = "audio-event-spoken-projection-v1"
+    elif run_config.get("backend") == "moss-tts":
         synthesis_text = normalize_short_trailing_ellipsis(synthesis_text)
         text_transform = "short-trailing-ellipsis-v1"
     expected["synthesis_text_sha256"] = hashlib.sha256(
@@ -3254,6 +3417,9 @@ def _workspace_generation_provenance(directory, workspace):
     queue_overrides = _workspace_queue_voice_overrides(directory, workspace)
     missing_voice_policy = _workspace_missing_voice_policy(workspace)
     failure_repair_policy = _workspace_failure_repair_policy(workspace)
+    projection_ids = workspace_audio_event_spoken_projection_queue_ids(
+        workspace, error_type=AuthoringWorkbenchError
+    )
     narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
     narrator_voice = registry.resolve(narrator)
     narrator_ready = (
@@ -3330,6 +3496,10 @@ def _workspace_generation_provenance(directory, workspace):
         ),
         "failure_repair_policy": failure_repair_policy.to_document(),
     }
+    if projection_ids:
+        synthesis_configuration["audio_event_spoken_projection_queue_ids"] = list(
+            projection_ids
+        )
     if queue_overrides:
         synthesis_configuration["queue_voice_overrides_sha256"] = (
             queue_voice_overrides_sha256(queue_overrides)
@@ -3340,7 +3510,9 @@ def _workspace_generation_provenance(directory, workspace):
             "model": model,
             "generation_profile": profile,
             "text_transform": (
-                "short-trailing-ellipsis-v1" if backend == "moss-tts" else None
+                "audio-event-spoken-projection-v1"
+                if projection_ids
+                else ("short-trailing-ellipsis-v1" if backend == "moss-tts" else None)
             ),
             **synthesis_configuration,
             "controls": [
@@ -3542,10 +3714,14 @@ def _load_workspace(workspace_directory):
     if workspace.get("seed_inventory") != expected_seed:
         raise AuthoringWorkbenchError("Workspace seed inventory was modified")
     _validate_workspace_carry_forward(directory, workspace)
-    queue_digest = next(
+    imported_queue_digest = next(
         (value["sha256"] for value in expected_seed if value["path"] == "queue.jsonl"),
         None,
     )
+    _validate_workspace_queue_extension(
+        directory, workspace, imported_queue_digest=imported_queue_digest
+    )
+    queue_digest = workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
     queue_path = directory / "queue.jsonl"
     if (
         queue_path.is_symlink()
@@ -3631,6 +3807,7 @@ def _load_workspace(workspace_directory):
         audio_event_projection_fallback,
         reviewed_waveform_publication,
         reviewed_rejection_live_fallback,
+        workspace.get("queue_extension"),
     )
     if (
         workspace.get("config_fingerprint") != expected_config
@@ -3853,6 +4030,67 @@ def _verify_selected_sources(selected_sources):
             raise AuthoringWorkbenchError(
                 f"Selected {label} changed while workspace was being created"
             )
+
+
+def _validate_workspace_queue_extension(directory, workspace, *, imported_queue_digest):
+    config = workspace.get("queue_extension")
+    if config is None:
+        return
+    required = {
+        "schema",
+        "schema_version",
+        "base_queue_path",
+        "base_queue_sha256",
+        "queue_path",
+        "queue_sha256",
+        "extension_queue_sha256",
+        "extension_id",
+        "added_item_count",
+        "added_queue_ids",
+    }
+    if (
+        not isinstance(config, dict)
+        or set(config) != required
+        or config.get("schema") != QUEUE_EXTENSION_WORKSPACE_SCHEMA
+        or config.get("schema_version") != QUEUE_EXTENSION_WORKSPACE_VERSION
+        or config.get("base_queue_sha256") != imported_queue_digest
+    ):
+        raise AuthoringWorkbenchError("Workspace queue extension is malformed")
+    base_path = _within(
+        directory,
+        _safe_relative(config["base_queue_path"], "Extended base queue snapshot"),
+        "Extended base queue snapshot",
+    )
+    target_path = _within(
+        directory,
+        _safe_relative(config["queue_path"], "Extended queue snapshot"),
+        "Extended queue snapshot",
+    )
+    if (
+        not base_path.is_file()
+        or base_path.is_symlink()
+        or sha256_file(base_path) != imported_queue_digest
+        or not target_path.is_file()
+        or target_path.is_symlink()
+        or sha256_file(target_path)
+        != _require_sha256(config["queue_sha256"], "Extended queue SHA-256")
+        or (directory / "queue.jsonl").read_bytes() != target_path.read_bytes()
+    ):
+        raise AuthoringWorkbenchError("Workspace queue extension snapshot changed")
+    try:
+        _queue, ledger = validate_additive_generation_queue(
+            target_path, base_queue=base_path
+        )
+    except (OSError, QueueExtensionError) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    expected_ids = sorted(record["queue_id"] for record in ledger["added_items"])
+    if (
+        config.get("extension_queue_sha256") != ledger["extension_queue_sha256"]
+        or config.get("extension_id") != ledger["extension_id"]
+        or config.get("added_item_count") != len(expected_ids)
+        or config.get("added_queue_ids") != expected_ids
+    ):
+        raise AuthoringWorkbenchError("Workspace queue extension ledger changed")
 
 
 def validate_workspace_provenance_extensions(directory, workspace, import_snapshot):
@@ -4455,16 +4693,14 @@ def _validate_workspace_failure_reference_binding(directory, workspace):
         )
     source = document["source_authority"]
     voice = workspace.get("voice_manifest")
+    compatible_queue_sha256s = {
+        workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
+    }
+    queue_extension = workspace.get("queue_extension")
+    if isinstance(queue_extension, dict):
+        compatible_queue_sha256s.add(queue_extension.get("base_queue_sha256"))
     if (
-        source["queue_sha256"]
-        != next(
-            (
-                value["sha256"]
-                for value in workspace.get("seed_inventory", [])
-                if value.get("path") == "queue.jsonl"
-            ),
-            None,
-        )
+        source["queue_sha256"] not in compatible_queue_sha256s
         or not isinstance(voice, dict)
         or source["voice_manifest_sha256"] != voice.get("sha256")
     ):

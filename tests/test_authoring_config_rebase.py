@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import (
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
 
 import vntts.authoring.config_rebase as config_rebase_module
 from tests.test_authoring_workbench import (
@@ -32,6 +36,7 @@ from vntts.authoring.config_rebase import (
     rebase_workspace_config,
     validate_config_rebase_workspace,
 )
+from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_resume_workspace,
@@ -81,6 +86,83 @@ def _prepare(
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_rebases_terminal_base_items_onto_strict_additive_queue(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_generation_item(
+                source.directory / "generated-audio/generation-state.json",
+                fixture["queue_id"],
+                "approved",
+            )
+            text = "A newly classified partial source cue."
+            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            added = {
+                "record_type": "generation_item",
+                "queue_id": expected_voice_generation_queue_id(
+                    "reverse1999:315401:8", text_hash
+                ),
+                "line_id": "reverse1999:315401:8",
+                "text_sha256": text_hash,
+                "text": text,
+                "speaker": "Rhiannon",
+                "voice_character": "Rhiannon",
+                "action": "generate",
+                "sequence": 8,
+                "story_order": 1008,
+                "source_audio_status": "available",
+                "source_audio_reason": "resolved_local_media",
+                "source_audio_completeness": "partial",
+                "source_audio_completeness_reason": "duration-too-short",
+            }
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl",
+                {"game": "Reverse: 1999", "language": "en"},
+                [added],
+            )
+            combined = publish_additive_generation_queue(
+                fixture["queue"], extension, root / "combined.jsonl"
+            )
+            target = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                generation_queue=combined,
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            )
+
+            result = rebase_workspace_config(
+                source.directory, target.directory, root / "workspaces"
+            )
+            repeated = rebase_workspace_config(
+                source.directory, target.directory, root / "workspaces"
+            )
+            workspace = json.loads(
+                (result.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            state = load_generation_state(
+                result.directory / "generated-audio/generation-state.json",
+                result.directory / "queue.jsonl",
+            )
+
+            self.assertTrue(result.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(repeated.directory, result.directory)
+            self.assertEqual(workspace["config_rebase"]["schema_version"], 4)
+            self.assertNotEqual(
+                workspace["config_rebase"]["source_queue_sha256"],
+                workspace["config_rebase"]["target_queue_sha256"],
+            )
+            self.assertEqual(
+                state["items"][fixture["queue_id"]]["review_status"], "approved"
+            )
+            self.assertNotIn(added["queue_id"], state["items"])
+            validate_config_rebase_workspace(result.directory, workspace, state)
+
     def test_historical_failure_reference_uses_checksum_bound_repair_route(self):
         queue_id = "line:historical-reference"
         result = {

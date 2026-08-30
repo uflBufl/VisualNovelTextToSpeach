@@ -30,7 +30,10 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.audio_events import requires_audio_event_composition
+from vntts.authoring.audio_events import (
+    audio_event_plan_for_record,
+    requires_audio_event_composition,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
@@ -531,6 +534,25 @@ def normalize_short_trailing_ellipsis(text):
     """Give one/two-word ellipses an audible terminal boundary for MOSS."""
     match = SHORT_TRAILING_ELLIPSIS_PATTERN.fullmatch(str(text or ""))
     return str(text) if match is None else match.group("spoken") + "."
+
+
+def audio_event_spoken_projection(text):
+    """Remove typed inline events while preserving the record's spoken text."""
+    try:
+        plan = audio_event_plan_for_record({"text": text})
+    except ValueError as error:
+        raise BulkGenerationError(str(error)) from error
+    if (
+        not isinstance(plan, dict)
+        or not plan.get("requires_composition")
+        or not isinstance(plan.get("spoken_text"), str)
+        or not plan["spoken_text"].strip()
+        or plan["spoken_text"] == text
+    ):
+        raise BulkGenerationError(
+            "Audio-event spoken projection requires mixed speech and events"
+        )
+    return plan["spoken_text"]
 
 
 def _failure_kind(error, completion=None):
@@ -1354,6 +1376,7 @@ def run_bulk_generation(
     narrator_character=None,
     failure_repair_policy=None,
     silence_failure_evidence=None,
+    audio_event_spoken_projection_queue_ids=None,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -1366,6 +1389,14 @@ def run_bulk_generation(
         missing_voice_policy,
         synthesis_character_overrides,
         narrator_character=narrator_character,
+    )
+    projection_queue_ids = tuple(
+        sorted(
+            {
+                _required_text(value, "Audio-event spoken projection queue ID")
+                for value in (audio_event_spoken_projection_queue_ids or ())
+            }
+        )
     )
     try:
         repair_policy = (
@@ -1446,6 +1477,30 @@ def run_bulk_generation(
         raise BulkGenerationError(
             "Failure repair requires an exact --queue-id selection matching its policy"
         )
+    if projection_queue_ids:
+        if (
+            selected_queue_ids != set(projection_queue_ids)
+            or not repair_policy.is_empty
+            or text_transform_id != "audio-event-spoken-projection-v1"
+            or text_transform is not audio_event_spoken_projection
+        ):
+            raise BulkGenerationError(
+                "Audio-event spoken projection requires its exact queue-ID scope "
+                "and canonical text transform"
+            )
+        queue_by_id = {item.queue_id: item for item in queue.items}
+        for queue_id in projection_queue_ids:
+            item = queue_by_id[queue_id]
+            if item.action != "generate":
+                raise BulkGenerationError(
+                    f"Audio-event projection item is not generated: {queue_id!r}"
+                )
+            projected = audio_event_spoken_projection(item.text)
+            plan = audio_event_plan_for_record(item)
+            if plan.get("spoken_text") != projected:
+                raise BulkGenerationError(
+                    f"Audio-event projection plan changed for {queue_id!r}"
+                )
     evidence_directory = None
     if silence_failure_evidence is not None:
         evidence_directory = Path(silence_failure_evidence).expanduser()
@@ -1494,6 +1549,10 @@ def run_bulk_generation(
         "synthesis_character_overrides": dict(sorted(character_overrides.items())),
         "failure_repair_policy": repair_policy.to_document(),
     }
+    if projection_queue_ids:
+        synthesis_configuration["audio_event_spoken_projection_queue_ids"] = list(
+            projection_queue_ids
+        )
     if queue_voice_overrides:
         synthesis_configuration["queue_voice_overrides_sha256"] = (
             queue_voice_overrides_sha256(queue_voice_overrides)

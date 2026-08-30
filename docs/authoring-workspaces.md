@@ -42,10 +42,15 @@ uv run vntts-pregenerate rebase-workspace-config REVIEWED_WORKSPACE \
   NEW_CONFIG_WORKSPACE --workspaces-root AUTHORING_WORKSPACES
 ```
 
-The command locks both source outputs, requires one byte-identical queue and
-import identity, and publishes a third no-replace workspace. Its base state and
-top-level synthesis controls come from the new config. Only exact terminal
-items come from the reviewed source. Each carried item binds the source
+The command locks both source outputs, requires one import identity, and
+publishes a third no-replace workspace. The target queue must either be
+byte-identical to the source queue or be its validated strict additive
+successor. In the additive case every source item must remain byte-equivalent,
+both queue hashes and every added item are bound, and added IDs deliberately
+start without state. Its base state and top-level synthesis controls come from
+the new config. Only exact terminal items come from the reviewed source; a
+source pending or failed result is not presented as a terminal decision. Each
+carried item binds the source
 workspace/state/item/WAV hashes, its original synthesis fields, effective
 source variant label, source reference digests and the target route that still
 contains every exact source reference byte. Internal source/target variant

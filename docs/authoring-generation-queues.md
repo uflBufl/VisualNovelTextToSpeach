@@ -102,6 +102,22 @@ Use `--partial-source-audio-only` on either command to isolate exact
 complete-text continuations for semantically partial installed cues. This does
 not include `full`, `unknown`, absent or recoverable-source records.
 
+An already reviewed base queue may be extended without rebuilding or silently
+changing its identities:
+
+```sh
+uv run vntts-pregenerate extend-queue BASE_QUEUE EXTENSION_QUEUE \
+  --output ADDITIVE_QUEUE
+```
+
+The extension must use the same game and language, contain at least one item,
+and have no queue-ID overlap with the base. The published queue embeds both
+input SHA-256 values, every added queue ID and its canonical item SHA-256, and
+the exact base/addition counts. Validation rejects a removed or changed base
+item, a changed added item, an ID collision, or a forged ledger. This contract
+lets a workspace add newly discovered generation work without pretending that
+the old review authority was built from a different queue.
+
 Omit `--collection` to include all story-index records. If any selected record
 has `unknown` source status, omitting `--unknown-action` fails before output is
 created. Queue IDs remain `line_id:text_sha256[:16]`, with the hash calculated

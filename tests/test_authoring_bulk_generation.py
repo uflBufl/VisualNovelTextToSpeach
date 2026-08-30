@@ -2593,6 +2593,46 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             hashlib.sha256(b"Wait.").hexdigest(),
         )
 
+    def test_mixed_audio_event_spoken_projection_is_exact_and_tamper_evident(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            mixed = queue_item("mixed-sigh")
+            mixed["text"] = "I can't believe she'd ... *sigh*"
+            mixed["text_sha256"] = hashlib.sha256(mixed["text"].encode()).hexdigest()
+            mixed["queue_id"] = f"line:mixed-sigh:{mixed['text_sha256'][:16]}"
+            queue = write_queue(root / "queue.jsonl", [mixed])
+            renderer = SyntheticRenderer()
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                renderer,
+                include_queue_ids=[mixed["queue_id"]],
+                item_filter=lambda _item: True,
+                text_transform=bulk_module.audio_event_spoken_projection,
+                text_transform_id="audio-event-spoken-projection-v1",
+                audio_event_spoken_projection_queue_ids=[mixed["queue_id"]],
+            )
+            state = load_generation_state(result.state, queue)
+            generated = state["items"][mixed["queue_id"]]
+
+            self.assertEqual(renderer.requests[0].text, "I can't believe she'd...")
+            self.assertEqual(
+                generated["text_transform"], "audio-event-spoken-projection-v1"
+            )
+            self.assertEqual(
+                generated["synthesis_configuration"][
+                    "audio_event_spoken_projection_queue_ids"
+                ],
+                [mixed["queue_id"]],
+            )
+            state["items"][mixed["queue_id"]]["synthesis_text_sha256"] = "0" * 64
+            atomic_write_json(result.state, state, sort_keys=True)
+            with self.assertRaisesRegex(
+                BulkGenerationError, "audio-event spoken projection changed"
+            ):
+                load_generation_state(result.state, queue)
+
     def test_state_game_and_language_must_match_bound_queue(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

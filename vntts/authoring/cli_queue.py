@@ -11,11 +11,18 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.queue_extension import publish_additive_generation_queue
 
-COMMANDS = frozenset({"preflight-queue", "build-queue"})
+COMMANDS = frozenset({"preflight-queue", "build-queue", "extend-queue"})
 
 
 def configure_parsers(subparsers) -> None:
+    extension = subparsers.add_parser(
+        "extend-queue", help="Publish a strict additive generation-queue successor"
+    )
+    extension.add_argument("base_queue", type=Path)
+    extension.add_argument("extension_queue", type=Path)
+    extension.add_argument("--output", type=Path, required=True)
     for command, help_text in (
         ("preflight-queue", "Summarize a collection-driven generation queue"),
         ("build-queue", "Publish a validated collection-driven generation queue"),
@@ -50,6 +57,12 @@ def configure_parsers(subparsers) -> None:
 
 
 def handle(arguments: argparse.Namespace) -> int:
+    if arguments.command == "extend-queue":
+        output = publish_additive_generation_queue(
+            arguments.base_queue, arguments.extension_queue, arguments.output
+        )
+        print(json.dumps({"output": str(output)}, indent=2, sort_keys=True))
+        return 0
     plan = inspect_generation_queue(
         arguments.story_index,
         arguments.voice_manifest,

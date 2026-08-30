@@ -34,6 +34,7 @@ from vntts.authoring.audio_event_review import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    audio_event_spoken_projection,
     authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
@@ -198,6 +199,7 @@ from vntts.authoring.portrait_aliases import (
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
 )
+from vntts.authoring.queue_extension import QueueExtensionError
 from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     create_reference_render_listening,
@@ -536,6 +538,15 @@ def create_parser():
         action="append",
         dest="queue_ids",
         help="Generate only one exact queue ID; repeat for a focused retry",
+    )
+    generate.add_argument(
+        "--audio-event-spoken-projection",
+        action="append",
+        dest="audio_event_spoken_projection_queue_ids",
+        help=(
+            "Synthesize only spoken text from this exact mixed audio-event item; "
+            "repeat for multiple IDs"
+        ),
     )
     review = subparsers.add_parser(
         "review", help="Approve or reject one generated queue item"
@@ -1406,6 +1417,9 @@ def main(argv=None):
         if arguments.command == "generate":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
             failure_repair_policy = _generation_failure_repair_policy(arguments)
+            audio_event_spoken_projection_queue_ids = tuple(
+                arguments.audio_event_spoken_projection_queue_ids or ()
+            )
             voice_manifest = arguments.voice_manifest.expanduser().resolve()
             expected_workspace_controls = None
             workspace_output_identity = None
@@ -1422,6 +1436,9 @@ def main(argv=None):
                         narrator_character=arguments.narrator_character,
                         missing_voice_policy=missing_voice_policy,
                         failure_repair_policy=failure_repair_policy,
+                        audio_event_spoken_projection_queue_ids=(
+                            audio_event_spoken_projection_queue_ids
+                        ),
                     )
                     workspace_output_identity = generation_output_identity(
                         arguments.workspace
@@ -1564,7 +1581,10 @@ def main(argv=None):
                 )
 
             def ready_spoken_item(item):
-                if not is_spoken_queue_item(item):
+                if not (
+                    is_spoken_queue_item(item)
+                    or item.queue_id in set(audio_event_spoken_projection_queue_ids)
+                ):
                     return False
                 requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
@@ -1610,14 +1630,22 @@ def main(argv=None):
                         seed=arguments.seed,
                         control_files=control_files,
                         text_transform=(
-                            normalize_short_trailing_ellipsis
-                            if arguments.backend == "moss-tts"
-                            else None
+                            audio_event_spoken_projection
+                            if audio_event_spoken_projection_queue_ids
+                            else (
+                                normalize_short_trailing_ellipsis
+                                if arguments.backend == "moss-tts"
+                                else None
+                            )
                         ),
                         text_transform_id=(
-                            "short-trailing-ellipsis-v1"
-                            if arguments.backend == "moss-tts"
-                            else None
+                            "audio-event-spoken-projection-v1"
+                            if audio_event_spoken_projection_queue_ids
+                            else (
+                                "short-trailing-ellipsis-v1"
+                                if arguments.backend == "moss-tts"
+                                else None
+                            )
                         ),
                         workspace_output_identity=workspace_output_identity,
                         synthesis_character_overrides=synthesis_character_overrides,
@@ -1626,6 +1654,9 @@ def main(argv=None):
                         narrator_character=arguments.narrator_character,
                         failure_repair_policy=failure_repair_policy.to_document(),
                         silence_failure_evidence=arguments.capture_silence_failure,
+                        audio_event_spoken_projection_queue_ids=(
+                            audio_event_spoken_projection_queue_ids
+                        ),
                     )
                 finally:
                     stop = getattr(backend, "stop", None)
@@ -2483,6 +2514,7 @@ def main(argv=None):
         MissingVoiceLiveFallbackError,
         KnownRoleReuseError,
         PortraitAliasError,
+        QueueExtensionError,
         ReferenceSelectionError,
         ReferenceRenderComparisonError,
         RenderHypothesisReviewError,
