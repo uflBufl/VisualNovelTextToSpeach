@@ -290,6 +290,14 @@ comparison-only target-silence default and re-exports the domain error, so
 workflow. Its normalized parser digest and focused tests bind all three distinct
 JSON result schemas in addition to parser order and implementation calls.
 
+`cli_terminal_conflicts` owns the five resolution, unchanged/cohort decision
+carry, reconciliation-successor and immutable workspace-merge commands. It
+re-exports the resolution, review and successor domain errors for top-level
+parser translation and keeps all four concrete terminal-conflict workflow
+modules out of `cli.py`. Its contract tests bind the contiguous parser position,
+workspace-root default and the intentionally distinct document, raw-progress
+and workspace-result JSON forms.
+
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by the remaining generation parser
 without coupling it back to the workspace family. These family modules depend
@@ -299,7 +307,7 @@ JSON behavior; the complete suite remains the final compatibility gate for each
 extraction slice. The audio-event slice additionally binds a normalized SHA-256
 of every option, positional, type, required flag, choice, default and help text,
 and rejects renewed concrete audio-event workflow imports from `cli.py`. The
-render-review, cohort-review and silence-comparison families apply the same digest and
-concrete-import boundary gates.
+render-review, cohort-review, silence-comparison and terminal-conflict families
+apply the same digest and concrete-import boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

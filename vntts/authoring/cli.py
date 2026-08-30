@@ -137,6 +137,20 @@ from vntts.authoring.cli_speech_robustness import (
 from vntts.authoring.cli_speech_robustness import (
     handle as handle_speech_robustness_command,
 )
+from vntts.authoring.cli_terminal_conflicts import (
+    COMMANDS as TERMINAL_CONFLICT_COMMANDS,
+)
+from vntts.authoring.cli_terminal_conflicts import (
+    TerminalConflictResolutionError,
+    TerminalConflictReviewError,
+    TerminalConflictSuccessorError,
+)
+from vntts.authoring.cli_terminal_conflicts import (
+    configure_parsers as configure_terminal_conflict_parsers,
+)
+from vntts.authoring.cli_terminal_conflicts import (
+    handle as handle_terminal_conflict_command,
+)
 from vntts.authoring.cli_workspace import (
     COMMANDS as WORKSPACE_COMMANDS,
 )
@@ -262,22 +276,6 @@ from vntts.authoring.source_reference_review import (
 from vntts.authoring.specialist_failure_plan import (
     build_specialist_failure_plan,
     write_specialist_failure_plan,
-)
-from vntts.authoring.terminal_conflict_resolution import (
-    TerminalConflictResolutionError,
-    publish_terminal_conflict_resolution,
-)
-from vntts.authoring.terminal_conflict_review import (
-    TerminalConflictReviewError,
-    carry_approved_cohort_terminal_conflict_decisions,
-    carry_terminal_conflict_decisions,
-)
-from vntts.authoring.terminal_conflict_successor import (
-    TerminalConflictSuccessorError,
-    publish_terminal_conflict_successor,
-)
-from vntts.authoring.terminal_conflict_workspace import (
-    merge_terminal_conflict_resolution,
 )
 from vntts.authoring.voice_quality_gate import (
     VoiceQualityGateError,
@@ -426,39 +424,7 @@ def create_parser():
     failed_prompt_selection.add_argument("plan", type=Path)
     failed_prompt_selection.add_argument("session", type=Path)
     failed_prompt_selection.add_argument("output", type=Path)
-    terminal_resolution = subparsers.add_parser(
-        "terminal-conflict-resolution",
-        help="Publish immutable completed terminal-conflict decisions",
-    )
-    terminal_resolution.add_argument("review_directory", type=Path)
-    terminal_resolution.add_argument("output", type=Path)
-    terminal_carry = subparsers.add_parser(
-        "terminal-conflict-carry",
-        help="Carry unchanged completed decisions into a refreshed review",
-    )
-    terminal_carry.add_argument("source_review_directory", type=Path)
-    terminal_carry.add_argument("target_review_directory", type=Path)
-    terminal_cohort_carry = subparsers.add_parser(
-        "terminal-conflict-cohort-carry",
-        help="Carry exact approved cohort decisions into a current conflict review",
-    )
-    terminal_cohort_carry.add_argument("review_directory", type=Path)
-    terminal_successor = subparsers.add_parser(
-        "terminal-conflict-successor",
-        help="Publish a resolution-aware reconciliation successor",
-    )
-    terminal_successor.add_argument("reconciliation", type=Path)
-    terminal_successor.add_argument("resolution_directory", type=Path)
-    terminal_successor.add_argument("output", type=Path)
-    terminal_merge = subparsers.add_parser(
-        "terminal-conflict-merge",
-        help="Create a config-addressed workspace from terminal decisions",
-    )
-    terminal_merge.add_argument("base_workspace", type=Path)
-    terminal_merge.add_argument("successor_directory", type=Path)
-    terminal_merge.add_argument(
-        "--workspaces-root", type=Path, default=default_workspaces_root()
-    )
+    configure_terminal_conflict_parsers(subparsers)
     reference_workspace = subparsers.add_parser(
         "create-failure-reference-workspace",
         help="Preserve a workspace and attach one immutable selected-reference overlay",
@@ -963,6 +929,7 @@ COMMAND_FAMILIES = (
     CommandFamily(RENDER_REVIEW_COMMANDS, handle_render_review_command),
     CommandFamily(SILENCE_COMPARISON_COMMANDS, handle_silence_comparison_command),
     CommandFamily(SPEECH_ROBUSTNESS_COMMANDS, handle_speech_robustness_command),
+    CommandFamily(TERMINAL_CONFLICT_COMMANDS, handle_terminal_conflict_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),
 )
 
@@ -1066,47 +1033,6 @@ def main(argv=None):
                 arguments.plan, arguments.session, arguments.output
             )
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "terminal-conflict-resolution":
-            result = publish_terminal_conflict_resolution(
-                arguments.review_directory, arguments.output
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "terminal-conflict-carry":
-            progress = carry_terminal_conflict_decisions(
-                arguments.source_review_directory,
-                arguments.target_review_directory,
-            )
-            print(json.dumps(progress, indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "terminal-conflict-cohort-carry":
-            progress = carry_approved_cohort_terminal_conflict_decisions(
-                arguments.review_directory
-            )
-            print(json.dumps(progress, indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "terminal-conflict-successor":
-            result = publish_terminal_conflict_successor(
-                arguments.reconciliation,
-                arguments.resolution_directory,
-                arguments.output,
-            )
-            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-            return 0
-        if arguments.command == "terminal-conflict-merge":
-            result = merge_terminal_conflict_resolution(
-                arguments.base_workspace,
-                arguments.successor_directory,
-                arguments.workspaces_root,
-            )
-            print(
-                json.dumps(
-                    {"directory": str(result.directory), "created": result.created},
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
             return 0
         if arguments.command == "generate":
             missing_voice_policy = _generation_missing_voice_policy(arguments)
