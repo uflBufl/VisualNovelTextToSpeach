@@ -165,6 +165,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 manifest_path,
                 partial_source_audio_only=True,
             )
+            published = VoiceGenerationQueue.load(
+                publish_generation_queue(partial_only, root / "partial-queue.jsonl")
+            )
 
         self.assertEqual(len(plan.items), 1)
         self.assertEqual(plan.items[0]["action"], "generate")
@@ -177,6 +180,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         self.assertEqual(plan.metadata["partial_source_audio_count"], 1)
         self.assertEqual([item["line_id"] for item in partial_only.items], ["line-1"])
         self.assertTrue(partial_only.metadata["filters"]["partial_source_audio_only"])
+        self.assertEqual(published.items[0].source_audio_status, "available")
 
     def test_inline_audio_event_plan_is_additive_and_canonical(self):
         with TemporaryDirectory() as directory:

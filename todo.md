@@ -161,7 +161,9 @@ while one-sentence controls remained below 0.25 seconds.
       semantic provenance fields in each queue item and report the partial-cue
       count explicitly. Provide a partial-only authoring filter so these exact
       continuations can be rendered/reviewed without mixing in ordinary absent
-      or recoverable-source work. Rebuild the selected Character Story queue, prove all 14
+      or recoverable-source work. Pin the compatible shared artifact revision
+      that admits only `available + partial + generate`, then rebuild the
+      selected Character Story queue and prove all 14
       partial lines have a full generated-or-authorized-live continuation, and
       do not publish the semantic pack until that gate passes.
 - [ ] Publish a new immutable Character Story pack from the timed/completeness

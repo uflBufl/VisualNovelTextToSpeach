@@ -75,7 +75,7 @@ torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", tag = "v0.7.1" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
 
 [dependency-groups]
 dev = [
