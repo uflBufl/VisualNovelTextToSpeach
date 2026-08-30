@@ -132,6 +132,45 @@ def write_inputs(root, records):
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_partial_source_audio_is_queued_for_complete_text_generation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root,
+                [
+                    story_record(
+                        "line-1",
+                        "available",
+                        source_audio_completeness="partial",
+                        source_audio_completeness_reason="asr-transcript-mismatch",
+                        source_audio_semantic_evidence_id="a" * 64,
+                        source_audio_semantic_evidence_entry_id="b" * 64,
+                    ),
+                    story_record(
+                        "line-2",
+                        "available",
+                        source_audio_completeness="full",
+                    ),
+                    story_record(
+                        "line-3",
+                        "available",
+                        source_audio_completeness="unknown",
+                    ),
+                ],
+            )
+
+            plan = inspect_generation_queue(story_path, manifest_path)
+
+        self.assertEqual(len(plan.items), 1)
+        self.assertEqual(plan.items[0]["action"], "generate")
+        self.assertEqual(plan.items[0]["source_audio_status"], "available")
+        self.assertEqual(plan.items[0]["source_audio_completeness"], "partial")
+        self.assertEqual(plan.items[0]["source_audio_semantic_evidence_id"], "a" * 64)
+        self.assertEqual(plan.summary.partial_source_audio, 1)
+        self.assertEqual(plan.summary.ready, 1)
+        self.assertEqual(plan.summary.skipped_available, 2)
+        self.assertEqual(plan.metadata["partial_source_audio_count"], 1)
+
     def test_inline_audio_event_plan_is_additive_and_canonical(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -271,6 +310,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 "missing_reference": 1,
                 "recoverable_source_audio": 1,
                 "manual_review": 1,
+                "partial_source_audio": 0,
                 "audio_event_composition": 0,
                 "skipped_available": 1,
                 "skipped_unspeakable": 1,

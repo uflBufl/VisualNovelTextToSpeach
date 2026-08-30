@@ -1790,3 +1790,38 @@ acquired; under those owned leases the command now verifies the already loaded
 authority whose validator would mistake the command's own lease for a foreign
 generation lease. Queue, state, inputs and WAVs remain independently loaded and
 rechecked immediately before atomic publication.
+
+### Semantic source-audio checkpoint and blocked v4 gate
+
+The five duration-plausible chapter `314601` cues were transcribed twice with
+the same pinned local Whisper `tiny.en` snapshot. Both runs produced semantic
+evidence ID
+`a02c1f40a26c64d8c716577df84acd811c34ad81592d80d1e672cf7a1f23bad8`.
+Sequence 9 (`Stop it.`) is `full`; sequences 22, 33, 86 and 100 are
+conservatively `partial`. Together with the ten duration-proven records, the
+semantic story therefore has 14 partial cues, one full cue and zero unknown
+installed cues. The evidence JSON SHA-256 is
+`392dac838b43ab2c400e2b23e8adc56abd9ed9dc91e4b8dc27437e67cf585145`;
+the immutable successor story-index SHA-256 is
+`86beb8102454dbeb69ec08e4aa18ab434f045c9d22391064451abfdab725b0d6`.
+
+The unchanged 592-item terminal state was safely rebound to that story in
+workspace `resume-395a5e5eec0327a3a793b66d-1d7656e5d118b44d`, whose
+workspace SHA-256 is
+`a2f2bd4a15619a4910bd6a81a69991db595a82425ff2febfa27e044fddeed9e0`
+and state SHA-256 is
+`e1ae31a6275fe27f2d132f5717331da61ca9da7086a45b110e15b3bbf48290c7`.
+It preserves 472 approvals, 90 rejected results with fallback authorities,
+23 standalone/known-role fallback states and seven omissions. The reviewed
+waveform publication binds all 472 approved WAVs under batch
+`963c59d2f11b481a906a37adb50d1a05adb890f8cf1088310658ae62371d299c`.
+
+No semantic v4 pack was published or activated. The completion gate found that
+the legacy queue excluded every `source_audio_status=available` record, so none
+of the 14 partial cues had a queue identity for its required full-text
+continuation. VNTTS now plans `available + partial` as `generate`, preserves the
+semantic evidence extensions and reports the partial-cue count. A successor
+queue/workspace must add those 14 exact identities, terminalize their generated
+or explicit live-fallback routes and only then publish the evidence-bearing v4
+pack. The active timed v3 pack and external live-sequence setting remain
+unchanged.

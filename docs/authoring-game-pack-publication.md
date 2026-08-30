@@ -140,6 +140,7 @@ uv run vntts-pregenerate publish-pack \
   --story-index /path/to/app-data/story-index.jsonl \
   --voice-manifest /path/to/app-data/voice-manifest.json \
   --live-sequence-plan /path/to/extractor/live-sequence.json \
+  --source-audio-semantic-evidence /path/to/source-audio-semantic-evidence.json \
   --output /path/to/deliveries/game-v1 \
   --game-id reverse-1999 \
   --game-version 1.0 \
@@ -157,6 +158,15 @@ against the exact copied story index and includes it as a core component. The
 source plan participates in the final mutation check. Omitting the option ships
 no sequence component; publication never guesses ordering or control flow from
 story rows.
+
+When the selected story contains `source_audio_semantics` metadata,
+`--source-audio-semantic-evidence` is mandatory. Publication copies the exact
+JSON under `story/source-audio-semantic-evidence.json`, binds its SHA-256,
+canonical `evidence_id` and entry count in the `vntts.authoring` extension, and
+validates every annotated story record against locale, exact media SHA-256 and
+normalized displayed-text SHA-256. Import performs the same validation and
+rejects a missing, escaping, modified or mismatched extension file. Runtime
+does not run ASR and does not ask the player for a semantic decision.
 
 At runtime the ledger is matched by exact line ID and text SHA-256 after source
 audio and approved generated-audio checks. A match permits only the recorded

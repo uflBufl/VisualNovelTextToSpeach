@@ -60,6 +60,7 @@ class GenerationQueueSummary:
     action_counts: dict[str, int]
     source_audio_status_counts: dict[str, int]
     missing_reference_characters: tuple[str, ...]
+    partial_source_audio: int = 0
     audio_event_composition: int = 0
 
     def to_dict(self):
@@ -72,6 +73,7 @@ class GenerationQueueSummary:
             "missing_reference": self.missing_reference,
             "recoverable_source_audio": self.recoverable_source_audio,
             "manual_review": self.manual_review,
+            "partial_source_audio": self.partial_source_audio,
             "audio_event_composition": self.audio_event_composition,
             "skipped_available": self.skipped_available,
             "skipped_unspeakable": self.skipped_unspeakable,
@@ -176,6 +178,7 @@ def plan_generation_queue(
     missing_reference = 0
     recoverable = 0
     manual_review = 0
+    partial_source_audio = 0
     audio_event_composition = 0
     missing_characters = set()
     for record in selected:
@@ -186,6 +189,13 @@ def plan_generation_queue(
             record.source_audio_status,
             unknown_action=unknown_action,
         )
+        if (
+            action is None
+            and record.source_audio_status == "available"
+            and record.producer_fields.get("source_audio_completeness") == "partial"
+        ):
+            action = "generate"
+            partial_source_audio += 1
         if action is None:
             skipped_available += 1
             continue
@@ -246,6 +256,7 @@ def plan_generation_queue(
         missing_reference=missing_reference,
         recoverable_source_audio=recoverable,
         manual_review=manual_review,
+        partial_source_audio=partial_source_audio,
         audio_event_composition=audio_event_composition,
         skipped_available=skipped_available,
         skipped_unspeakable=skipped_unspeakable,
@@ -265,6 +276,7 @@ def plan_generation_queue(
         "character_count": len(characters),
         "source_audio_status_counts": status_counts,
         "action_counts": action_counts,
+        "partial_source_audio_count": partial_source_audio,
         "source_kind_counts": _counts(item["source_kind"] for item in items),
         "filters": {
             "collection_ids": []

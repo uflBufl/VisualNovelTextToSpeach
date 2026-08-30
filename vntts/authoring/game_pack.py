@@ -69,6 +69,10 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidenceError,
+    load_source_audio_semantic_evidence,
+)
 from vntts.voices import synthesis_character_for_line
 
 _canonical_sha256 = canonical_document_sha256
@@ -83,6 +87,7 @@ class FinalGamePackResult:
     directory: Path
     manifest: Path
     live_sequence_plan: Path | None
+    source_audio_semantic_evidence: Path | None
     game_id: str
     game_version: str
     approved_count: int
@@ -99,6 +104,11 @@ class FinalGamePackResult:
         payload["live_sequence_plan"] = (
             None if self.live_sequence_plan is None else str(self.live_sequence_plan)
         )
+        payload["source_audio_semantic_evidence"] = (
+            None
+            if self.source_audio_semantic_evidence is None
+            else str(self.source_audio_semantic_evidence)
+        )
         return payload
 
 
@@ -110,6 +120,7 @@ def publish_final_game_pack(
     story_index_path,
     voice_manifest_path,
     live_sequence_plan_path=None,
+    source_audio_semantic_evidence_path=None,
     failure_reference_binding_path=None,
     game_id=None,
     game_version,
@@ -126,6 +137,11 @@ def publish_final_game_pack(
         None
         if live_sequence_plan_path is None
         else Path(live_sequence_plan_path).expanduser().resolve()
+    )
+    source_audio_semantic_evidence_path = (
+        None
+        if source_audio_semantic_evidence_path is None
+        else Path(source_audio_semantic_evidence_path).expanduser().resolve()
     )
     failure_reference_binding_path = (
         None
@@ -233,6 +249,32 @@ def publish_final_game_pack(
                         )
 
                 story = _load_story(story_copy)
+                semantic_evidence_copy = None
+                semantic_evidence_document = None
+                semantic_evidence_sha256 = None
+                if source_audio_semantic_evidence_path is not None:
+                    semantic_evidence_copy = (
+                        staging / "story" / "source-audio-semantic-evidence.json"
+                    )
+                    semantic_evidence_sha256 = _copy_control(
+                        source_audio_semantic_evidence_path,
+                        semantic_evidence_copy,
+                        inventory,
+                        "source-audio semantic evidence",
+                    )
+                    try:
+                        semantic_evidence_document = (
+                            load_source_audio_semantic_evidence(
+                                semantic_evidence_copy,
+                                story_copy,
+                            )
+                        )
+                    except SourceAudioSemanticEvidenceError as error:
+                        raise FinalGamePackError(str(error)) from error
+                elif isinstance(story.metadata.get("source_audio_semantics"), dict):
+                    raise FinalGamePackError(
+                        "Story index semantic decisions require their exact evidence file"
+                    )
                 live_sequence_copy = None
                 if live_sequence_plan_path is not None:
                     live_sequence_copy = staging / "story" / "live-sequence.json"
@@ -389,6 +431,22 @@ def publish_final_game_pack(
                                         ],
                                     }
                                 ),
+                                "source_audio_semantic_evidence": (
+                                    None
+                                    if semantic_evidence_document is None
+                                    else {
+                                        "path": (
+                                            "story/source-audio-semantic-evidence.json"
+                                        ),
+                                        "sha256": semantic_evidence_sha256,
+                                        "evidence_id": semantic_evidence_document[
+                                            "evidence_id"
+                                        ],
+                                        "entry_count": len(
+                                            semantic_evidence_document["entries"]
+                                        ),
+                                    }
+                                ),
                                 "reviewed_waveform_publication": (
                                     None
                                     if not reviewed_waveform_records
@@ -435,6 +493,11 @@ def publish_final_game_pack(
             None
             if live_sequence_plan_path is None
             else destination / "story" / "live-sequence.json"
+        ),
+        source_audio_semantic_evidence=(
+            None
+            if source_audio_semantic_evidence_path is None
+            else destination / "story" / "source-audio-semantic-evidence.json"
         ),
         game_id=resolved_game_id,
         game_version=game_version,

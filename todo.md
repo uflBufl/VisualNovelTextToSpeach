@@ -139,20 +139,13 @@ while one-sentence controls remained below 0.25 seconds.
 
 ### P1 - Restore automatic advance for original game audio
 
-- [ ] Resolve the five duration-plausible chapter `314601` source cues that
-      remain semantically `unknown`. Add a reusable semantic-evidence index whose
-      identity binds locale, exact media SHA-256 and normalized displayed-text
-      SHA-256: the same media/text pair may reuse transcript or human evidence
-      across stories, while the same WEM attached to different text must be
-      classified again. Only matching evidence may mark a cue `full`, while a
-      mismatch marks it `partial`. Never infer `full` from duration alone.
-- [ ] Keep source-cue classification authoring-owned and zero-prompt at runtime.
-      Publish the small semantic-evidence index inside each immutable game pack;
-      an installed app must never ask the player to review or classify a cue.
-      For an unseen or still-unknown pair, wait for the exact source duration and
-      then read the complete displayed text, accepting possible repetition over
-      silently omitting inaccessible text. Human verdicts are optional
-      development/calibration evidence only.
+- [ ] Ship the authoring-owned source-cue classification in the next immutable
+      game pack after its partial-text continuations are terminal. Final-pack
+      publication/import already copies and validates the exact semantic
+      evidence under `story/` and runtime never asks the player to classify a
+      cue. Keep unseen or still-unknown pairs fail-closed: wait for exact source
+      duration and then read the complete displayed text, accepting possible
+      repetition over silently omitted text.
 - [ ] Make optional local ASR a managed authoring dependency rather than a model
       path the operator must configure. Pin the Whisper model revision, checksum
       and license notice, then either bundle it in the authoring distribution or
@@ -162,12 +155,22 @@ while one-sentence controls remained below 0.25 seconds.
       the selected Character Story. Include these source-available lines in a
       checksum-bound queue instead of treating the short game cue as coverage;
       generated audio should follow the cue, with approved live TTS only as the
-      fallback when a reviewed WAV is unavailable.
+      fallback when a reviewed WAV is unavailable. Update the queue builder so
+      exact `available + partial` story records become `generate` items while
+      `full` remains source-only and `unknown` remains fail-closed; preserve the
+      semantic provenance fields in each queue item and report the partial-cue
+      count explicitly. Rebuild the selected Character Story queue, prove all 14
+      partial lines have a full generated-or-authorized-live continuation, and
+      do not publish the semantic pack until that gate passes.
 - [ ] Publish a new immutable Character Story pack from the timed/completeness
       story index; do not mutate reviewed v2 in place. The final real-game gate
       must prove that original cues never overlap TTS, every displayed line is
       fully read, unknown cues stay manual, and exactly one automatic advance
-      follows the final audible route.
+      follows the final audible route. Rebase unchanged terminal identities onto
+      the semantic story hash, restore typed fallback/omission authorities,
+      republish the reviewed-waveform ledger, verify all newly partial lines
+      have a full generated-or-live continuation, preflight the successor pack,
+      then activate it without discarding the external live-sequence plan.
 
 ### P0 - Replace OCR-driven playback with a sequence-first story cursor
 

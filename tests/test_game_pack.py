@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import PCM16_MONO_WAV_FORMAT, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
@@ -19,29 +20,108 @@ from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.game_pack import apply_game_pack, import_game_pack, main
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.settings import AppSettings, load_app_settings
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    canonical_document_sha256,
+    semantic_text_sha256,
+)
 from vntts.voices import CharacterVoiceRegistry
 
 
-def write_synthetic_game_pack(root, *, include_generated=True, include_sequence=False):
+def write_synthetic_game_pack(
+    root,
+    *,
+    include_generated=True,
+    include_sequence=False,
+    include_semantics=False,
+):
     line_id = "synthetic:chapter-1:line-7"
     text = "Keep this exact line intact."
     text_hash = text_sha256(text)
+    semantic_evidence = None
+    semantic_entry = None
+    semantic_metadata = None
+    if include_semantics:
+        media_sha256 = "1" * 64
+        semantic_entry = {
+            "locale": "en",
+            "media_id": 11,
+            "media_sha256": media_sha256,
+            "displayed_text_sha256": text_hash,
+            "normalized_displayed_text_sha256": semantic_text_sha256(text),
+            "observed_transcript": text,
+            "normalized_observed_text_sha256": semantic_text_sha256(text),
+            "verdict": "full",
+            "reason": "exact-normalized-asr-transcript",
+            "method": SEMANTIC_EVIDENCE_METHOD,
+            "model_sha256": "2" * 64,
+            "source_line_ids": [line_id],
+        }
+        semantic_entry["entry_id"] = canonical_document_sha256(
+            {
+                key: value
+                for key, value in semantic_entry.items()
+                if key != "source_line_ids"
+            }
+        )
+        semantic_document = {
+            "schema": "r1999.source-audio-semantic-evidence",
+            "schema_version": 1,
+            "locale": "en",
+            "source_story_index_sha256": "3" * 64,
+            "model": {
+                "kind": "whisper",
+                "snapshot": "synthetic",
+                "sha256": "2" * 64,
+                "device": "cpu",
+                "decoding": "deterministic_greedy_default",
+            },
+            "entries": [semantic_entry],
+        }
+        semantic_document["evidence_id"] = canonical_document_sha256(semantic_document)
+        semantic_document["generated_at"] = "2026-08-30T00:00:00Z"
+        semantic_evidence = root / "source-audio-semantic-evidence.json"
+        atomic_write_json(semantic_evidence, semantic_document, sort_keys=True)
+        semantic_metadata = {
+            "evidence_id": semantic_document["evidence_id"],
+            "evidence_sha256": sha256_file(semantic_evidence),
+            "method": SEMANTIC_EVIDENCE_METHOD,
+            "selected_chapters": ["chapter-1"],
+            "applied_count": 1,
+        }
+
     story = root / "story-index.jsonl"
+    story_record = {
+        "record_type": "line",
+        "line_id": line_id,
+        "chapter": "chapter-1",
+        "sequence": 7,
+        "speaker": "Ada",
+        "text": text,
+        "kind": "dialogue",
+        "source_audio_status": "absent",
+    }
+    if include_semantics:
+        story_record.update(
+            text_sha256=text_hash,
+            source_audio_duration_media_sha256=semantic_entry["media_sha256"],
+            source_audio_completeness="full",
+            source_audio_completeness_reason="exact-normalized-asr-transcript",
+            source_audio_semantic_evidence_id=semantic_metadata["evidence_id"],
+            source_audio_semantic_evidence_entry_id=semantic_entry["entry_id"],
+        )
     write_story_index(
         story,
-        {"game": "Synthetic Game", "language": "en"},
-        [
-            {
-                "record_type": "line",
-                "line_id": line_id,
-                "chapter": "chapter-1",
-                "sequence": 7,
-                "speaker": "Ada",
-                "text": text,
-                "kind": "dialogue",
-                "source_audio_status": "absent",
-            }
-        ],
+        {
+            "game": "Synthetic Game",
+            "language": "en",
+            **(
+                {"source_audio_semantics": semantic_metadata}
+                if semantic_metadata is not None
+                else {}
+            ),
+        },
+        [story_record],
     )
 
     voice_wav = root / "voices" / "ada.wav"
@@ -119,19 +199,59 @@ def write_synthetic_game_pack(root, *, include_generated=True, include_sequence=
             story,
         )
         components["live_sequence_plan"] = sequence
+    pack_metadata = {
+        "game": {"id": "synthetic-game", "version": "1.0"},
+        "producers": [{"name": "synthetic-extractor", "version": "0.6.0"}],
+        "created_at": "2026-08-16T12:05:00Z",
+    }
+    if include_semantics:
+        pack_metadata["vntts.authoring"] = {
+            "source_audio_semantic_evidence": {
+                "path": semantic_evidence.name,
+                "sha256": sha256_file(semantic_evidence),
+                "evidence_id": semantic_metadata["evidence_id"],
+                "entry_count": 1,
+            }
+        }
     write_game_pack(
         pack_path,
-        {
-            "game": {"id": "synthetic-game", "version": "1.0"},
-            "producers": [{"name": "synthetic-extractor", "version": "0.6.0"}],
-            "created_at": "2026-08-16T12:05:00Z",
-        },
+        pack_metadata,
         components,
     )
     return pack_path, line_id, text, text_hash, generated_wav
 
 
 class GamePackImportTest(unittest.TestCase):
+    def test_import_preflights_checksum_bound_semantic_evidence_extension(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(
+                root,
+                include_semantics=True,
+            )
+
+            imported = import_game_pack(pack_path)
+
+        self.assertEqual(
+            imported.source_audio_semantic_evidence.name,
+            "source-audio-semantic-evidence.json",
+        )
+
+    def test_import_rejects_modified_semantic_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(
+                root,
+                include_semantics=True,
+            )
+            (root / "source-audio-semantic-evidence.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(GamePackError, "checksum changed"):
+                import_game_pack(pack_path)
+
     def test_public_producer_pack_reaches_all_public_vntts_consumers(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import load_game_pack
@@ -48,6 +49,11 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    canonical_document_sha256,
+    semantic_text_sha256,
+)
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -119,6 +125,7 @@ def prepare_authoring_fixture(
     narrator_selection_character=None,
     named_narrator_fallback=None,
     queue_voice_override=False,
+    source_audio_semantics=False,
 ):
     root.mkdir(parents=True, exist_ok=True)
     items = [queue_item(name) for name in names]
@@ -129,6 +136,58 @@ def prepare_authoring_fixture(
         for item in items:
             item["speaker"] = named_narrator_fallback
             item["voice_character"] = named_narrator_fallback
+    semantic_evidence = None
+    semantic_metadata = None
+    semantic_entries = {}
+    if source_audio_semantics:
+        entries = []
+        for index, item in enumerate(items, start=1):
+            media_sha256 = hashlib.sha256(f"media-{index}".encode()).hexdigest()
+            entry = {
+                "locale": "en",
+                "media_id": index,
+                "media_sha256": media_sha256,
+                "displayed_text_sha256": item["text_sha256"],
+                "normalized_displayed_text_sha256": semantic_text_sha256(item["text"]),
+                "observed_transcript": item["text"],
+                "normalized_observed_text_sha256": semantic_text_sha256(item["text"]),
+                "verdict": "full",
+                "reason": "exact-normalized-asr-transcript",
+                "method": SEMANTIC_EVIDENCE_METHOD,
+                "model_sha256": "2" * 64,
+                "source_line_ids": [item["line_id"]],
+            }
+            entry["entry_id"] = canonical_document_sha256(
+                {key: value for key, value in entry.items() if key != "source_line_ids"}
+            )
+            entries.append(entry)
+            semantic_entries[item["line_id"]] = entry
+        semantic_document = {
+            "schema": "r1999.source-audio-semantic-evidence",
+            "schema_version": 1,
+            "locale": "en",
+            "source_story_index_sha256": "3" * 64,
+            "model": {
+                "kind": "whisper",
+                "snapshot": "synthetic",
+                "sha256": "2" * 64,
+                "device": "cpu",
+                "decoding": "deterministic_greedy_default",
+            },
+            "entries": entries,
+        }
+        semantic_document["evidence_id"] = canonical_document_sha256(semantic_document)
+        semantic_document["generated_at"] = "2026-08-30T00:00:00Z"
+        semantic_evidence = root / "inputs" / "source-audio-semantic-evidence.json"
+        atomic_write_json(semantic_evidence, semantic_document, sort_keys=True)
+        semantic_metadata = {
+            "evidence_id": semantic_document["evidence_id"],
+            "evidence_sha256": sha256_file(semantic_evidence),
+            "method": SEMANTIC_EVIDENCE_METHOD,
+            "selected_chapters": ["chapter-one"],
+            "applied_count": len(items),
+        }
+
     story = root / "inputs" / "story-index.jsonl"
     write_story_index_document(
         story,
@@ -136,6 +195,11 @@ def prepare_authoring_fixture(
             "game": "Synthetic Game",
             "language": "en",
             "generated_at": "2026-08-16T12:00:00+00:00",
+            **(
+                {"source_audio_semantics": semantic_metadata}
+                if semantic_metadata is not None
+                else {}
+            ),
         },
         [
             {
@@ -149,6 +213,25 @@ def prepare_authoring_fixture(
                 "text_sha256": item["text_sha256"],
                 "kind": "dialogue",
                 "source_audio_status": "absent",
+                **(
+                    {
+                        "source_audio_duration_media_sha256": semantic_entries[
+                            item["line_id"]
+                        ]["media_sha256"],
+                        "source_audio_completeness": "full",
+                        "source_audio_completeness_reason": (
+                            "exact-normalized-asr-transcript"
+                        ),
+                        "source_audio_semantic_evidence_id": semantic_metadata[
+                            "evidence_id"
+                        ],
+                        "source_audio_semantic_evidence_entry_id": semantic_entries[
+                            item["line_id"]
+                        ]["entry_id"],
+                    }
+                    if source_audio_semantics
+                    else {}
+                ),
             }
             for index, item in enumerate(items, start=1)
         ],
@@ -251,6 +334,7 @@ def prepare_authoring_fixture(
         "output": output,
         "state": result.state,
         "manifest": result.manifest,
+        "source_audio_semantic_evidence": semantic_evidence,
     }
 
 
@@ -303,6 +387,46 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_publishes_and_imports_exact_source_audio_semantic_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root, source_audio_semantics=True)
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+
+            result = publish(
+                fixture,
+                root / "final-pack",
+                source_audio_semantic_evidence_path=fixture[
+                    "source_audio_semantic_evidence"
+                ],
+            )
+            imported = import_game_pack(result.manifest)
+            pack = load_game_pack(result.manifest)
+            extension = pack.extensions["vntts.authoring"][
+                "source_audio_semantic_evidence"
+            ]
+
+        self.assertEqual(
+            result.source_audio_semantic_evidence,
+            imported.source_audio_semantic_evidence,
+        )
+        self.assertEqual(extension["entry_count"], 2)
+        self.assertEqual(extension["path"], "story/source-audio-semantic-evidence.json")
+
+    def test_rejects_semantic_story_without_its_evidence_file(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root, source_audio_semantics=True)
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+
+            with self.assertRaisesRegex(
+                FinalGamePackError,
+                "require their exact evidence file",
+            ):
+                publish(fixture, root / "final-pack")
+
     def prepare_exhausted_hypothesis_fixture(self, root):
         fixture = prepare_authoring_fixture(
             root / "source", names=("one. Another sentence follows",)

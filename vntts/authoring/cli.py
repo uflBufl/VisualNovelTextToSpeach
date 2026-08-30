@@ -1194,6 +1194,13 @@ def create_parser():
         help="Exact checksum-bound live sequence plan to ship as a version-2 pack",
     )
     pack.add_argument(
+        "--source-audio-semantic-evidence",
+        type=Path,
+        help=(
+            "Exact authoring-only semantic evidence bound by the selected story index"
+        ),
+    )
+    pack.add_argument(
         "--failure-reference-binding",
         type=Path,
         help="Exact immutable selected-reference binding used by mixed provenance state",
@@ -2443,6 +2450,9 @@ def main(argv=None):
                 story_index_path=arguments.story_index,
                 voice_manifest_path=arguments.voice_manifest,
                 live_sequence_plan_path=arguments.live_sequence_plan,
+                source_audio_semantic_evidence_path=(
+                    arguments.source_audio_semantic_evidence
+                ),
                 failure_reference_binding_path=arguments.failure_reference_binding,
                 game_id=arguments.game_id,
                 game_version=arguments.game_version,

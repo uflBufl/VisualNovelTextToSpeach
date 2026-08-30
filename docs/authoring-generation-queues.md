@@ -53,18 +53,22 @@ identity.
 
 ## Source-audio policy
 
-Only the canonical typed `source_audio_status` controls the queue action:
+The canonical typed `source_audio_status` controls the base queue action. An
+`available` record may additionally carry checksum-bound semantic completeness:
 
 | Source status | Queue result |
 | --- | --- |
-| `available` | excluded; use the existing source audio |
+| `available` + `full` or no completeness evidence | excluded; use the existing source audio |
+| `available` + `partial` | `generate`; play the cue, then read the complete displayed text |
 | `absent` | `generate` |
 | `unavailable` | `prefer_source_audio` |
 | `unknown` | requires explicit `resolve_audio` or `manual_review` |
 
 There is deliberately no default for `unknown`: legacy unchecked and unresolved
 records normalize to the same canonical status but require different authoring
-decisions. Non-speakable records are also excluded. The preflight summary
+decisions. A partial cue retains its semantic evidence extensions in the queue,
+and `partial_source_audio` reports how many complete-text continuations were
+added. Non-speakable records are also excluded. The preflight summary
 separates ready generation, missing references, recoverable source audio,
 manual review, available audio, non-speakable records and records outside the
 selected collections. The broader workbench still needs a dedicated
