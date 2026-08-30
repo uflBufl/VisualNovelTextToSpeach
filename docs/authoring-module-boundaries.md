@@ -254,12 +254,22 @@ blind-listening import commands. `cli_delivery` owns delivery annotation,
 workspace creation and immutable outcome merges. `cli_speech_robustness` owns
 corpus publication/checking, diagnostic ASR and managed-ASR installation/status;
 it translates its implementation errors through one family error so `cli.py`
-does not import those workflow modules. Shared missing-voice and failure-repair
-flags live in `cli_generation_options`, which is reused by the remaining
-generation parser without coupling it back to the workspace family. These
-family modules depend only on their workflow leaves and never on `cli.py` or on
-each other. Focused tests bind their parser defaults, ordering, single-owner
-dispatch and existing JSON behavior; the complete suite remains the final
-compatibility gate for each extraction slice.
+does not import those workflow modules. `cli_audio_events` owns all nine exact
+omission, projection-fallback, source-review, production-composition and
+composition-workspace commands. It registers its workspace and review parsers at
+their two historical composition points so top-level help order remains stable,
+but exposes one immutable command inventory and one dispatch handler. The
+top-level CLI imports only that family boundary while retaining shared
+translation of its review/composition domain errors.
+
+Shared missing-voice and failure-repair flags live in
+`cli_generation_options`, which is reused by the remaining generation parser
+without coupling it back to the workspace family. These family modules depend
+only on their workflow leaves and never on `cli.py` or on each other. Focused
+tests bind their parser defaults, ordering, single-owner dispatch and existing
+JSON behavior; the complete suite remains the final compatibility gate for each
+extraction slice. The audio-event slice additionally binds a normalized SHA-256
+of every option, positional, type, required flag, choice, default and help text,
+and rejects renewed concrete audio-event workflow imports from `cli.py`.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.
