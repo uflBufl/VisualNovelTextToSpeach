@@ -251,12 +251,15 @@ exit codes and JSON output remain compatible during incremental migration.
 `cli_legacy` owns legacy discovery/import, standalone generation import and
 blind-listening import commands. `cli_delivery` owns delivery annotation,
 `cli_queue` owns queue preflight/publication, and `cli_workspace` owns core
-workspace creation and immutable outcome merges. Shared missing-voice and
-failure-repair flags live in `cli_generation_options`, which is reused by the
-remaining generation parser without coupling it back to the workspace family.
-These family modules depend only on their workflow leaves and never on `cli.py`
-or on each other. Focused tests bind their parser defaults, ordering,
-single-owner dispatch and existing JSON behavior; the complete suite remains
-the final compatibility gate for each extraction slice.
+workspace creation and immutable outcome merges. `cli_speech_robustness` owns
+corpus publication/checking, diagnostic ASR and managed-ASR installation/status;
+it translates its implementation errors through one family error so `cli.py`
+does not import those workflow modules. Shared missing-voice and failure-repair
+flags live in `cli_generation_options`, which is reused by the remaining
+generation parser without coupling it back to the workspace family. These
+family modules depend only on their workflow leaves and never on `cli.py` or on
+each other. Focused tests bind their parser defaults, ordering, single-owner
+dispatch and existing JSON behavior; the complete suite remains the final
+compatibility gate for each extraction slice.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.
