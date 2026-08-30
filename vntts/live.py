@@ -1796,6 +1796,20 @@ class LiveDialogReader:
                     )
                     self._report_auto_advance_state("focus-wait", generation, 0)
                 self._maybe_auto_advance()
+            elif refusal_reason == "visual-wait":
+                with self.state_lock:
+                    report_visual_wait = (
+                        self.auto_advance_visual_wait_generation != generation
+                    )
+                    self.auto_advance_visual_wait_generation = generation
+                if report_visual_wait:
+                    self._report_pipeline_event(
+                        "auto-advance-withheld",
+                        generation,
+                        reason="canonical-full-text-not-confirmed",
+                    )
+                    self._report_auto_advance_state("visual-wait", generation, 0)
+                self._maybe_auto_advance()
             else:
                 self._report_pipeline_event(
                     "auto-advance-withheld",

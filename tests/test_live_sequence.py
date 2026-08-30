@@ -225,6 +225,21 @@ class StoryCursorTest(unittest.TestCase):
         cursor.begin_playback()
         self.assertEqual(cursor.state, StoryCursorState.PLAYING)
 
+    def test_repeated_current_observation_preserves_completed_playback_authority(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+
+        snapshot = cursor.observe_bounded_line(
+            "synthetic:chapter-1:1",
+            ("event-1", "event-2"),
+        )
+
+        self.assertEqual(snapshot.reason, "playback-completed")
+        self.assertTrue(cursor.can_auto_advance)
+
     def test_waiting_dispatch_confirms_only_one_deterministic_visual_successor(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)

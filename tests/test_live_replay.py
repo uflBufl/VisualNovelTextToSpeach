@@ -465,6 +465,126 @@ class LiveReplayTest(unittest.TestCase):
         self.assertEqual(report["manual_advance_requests"], 0)
         self.assertEqual(report["advance_requests"], 0)
 
+    def test_sequence_audio_auto_prefetches_and_routes_a_typewriter_prefix(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": "story:prefix:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Rhiannon",
+                    "text": "The first source line is already complete.",
+                    "source_audio_status": "available",
+                    "source_audio_duration_seconds": 0.001,
+                },
+                {
+                    "line_id": "story:prefix:2",
+                    "chapter": "1",
+                    "sequence": 2,
+                    "speaker": "Centurion",
+                    "text": "The generated narration keeps rendering after playback starts.",
+                    "source_audio_status": "absent",
+                },
+                {
+                    "line_id": "story:prefix:3",
+                    "chapter": "1",
+                    "sequence": 3,
+                    "speaker": "Rhiannon",
+                    "text": "The terminal source line is complete.",
+                    "source_audio_status": "available",
+                    "source_audio_duration_seconds": 0.001,
+                },
+            ]
+            events = [
+                {
+                    "event_id": "prefix-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["prefix-2"],
+                    "line_id": "story:prefix:1",
+                },
+                {
+                    "event_id": "prefix-2",
+                    "sequence": 2,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["prefix-3"],
+                    "line_id": "story:prefix:2",
+                },
+                {
+                    "event_id": "prefix-3",
+                    "sequence": 3,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:prefix:3",
+                },
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="audio-auto",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=tuple(line["line_id"] for line in story_lines),
+                observations={
+                    "story:prefix:1": [
+                        ("Rhiannon", "The first source line is already complete.")
+                    ],
+                    "story:prefix:2": [
+                        ("Centurion", "The generated narration"),
+                        ("Centurion", "The generated narration keeps rendering"),
+                        (
+                            "Centurion",
+                            "The generated narration keeps rendering after playback starts.",
+                        ),
+                    ],
+                    "story:prefix:3": [
+                        ("Rhiannon", "The terminal source line is complete.")
+                    ],
+                },
+                expected_counts={
+                    "ocr_calls": 4,
+                    "bounded_recoveries": 1,
+                    "key_dispatch_attempts": 2,
+                    "confirmed_key_dispatches": 2,
+                },
+                generated_line_id="story:prefix:2",
+            )
+
+            report = LiveReplayRunner(
+                load_live_replay_corpus(path),
+                interval_seconds=0.002,
+                timeout_seconds=4,
+            ).run()
+
+        self.assertTrue(report["successful"], report)
+        self.assertEqual(report["route_sources"], ["game", "generated", "game"])
+        generated_route = next(
+            route for route in report["routes"] if route["line_id"] == "story:prefix:2"
+        )
+        self.assertEqual(
+            generated_route["artifact_preflight_state"],
+            "generated-audio-entry-reserved",
+        )
+        prefetch = next(
+            event
+            for event in report["sequence"]["events"]
+            if event["stage"] == "sequence-successor-prefetch"
+            and event.get("line_id") == "story:prefix:2"
+        )
+        self.assertEqual(prefetch["outcome"], "reserved")
+        self.assertEqual(prefetch["target_event_id"], "prefix-2")
+        self.assertEqual(len(report["media_integrity"]["generated_playback"]), 1)
+        self.assertTrue(
+            any(
+                event["stage"] == "auto-advance-withheld"
+                and event.get("reason") == "canonical-full-text-not-confirmed"
+                for timeline in report["timelines"]
+                for event in timeline["events"]
+            )
+        )
+
     def test_sequence_audio_manual_uses_bounded_ocr_for_skip_and_choice(self):
         with TemporaryDirectory() as temporary_directory:
             story_lines = [

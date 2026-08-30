@@ -150,9 +150,11 @@ incremental dialogue tracker, exact story resolver, generated-audio verifier,
 route preparation/playback outcome, completion seal and auto-advance state.
 Capture frames advance only after OCR consumes that exact image; a dropped or
 replaced capture therefore cannot silently skip a fixture state. A route may
-finish early, but its auto-advance callback waits until OCR has acknowledged
-every declared frame for that dialogue. Final success additionally requires the
-full corpus frame ledger to be consumed. Real-pixel replay uses the production
+finish early, but a prefix-started route keeps auto-advance in retryable
+`visual-wait` until recognition has confirmed the full canonical line. Changed
+typewriter frames cannot be interpreted as deterministic successors while that
+barrier is active. Final success additionally requires the full corpus frame
+ledger to be consumed. Real-pixel replay uses the production
 OCR confidence threshold and preprocessing-profile search. A zero threshold is
 not used because it would stop at the first non-empty noisy preprocessing pass
 instead of exercising production recognition.

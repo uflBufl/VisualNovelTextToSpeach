@@ -180,7 +180,11 @@ locked.
       narration, OCR truncation, speaker-name noise, branches, focus loss and
       rapid manual skips. The implementation pre-opens only one direct unique
       generated speech successor, never invokes live TTS from a prefix, and
-      keeps visual settling as the auto-advance gate. Acceptance is zero wrong,
+      requires an exact/full canonical observation before auto-advance. A
+      synthetic slow-typewriter replay with a sub-millisecond generated WAV now
+      proves one early playback, no duplicate route and no key before the full
+      line; extend that evidence with real captured frames for the remaining
+      noise, branch, focus and manual-skip cases. Acceptance is zero wrong,
       early, duplicate or skipped lines and no stale route after backend, pack,
       checksum, focus, branch or cursor-owner changes.
 - [ ] Measure the real post-render result after removing the fixed 1.5-second

@@ -326,6 +326,7 @@ class AppController:
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
+        self.sequence_prefix_confirmation_event_id = None
         self._load_live_sequence_plan()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
@@ -1474,6 +1475,7 @@ class AppController:
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
+        self.sequence_prefix_confirmation_event_id = None
         with self.sequence_prefetch_lock:
             self.sequence_prefetch_keys.clear()
         if self.settings.live_sequence_mode == "off":
@@ -1751,10 +1753,24 @@ class AppController:
                 line, match_result = resolve_bounded(
                     character, text, candidate_line_ids
                 )
+                resolved_event = (
+                    None
+                    if line is None
+                    else self.live_sequence_plan.event_for_line(line.line_id)
+                )
+                prefix_match = "prefix" in str(match_result)
+                pending_prefix_continuation = bool(
+                    prefix_match
+                    and resolved_event is not None
+                    and resolved_event.event_id == cursor.current_event_id
+                    and self.sequence_prefix_confirmation_event_id
+                    == resolved_event.event_id
+                )
                 if (
                     self.settings.live_sequence_mode == "audio-auto"
                     and line is not None
-                    and "prefix" in str(match_result)
+                    and prefix_match
+                    and not pending_prefix_continuation
                     and (
                         cursor.state != StoryCursorState.WAITING_TRANSITION
                         or not self._reserve_generated_prefix(line)
@@ -1762,9 +1778,31 @@ class AppController:
                 ):
                     # Early playback is allowed only for a unique cursor-bounded
                     # prefix whose checksum-bound WAV has already passed preflight.
-                    # The visual auto-advance gate still waits for the routed frame
-                    # to stop changing, so a slow typewriter cannot receive a key.
+                    # Auto-advance remains barred until a later observation proves
+                    # that the full canonical line is visible.
                     line = None
+                elif (
+                    self.settings.live_sequence_mode == "audio-auto"
+                    and line is not None
+                ):
+                    if prefix_match:
+                        self.sequence_prefix_confirmation_event_id = (
+                            None if resolved_event is None else resolved_event.event_id
+                        )
+                    elif (
+                        match_result
+                        in {
+                            "expected-exact",
+                            "expected-normalized-exact",
+                            "expected-text-only",
+                            "expected-bounded-ocr-suffix",
+                            "expected-bounded-speaker-text",
+                        }
+                        and resolved_event is not None
+                        and self.sequence_prefix_confirmation_event_id
+                        == resolved_event.event_id
+                    ):
+                        self.sequence_prefix_confirmation_event_id = None
                 snapshot = (
                     None
                     if line is None
@@ -1983,6 +2021,7 @@ class AppController:
         if running:
             self.live_reader.clear_queue()
         cursor.anchor_event(event.event_id, reason)
+        self.sequence_prefix_confirmation_event_id = None
         if running:
             try:
                 enqueued = (
@@ -2123,6 +2162,12 @@ class AppController:
                 StoryCursorState.MANUAL,
                 StoryCursorState.DESYNCHRONIZED,
             }:
+                return None
+            if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
+                # The changed frame may be the remainder of a typewriter line
+                # whose exact WAV already started from a verified prefix. OCR
+                # must confirm that same full canonical line before a changed
+                # fingerprint can be interpreted as its successor.
                 return None
             if not cursor.can_confirm_visual_transition:
                 return False
@@ -2562,6 +2607,8 @@ class AppController:
                 or not cursor.can_auto_advance
             ):
                 return AutoAdvanceAttempt(False, "cursor-not-auto-advance-eligible")
+            if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
+                return AutoAdvanceAttempt(False, "visual-wait")
             if not self._is_game_focused():
                 return AutoAdvanceAttempt(False, "focus-wait")
             advanced = self._auto_advance_dialog(focus_verified=True)

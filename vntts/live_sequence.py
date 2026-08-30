@@ -290,8 +290,7 @@ class StoryCursor:
         }:
             return self.anchor_event(event.event_id, "observation-anchor")
         if event.event_id == current.event_id:
-            self.reason = "observation-current-event"
-            return self.snapshot()
+            return self._observe_current_event(event)
         if event.event_id in current.successors:
             return self.anchor_event(event.event_id, "observation-successor")
         if self._is_linear_observed_successor(current, event.event_id):
@@ -340,15 +339,27 @@ class StoryCursor:
             return self.desynchronize(f"unplanned-line:{line_id}")
         current = self.current_event
         if current is not None and event.event_id == current.event_id:
-            self.state = self._resting_state(event)
-            self.reason = "observation-current-event"
-            return self.snapshot()
+            return self._observe_current_event(event)
         allowed = {str(event_id) for event_id in allowed_event_ids}
         if event.event_id not in allowed:
             return self.desynchronize(
                 f"observation-outside-bounded-window:{event.event_id}"
             )
         return self.anchor_event(event.event_id, "observation-bounded-lookahead")
+
+    def _observe_current_event(self, event):
+        if self.state in {
+            StoryCursorState.PLAYING,
+            StoryCursorState.WAITING_TRANSITION,
+        }:
+            return self.snapshot()
+        self.state = self._resting_state(event)
+        self.reason = (
+            "playback-completed"
+            if self.completed_playback_event_id == event.event_id
+            else "observation-current-event"
+        )
+        return self.snapshot()
 
     def desynchronize(self, reason):
         self.state = StoryCursorState.DESYNCHRONIZED

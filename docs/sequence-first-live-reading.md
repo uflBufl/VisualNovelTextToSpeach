@@ -420,12 +420,15 @@ remain immediate. A uniquely bounded prefix of at least 20 normalized
 characters may confirm immediately only when it selects one cursor-authorized
 line and that line's generated WAV has already passed checksum/metadata
 preflight. Playback uses the complete canonical text and line ID, never the OCR
-fragment. The routed-frame visibility gate remains active while the typewriter
-continues changing the frame, so early playback cannot make an early key
-eligible. Missing, corrupt, ambiguous and live-TTS-only prefix candidates keep
-waiting for the ordinary exact route. Choice, wait and manual boundaries retain
-the pending no-second-key state and expose bounded expected-event/resync
-actions.
+fragment. A prefix-started event retains a separate canonical-full-text barrier:
+changed typewriter frames are forced through recognition rather than being
+mistaken for the next deterministic successor, and auto-advance remains in a
+retryable `visual-wait` until an exact/full observation clears the barrier. A
+synthetic replay deliberately uses a generated WAV shorter than the remaining
+typewriter animation and proves one playback with no early key. Missing,
+corrupt, ambiguous and live-TTS-only prefix candidates keep waiting for the
+ordinary exact route. Choice, wait and manual boundaries retain the pending
+no-second-key state and expose bounded expected-event/resync actions.
 
 When the current canonical line begins playback, the controller also inspects
 the sequence graph without changing cursor state. If exactly one next visible
