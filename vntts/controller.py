@@ -1418,6 +1418,7 @@ class AppController:
                         return (None, "")
                     if self.story_cursor.state in {
                         StoryCursorState.LOCKED,
+                        StoryCursorState.WAITING_TRANSITION,
                         StoryCursorState.MANUAL,
                         StoryCursorState.DESYNCHRONIZED,
                     }:

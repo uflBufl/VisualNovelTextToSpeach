@@ -1640,6 +1640,7 @@ class MainTest(unittest.TestCase):
             ),
         )
         controller.live_reader = Mock(active_generation=7)
+        controller._offer_unknown_speaker_mapping = Mock(return_value=False)
         controller._auto_advance_dialog = Mock(return_value=True)
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
@@ -1655,6 +1656,30 @@ class MainTest(unittest.TestCase):
         self.assertFalse(callback())
         controller._auto_advance_dialog.assert_called_once_with(focus_verified=True)
         self.assertEqual(pipeline[-1][0][0], "sequence-key-dispatch-authorized")
+
+        self.assertFalse(
+            controller._dialog_observed(
+                "Hotelier",
+                "A transitional OCR frame that is not the expected successor.",
+            )
+        )
+        controller._offer_unknown_speaker_mapping.assert_not_called()
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.WAITING_TRANSITION,
+        )
+
+        self.assertEqual(
+            controller._dialog_observed("Rhiannon", "Second line."),
+            ("Rhiannon", "Second line."),
+        )
+        controller._offer_unknown_speaker_mapping.assert_called_once_with(
+            "Rhiannon",
+            "Second line.",
+        )
+        controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
 
         controller.story_cursor.reset()
         controller.story_cursor.anchor_event("event-1")

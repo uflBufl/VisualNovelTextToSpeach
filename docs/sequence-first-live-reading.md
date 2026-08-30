@@ -411,8 +411,12 @@ Audio-auto queues an exact cursor-owned canonical line immediately, waits for
 successful playback (or a typed silent event), requires the latest accepted
 frame to remain visible, rechecks game focus under the cursor dispatch lock and
 sends at most one key. A changed stable frame confirms that pending key before
-the next event can advance. Choice, wait and manual boundaries retain the
-pending no-second-key state and expose bounded expected-event/resync actions.
+the next event can advance. While that confirmation is pending, an unmatched
+OCR observation is transition noise: it is consumed without opening a voice
+decision, updating dialogue history, enqueueing live TTS or changing generation
+ownership. Only an exact bounded successor may confirm the pending key and
+resume canonical routing. Choice, wait and manual boundaries retain the pending
+no-second-key state and expose bounded expected-event/resync actions.
 Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
 generation failure. It schedules another guarded attempt after focus returns.
 This avoids the former race where several consecutive macOS focus probes could
