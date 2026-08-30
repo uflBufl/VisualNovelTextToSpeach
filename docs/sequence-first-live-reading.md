@@ -416,12 +416,26 @@ OCR observation is transition noise: it is consumed without opening a voice
 decision, updating dialogue history, enqueueing live TTS or changing generation
 ownership. An OCR-empty transition frame is likewise not a dialogue boundary
 and cannot close the pending confirmation generation. Exact bounded successors
-remain immediate. A uniquely bounded prefix may confirm only after the same
-cursor owner, canonical line and normalized OCR observation remain unchanged
-for 1.5 seconds; every growing or different prefix restarts that dwell, and the
-accepted route always uses the complete checksum-bound canonical line rather
-than OCR text. Choice, wait and manual boundaries retain the pending no-second-key
-state and expose bounded expected-event/resync actions.
+remain immediate. A uniquely bounded prefix of at least 20 normalized
+characters may confirm immediately only when it selects one cursor-authorized
+line and that line's generated WAV has already passed checksum/metadata
+preflight. Playback uses the complete canonical text and line ID, never the OCR
+fragment. The routed-frame visibility gate remains active while the typewriter
+continues changing the frame, so early playback cannot make an early key
+eligible. Missing, corrupt, ambiguous and live-TTS-only prefix candidates keep
+waiting for the ordinary exact route. Choice, wait and manual boundaries retain
+the pending no-second-key state and expose bounded expected-event/resync
+actions.
+
+When the current canonical line begins playback, the controller also inspects
+the sequence graph without changing cursor state. If exactly one next visible
+event is a generated speech line, its checksum-bound WAV is read, verified and
+decoded on the synthesis executor while the current line plays. The
+reservation key includes backend authority, owner event, line ID and text hash;
+focus/cursor/backend changes make the result stale, and the exact checksum key
+prevents stale bytes from routing as another line. This preflight never invokes
+live TTS, chooses a voice, plays audio or authorizes a key. Branch, silent,
+choice and manual frontiers are not crossed.
 Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
 generation failure. It schedules another guarded attempt after focus returns.
 This avoids the former race where several consecutive macOS focus probes could
@@ -464,6 +478,14 @@ Production acceptance requires:
 - focus loss, choices, ambiguity and unsupported events pause safely;
 - generated playback starts within the existing local-WAV latency target after
   the visual transition is detected.
+
+The privacy-safe timeline records `sequence-successor-prefetch` with target
+identity, result and preflight duration. `first-pcm` records elapsed time from
+the latest visible-text, OCR-stable, generation-start and playback-start marks.
+The persisted timeline and support bundle aggregate retained samples as p50/p95
+without dialogue text. These component measurements are diagnostics only;
+real-game acceptance must still separate intentional speaker announcements and
+partial source cues from avoidable route/decode/device delay.
 
 After these gates pass, remove OCR text from the locked-mode speech path and
 retire the old incremental tracker as a fallback-only recovery component.

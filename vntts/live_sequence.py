@@ -209,7 +209,13 @@ class StoryCursor:
         """Return one visible successor without guessing across a branch."""
         if not self.can_confirm_visual_transition:
             return None
-        current = self._require_current()
+        return self.deterministic_upcoming_visible_event()
+
+    def deterministic_upcoming_visible_event(self):
+        """Return the unique next visible event without changing cursor state."""
+        current = self.current_event
+        if current is None:
+            return None
         visited = {current.event_id}
         while True:
             if len(current.successors) != 1:

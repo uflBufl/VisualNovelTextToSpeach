@@ -780,6 +780,7 @@ class MainTest(unittest.TestCase):
             controller.chapter_voice_preloader,
             audio_output=Mock(),
         )
+        wrapper.has_generated_line = Mock(return_value=True)
         controller.speech_backend = wrapper
         line = SimpleNamespace(text="The complete generated dialogue.")
         controller.chapter_voice_preloader.resolve_unique_prefix = Mock(
@@ -797,6 +798,36 @@ class MainTest(unittest.TestCase):
             "Rhiannon",
             "The complete generated",
         )
+        wrapper.has_generated_line.assert_called_once_with(line)
+
+    def test_artifact_policy_does_not_expand_prefix_without_verified_wav(self):
+        controller = AppController(
+            AppSettings(audio_source_policy="prefer-generated"),
+            tts_factory=Mock(),
+        )
+        live_backend = Mock(
+            name="pocket-tts",
+            capabilities=SpeechBackendCapabilities(True, True, False, False),
+        )
+        live_backend.name = "pocket-tts"
+        wrapper = GeneratedAudioFallbackBackend(
+            live_backend,
+            Mock(),
+            controller.chapter_voice_preloader,
+            audio_output=Mock(),
+        )
+        line = SimpleNamespace(text="The complete generated dialogue.")
+        controller.chapter_voice_preloader.resolve_unique_prefix = Mock(
+            return_value=line
+        )
+        wrapper.has_generated_line = Mock(return_value=False)
+        controller.speech_backend = wrapper
+
+        resolver = controller._get_live_configuration()["tracker_options"][
+            "early_dialogue_resolver"
+        ]
+
+        self.assertIsNone(resolver("Rhiannon", "The complete generated"))
 
     def test_unique_story_text_recovers_ocr_lost_speaker_before_routing(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
@@ -1628,7 +1659,6 @@ class MainTest(unittest.TestCase):
             },
         )
         pipeline = []
-        prefix_clock = Mock()
         controller = AppController(
             AppSettings(
                 story_index="story.jsonl",
@@ -1642,9 +1672,20 @@ class MainTest(unittest.TestCase):
             pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
                 (args, kwargs)
             ),
-            sequence_prefix_clock=prefix_clock,
-            sequence_prefix_dwell_seconds=1.5,
         )
+        live_backend = Mock(
+            name="pocket-tts",
+            capabilities=SpeechBackendCapabilities(True, True, False, False),
+        )
+        live_backend.name = "pocket-tts"
+        generated_backend = GeneratedAudioFallbackBackend(
+            live_backend,
+            Mock(),
+            preloader,
+            audio_output=Mock(),
+        )
+        generated_backend.has_generated_line = Mock(return_value=True)
+        controller.speech_backend = generated_backend
         controller.live_reader = Mock(active_generation=7)
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
         controller._auto_advance_dialog = Mock(return_value=True)
@@ -1676,39 +1717,15 @@ class MainTest(unittest.TestCase):
         )
         self.assertFalse(controller._dialog_observed("Narrator", ""))
 
-        prefix_clock.return_value = 10.0
-        self.assertFalse(
-            controller._dialog_observed("Rhiannon", "Second canonical line")
-        )
-        prefix_clock.return_value = 11.0
-        self.assertFalse(
-            controller._dialog_observed(
-                "Rhiannon",
-                "Second canonical line that",
-            )
-        )
-        self.assertFalse(controller._dialog_observed("Narrator", ""))
-        prefix_clock.return_value = 12.0
-        self.assertFalse(
-            controller._dialog_observed(
-                "Rhiannon",
-                "Second canonical line that",
-            )
-        )
-        prefix_clock.return_value = 13.0
-        self.assertFalse(
-            controller._dialog_observed(
-                "Rhiannon",
-                "Second canonical line that",
-            )
-        )
-        prefix_clock.return_value = 13.5
         self.assertEqual(
             controller._dialog_observed(
                 "Rhiannon",
                 "Second canonical line that",
             ),
             ("Rhiannon", "Second canonical line that remains stable."),
+        )
+        generated_backend.has_generated_line.assert_called_once_with(
+            preloader.dialogue[1]
         )
         controller._offer_unknown_speaker_mapping.assert_called_once_with(
             "Rhiannon",
@@ -1989,6 +2006,104 @@ class MainTest(unittest.TestCase):
             ("Hotelier", "Second canonical line."),
         )
         self.assertEqual(controller.story_cursor.current_event_id, "event-3")
+
+    def test_sequence_playback_prefetches_unique_next_generated_line(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, speaker, text in (
+                (1, "Rhiannon", "First canonical line."),
+                (2, "Hotelier", "Second canonical line."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-2",),
+                "reverse1999:1:1",
+            ),
+            "event-2": LiveSequenceEvent(
+                "event-2",
+                "1",
+                2,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:2",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:1": "event-1",
+                "reverse1999:1:2": "event-2",
+            },
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        live_backend = Mock(
+            name="pocket-tts",
+            capabilities=SpeechBackendCapabilities(True, True, False, False),
+        )
+        live_backend.name = "pocket-tts"
+        backend = GeneratedAudioFallbackBackend(
+            live_backend,
+            Mock(),
+            preloader,
+            audio_output=Mock(),
+        )
+        backend.has_generated_line = Mock(return_value=True)
+        controller.speech_backend = backend
+        controller.speech_executor = Mock()
+        controller.story_cursor.anchor_event("event-1")
+
+        event_id = controller._begin_sequence_playback(
+            SpeechChunk(
+                1,
+                "Rhiannon",
+                "First canonical line.",
+                line_id="reverse1999:1:1",
+            )
+        )
+
+        self.assertEqual(event_id, "event-1")
+        submitted = controller.speech_executor.submit.call_args.args
+        self.assertEqual(submitted[0](*submitted[1:]), "reserved")
+        backend.has_generated_line.assert_called_once_with(preloader.dialogue[1])
+        self.assertEqual(pipeline[-1][0][0], "sequence-successor-prefetch")
+        self.assertEqual(pipeline[-1][1]["line_id"], "reverse1999:1:2")
+        self.assertEqual(pipeline[-1][1]["outcome"], "reserved")
 
     def test_sequence_audio_manual_failed_playback_keeps_current_event_closed(self):
         preloader = ChapterVoicePreloader.from_document(

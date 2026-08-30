@@ -59,6 +59,38 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertNotIn("private_text", str(snapshot))
         self.assertEqual(persisted["timelines"], snapshot)
 
+    def test_reports_latency_component_percentiles_without_dialogue_text(self):
+        timelines = GenerationTimelineLog()
+        for generation, value in enumerate((100, 200, 300), 1):
+            timelines.record(
+                "first-pcm",
+                generation,
+                float(generation),
+                from_text_visible_ms=value,
+                from_playback_started_ms=value / 10,
+            )
+        timelines.record(
+            "sequence-successor-prefetch",
+            3,
+            3.5,
+            prefetch_ms=12,
+        )
+
+        summary = timelines.latency_summary()
+
+        self.assertEqual(
+            summary["visible_to_first_pcm_ms"],
+            {"samples": 3, "p50_ms": 200.0, "p95_ms": 290.0},
+        )
+        self.assertEqual(
+            summary["playback_to_first_pcm_ms"],
+            {"samples": 3, "p50_ms": 20.0, "p95_ms": 29.0},
+        )
+        self.assertEqual(
+            summary["successor_preflight_ms"],
+            {"samples": 1, "p50_ms": 12.0, "p95_ms": 12.0},
+        )
+
     def test_merges_details_when_a_stage_is_reported_twice(self):
         timelines = GenerationTimelineLog()
 
@@ -163,12 +195,26 @@ class GenerationTimelineLogTest(unittest.TestCase):
             event_id="event-1",
             next_event_count=1,
         )
+        timelines.record(
+            "sequence-successor-prefetch",
+            1,
+            1.25,
+            event_id="event-1",
+            target_event_id="event-2",
+            line_id="reverse1999:1:2",
+            outcome="reserved",
+            prefetch_ms=12,
+        )
 
         events = timelines.snapshot()[0]["events"]
 
         self.assertEqual(
             [event["stage"] for event in events],
-            ["sequence-audio-auto", "sequence-key-dispatch-authorized"],
+            [
+                "sequence-audio-auto",
+                "sequence-successor-prefetch",
+                "sequence-key-dispatch-authorized",
+            ],
         )
         self.assertEqual(events[0]["event_id"], "event-1")
         self.assertNotIn("private_text", str(events))

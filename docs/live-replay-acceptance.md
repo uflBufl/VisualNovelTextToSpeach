@@ -323,3 +323,13 @@ resolution searches the current chapter first; a global same-speaker scan is
 retained only when the current chapter has no matching candidate. On the same
 real index this reduced a warm Narrator-prefix lookup from 90-96 ms to
 0.14-0.18 ms (0.9 ms on its first verified-WAV lookup).
+
+The sequence-owned path no longer adds the former fixed 1.5-second prefix
+dwell. A unique bounded prefix can route immediately only after its exact WAV
+passes checksum/metadata preflight; a live fallback is never started from that
+prefix. The visual frame must still settle before automatic key delivery. The
+unique next generated speech event is preflighted during current playback, so
+the later prefix route normally consumes reserved PCM rather than reopening the
+WAV. Replay and real-game acceptance still need to prove zero wrong, duplicate,
+skipped or early-advanced lines under slow typewriter, truncation, branches,
+focus loss and rapid manual skips.

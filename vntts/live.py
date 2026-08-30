@@ -632,6 +632,7 @@ class LiveDialogReader:
         self.paused_chunks = []
         self.deferred_chunk = None
         self.current_chunk = None
+        self.current_chunk_pipeline_origins = None
         self.last_spoken_chunk = None
         self.cancelled_chunk_ids = set()
         self.prepared_chunk_ids = set()
@@ -1541,6 +1542,13 @@ class LiveDialogReader:
         with self.state_lock:
             self.current_chunk = chunk
             self.last_spoken_chunk = chunk
+            metrics = self.pipeline_metrics
+            self.current_chunk_pipeline_origins = {
+                "from_text_visible_ms": metrics.last_text_visible_at,
+                "from_ocr_stable_ms": metrics.last_ocr_stable_at,
+                "from_generation_started_ms": metrics.last_generation_started_at,
+                "from_playback_started_ms": monotonic(),
+            }
             self._record_speech_metrics_locked(playback_started=True)
         if self.first_pcm_on_prepare and not isinstance(
             prepared,
@@ -1569,6 +1577,7 @@ class LiveDialogReader:
                 self._record_speech_metrics_locked(playback_completed=True)
                 if self.current_chunk == chunk:
                     self.current_chunk = None
+                    self.current_chunk_pipeline_origins = None
                 self.cancelled_chunk_ids.discard(id(chunk))
             self._report_pipeline_event(
                 "playback-completion",
@@ -1997,12 +2006,19 @@ class LiveDialogReader:
     def record_first_pcm(self, timestamp=None):
         occurred_at = monotonic() if timestamp is None else timestamp
         with self.state_lock:
+            previous = self.pipeline_metrics
             self.pipeline_metrics = replace(
-                self.pipeline_metrics,
+                previous,
                 last_first_pcm_at=occurred_at,
             )
             generation = self.active_generation
             chunk = self.current_chunk
+            origins = self.current_chunk_pipeline_origins or {
+                "from_text_visible_ms": previous.last_text_visible_at,
+                "from_ocr_stable_ms": previous.last_ocr_stable_at,
+                "from_generation_started_ms": previous.last_generation_started_at,
+                "from_playback_started_ms": previous.last_playback_started_at,
+            }
         details = (
             {
                 "chunk_id": chunk.chunk_id,
@@ -2012,6 +2028,9 @@ class LiveDialogReader:
             if chunk is not None
             else {}
         )
+        for name, origin in origins.items():
+            if origin is not None and origin <= occurred_at:
+                details[name] = round((occurred_at - origin) * 1000)
         self._report_pipeline_event("first-pcm", generation, occurred_at, **details)
 
     def _defer_chunk_locked(self, chunk):

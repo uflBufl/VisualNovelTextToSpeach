@@ -284,8 +284,6 @@ class AppController:
         route_trace_handler=None,
         pipeline_event_handler=None,
         live_sequence_plan_factory=LiveSequencePlan.load,
-        sequence_prefix_clock=monotonic,
-        sequence_prefix_dwell_seconds=1.5,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -313,9 +311,8 @@ class AppController:
             lambda _stage, _generation, _occurred_at, **_details: None
         )
         self.live_sequence_plan_factory = live_sequence_plan_factory
-        self.sequence_prefix_clock = sequence_prefix_clock
-        self.sequence_prefix_dwell_seconds = float(sequence_prefix_dwell_seconds)
-        self.pending_sequence_prefix = None
+        self.sequence_prefetch_lock = Lock()
+        self.sequence_prefetch_keys = set()
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -1210,7 +1207,9 @@ class AppController:
             character,
             text,
         )
-        return line.text if line is not None else None
+        if line is None or not backend.has_generated_line(line):
+            return None
+        return line.text
 
     def _has_manual_voice_override(self, character):
         if is_unattributed_speaker(character):
@@ -1411,7 +1410,6 @@ class AppController:
                         StoryCursorState.ANCHORING,
                     }
                 ):
-                    self.pending_sequence_prefix = None
                     return False
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
@@ -1476,7 +1474,8 @@ class AppController:
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
-        self.pending_sequence_prefix = None
+        with self.sequence_prefetch_lock:
+            self.sequence_prefetch_keys.clear()
         if self.settings.live_sequence_mode == "off":
             self._publish_live_sequence_status()
             return False
@@ -1758,17 +1757,14 @@ class AppController:
                     and "prefix" in str(match_result)
                     and (
                         cursor.state != StoryCursorState.WAITING_TRANSITION
-                        or not self._sequence_prefix_is_stable(cursor, line, text)
+                        or not self._reserve_generated_prefix(line)
                     )
                 ):
-                    # Canonical audio may be prepared from a safe prefix in manual
-                    # mode. Automatic control additionally requires the same
-                    # bounded candidate and OCR observation to remain unchanged,
-                    # so a growing typewriter prefix cannot look like the final
-                    # post-key transition.
+                    # Early playback is allowed only for a unique cursor-bounded
+                    # prefix whose checksum-bound WAV has already passed preflight.
+                    # The visual auto-advance gate still waits for the routed frame
+                    # to stop changing, so a slow typewriter cannot receive a key.
                     line = None
-                elif self.settings.live_sequence_mode == "audio-auto":
-                    self.pending_sequence_prefix = None
                 snapshot = (
                     None
                     if line is None
@@ -1822,22 +1818,18 @@ class AppController:
         self._publish_live_sequence_status()
         return snapshot, line, match_result
 
-    def _sequence_prefix_is_stable(self, cursor, line, text):
-        normalized_text = " ".join(str(text or "").casefold().split())
-        candidate = (
-            cursor.current_event_id,
-            line.line_id,
-            normalized_text,
-        )
-        now = self.sequence_prefix_clock()
-        pending = self.pending_sequence_prefix
-        if pending is None or pending[:3] != candidate:
-            self.pending_sequence_prefix = (*candidate, now)
+    def _reserve_generated_prefix(self, line):
+        backend = self.speech_backend
+        if (
+            not isinstance(backend, GeneratedAudioFallbackBackend)
+            or backend.library is None
+        ):
             return False
-        if now - pending[3] < self.sequence_prefix_dwell_seconds:
+        try:
+            return backend.has_generated_line(line)
+        except Exception as error:
+            self.error_handler(error)
             return False
-        self.pending_sequence_prefix = None
-        return True
 
     def live_sequence_anchor_options(self):
         with self.story_cursor_lock:
@@ -2219,6 +2211,7 @@ class AppController:
             return line.line_id
 
     def _begin_sequence_playback(self, chunk):
+        successor = None
         with self.story_cursor_lock:
             cursor = self.story_cursor
             if cursor is None or not is_live_sequence_audio_mode(
@@ -2243,8 +2236,104 @@ class AppController:
                 cursor.begin_playback()
             except StoryCursorError:
                 return None
+            candidate = cursor.deterministic_upcoming_visible_event()
+            if candidate is not None and candidate.is_speech and candidate.line_id:
+                successor = self.chapter_voice_preloader.line_for_id(candidate.line_id)
             self._publish_live_sequence_status()
-            return event.event_id
+            event_id = event.event_id
+        self._schedule_sequence_successor_prefetch(event_id, successor)
+        return event_id
+
+    def _schedule_sequence_successor_prefetch(self, owner_event_id, line):
+        backend = self.speech_backend
+        executor = self.speech_executor
+        if (
+            line is None
+            or executor is None
+            or not isinstance(backend, GeneratedAudioFallbackBackend)
+            or backend.library is None
+            or not line.line_id
+            or not line.text_sha256
+        ):
+            return False
+        key = (id(backend), owner_event_id, line.line_id, line.text_sha256)
+        with self.sequence_prefetch_lock:
+            if key in self.sequence_prefetch_keys:
+                return False
+            self.sequence_prefetch_keys.add(key)
+        try:
+            executor.submit(
+                self._prefetch_sequence_successor,
+                key,
+                backend,
+                owner_event_id,
+                line,
+            )
+        except RuntimeError:
+            with self.sequence_prefetch_lock:
+                self.sequence_prefetch_keys.discard(key)
+            return False
+        return True
+
+    def _prefetch_sequence_successor(
+        self,
+        key,
+        backend,
+        owner_event_id,
+        line,
+    ):
+        started_at = monotonic()
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            current = None if cursor is None else cursor.current_event_id
+            authorized = bool(
+                backend is self.speech_backend
+                and current == owner_event_id
+                and self.game_focused
+                and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            )
+        if not authorized:
+            outcome = "stale"
+        else:
+            try:
+                outcome = (
+                    "reserved" if backend.has_generated_line(line) else "unavailable"
+                )
+            except Exception as error:
+                outcome = "failed"
+                self.error_handler(error)
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if outcome == "reserved" and (
+                backend is not self.speech_backend
+                or cursor is None
+                or cursor.current_event_id != owner_event_id
+                or not self.game_focused
+            ):
+                outcome = "stale"
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
+            )
+            plan = self.live_sequence_plan
+            target = None if plan is None else plan.event_for_line(line.line_id)
+        try:
+            self.pipeline_event_handler(
+                "sequence-successor-prefetch",
+                generation,
+                monotonic(),
+                event_id=owner_event_id,
+                target_event_id=None if target is None else target.event_id,
+                line_id=line.line_id,
+                outcome=outcome,
+                prefetch_ms=round((monotonic() - started_at) * 1000),
+            )
+        except Exception as error:
+            self.error_handler(error)
+        with self.sequence_prefetch_lock:
+            self.sequence_prefetch_keys.discard(key)
+        return outcome
 
     def _finish_sequence_playback(self, event_id, outcome):
         with self.story_cursor_lock:

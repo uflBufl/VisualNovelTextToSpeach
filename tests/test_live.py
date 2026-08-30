@@ -1,5 +1,6 @@
 import unittest
 from concurrent.futures import Future
+from dataclasses import replace
 from queue import Queue
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, call, patch
@@ -1258,6 +1259,69 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.record_first_pcm(123.5)
 
         self.assertEqual(reader.get_pipeline_metrics().last_first_pcm_at, 123.5)
+
+    def test_first_pcm_reports_pipeline_latency_breakdown(self):
+        events = []
+        reader = self.create_reader(
+            first_pcm_on_prepare=False,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        reader.active_generation = 3
+        reader.current_chunk = SpeechChunk(3, "Alice", "Hello.", ordinal=1)
+        reader.pipeline_metrics = replace(
+            reader.pipeline_metrics,
+            last_text_visible_at=10.0,
+            last_ocr_stable_at=10.25,
+            last_generation_started_at=10.5,
+            last_playback_started_at=10.75,
+        )
+
+        reader.record_first_pcm(11.0)
+
+        details = events[-1][3]
+        self.assertEqual(details["from_text_visible_ms"], 1000)
+        self.assertEqual(details["from_ocr_stable_ms"], 750)
+        self.assertEqual(details["from_generation_started_ms"], 500)
+        self.assertEqual(details["from_playback_started_ms"], 250)
+
+    def test_first_pcm_keeps_origins_owned_by_the_playing_chunk(self):
+        events = []
+        reader = None
+
+        def play_prepared(_chunk, _prepared):
+            with reader.state_lock:
+                reader.pipeline_metrics = replace(
+                    reader.pipeline_metrics,
+                    last_text_visible_at=10.9,
+                )
+            reader.record_first_pcm(11.0)
+
+        reader = self.create_reader(
+            first_pcm_on_prepare=False,
+            prepare_chunk=Mock(),
+            play_prepared=play_prepared,
+            playback_executor=ImmediateExecutor(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        reader.active_generation = 3
+        reader.pipeline_metrics = replace(
+            reader.pipeline_metrics,
+            last_text_visible_at=10.0,
+            last_generation_started_at=10.5,
+        )
+        chunk = SpeechChunk(3, "Alice", "Hello.", ordinal=1)
+
+        with patch("vntts.live.monotonic", return_value=10.75):
+            reader._play_if_current(chunk, "prepared")
+
+        details = next(event[3] for event in events if event[0] == "first-pcm")
+        self.assertEqual(details["from_text_visible_ms"], 1000)
+        self.assertEqual(details["from_generation_started_ms"], 500)
+        self.assertEqual(details["from_playback_started_ms"], 250)
 
     def test_typed_route_does_not_claim_first_pcm_before_player_observes_it(self):
         events = []

@@ -392,6 +392,7 @@ class GeneratedAudioFallbackBackend:
         self.name = f"{prefix}+{live_backend.name}"
         self.capabilities = live_backend.capabilities
         self.playback_lock = Lock()
+        self.generated_preflight_lock = Lock()
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
         self.generated_reservations = BoundedCache(32)
@@ -489,12 +490,16 @@ class GeneratedAudioFallbackBackend:
             or not line.text_sha256
         ):
             return False
-        prepared, _state = self.library.find_with_preflight(
-            line.line_id, line.text_sha256
-        )
-        if prepared is None:
-            return False
-        self.generated_reservations.put((line.line_id, line.text_sha256), prepared)
+        reservation_key = (line.line_id, line.text_sha256)
+        with self.generated_preflight_lock:
+            if self.generated_reservations.get(reservation_key) is not None:
+                return True
+            prepared, _state = self.library.find_with_preflight(
+                line.line_id, line.text_sha256
+            )
+            if prepared is None:
+                return False
+            self.generated_reservations.put(reservation_key, prepared)
         return True
 
     def prepare_route(self, character, text, *, line_id=None):
@@ -621,14 +626,17 @@ class GeneratedAudioFallbackBackend:
             and self.speed == 1.0
         ):
             reservation_key = (line.line_id, line.text_sha256)
-            prepared = self.generated_reservations.get(reservation_key)
-            if prepared is not None:
-                artifact_preflight_state = "generated-audio-entry-reserved"
-            else:
-                prepared, artifact_preflight_state = self.library.find_with_preflight(
-                    line.line_id,
-                    line.text_sha256,
-                )
+            with self.generated_preflight_lock:
+                prepared = self.generated_reservations.get(reservation_key)
+                if prepared is not None:
+                    artifact_preflight_state = "generated-audio-entry-reserved"
+                else:
+                    prepared, artifact_preflight_state = (
+                        self.library.find_with_preflight(
+                            line.line_id,
+                            line.text_sha256,
+                        )
+                    )
             if prepared is not None:
                 trace = AudioRouteTrace(
                     None,

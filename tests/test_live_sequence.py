@@ -240,6 +240,18 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(cursor.state, StoryCursorState.LOCKED)
         self.assertTrue(cursor.can_auto_advance)
 
+    def test_unique_upcoming_visible_event_can_be_inspected_during_playback(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_line("synthetic:chapter-1:1")
+        cursor.begin_playback()
+
+        candidate = cursor.deterministic_upcoming_visible_event()
+
+        self.assertEqual(candidate.event_id, "event-2")
+        self.assertEqual(cursor.current_event_id, "event-1")
+        self.assertEqual(cursor.state, StoryCursorState.PLAYING)
+
     def test_waiting_dispatch_identifies_manual_boundary_without_second_key(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

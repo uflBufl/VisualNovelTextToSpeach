@@ -171,27 +171,24 @@ locked.
       first PCM. Record separate privacy-safe timings for typewriter/recognition,
       canonical identity confirmation, generated/source WAV lookup and decode,
       speaker announcement, source-cue completion, queue wait and audio-device
-      start. Report p50/p95 plus the avoidable delay after the final rendered
-      glyph; do not attribute an intentional announcement or partial source cue
-      to WAV-loading latency.
-- [ ] Pre-resolve and pre-open the unique expected successor's generated/source
-      route while the current canonical line is playing. Prebuffering must not
-      play, choose a voice, mutate the cursor or make a key eligible, and stale
-      work must be discarded when focus, branch, settings, pack authority,
-      checksum or cursor ownership changes.
-- [ ] Evaluate safe early playback from a stable unique bounded prefix so known
-      pregenerated audio can begin while the game's typewriter animation is
-      still finishing. Use the full checksum-bound canonical text and line ID,
-      never the OCR fragment. Require a replay corpus with slow/paused
-      typewriter updates, long narration, OCR truncation, speaker-name noise,
-      branches and rapid manual skips before reducing the defensive dwell.
-- [ ] Remove the observed one-to-two-second avoidable post-render wait. The
-      acceptance gate is zero wrong, early, duplicate or skipped lines, with
-      pregenerated first PCM normally beginning before full rendering or within
-      250 ms after the last glyph when early confirmation is unavailable.
-      Measure speaker-cue duration separately and evaluate a shorter cached cue
-      for narrator-fallback roles if that cue, rather than routing, dominates
-      perceived delay.
+      start. First-PCM component deltas, generated-successor preflight time and
+      retained p50/p95 summaries are now exported; add final-glyph evidence and
+      speaker/source-cue separation. Do not attribute an intentional
+      announcement or partial source cue to WAV-loading latency.
+- [ ] Validate generated-successor preflight and immediate checksum-bound prefix
+      playback on a replay corpus with slow/paused typewriter updates, long
+      narration, OCR truncation, speaker-name noise, branches, focus loss and
+      rapid manual skips. The implementation pre-opens only one direct unique
+      generated speech successor, never invokes live TTS from a prefix, and
+      keeps visual settling as the auto-advance gate. Acceptance is zero wrong,
+      early, duplicate or skipped lines and no stale route after backend, pack,
+      checksum, focus, branch or cursor-owner changes.
+- [ ] Measure the real post-render result after removing the fixed 1.5-second
+      prefix dwell. Pregenerated first PCM should normally begin before full
+      rendering or within 250 ms after the last glyph when early confirmation
+      is unavailable. If the remaining perceived delay is a speaker cue, assess
+      a shorter cached cue for narrator-fallback roles through listening review
+      rather than weakening routing safety.
 
 ### P0 - Accept Narrator fallback role cues in real gameplay
 

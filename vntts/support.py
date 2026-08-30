@@ -64,6 +64,7 @@ sequence_timeline_stages = (
     "sequence-playback-state",
     "sequence-playback-suppressed",
     "sequence-key-dispatch-authorized",
+    "sequence-successor-prefetch",
     "speaker-announcement-route",
     "speaker-announcement-outcome",
 )
@@ -100,6 +101,12 @@ generation_timeline_detail_fields = (
     "candidate_frames",
     "settled_ms",
     "ready",
+    "target_event_id",
+    "prefetch_ms",
+    "from_text_visible_ms",
+    "from_ocr_stable_ms",
+    "from_generation_started_ms",
+    "from_playback_started_ms",
 )
 
 
@@ -157,6 +164,47 @@ class GenerationTimelineLog:
                 self._serialize_timeline(value) for value in self.timelines.values()
             ]
 
+    def latency_summary(self):
+        """Aggregate privacy-safe live latency components across retained lines."""
+        fields = {
+            "visible_to_first_pcm_ms": ("first-pcm", "from_text_visible_ms"),
+            "ocr_stable_to_first_pcm_ms": ("first-pcm", "from_ocr_stable_ms"),
+            "generation_to_first_pcm_ms": (
+                "first-pcm",
+                "from_generation_started_ms",
+            ),
+            "playback_to_first_pcm_ms": (
+                "first-pcm",
+                "from_playback_started_ms",
+            ),
+            "successor_preflight_ms": (
+                "sequence-successor-prefetch",
+                "prefetch_ms",
+            ),
+        }
+        samples = {name: [] for name in fields}
+        with self.lock:
+            for timeline in self.timelines.values():
+                for event in timeline["events"].values():
+                    for name, (stage, field) in fields.items():
+                        value = event.get(field)
+                        if (
+                            event.get("stage") == stage
+                            and isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                            and value >= 0
+                        ):
+                            samples[name].append(float(value))
+        return {
+            name: {
+                "samples": len(values),
+                "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+            }
+            for name, values in samples.items()
+            if values
+        }
+
     def _persist_locked(self):
         if self.path is None:
             return
@@ -166,7 +214,11 @@ class GenerationTimelineLog:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(
                 self.path,
-                {"version": 1, "timelines": self.snapshot()},
+                {
+                    "version": 1,
+                    "timelines": self.snapshot(),
+                    "latency_summary": self.latency_summary(),
+                },
             )
         except OSError:
             pass
@@ -197,6 +249,17 @@ class GenerationTimelineLog:
                 }
             )
         return {"generation": timeline["generation"], "events": serialized}
+
+
+def _percentile(values, quantile):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    position = (len(ordered) - 1) * quantile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 3)
 
 
 class RuntimeSupportLog:
@@ -272,6 +335,11 @@ class SupportBundleBuilder:
                     self.generation_timelines.snapshot()
                     if self.generation_timelines is not None
                     else []
+                ),
+                "latency_summary": (
+                    self.generation_timelines.latency_summary()
+                    if self.generation_timelines is not None
+                    else {}
                 ),
             },
             "ocr-metrics.json": collect_ocr_metrics(
