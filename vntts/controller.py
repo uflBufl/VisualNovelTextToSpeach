@@ -284,6 +284,8 @@ class AppController:
         route_trace_handler=None,
         pipeline_event_handler=None,
         live_sequence_plan_factory=LiveSequencePlan.load,
+        sequence_prefix_clock=monotonic,
+        sequence_prefix_dwell_seconds=1.5,
     ):
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -311,6 +313,9 @@ class AppController:
             lambda _stage, _generation, _occurred_at, **_details: None
         )
         self.live_sequence_plan_factory = live_sequence_plan_factory
+        self.sequence_prefix_clock = sequence_prefix_clock
+        self.sequence_prefix_dwell_seconds = float(sequence_prefix_dwell_seconds)
+        self.pending_sequence_prefix = None
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -1396,6 +1401,18 @@ class AppController:
 
     def _dialog_observed(self, character, text):
         if not text:
+            with self.story_cursor_lock:
+                if (
+                    self.story_cursor is not None
+                    and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+                    and self.story_cursor.state
+                    not in {
+                        StoryCursorState.UNSYNCHRONIZED,
+                        StoryCursorState.ANCHORING,
+                    }
+                ):
+                    self.pending_sequence_prefix = None
+                    return False
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return True
@@ -1459,6 +1476,7 @@ class AppController:
         self.live_sequence_plan = None
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
+        self.pending_sequence_prefix = None
         if self.settings.live_sequence_mode == "off":
             self._publish_live_sequence_status()
             return False
@@ -1734,14 +1752,23 @@ class AppController:
                 line, match_result = resolve_bounded(
                     character, text, candidate_line_ids
                 )
-                if self.settings.live_sequence_mode == "audio-auto" and "prefix" in str(
-                    match_result
+                if (
+                    self.settings.live_sequence_mode == "audio-auto"
+                    and line is not None
+                    and "prefix" in str(match_result)
+                    and (
+                        cursor.state != StoryCursorState.WAITING_TRANSITION
+                        or not self._sequence_prefix_is_stable(cursor, line, text)
+                    )
                 ):
                     # Canonical audio may be prepared from a safe prefix in manual
-                    # mode, but automatic control must wait until the visible box
-                    # itself is complete so a later typewriter update cannot look
-                    # like the post-key transition.
+                    # mode. Automatic control additionally requires the same
+                    # bounded candidate and OCR observation to remain unchanged,
+                    # so a growing typewriter prefix cannot look like the final
+                    # post-key transition.
                     line = None
+                elif self.settings.live_sequence_mode == "audio-auto":
+                    self.pending_sequence_prefix = None
                 snapshot = (
                     None
                     if line is None
@@ -1794,6 +1821,23 @@ class AppController:
         )
         self._publish_live_sequence_status()
         return snapshot, line, match_result
+
+    def _sequence_prefix_is_stable(self, cursor, line, text):
+        normalized_text = " ".join(str(text or "").casefold().split())
+        candidate = (
+            cursor.current_event_id,
+            line.line_id,
+            normalized_text,
+        )
+        now = self.sequence_prefix_clock()
+        pending = self.pending_sequence_prefix
+        if pending is None or pending[:3] != candidate:
+            self.pending_sequence_prefix = (*candidate, now)
+            return False
+        if now - pending[3] < self.sequence_prefix_dwell_seconds:
+            return False
+        self.pending_sequence_prefix = None
+        return True
 
     def live_sequence_anchor_options(self):
         with self.story_cursor_lock:

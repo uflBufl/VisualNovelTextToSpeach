@@ -1964,6 +1964,26 @@ class LiveDialogReaderTest(unittest.TestCase):
             ],
         )
 
+    def test_rejected_empty_transition_keeps_previous_observation(self):
+        dialog_observed = Mock(side_effect=[True, False, False])
+        reader = self.create_reader(dialog_observed=dialog_observed)
+        reader._report_observation("Alice", "Hello")
+
+        first_empty = reader._report_observation(None, "")
+        second_empty = reader._report_observation(None, "")
+
+        self.assertIsNone(first_empty)
+        self.assertIsNone(second_empty)
+        self.assertEqual(reader.last_observation, ("Alice", "Hello"))
+        self.assertEqual(
+            dialog_observed.call_args_list,
+            [
+                unittest.mock.call("Alice", "Hello"),
+                unittest.mock.call("Narrator", ""),
+                unittest.mock.call("Narrator", ""),
+            ],
+        )
+
     def test_unfocused_game_skips_capture_and_reports_adaptive_interval(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, True]

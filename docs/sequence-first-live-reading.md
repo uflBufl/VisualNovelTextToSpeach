@@ -414,9 +414,14 @@ sends at most one key. A changed stable frame confirms that pending key before
 the next event can advance. While that confirmation is pending, an unmatched
 OCR observation is transition noise: it is consumed without opening a voice
 decision, updating dialogue history, enqueueing live TTS or changing generation
-ownership. Only an exact bounded successor may confirm the pending key and
-resume canonical routing. Choice, wait and manual boundaries retain the pending
-no-second-key state and expose bounded expected-event/resync actions.
+ownership. An OCR-empty transition frame is likewise not a dialogue boundary
+and cannot close the pending confirmation generation. Exact bounded successors
+remain immediate. A uniquely bounded prefix may confirm only after the same
+cursor owner, canonical line and normalized OCR observation remain unchanged
+for 1.5 seconds; every growing or different prefix restarts that dwell, and the
+accepted route always uses the complete checksum-bound canonical line rather
+than OCR text. Choice, wait and manual boundaries retain the pending no-second-key
+state and expose bounded expected-event/resync actions.
 Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
 generation failure. It schedules another guarded attempt after focus returns.
 This avoids the former race where several consecutive macOS focus probes could

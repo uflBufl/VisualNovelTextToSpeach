@@ -1586,7 +1586,10 @@ class MainTest(unittest.TestCase):
                 "text": text,
                 "text_sha256": text_sha256(text),
             }
-            for sequence, text in ((1, "First line."), (2, "Second line."))
+            for sequence, text in (
+                (1, "First line."),
+                (2, "Second canonical line that remains stable."),
+            )
         ]
         preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
         events = {
@@ -1625,6 +1628,7 @@ class MainTest(unittest.TestCase):
             },
         )
         pipeline = []
+        prefix_clock = Mock()
         controller = AppController(
             AppSettings(
                 story_index="story.jsonl",
@@ -1638,6 +1642,8 @@ class MainTest(unittest.TestCase):
             pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
                 (args, kwargs)
             ),
+            sequence_prefix_clock=prefix_clock,
+            sequence_prefix_dwell_seconds=1.5,
         )
         controller.live_reader = Mock(active_generation=7)
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
@@ -1668,14 +1674,45 @@ class MainTest(unittest.TestCase):
             controller.story_cursor.state,
             StoryCursorState.WAITING_TRANSITION,
         )
+        self.assertFalse(controller._dialog_observed("Narrator", ""))
 
+        prefix_clock.return_value = 10.0
+        self.assertFalse(
+            controller._dialog_observed("Rhiannon", "Second canonical line")
+        )
+        prefix_clock.return_value = 11.0
+        self.assertFalse(
+            controller._dialog_observed(
+                "Rhiannon",
+                "Second canonical line that",
+            )
+        )
+        self.assertFalse(controller._dialog_observed("Narrator", ""))
+        prefix_clock.return_value = 12.0
+        self.assertFalse(
+            controller._dialog_observed(
+                "Rhiannon",
+                "Second canonical line that",
+            )
+        )
+        prefix_clock.return_value = 13.0
+        self.assertFalse(
+            controller._dialog_observed(
+                "Rhiannon",
+                "Second canonical line that",
+            )
+        )
+        prefix_clock.return_value = 13.5
         self.assertEqual(
-            controller._dialog_observed("Rhiannon", "Second line."),
-            ("Rhiannon", "Second line."),
+            controller._dialog_observed(
+                "Rhiannon",
+                "Second canonical line that",
+            ),
+            ("Rhiannon", "Second canonical line that remains stable."),
         )
         controller._offer_unknown_speaker_mapping.assert_called_once_with(
             "Rhiannon",
-            "Second line.",
+            "Second canonical line that remains stable.",
         )
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
         self.assertEqual(controller.story_cursor.current_event_id, "event-2")

@@ -1620,7 +1620,11 @@ class LiveDialogReader:
     def _report_observation(self, character, text):
         if character is None and not text:
             if self.last_observation is not None:
-                self.dialog_observed("Narrator", "")
+                decision = self.dialog_observed("Narrator", "")
+                if decision is False:
+                    self.deferred_observation = (None, "")
+                    self.last_accepted_observation = None
+                    return None
             self.last_observation = None
             self.last_accepted_observation = None
             self.deferred_observation = None
