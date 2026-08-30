@@ -140,9 +140,24 @@ while one-sentence controls remained below 0.25 seconds.
 ### P1 - Restore automatic advance for original game audio
 
 - [ ] Resolve the five duration-plausible chapter `314601` source cues that
-      remain semantically `unknown`. Bind a transcript or human verdict to each
-      exact media SHA-256; only matching evidence may mark a cue `full`, while a
+      remain semantically `unknown`. Add a reusable semantic-evidence index whose
+      identity binds locale, exact media SHA-256 and normalized displayed-text
+      SHA-256: the same media/text pair may reuse transcript or human evidence
+      across stories, while the same WEM attached to different text must be
+      classified again. Only matching evidence may mark a cue `full`, while a
       mismatch marks it `partial`. Never infer `full` from duration alone.
+- [ ] Keep source-cue classification authoring-owned and zero-prompt at runtime.
+      Publish the small semantic-evidence index inside each immutable game pack;
+      an installed app must never ask the player to review or classify a cue.
+      For an unseen or still-unknown pair, wait for the exact source duration and
+      then read the complete displayed text, accepting possible repetition over
+      silently omitting inaccessible text. Human verdicts are optional
+      development/calibration evidence only.
+- [ ] Make optional local ASR a managed authoring dependency rather than a model
+      path the operator must configure. Pin the Whisper model revision, checksum
+      and license notice, then either bundle it in the authoring distribution or
+      download it on demand into application data with integrity verification.
+      Published-pack playback must not require Whisper or network access.
 - [ ] Pregenerate the complete displayed text for every `partial` source cue in
       the selected Character Story. Include these source-available lines in a
       checksum-bound queue instead of treating the short game cue as coverage;

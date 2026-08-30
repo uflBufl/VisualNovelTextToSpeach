@@ -686,10 +686,9 @@ def _source_audio_duration_seconds(entry, *, completion_contract=None):
         or not decoder
     ):
         return None
-    if (
-        entry.get("source_media_ids") != [media_id]
-        or entry.get("available_media_ids") != [media_id]
-    ):
+    if entry.get("source_media_ids") != [media_id] or entry.get(
+        "available_media_ids"
+    ) != [media_id]:
         return None
     measured = sample_count / sample_rate
     return value if math.isclose(value, measured, rel_tol=0, abs_tol=0.000001) else None

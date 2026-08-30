@@ -1749,3 +1749,44 @@ metadata selects Centurion as Narrator, routes the two mixed event lines as
 Centurion routing. The v1 checkpoint and source migration remain unchanged at
 their recorded hashes. Real in-game listening is the remaining acceptance
 gate; static publication and completeness gates are closed.
+
+### Exact source-duration successor and timed v3 pack
+
+The installed English chapter `314601` source routes were measured directly
+from their exact WEM media with `vgmstream-cli` r2117. Duration is derived from
+decoder sample count divided by sample rate; every measured line records those
+values together with the exact media ID and SHA-256. Timed story index
+`authoring/story-indexes/current-character-story-3.7-v2-timed-314601.jsonl`
+has SHA-256
+`a25b8270573dec40787148951fae236d81ad462f7c5d1188f2c1e43e55dcf33f`.
+All 15 installed eligible routes were measured with zero sample-math mismatch:
+ten are conservatively `partial` because their audio is too short for the
+displayed text and five remain semantically `unknown`. No route is declared
+`full` from duration alone. Two other configured source references remain
+unmeasured because their banks are not installed.
+
+The unchanged line and text identities were rebound through immutable config
+successors. The final reviewed-waveform successor is
+`resume-395a5e5eec0327a3a793b66d-7b7b79fb811b3876`, with workspace SHA-256
+`1eb811c40b9bd1d7af5bc4e017aabde36250eaa4c69a21fb3d1f1d5ad2ece28a`
+and generation-state SHA-256
+`59916937ce31034c3b2055c95379b40da3a34a0319bc59e8c703a48e0997b2c4`.
+The typed migration restored the existing 20 known-role fallbacks, three
+standalone fallbacks and seven pure-event omissions rather than treating their
+absence after config rebase as a new generation decision.
+
+Final pack `authoring/game-packs/current-character-story-3.7-v3-timed` has
+game-pack SHA-256
+`b4237b0bc17d9c64736c194b8cb02b73f8980713b7f58b478a4b15674f9b0ee6`
+and passed `vntts-preflight-game-pack`. It retains the complete v2 terminal
+coverage of 472 approved WAVs + 113 explicit live fallbacks + seven omissions
+= all 592 queue identities while adding the exact source-duration metadata.
+The v2 pack and every predecessor workspace remain unchanged.
+
+The migration also exposed a config-rebase self-lease false conflict. Workspace
+authorities are fully validated immediately before their publication leases are
+acquired; under those owned leases the command now verifies the already loaded
+`workspace.json` SHA-256 snapshots instead of recursively reopening an
+authority whose validator would mistake the command's own lease for a foreign
+generation lease. Queue, state, inputs and WAVs remain independently loaded and
+rechecked immediately before atomic publication.

@@ -1110,9 +1110,7 @@ def load_live_replay_corpus(path):
                 "source_audio_duration_seconds": item.get(
                     "source_audio_duration_seconds"
                 ),
-                "source_audio_completeness": item.get(
-                    "source_audio_completeness"
-                ),
+                "source_audio_completeness": item.get("source_audio_completeness"),
             }
         )
     if not dialogue:

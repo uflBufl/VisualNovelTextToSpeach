@@ -382,6 +382,29 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             manifest_document = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(manifest_document["entry_count"], 1)
 
+    def test_does_not_recursively_revalidate_authority_under_owned_lease(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, source, target = _prepare(root)
+            original_loader = config_rebase_module.load_workspace_authority
+
+            def reject_recursive_load_while_owned(path):
+                resolved = Path(path).resolve()
+                if (resolved / "generated-audio/.generation-lease.json").exists():
+                    raise AssertionError(
+                        "workspace authority was recursively loaded under its own lease"
+                    )
+                return original_loader(path)
+
+            with patch.object(
+                config_rebase_module,
+                "load_workspace_authority",
+                side_effect=reject_recursive_load_while_owned,
+            ):
+                result = rebase_workspace_config(source, target, root / "workspaces")
+
+            self.assertTrue(result.created)
+
     def test_validation_allows_only_ledger_bound_later_terminal_overlay(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -2964,9 +2964,7 @@ class AppController:
             )
 
     def _describe_audio_source(self, prepared):
-        lead_seconds = float(
-            getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0
-        )
+        lead_seconds = float(getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0)
         if lead_seconds > 0:
             following = self._describe_audio_source(
                 replace(prepared, source_audio_lead_seconds=0.0)

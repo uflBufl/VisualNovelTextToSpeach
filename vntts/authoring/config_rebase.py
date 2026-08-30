@@ -101,12 +101,21 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             ((source_output, queue_sha256), (target_output, queue_sha256)),
             process_checker=process_is_alive,
         ) as leases:
-            source_directory, source_document, source_workspace_sha256 = (
-                load_workspace_authority(source_directory)
-            )
-            target_directory, target_document, target_workspace_sha256 = (
-                load_workspace_authority(target_directory)
-            )
+            # Both authorities were fully validated immediately before the
+            # publication leases were acquired. Re-running their recursive
+            # validators here would make a workspace-owned validator see this
+            # operation's own lease as a foreign generation lease. Instead,
+            # require the validated authority snapshots to remain byte-exact;
+            # the queue, state, inputs and WAVs are independently loaded below
+            # and rechecked again immediately before publication.
+            for directory, digest, label in (
+                (source_directory, source_workspace_sha256, "source"),
+                (target_directory, target_workspace_sha256, "target"),
+            ):
+                if sha256_file(directory / "workspace.json") != digest:
+                    raise AuthoringWorkbenchError(
+                        f"Config rebase {label} workspace changed before publication"
+                    )
             audio_event_composition = _rebase_audio_event_composition(
                 source_document, target_document
             )

@@ -897,9 +897,7 @@ class GeneratedAudioFallbackBackend:
             outcome,
             audio_source=route.trace.effective_source,
             playback_ms=(
-                None
-                if outcome.playback_ms is None
-                else outcome.playback_ms + lead_ms
+                None if outcome.playback_ms is None else outcome.playback_ms + lead_ms
             ),
         )
 
