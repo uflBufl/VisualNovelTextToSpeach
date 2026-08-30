@@ -907,6 +907,11 @@ class GeneratedAudioFallbackBackend:
             playback_ms=(
                 None if outcome.playback_ms is None else outcome.playback_ms + lead_ms
             ),
+            first_audio_ms=(
+                None
+                if outcome.first_audio_ms is None
+                else outcome.first_audio_ms + lead_ms
+            ),
         )
 
     def _wait_for_source_audio_lead(self, route, playback_guard):

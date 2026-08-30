@@ -75,6 +75,24 @@ class GenerationTimelineLogTest(unittest.TestCase):
             3.5,
             prefetch_ms=12,
         )
+        timelines.record(
+            "canonical-full-text",
+            3,
+            3.25,
+            first_pcm_before_canonical_full_ms=40,
+        )
+        timelines.record(
+            "playback-outcome",
+            3,
+            3.75,
+            source_audio_lead_ms=1600,
+        )
+        timelines.record(
+            "speaker-announcement-outcome",
+            3,
+            3.9,
+            playback_ms=425,
+        )
 
         summary = timelines.latency_summary()
 
@@ -89,6 +107,18 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertEqual(
             summary["successor_preflight_ms"],
             {"samples": 1, "p50_ms": 12.0, "p95_ms": 12.0},
+        )
+        self.assertEqual(
+            summary["first_pcm_before_canonical_full_ms"],
+            {"samples": 1, "p50_ms": 40.0, "p95_ms": 40.0},
+        )
+        self.assertEqual(
+            summary["source_audio_lead_ms"],
+            {"samples": 1, "p50_ms": 1600.0, "p95_ms": 1600.0},
+        )
+        self.assertEqual(
+            summary["speaker_announcement_playback_ms"],
+            {"samples": 1, "p50_ms": 425.0, "p95_ms": 425.0},
         )
 
     def test_merges_details_when_a_stage_is_reported_twice(self):

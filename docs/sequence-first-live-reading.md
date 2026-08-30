@@ -485,6 +485,12 @@ Production acceptance requires:
 The privacy-safe timeline records `sequence-successor-prefetch` with target
 identity, result and preflight duration. `first-pcm` records elapsed time from
 the latest visible-text, OCR-stable, generation-start and playback-start marks.
+When a verified prefix starts audio before the final glyph, a later
+`canonical-full-text` event records how far PCM preceded full-text confirmation;
+when confirmation comes first, `first-pcm` records the ordinary forward delta.
+Partial original-game cues are included in `first_audio_ms` and reported as a
+separate `source_audio_lead_ms` component. Speaker announcements retain their
+own route and outcome, and their playback duration is aggregated separately.
 The persisted timeline and support bundle aggregate retained samples as p50/p95
 without dialogue text. These component measurements are diagnostics only;
 real-game acceptance must still separate intentional speaker announcements and

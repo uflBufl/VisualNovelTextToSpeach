@@ -584,6 +584,13 @@ class LiveReplayTest(unittest.TestCase):
                 for event in timeline["events"]
             )
         )
+        canonical_full = next(
+            event
+            for timeline in report["timelines"]
+            for event in timeline["events"]
+            if event["stage"] == "canonical-full-text"
+        )
+        self.assertGreater(canonical_full["first_pcm_before_canonical_full_ms"], 0)
 
     def test_sequence_audio_manual_uses_bounded_ocr_for_skip_and_choice(self):
         with TemporaryDirectory() as temporary_directory:

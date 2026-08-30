@@ -37,6 +37,7 @@ generation_timeline_stages = (
     "route-decision",
     "voice-resolution",
     "generation-start",
+    "canonical-full-text",
     "first-pcm",
     "playback-completion",
     "playback-outcome",
@@ -107,6 +108,9 @@ generation_timeline_detail_fields = (
     "from_ocr_stable_ms",
     "from_generation_started_ms",
     "from_playback_started_ms",
+    "from_canonical_full_text_ms",
+    "source_audio_lead_ms",
+    "first_pcm_before_canonical_full_ms",
 )
 
 
@@ -177,9 +181,22 @@ class GenerationTimelineLog:
                 "first-pcm",
                 "from_playback_started_ms",
             ),
+            "canonical_full_to_first_pcm_ms": (
+                "first-pcm",
+                "from_canonical_full_text_ms",
+            ),
+            "first_pcm_before_canonical_full_ms": (
+                "canonical-full-text",
+                "first_pcm_before_canonical_full_ms",
+            ),
             "successor_preflight_ms": (
                 "sequence-successor-prefetch",
                 "prefetch_ms",
+            ),
+            "source_audio_lead_ms": ("playback-outcome", "source_audio_lead_ms"),
+            "speaker_announcement_playback_ms": (
+                "speaker-announcement-outcome",
+                "playback_ms",
             ),
         }
         samples = {name: [] for name in fields}

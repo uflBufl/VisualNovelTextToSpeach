@@ -1803,6 +1803,13 @@ class AppController:
                         == resolved_event.event_id
                     ):
                         self.sequence_prefix_confirmation_event_id = None
+                        record_full_text = getattr(
+                            self.live_reader,
+                            "record_canonical_full_text",
+                            None,
+                        )
+                        if callable(record_full_text):
+                            record_full_text(line_id=line.line_id)
                 snapshot = (
                     None
                     if line is None
@@ -2863,6 +2870,14 @@ class AppController:
                     )
             audio = audio.dialogue
         source = self._describe_audio_source(audio)
+        source_audio_lead_seconds = float(
+            getattr(audio, "source_audio_lead_seconds", 0.0) or 0.0
+        )
+        source_audio_lead_ms = (
+            round(source_audio_lead_seconds * 1000)
+            if source_audio_lead_seconds > 0
+            else None
+        )
         self.last_audio_source_description = source
         self.status_handler(f"Audio source for {chunk.character}: {source}")
         if (
@@ -2961,6 +2976,7 @@ class AppController:
                     first_audio_ms=(outcome.first_audio_ms if outcome else None),
                     cache_source=(outcome.cache_source if outcome else None),
                     effective_source=(outcome.audio_source if outcome else None),
+                    source_audio_lead_ms=source_audio_lead_ms,
                     chunk_id=chunk.chunk_id,
                     chunk_ordinal=chunk.ordinal,
                     chunk_characters=len(chunk.text),
@@ -2977,6 +2993,7 @@ class AppController:
                     first_audio_ms=(outcome.first_audio_ms if outcome else None),
                     cache_source=(outcome.cache_source if outcome else None),
                     effective_source=(outcome.audio_source if outcome else None),
+                    source_audio_lead_ms=source_audio_lead_ms,
                     chunk_id=chunk.chunk_id,
                     chunk_ordinal=chunk.ordinal,
                     chunk_characters=len(chunk.text),

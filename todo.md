@@ -171,10 +171,11 @@ locked.
       first PCM. Record separate privacy-safe timings for typewriter/recognition,
       canonical identity confirmation, generated/source WAV lookup and decode,
       speaker announcement, source-cue completion, queue wait and audio-device
-      start. First-PCM component deltas, generated-successor preflight time and
-      retained p50/p95 summaries are now exported; add final-glyph evidence and
-      speaker/source-cue separation. Do not attribute an intentional
-      announcement or partial source cue to WAV-loading latency.
+      start. First-PCM component deltas, generated-successor preflight,
+      canonical-full confirmation, speaker-announcement playback, partial-source
+      cue time and retained p50/p95 summaries are now exported. Run the real-game
+      capture and classify any remaining unaccounted delay; do not attribute an
+      intentional announcement or partial source cue to WAV-loading latency.
 - [ ] Validate generated-successor preflight and immediate checksum-bound prefix
       playback on a replay corpus with slow/paused typewriter updates, long
       narration, OCR truncation, speaker-name noise, branches, focus loss and

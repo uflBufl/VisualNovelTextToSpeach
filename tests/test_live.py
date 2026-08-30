@@ -1323,6 +1323,56 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(details["from_generation_started_ms"], 500)
         self.assertEqual(details["from_playback_started_ms"], 250)
 
+    def test_prefix_first_pcm_and_later_full_text_report_signed_order_separately(self):
+        events = []
+        reader = self.create_reader(
+            first_pcm_on_prepare=False,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        reader.active_generation = 3
+
+        reader.record_first_pcm(10.0)
+        reader.record_canonical_full_text(line_id="story:3", timestamp=10.4)
+
+        full_text = next(event for event in events if event[0] == "canonical-full-text")
+        self.assertEqual(full_text[1], 3)
+        self.assertEqual(full_text[3]["line_id"], "story:3")
+        self.assertEqual(full_text[3]["first_pcm_before_canonical_full_ms"], 400)
+
+    def test_full_text_origin_is_added_when_first_pcm_follows_confirmation(self):
+        events = []
+        reader = self.create_reader(
+            first_pcm_on_prepare=False,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        reader.active_generation = 3
+
+        reader.record_canonical_full_text(timestamp=10.0)
+        reader.record_first_pcm(10.25)
+
+        first_pcm = next(event for event in events if event[0] == "first-pcm")
+        self.assertEqual(first_pcm[3]["from_canonical_full_text_ms"], 250)
+
+    def test_retroactive_first_pcm_updates_an_existing_later_full_text_event(self):
+        events = []
+        reader = self.create_reader(
+            first_pcm_on_prepare=False,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        reader.active_generation = 3
+
+        reader.record_canonical_full_text(timestamp=10.4)
+        reader.record_first_pcm(10.0)
+
+        full_text = [event for event in events if event[0] == "canonical-full-text"]
+        self.assertEqual(full_text[-1][3]["first_pcm_before_canonical_full_ms"], 400)
+
     def test_typed_route_does_not_claim_first_pcm_before_player_observes_it(self):
         events = []
         reader = self.create_reader(

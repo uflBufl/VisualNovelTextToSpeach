@@ -3165,6 +3165,36 @@ class MainTest(unittest.TestCase):
         self.assertIn("Original game cue (1.60s including post-roll)", description)
         self.assertIn("then", description)
 
+    def test_partial_source_cue_has_separate_playback_timeline_component(self):
+        pipeline = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                pipeline.append((stage, generation, occurred_at, details))
+            ),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = StubTypedPlaybackBackend()
+        route = LiveTTSRoute(
+            PreparedPlayback("live", 10.0, 5.0, None, "live:pocket-tts"),
+            stub_route_trace("live:pocket-tts", "reverse1999:1:2"),
+            10.0,
+            5.0,
+            source_audio_lead_seconds=1.6,
+        )
+
+        self.assertTrue(
+            controller._play_live_chunk(
+                SpeechChunk(7, "Hotelier", "A partially voiced line."),
+                route,
+            )
+        )
+
+        outcomes = [event for event in pipeline if event[0] == "playback-outcome"]
+        self.assertEqual(outcomes[0][3]["source_audio_lead_ms"], 1600)
+
     def test_sequence_audio_suppresses_a_line_the_cursor_already_played(self):
         statuses = []
         pipeline = []

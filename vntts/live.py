@@ -66,6 +66,9 @@ class LivePipelineMetrics:
     last_speaker_resolved_at: float | None = None
     last_generation_started_at: float | None = None
     last_first_pcm_at: float | None = None
+    last_first_pcm_generation: int | None = None
+    last_canonical_full_text_at: float | None = None
+    last_canonical_full_text_generation: int | None = None
     last_playback_started_at: float | None = None
     last_playback_completed_at: float | None = None
 
@@ -1548,6 +1551,11 @@ class LiveDialogReader:
                 "from_ocr_stable_ms": metrics.last_ocr_stable_at,
                 "from_generation_started_ms": metrics.last_generation_started_at,
                 "from_playback_started_ms": monotonic(),
+                "from_canonical_full_text_ms": (
+                    metrics.last_canonical_full_text_at
+                    if metrics.last_canonical_full_text_generation == chunk.generation
+                    else None
+                ),
             }
             self._record_speech_metrics_locked(playback_started=True)
         if self.first_pcm_on_prepare and not isinstance(
@@ -2009,6 +2017,11 @@ class LiveDialogReader:
                 now if generation_started else metrics.last_generation_started_at
             ),
             last_first_pcm_at=now if first_pcm else metrics.last_first_pcm_at,
+            last_first_pcm_generation=(
+                self.active_generation
+                if first_pcm
+                else metrics.last_first_pcm_generation
+            ),
             last_playback_started_at=(
                 now if playback_started else metrics.last_playback_started_at
             ),
@@ -2021,11 +2034,12 @@ class LiveDialogReader:
         occurred_at = monotonic() if timestamp is None else timestamp
         with self.state_lock:
             previous = self.pipeline_metrics
+            generation = self.active_generation
             self.pipeline_metrics = replace(
                 previous,
                 last_first_pcm_at=occurred_at,
+                last_first_pcm_generation=generation,
             )
-            generation = self.active_generation
             chunk = self.current_chunk
             origins = self.current_chunk_pipeline_origins or {
                 "from_text_visible_ms": previous.last_text_visible_at,
@@ -2033,6 +2047,16 @@ class LiveDialogReader:
                 "from_generation_started_ms": previous.last_generation_started_at,
                 "from_playback_started_ms": previous.last_playback_started_at,
             }
+            origins = dict(origins)
+            if previous.last_canonical_full_text_generation == generation:
+                origins["from_canonical_full_text_ms"] = (
+                    previous.last_canonical_full_text_at
+                )
+            canonical_full_at = (
+                previous.last_canonical_full_text_at
+                if previous.last_canonical_full_text_generation == generation
+                else None
+            )
         details = (
             {
                 "chunk_id": chunk.chunk_id,
@@ -2046,6 +2070,46 @@ class LiveDialogReader:
             if origin is not None and origin <= occurred_at:
                 details[name] = round((occurred_at - origin) * 1000)
         self._report_pipeline_event("first-pcm", generation, occurred_at, **details)
+        if canonical_full_at is not None and canonical_full_at > occurred_at:
+            self._report_pipeline_event(
+                "canonical-full-text",
+                generation,
+                canonical_full_at,
+                first_pcm_before_canonical_full_ms=round(
+                    (canonical_full_at - occurred_at) * 1000
+                ),
+            )
+
+    def record_canonical_full_text(self, *, line_id=None, timestamp=None):
+        """Record full-text confirmation after an early canonical prefix route."""
+        occurred_at = monotonic() if timestamp is None else timestamp
+        with self.state_lock:
+            generation = self.active_generation
+            if generation < 1:
+                return False
+            previous = self.pipeline_metrics
+            self.pipeline_metrics = replace(
+                previous,
+                last_canonical_full_text_at=occurred_at,
+                last_canonical_full_text_generation=generation,
+            )
+            first_pcm_at = (
+                previous.last_first_pcm_at
+                if previous.last_first_pcm_generation == generation
+                else None
+            )
+        details = {"line_id": line_id} if line_id is not None else {}
+        if first_pcm_at is not None and first_pcm_at <= occurred_at:
+            details["first_pcm_before_canonical_full_ms"] = round(
+                (occurred_at - first_pcm_at) * 1000
+            )
+        self._report_pipeline_event(
+            "canonical-full-text",
+            generation,
+            occurred_at,
+            **details,
+        )
+        return True
 
     def _defer_chunk_locked(self, chunk):
         deferred = self.deferred_chunk

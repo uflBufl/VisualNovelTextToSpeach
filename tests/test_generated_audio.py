@@ -814,6 +814,37 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIn("source-audio-partial-cue", route.trace.fallback_reason)
         self.assertFalse(backend.will_use_source_audio("Ada", "Hello."))
 
+    def test_partial_source_cue_is_included_in_first_audio_latency(self):
+        live = self.create_live_backend()
+        clock = Mock(side_effect=[10.0, 11.6])
+        backend = GeneratedAudioFallbackBackend(
+            live,
+            None,
+            self.create_resolver(
+                source_audio_status="available",
+                source_audio_duration_seconds=1.25,
+                source_audio_completeness="partial",
+            ),
+            audio_source_policy="prefer-game-audio",
+            audio_output=FakeAudioOutput(),
+            clock=clock,
+        )
+        backend.set_live_mode_active(True)
+        route = backend.prepare_route("Ada", "Hello.")
+        live.play_prepared.side_effect = None
+        live.play_prepared.return_value = outcome_for_prepared(
+            route.prepared,
+            PlaybackStatus.COMPLETED,
+            250.0,
+            first_audio_ms=25.0,
+        )
+        backend._wait_for_source_audio_lead = Mock(return_value=True)
+
+        outcome = backend.play_route(route)
+
+        self.assertAlmostEqual(outcome.playback_ms, 1850.0)
+        self.assertAlmostEqual(outcome.first_audio_ms, 1625.0)
+
     def test_unknown_source_completeness_stays_manual_despite_measured_duration(self):
         backend = GeneratedAudioFallbackBackend(
             self.create_live_backend(),

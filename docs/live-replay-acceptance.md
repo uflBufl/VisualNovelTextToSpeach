@@ -159,6 +159,11 @@ OCR confidence threshold and preprocessing-profile search. A zero threshold is
 not used because it would stop at the first non-empty noisy preprocessing pass
 instead of exercising production recognition.
 
+The prefix replay uses a generated WAV shorter than the remaining typewriter
+animation. Besides one route and no early key, it requires a privacy-safe
+`canonical-full-text` event proving that first PCM occurred before the final
+glyph. This makes early playback measurable without retaining dialogue text.
+
 ### Repaired chapter 314601 capture evidence
 
 The 2026-08-29 repaired Rhiannon capture retained 86 distinct real frames. The
