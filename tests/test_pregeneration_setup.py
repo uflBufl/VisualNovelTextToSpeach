@@ -465,7 +465,50 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.planning_voices)
-            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+        dialog.deleteLater()
+
+    def test_voice_matching_uses_candidates_prepared_by_game_importer(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(
+                write_story_index(root / "content"),
+                provider_id="reverse1999",
+            )
+            job = PregenerationJobStore(root / "jobs").create_or_resume(
+                content,
+                tuple(selection.selection_id for selection in content.selections),
+            )
+            manifest = root / "candidate-manifest.json"
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_voice_candidates.return_value = manifest
+            voice_plan = Mock()
+            voice_plan_store = Mock()
+            voice_plan_store.create.return_value = voice_plan
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                importer=importer,
+                job_store=PregenerationJobStore(root / "other-jobs"),
+                voice_plan_store=voice_plan_store,
+            )
+
+            with patch(
+                "vntts.pregeneration_ui.find_default_voice_manifest",
+                return_value=None,
+            ):
+                result = dialog._create_voice_plan(job)
+
+            self.assertIs(result, voice_plan)
+            importer.prepare_voice_candidates.assert_called_once_with(
+                job,
+                dialog.voice_cancel_event,
+            )
+            self.assertEqual(
+                voice_plan_store.create.call_args.kwargs["manifest_path"],
+                manifest,
+            )
             dialog.deleteLater()
 
     def test_generation_input_cancel_waits_for_its_worker(self):

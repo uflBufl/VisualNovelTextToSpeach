@@ -11,12 +11,11 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Make the ordinary game importer publish the immutable evidence consumed by
-      voice matching: reviewed source-reference candidates, exact voice IDs and
-      banks, source-line provenance, and exact portrait assets under
-      `portraits/<portrait>.png`. The current resolver can rank and compare this
-      evidence, but a fresh import must not depend on an authoring-produced
-      manifest to expose real alternatives or an original-voice anchor.
+- [ ] Extract exact Reverse: 1999 portrait assets into
+      `portraits/<portrait>.png`, bind their hashes to imported story content and
+      render them in ambiguous-voice cards. The importer now publishes the
+      selected roles' checksum-bound voice candidates and provenance, but only
+      portrait IDs are currently available.
 - [ ] Refine ambiguous-voice comparison without expanding mandatory review.
   - [ ] Add objective source-reference and generated-preview preflight for
         clipping, unusable silence and obvious artifacts before candidates enter

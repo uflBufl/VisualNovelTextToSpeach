@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.voice_manifest import normalize_character_name
+
 from vntts.application_directories import get_local_data_directory
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
+from vntts.voices import is_narrator, synthesis_character_for_line
 
 
 class GameContentImportError(PregenerationSetupError):
@@ -94,6 +100,49 @@ class Reverse1999GameImporter:
             arguments.extend(("--resource-root", str(resource_root)))
             arguments.extend(("--config-directory", str(config_directory)))
             arguments.extend(("--game-audio-directory", str(audio_directory)))
+        self._run(arguments, cancel_event)
+        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        if not story_index.is_file():
+            raise GameContentImportError(
+                "The game importer finished without producing story content."
+            )
+        return inspect_story_index(story_index, provider_id=self.provider_id)
+
+    def prepare_voice_candidates(self, job, cancel_event=None):
+        """Prepare only candidate references needed by the selected stories."""
+        if job.provider_id != self.provider_id:
+            return None
+        roles = _candidate_roles(job)
+        if not roles:
+            return None
+        command = self.command()
+        if command is None:
+            raise GameContentImportError(self.availability().message)
+        arguments = [
+            *command,
+            "--data-directory",
+            str(self.output_root),
+            "--prepare-voice-candidates-only",
+        ]
+        for role in roles:
+            arguments.extend(("--voice-candidate-role", role))
+        stdout, _stderr = self._run(arguments, cancel_event)
+        try:
+            result = json.loads(_last_output_line(stdout) or "")
+            manifest = Path(result["voice_manifest"]).expanduser().resolve()
+            root = (self.output_root / "reverse1999" / "voice-candidates").resolve()
+            manifest.relative_to(root)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise GameContentImportError(
+                "Reverse: 1999 voice preparation returned an invalid result"
+            ) from error
+        if manifest.is_symlink() or not manifest.is_file():
+            raise GameContentImportError(
+                "Reverse: 1999 voice preparation produced no usable manifest"
+            )
+        return manifest
+
+    def _run(self, arguments, cancel_event):
         try:
             process = self.popen_factory(
                 tuple(arguments),
@@ -105,7 +154,6 @@ class Reverse1999GameImporter:
             raise GameContentImportError(
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
-
         while process.poll() is None:
             if cancel_event is not None and cancel_event.wait(0.1):
                 _terminate_process(process)
@@ -117,12 +165,46 @@ class Reverse1999GameImporter:
                 "Reverse: 1999 content could not be imported"
                 + (f": {detail}" if detail else ".")
             )
-        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
-        if not story_index.is_file():
+        return stdout, stderr
+
+
+def _candidate_roles(job):
+    story_index = Path(job.story_index).expanduser().resolve()
+    try:
+        if sha256_file(story_index) != job.story_index_sha256:
             raise GameContentImportError(
-                "The game importer finished without producing story content."
+                "Selected dialogue changed before character voices were prepared"
             )
-        return inspect_story_index(story_index, provider_id=self.provider_id)
+        document = load_story_index_document(story_index)
+    except GameContentImportError:
+        raise
+    except (OSError, StoryIndexError, ValueError) as error:
+        raise GameContentImportError(
+            f"Unable to inspect selected character voices: {error}"
+        ) from error
+    selected = set(job.selected_line_ids)
+    available = set()
+    requested = {}
+    for record in document.records:
+        character = synthesis_character_for_line(
+            record.speaker,
+            record.voice_character,
+        )
+        normalized = normalize_character_name(character)
+        if record.source_audio_status == "available":
+            available.add(normalized)
+        elif (
+            record.line_id in selected
+            and record.speakable
+            and not is_narrator(character)
+        ):
+            requested.setdefault(normalized, character)
+    return tuple(
+        sorted(
+            (character for key, character in requested.items() if key in available),
+            key=str.casefold,
+        )
+    )
 
 
 def resolve_reverse1999_installation(path):

@@ -101,6 +101,19 @@ fallback asks for one game-installation folder, searches only beneath that
 explicit root, resolves the resource, config and English bank directories, and
 passes all three exact paths to the same importer.
 
+After chapter selection, the same bounded importer worker prepares only the
+missing named roles that have exact installed source audio elsewhere in the
+story index. It reuses the checksum-bound bank routes and technical reference
+preflight already owned by `reverse1999-extractor`, keeps at most three
+recommended references per evidenced portrait/bank group, and publishes their
+voice IDs, bank, source lines, event IDs, duration, quality score and WAV hashes
+in an identity-addressed voice manifest. The manifest is bound to the exact
+story-index hash and is reused on restart. VNTTS validates the manifest, report
+and reference hashes before adding those candidates to the ordinary A/B voice
+card. If preparation finds no safe candidate or fails, pregeneration remains
+playable through the existing narrator route instead of opening an authoring
+workflow.
+
 `reverse1999-extractor` is an exact-revision runtime dependency. macOS and Windows
 PyInstaller specifications collect its modules, data, binaries and distribution
 metadata. A frozen VNTTS executable relaunches itself with a hidden provider
@@ -115,7 +128,8 @@ character plus exact portrait, age, source-bank and source-voice evidence. It
 also validates exact queue-to-voice bindings carried by reviewed source-reference
 manifests. Exact queue bindings split otherwise similar groups and remain
 automatic. The candidate inventory then combines that authority with exact
-manifest names/aliases and reviewed variants of the same character. Its stable
+manifest names/aliases, imported installed-game candidates and reviewed variants
+of the same character. Its stable
 evidence order is: explicit assignment or exact queue binding, matching original
 voice ID, matching portrait plus source bank, exact character name or alias,
 matching portrait, matching bank, then another reviewed character variant.

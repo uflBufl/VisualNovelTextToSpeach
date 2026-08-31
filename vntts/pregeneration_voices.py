@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
@@ -34,6 +34,9 @@ from vntts.voices import (
 
 voice_plan_schema_version = 2
 voice_decisions_schema_version = 1
+PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
+PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
+PLAYER_VOICE_CANDIDATES_VERSION = 1
 _CLEAR_WINNER_SCORE = 80
 _CLEAR_WINNER_MARGIN = 20
 
@@ -56,10 +59,15 @@ class VoiceCandidate:
     reference_sha256s: tuple[str, ...]
     match_score: int = 0
     recommendation: str = "Available character voice"
+    portrait: str | None = None
+    source_bank: str | None = None
+    source_voice_ids: tuple[str, ...] = ()
+    source_line_ids: tuple[str, ...] = ()
 
     def to_document(self):
         value = asdict(self)
-        value["reference_sha256s"] = list(self.reference_sha256s)
+        for field in ("reference_sha256s", "source_voice_ids", "source_line_ids"):
+            value[field] = list(value[field])
         return value
 
 
@@ -261,6 +269,12 @@ class VoicePlanStore:
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
+        candidate_variants = _manifest_candidate_variants(
+            manifest_document,
+            registry,
+            manifest_path,
+            job.story_index_sha256,
+        )
         controls = _synthesis_controls(settings)
         controls_sha256 = _digest(controls)
         records = {
@@ -312,7 +326,7 @@ class VoicePlanStore:
                 values,
                 settings,
                 registry,
-                manifest_document,
+                candidate_variants,
                 controls,
                 ignore_decisions,
             )
@@ -346,7 +360,7 @@ class VoicePlanStore:
         values,
         settings,
         registry,
-        manifest_document,
+        candidate_variants,
         controls,
         ignore_decisions,
     ):
@@ -366,7 +380,7 @@ class VoicePlanStore:
             bound_source,
             settings,
             registry,
-            manifest_document,
+            candidate_variants,
         )
         eligible_candidates = _eligible_candidates(candidate_inventory)
         narrator_candidate = _narrator_candidate(settings, registry)
@@ -564,7 +578,7 @@ def _candidate_inventory(
     bound_source,
     settings,
     registry,
-    manifest_document,
+    candidate_variants,
 ):
     assignment = find_voice_assignment(settings.voice_assignments, character)
     if assignment and assignment != default_voice_choice_id:
@@ -584,7 +598,7 @@ def _candidate_inventory(
 
     candidates = {}
 
-    def add(source_id, score, recommendation):
+    def add(source_id, score, recommendation, variant=None):
         voice = _candidate_from_source(source_id, registry)
         if voice is None:
             return
@@ -593,6 +607,7 @@ def _candidate_inventory(
             voice,
             score,
             recommendation,
+            variant=variant,
         )
         previous = candidates.get(source_id)
         if previous is None or candidate.match_score > previous.match_score:
@@ -605,12 +620,8 @@ def _candidate_inventory(
     if exact is not None:
         add(exact[0], 90, "Exact character name or known alias")
 
-    bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
-    variants = (
-        bindings.get("selected_variants", ()) if isinstance(bindings, dict) else ()
-    )
     target = normalize_character_name(character)
-    for variant in variants if isinstance(variants, list) else ():
+    for variant in candidate_variants:
         if (
             not isinstance(variant, dict)
             or normalize_character_name(variant.get("character", "")) != target
@@ -622,10 +633,13 @@ def _candidate_inventory(
         source_id = f"character:{normalize_character_name(voice_character)}"
         variant_portrait = _optional_variant(variant.get("portrait"))
         variant_bank = _optional_variant(variant.get("source_bank"))
+        variant_voice_ids = variant.get("source_voice_ids", ())
         voice = _candidate_from_source(source_id, registry)
         if voice is None:
             continue
-        if source_voice_id and _same_identity(source_voice_id, voice.speaker):
+        if source_voice_id and any(
+            _same_identity(source_voice_id, value) for value in variant_voice_ids
+        ):
             score = 110
             reason = "Same original game voice ID"
         elif (
@@ -647,7 +661,7 @@ def _candidate_inventory(
         else:
             score = 45
             reason = "Reviewed voice from another variant of this character"
-        add(source_id, score, reason)
+        add(source_id, score, reason, variant)
 
     return tuple(
         sorted(
@@ -690,8 +704,9 @@ def _narrator_candidate(settings, registry):
     )
 
 
-def _ranked_candidate(source_id, voice, score, recommendation):
+def _ranked_candidate(source_id, voice, score, recommendation, *, variant=None):
     identity = _candidate_identity((source_id, voice))
+    variant = variant or {}
     return VoiceCandidate(
         source_id=source_id,
         source_character=voice.character,
@@ -699,6 +714,10 @@ def _ranked_candidate(source_id, voice, score, recommendation):
         reference_sha256s=tuple(identity["references"]),
         match_score=score,
         recommendation=recommendation,
+        portrait=_optional_variant(variant.get("portrait")),
+        source_bank=_optional_variant(variant.get("source_bank")),
+        source_voice_ids=tuple(variant.get("source_voice_ids", ())),
+        source_line_ids=tuple(variant.get("source_line_ids", ())),
     )
 
 
@@ -749,6 +768,146 @@ def _manifest_queue_bindings(manifest_document, registry):
         raise PregenerationVoiceError(
             f"Character voice evidence is invalid: {error}"
         ) from error
+
+
+def _manifest_candidate_variants(
+    manifest_document,
+    registry,
+    manifest_path,
+    story_index_sha256,
+):
+    bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
+    variants = list(
+        bindings.get("selected_variants", ()) if isinstance(bindings, dict) else ()
+    )
+    player = manifest_document.get(PLAYER_VOICE_CANDIDATES_FIELD)
+    if player is None:
+        return tuple(variants)
+    expected_fields = {
+        "schema",
+        "schema_version",
+        "story_index_sha256",
+        "candidate_report",
+        "candidate_report_sha256",
+        "variants",
+    }
+    if (
+        not isinstance(player, dict)
+        or set(player) != expected_fields
+        or player.get("schema") != PLAYER_VOICE_CANDIDATES_SCHEMA
+        or player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+        or player.get("story_index_sha256") != story_index_sha256
+        or manifest_path is None
+    ):
+        raise PregenerationVoiceError("Player voice candidate evidence is invalid")
+    report_relative = player.get("candidate_report")
+    if (
+        not isinstance(report_relative, str)
+        or not report_relative.strip()
+        or "\\" in report_relative
+    ):
+        raise PregenerationVoiceError("Player voice candidate report path is invalid")
+    relative = PurePosixPath(report_relative)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise PregenerationVoiceError("Player voice candidate report path is unsafe")
+    report = (manifest_path.parent / Path(*relative.parts)).resolve()
+    try:
+        report.relative_to(manifest_path.parent.resolve())
+    except ValueError as error:
+        raise PregenerationVoiceError(
+            "Player voice candidate report escapes its manifest"
+        ) from error
+    if (
+        report.is_symlink()
+        or not report.is_file()
+        or not _is_sha256(player.get("candidate_report_sha256"))
+        or sha256_file(report) != player["candidate_report_sha256"]
+    ):
+        raise PregenerationVoiceError("Player voice candidate report changed")
+    values = player.get("variants")
+    if not isinstance(values, list) or not values:
+        raise PregenerationVoiceError("Player voice candidate inventory is empty")
+    seen = set()
+    for index, variant in enumerate(values):
+        fields = {
+            "variant_id",
+            "character",
+            "portrait",
+            "source_bank",
+            "source_voice_ids",
+            "voice_character",
+            "reference_sha256",
+            "source_line_ids",
+            "source_event_ids",
+            "duration_seconds",
+            "quality_score",
+        }
+        if not isinstance(variant, dict) or set(variant) != fields:
+            raise PregenerationVoiceError(
+                f"Player voice candidate {index} is malformed"
+            )
+        variant_id = variant.get("variant_id")
+        character = variant.get("character")
+        source_bank = variant.get("source_bank")
+        voice_character = variant.get("voice_character")
+        reference_sha256 = variant.get("reference_sha256")
+        source_voice_ids = variant.get("source_voice_ids")
+        source_line_ids = variant.get("source_line_ids")
+        source_event_ids = variant.get("source_event_ids")
+        portrait = variant.get("portrait")
+        duration = variant.get("duration_seconds")
+        quality = variant.get("quality_score")
+        if (
+            not _is_sha256(variant_id)
+            or variant_id in seen
+            or not isinstance(character, str)
+            or not character.strip()
+            or portrait is not None
+            and (not isinstance(portrait, str) or not portrait.strip())
+            or not isinstance(source_bank, str)
+            or not source_bank.strip()
+            or not isinstance(voice_character, str)
+            or not voice_character.strip()
+            or not _is_sha256(reference_sha256)
+            or not _canonical_texts(source_voice_ids)
+            or not _canonical_texts(source_line_ids)
+            or not isinstance(source_event_ids, list)
+            or source_event_ids != sorted(set(source_event_ids))
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in source_event_ids
+            )
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration <= 0
+            or isinstance(quality, bool)
+            or not isinstance(quality, int)
+            or not 0 <= quality <= 100
+        ):
+            raise PregenerationVoiceError(
+                f"Player voice candidate {index} evidence is invalid"
+            )
+        source_id = f"character:{normalize_character_name(voice_character)}"
+        voice = _candidate_from_source(source_id, registry)
+        if voice is None or tuple(sha256_file(path) for path in voice.references) != (
+            reference_sha256,
+        ):
+            raise PregenerationVoiceError(
+                f"Player voice candidate {index} reference is invalid"
+            )
+        seen.add(variant_id)
+        variants.append(dict(variant))
+    return tuple(variants)
+
+
+def _canonical_texts(values):
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or not value.strip() for value in values)
+    ):
+        return False
+    return values == sorted(set(values), key=str.casefold)
 
 
 def _bound_source_for_record(record, bindings):

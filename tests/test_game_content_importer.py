@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -6,12 +7,14 @@ from threading import Event
 from unittest.mock import Mock, patch
 
 from tests.test_pregeneration_setup import write_story_index
+from tests.test_pregeneration_voices import write_content
 from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
     Reverse1999GameImporter,
     resolve_reverse1999_installation,
 )
+from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 
 
 class FinishedProcess:
@@ -160,6 +163,43 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 "story bundles, game configuration, English voice banks",
             ):
                 resolve_reverse1999_installation(temporary_directory)
+
+    def test_prepares_candidates_only_for_selected_roles_with_source_audio(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(
+                write_content(root / "content"),
+                provider_id="reverse1999",
+            )
+            job = PregenerationJobStore(root / "jobs").create_or_resume(
+                content,
+                ("story",),
+            )
+            output = root / "imports"
+            manifest = output / "reverse1999" / "voice-candidates" / "id" / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+            process = FinishedProcess(
+                stdout=json.dumps({"voice_manifest": str(manifest)}) + "\n"
+            )
+            popen = Mock(return_value=process)
+            importer = Reverse1999GameImporter(
+                command=("r1999-bootstrap",),
+                output_root=output,
+                popen_factory=popen,
+            )
+
+            result = importer.prepare_voice_candidates(job)
+
+        arguments = popen.call_args.args[0]
+        self.assertEqual(result, manifest.resolve())
+        self.assertIn("--prepare-voice-candidates-only", arguments)
+        roles = [
+            arguments[index + 1]
+            for index, value in enumerate(arguments)
+            if value == "--voice-candidate-role"
+        ]
+        self.assertEqual(roles, ["Rhiannon"])
 
 
 if __name__ == "__main__":

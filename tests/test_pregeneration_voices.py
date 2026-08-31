@@ -20,6 +20,7 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import (
+    PLAYER_VOICE_CANDIDATES_FIELD,
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
@@ -256,6 +257,61 @@ def write_conflicting_manifest(root, *, bind_selected_lines=False):
     return path
 
 
+def write_player_candidate_manifest(root, story_index_sha256):
+    references = root / "references"
+    references.mkdir(parents=True, exist_ok=True)
+    report = root / "report.json"
+    report.write_text('{"candidate_count":2}', encoding="utf-8")
+    voices = []
+    variants = []
+    for index in (1, 2):
+        reference = references / f"rhiannon-{index}.wav"
+        reference.write_bytes(f"rhiannon-{index}".encode())
+        variant_id = str(index) * 64
+        voice_character = f"Player candidate Rhiannon {index}"
+        voices.append(
+            {
+                "character": voice_character,
+                "speaker": f"player-candidate:{variant_id}",
+                "references": [f"references/rhiannon-{index}.wav"],
+            }
+        )
+        variants.append(
+            {
+                "variant_id": variant_id,
+                "character": "Rhiannon",
+                "portrait": "10",
+                "source_bank": "rhiannon.bnk",
+                "source_voice_ids": [f"play_rhiannon_{index}"],
+                "voice_character": voice_character,
+                "reference_sha256": sha256_file(reference),
+                "source_line_ids": [f"line:source:{index}"],
+                "source_event_ids": [index],
+                "duration_seconds": 3.0 + index,
+                "quality_score": 100 - index,
+            }
+        )
+    path = root / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": voices,
+                PLAYER_VOICE_CANDIDATES_FIELD: {
+                    "schema": "vntts.player-voice-candidates",
+                    "schema_version": 1,
+                    "story_index_sha256": story_index_sha256,
+                    "candidate_report": report.name,
+                    "candidate_report_sha256": sha256_file(report),
+                    "variants": variants,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 class VoicePlanStoreTest(unittest.TestCase):
     def create_fixture(self, root):
         content = inspect_story_index(write_content(root / "content"))
@@ -372,6 +428,55 @@ class VoicePlanStoreTest(unittest.TestCase):
                 "Source reference Rhiannon child",
                 {candidate.source_character for candidate in rhiannon.candidates},
             )
+
+    def test_player_import_candidates_reach_the_same_bounded_audition(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+            )
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(rhiannon.route, "needs-audition")
+            self.assertEqual(len(rhiannon.candidates), 2)
+            self.assertEqual(rhiannon.candidates[0].source_bank, "rhiannon.bnk")
+            self.assertEqual(
+                rhiannon.candidates[0].source_line_ids,
+                ("line:source:1",),
+            )
+            self.assertEqual(
+                rhiannon.candidates[0].source_voice_ids,
+                ("play_rhiannon_1",),
+            )
+
+    def test_player_import_candidates_reject_another_story_index(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                "0" * 64,
+            )
+
+            with self.assertRaisesRegex(
+                PregenerationVoiceError,
+                "Player voice candidate evidence is invalid",
+            ):
+                VoicePlanStore(jobs).create(
+                    job,
+                    AppSettings(),
+                    manifest_path=manifest,
+                )
 
     def test_exact_queue_voice_binding_wins_without_prompt(self):
         with TemporaryDirectory() as temporary_directory:

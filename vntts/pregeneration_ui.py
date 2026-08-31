@@ -23,6 +23,7 @@ from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_content_importer import (
     GameContentImportCancelled,
+    GameContentImportError,
     Reverse1999GameImporter,
 )
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
@@ -50,6 +51,7 @@ from vntts.pregeneration_voices import (
     VoiceDecisionStore,
     VoicePlanStore,
 )
+from vntts.voices import find_default_voice_manifest
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -447,15 +449,35 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
         self.resume_status.setText(
-            "Matching known character voices and narrator fallbacks..."
+            "Preparing and matching character voices..."
         )
         self.voice_runner.start(
-            self.voice_plan_store.create,
+            self._create_voice_plan,
             self._job,
-            self.settings,
-            cancellation=self.voice_cancel_event,
-            ignore_decisions=self.change_voices.isChecked(),
+            self.change_voices.isChecked(),
         )
+
+    def _create_voice_plan(self, job, ignore_decisions=False):
+        manifest = None
+        if not self.settings.voice_manifest and find_default_voice_manifest() is None:
+            try:
+                manifest = self.importer.prepare_voice_candidates(
+                    job,
+                    self.voice_cancel_event,
+                )
+            except GameContentImportCancelled as error:
+                raise PregenerationVoiceCancelled(
+                    "Voice candidate preparation was cancelled"
+                ) from error
+            except GameContentImportError:
+                manifest = None
+        options = {
+            "cancellation": self.voice_cancel_event,
+            "ignore_decisions": ignore_decisions,
+        }
+        if manifest is not None:
+            options["manifest_path"] = manifest
+        return self.voice_plan_store.create(job, self.settings, **options)
 
     def _voice_plan_finished(self, plan, error):
         self.planning_voices = False
@@ -519,10 +541,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setEnabled(True)
         self.resume_status.setText("Applying your saved voice choices...")
         self.voice_runner.start(
-            self.voice_plan_store.create,
+            self._create_voice_plan,
             self._job,
-            self.settings,
-            cancellation=self.voice_cancel_event,
+            False,
         )
 
     def _voice_auditions_cancelled(self):
