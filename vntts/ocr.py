@@ -291,7 +291,9 @@ def recognize_dialog_image_result(
         )
         if best_result is None or _result_rank(result) > _result_rank(best_result):
             best_result = result
-        if result.is_confident(minimum_confidence):
+        if result.is_confident(minimum_confidence) and not _orphaned_nameplate_result(
+            result
+        ):
             return result
 
     return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
@@ -425,7 +427,11 @@ def recognize_speaker_from_data(
         if not dialog_lines:
             continue
         first_dialog_line = dialog_lines[0]
-        if len(first_dialog_line.text) < 12:
+        # Short, complete lines such as ``This ...``, ``No.`` or ``...`` are
+        # common in visual novels. Geometry already proves that this line sits
+        # below a plausible nameplate; requiring twelve characters here loses
+        # those lines before the checksum-bound sequence matcher can see them.
+        if len(first_dialog_line.text.strip()) < 3:
             continue
         if image_width is not None:
             if line.right - line.left > image_width * 0.45:
@@ -482,7 +488,32 @@ def calculate_ocr_confidence(data):
 
 
 def _result_rank(result):
-    return result.confidence, len(result.text.strip())
+    return (
+        not _orphaned_nameplate_result(result),
+        result.confidence,
+        len(result.text.strip()),
+    )
+
+
+def _orphaned_nameplate_result(result):
+    """Return whether preprocessing found a decorated name but no dialogue."""
+    character = str(result.character or "").strip()
+    compact_character = "".join(value for value in character if value.isalnum())
+    if character.casefold() != "narrator" and not (
+        compact_character.isupper() and len(compact_character) <= 4
+    ):
+        return False
+    text = str(result.text or "").strip()
+    if not text:
+        return False
+    candidate = text.lstrip(" :;,.|_-=+~`'\"&<>[](){}\\/—–")
+    tokens = candidate.split()
+    removed_noise = candidate != text
+    if tokens and len(tokens[0]) == 1 and tokens[0].islower():
+        tokens.pop(0)
+        removed_noise = True
+    candidate = " ".join(tokens)
+    return removed_noise and is_probable_character_name(candidate)
 
 
 def extract_ocr_lines(data):

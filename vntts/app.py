@@ -166,6 +166,8 @@ class AppSignals(QObject):
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
     diagnostics_changed = Signal(object)
+    diagnostics_refresh_finished = Signal(int, object)
+    diagnostics_refresh_failed = Signal(int, str)
     sequence_status_changed = Signal(object)
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
@@ -1082,6 +1084,7 @@ class TrayApplication(QObject):
         self.calibration_overlay = None
         self.onboarding_wizard = None
         self.diagnostics_dialog = None
+        self.diagnostics_refresh_generation = 0
         self.readiness_dialog = None
         self.support_dialog = None
         self.unknown_speaker_prompt = None
@@ -1225,6 +1228,12 @@ class TrayApplication(QObject):
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
         self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
+        self.signals.diagnostics_refresh_finished.connect(
+            self._diagnostics_refresh_finished
+        )
+        self.signals.diagnostics_refresh_failed.connect(
+            self._diagnostics_refresh_failed
+        )
         self.signals.sequence_status_changed.connect(self.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
@@ -1532,10 +1541,27 @@ class TrayApplication(QObject):
             self.signals.live_changed.emit(False)
             return
         if identified is not True:
-            self.set_status(
-                "Live reading could not start: keep a complete dialog line visible "
-                "and try again"
+            failure = getattr(
+                self.controller,
+                "live_scope_identification_failure",
+                None,
             )
+            if failure == "no-dialog-text":
+                message = (
+                    "Live reading could not start: no dialog text was recognized "
+                    "in the selected game window"
+                )
+            elif failure == "story-line-no-match":
+                message = (
+                    "Live reading could not start: the visible text did not match "
+                    "one unambiguous line in the configured story"
+                )
+            else:
+                message = (
+                    "Live reading could not start: keep a complete dialog line "
+                    "visible and try again"
+                )
+            self.set_status(message)
             self.signals.live_changed.emit(False)
             return
         self._start_live_with_preflight(allow_scope_bootstrap=False)
@@ -1725,12 +1751,6 @@ class TrayApplication(QObject):
         self.diagnostics_dialog.activateWindow()
 
     def refresh_diagnostics(self):
-        if self.controller.is_live_running:
-            snapshot = self.controller.get_latest_diagnostic()
-            if snapshot is not None:
-                self.signals.diagnostics_changed.emit(snapshot)
-                return
-
         permission_status = get_macos_permission_status()
         if permission_status["screen_capture"] is False:
             self.signals.diagnostics_failed.emit(
@@ -1743,16 +1763,43 @@ class TrayApplication(QObject):
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.conceal_for_capture()
 
-        QTimer.singleShot(200, self._capture_diagnostic_snapshot)
+        self.diagnostics_refresh_generation += 1
+        generation = self.diagnostics_refresh_generation
+        QTimer.singleShot(
+            200,
+            lambda: self._capture_diagnostic_snapshot(generation),
+        )
 
-    def _capture_diagnostic_snapshot(self):
+    def _capture_diagnostic_snapshot(self, generation):
         def inspect():
             try:
-                self.controller.inspect_current_dialog()
+                snapshot = self.controller.inspect_current_dialog(notify=False)
             except Exception as error:
-                self.signals.diagnostics_failed.emit(diagnostic_error_guidance(error))
+                self.signals.diagnostics_refresh_failed.emit(
+                    generation,
+                    diagnostic_error_guidance(error),
+                )
+            else:
+                self.signals.diagnostics_refresh_finished.emit(generation, snapshot)
 
         Thread(target=inspect, daemon=True).start()
+
+    def _diagnostics_refresh_is_current(self, generation):
+        return bool(
+            generation == self.diagnostics_refresh_generation
+            and self.diagnostics_dialog is not None
+            and self.diagnostics_dialog.refresh_in_flight
+        )
+
+    def _diagnostics_refresh_finished(self, generation, snapshot):
+        if not self._diagnostics_refresh_is_current(generation):
+            return
+        self.update_diagnostics_snapshot(snapshot)
+
+    def _diagnostics_refresh_failed(self, generation, message):
+        if not self._diagnostics_refresh_is_current(generation):
+            return
+        self.set_diagnostics_error(message)
 
     def update_diagnostics_snapshot(self, snapshot):
         self.dashboard.set_diagnostic(snapshot)

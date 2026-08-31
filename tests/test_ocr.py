@@ -191,6 +191,95 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(speaker[0], "Kamuta")
         self.assertEqual(speaker[1].text, "Kamuta")
 
+    def test_unknown_speaker_geometry_accepts_complete_short_dialogue(self):
+        for speaker_name, dialogue in (
+            ("Hotelier", "This ..."),
+            ("Policeman 2", "No."),
+            ("37", "..."),
+        ):
+            with self.subTest(speaker=speaker_name, dialogue=dialogue):
+                speaker = recognize_speaker_from_data(
+                    {
+                        "text": [speaker_name, dialogue],
+                        "conf": [96, 95],
+                        "block_num": [1, 2],
+                        "par_num": [1, 1],
+                        "line_num": [1, 1],
+                        "left": [80, 75],
+                        "top": [30, 150],
+                        "width": [180, 100],
+                        "height": [45, 40],
+                    },
+                    image_width=1000,
+                    image_height=300,
+                )
+
+                self.assertEqual(speaker[0], speaker_name)
+
+    def test_confident_orphaned_nameplate_does_not_hide_short_dialogue(self):
+        orphaned_nameplate = {
+            "text": [":", "Hotelier"],
+            "conf": [92, 96],
+            "block_num": [1, 1],
+            "par_num": [1, 1],
+            "line_num": [1, 1],
+            "left": [40, 80],
+            "top": [30, 30],
+            "width": [20, 180],
+            "height": [45, 45],
+        }
+        complete_frame = {
+            "text": ["Hotelier", "This", "..."],
+            "conf": [96, 95, 94],
+            "block_num": [1, 2, 2],
+            "par_num": [1, 1, 1],
+            "line_num": [1, 1, 1],
+            "left": [80, 75, 170],
+            "top": [30, 150, 150],
+            "width": [180, 80, 35],
+            "height": [45, 40, 40],
+        }
+        false_speaker_frame = {
+            "text": ["TTS", "&", "Hotelier"],
+            "conf": [90, 70, 96],
+            "block_num": [1, 2, 2],
+            "par_num": [1, 1, 1],
+            "line_num": [1, 1, 1],
+            "left": [40, 75, 100],
+            "top": [5, 150, 150],
+            "width": [100, 20, 180],
+            "height": [35, 40, 40],
+        }
+        false_dialog_data = {"text": ["e", "Hotelier"], "conf": [60, 96]}
+        dialog_data = {"text": ["This", "..."], "conf": [95, 94]}
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (1000, 300), "black"),
+            recognize_text=Mock(
+                side_effect=[": Hotelier\n", "e Hotelier\n", "This ...\n"]
+            ),
+            recognize_data=Mock(
+                side_effect=[
+                    orphaned_nameplate,
+                    orphaned_nameplate,
+                    false_speaker_frame,
+                    false_dialog_data,
+                    complete_frame,
+                    dialog_data,
+                ]
+            ),
+            profiles=(
+                OCRPreprocessingProfile("balanced", 1.8, 180),
+                OCRPreprocessingProfile("dark-background", 2.2, 155),
+                OCRPreprocessingProfile("light-background", 1.5, 205),
+            ),
+            minimum_confidence=60,
+        )
+
+        self.assertEqual(result.character, "Hotelier")
+        self.assertEqual(result.text, "This ...")
+        self.assertEqual(result.profile, "light-background")
+
     def test_geometry_prefers_known_speaker_over_uppercase_ui_noise(self):
         data = {
             "text": ["AUTO", "SKIP", "Mareus", "Hello", "from", "the", "suitcase"],

@@ -160,21 +160,32 @@ def fingerprint_dialog_frame(frame):
     # background while still preserving additions to typewriter text.
     width, height = grayscale.size
 
-    def glyph_band(top, bottom, output_height, minimum_brightness):
+    def glyph_band(
+        top,
+        bottom,
+        output_height,
+        minimum_brightness,
+        *,
+        ignore_continue_indicator=False,
+    ):
         band = grayscale.crop((0, top, width, bottom))
+        if ignore_continue_indicator:
+            # Clear the chrome before measuring the band's brightest pixel;
+            # otherwise a blinking indicator also changes the threshold used
+            # for every dialogue glyph outside the ignored area.
+            indicator_left = round(width * 0.92)
+            indicator_top = max(0, round(height * 0.68) - top)
+            band.paste(0, (indicator_left, indicator_top, width, bottom - top))
         brightest = band.getextrema()[1]
         # Fully covered glyph pixels keep the same value even when the
         # anti-aliased edge is composited over a changing background.
         glyph_threshold = max(minimum_brightness, brightest)
-        mask = (
-            band.point(
-                tuple(255 if value >= glyph_threshold else 0 for value in range(256))
-            )
-            .filter(ImageFilter.MaxFilter(5))
-            .resize(
-                (256, output_height),
-                Image.Resampling.LANCZOS,
-            )
+        mask = band.point(
+            tuple(255 if value >= glyph_threshold else 0 for value in range(256))
+        )
+        mask = mask.filter(ImageFilter.MaxFilter(5)).resize(
+            (256, output_height),
+            Image.Resampling.LANCZOS,
         )
         # Collapse resize ringing so sub-pixel capture noise cannot invalidate
         # the cache.
@@ -188,8 +199,39 @@ def fingerprint_dialog_frame(frame):
     label_bottom = max(1, round(height * 0.36))
     dialog_top = min(height - 1, round(height * 0.25))
     label = glyph_band(0, label_bottom, 27, 180)
-    dialog = glyph_band(dialog_top, height, 45, 200)
+    dialog = glyph_band(
+        dialog_top,
+        height,
+        45,
+        200,
+        ignore_continue_indicator=True,
+    )
     return blake2b(label + dialog, digest_size=16).digest()
+
+
+def fingerprint_dialog_render_activity(frame):
+    """Fingerprint high-fidelity dialogue glyph activity, not screen identity.
+
+    The ordinary dialogue fingerprint is intentionally compact and may map a
+    nearly complete typewriter prefix to the same identity as the full line.
+    Render completion needs the opposite tradeoff: retain small new glyphs, but
+    ignore the portrait, continue indicator and most animated backdrop pixels.
+    """
+    grayscale = frame.image.convert("L")
+    width, height = grayscale.size
+    left = min(width - 1, max(0, round(width * 0.18)))
+    right = max(left + 1, min(width, round(width * 0.92)))
+    top = min(height - 1, max(0, round(height * 0.25)))
+    band = grayscale.crop((left, top, right, height))
+    brightest = band.getextrema()[1]
+    threshold = max(205, brightest - 20)
+    mask = band.point(
+        tuple(255 if value >= threshold else 0 for value in range(256))
+    ).filter(ImageFilter.MaxFilter(3))
+    if mask.width > 1024:
+        output_height = max(1, round(mask.height * 1024 / mask.width))
+        mask = mask.resize((1024, output_height), Image.Resampling.NEAREST)
+    return blake2b(mask.tobytes(), digest_size=16).digest()
 
 
 def dialog_glyphs_visible(frame):
@@ -208,6 +250,62 @@ def dialog_glyphs_visible(frame):
     bright_pixels = sum(histogram[160:])
     pixels = max(1, dialog.width * dialog.height)
     return 3 <= bright_pixels <= round(pixels * 0.25)
+
+
+def dialog_completion_cue_visible(frame):
+    """Detect the game's small downward continue indicator, not dialogue text."""
+    if not dialog_glyphs_visible(frame):
+        return False
+    grayscale = frame.image.convert("L")
+    width, height = grayscale.size
+    left = min(width - 1, round(width * 0.94))
+    top = min(height - 1, round(height * 0.68))
+    bottom = min(height, max(top + 1, round(height * 0.96)))
+    region = grayscale.crop((left, top, width, bottom))
+    bright = {
+        (x, y)
+        for y in range(region.height)
+        for x in range(region.width)
+        if region.getpixel((x, y)) >= 150
+    }
+    components = []
+    while bright:
+        pending = [bright.pop()]
+        component = []
+        while pending:
+            x, y = pending.pop()
+            component.append((x, y))
+            for neighbor_y in range(max(0, y - 1), min(region.height, y + 2)):
+                for neighbor_x in range(max(0, x - 1), min(region.width, x + 2)):
+                    neighbor = (neighbor_x, neighbor_y)
+                    if neighbor in bright:
+                        bright.remove(neighbor)
+                        pending.append(neighbor)
+        components.append(component)
+
+    minimum_component_pixels = max(4, round(width / 240))
+    maximum_width = max(6, round(width * 0.02))
+    maximum_height = max(6, round(height * 0.12))
+    for component in components:
+        xs = [point[0] for point in component]
+        ys = [point[1] for point in component]
+        component_width = max(xs) - min(xs) + 1
+        component_height = max(ys) - min(ys) + 1
+        center_x = left + (min(xs) + max(xs)) / 2
+        center_y = top + (min(ys) + max(ys)) / 2
+        aspect_ratio = component_width / component_height
+        if (
+            minimum_component_pixels <= len(component) <= 500
+            and 3 <= component_width <= maximum_width
+            and 3 <= component_height <= maximum_height
+            and width * 0.95 <= center_x <= width * 0.99
+            and height * 0.78 <= center_y <= height * 0.93
+            and 0.65 <= aspect_ratio <= 2.5
+            and max(ys) < region.height - 1
+            and len(component) / (component_width * component_height) >= 0.12
+        ):
+            return True
+    return False
 
 
 def detect_standalone_ellipsis_frame(image):

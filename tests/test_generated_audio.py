@@ -49,6 +49,41 @@ class FakeAudioOutput:
         self.stopped = True
 
 
+class ExplicitStreamAudioOutput(FakeAudioOutput):
+    def __init__(self, sample_rate=48_000):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.streams = []
+
+    def query_devices(self, _device=None, _kind=None, **_options):
+        return {"default_samplerate": self.sample_rate}
+
+    def OutputStream(self, **options):
+        owner = self
+
+        class Stream:
+            def __init__(self):
+                self.options = options
+                self.samples = None
+                self.aborted = False
+
+            def __enter__(self):
+                owner.streams.append(self)
+                return self
+
+            def __exit__(self, _error_type, _error, _traceback):
+                return False
+
+            def write(self, samples):
+                self.samples = np.asarray(samples)
+                return False
+
+            def abort(self):
+                self.aborted = True
+
+        return Stream()
+
+
 def write_wav(path, samples, sample_rate=24_000):
     values = np.asarray(samples, dtype=np.float32)
     pcm = np.round(np.clip(values, -1, 1) * 32767).astype("<i2")
@@ -438,6 +473,57 @@ class GeneratedAudioTest(unittest.TestCase):
             )
 
             self.assertTrue(backend.has_generated_line(resolver.dialogue[0]))
+
+    def test_early_generated_reservation_never_bypasses_original_audio_or_override(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            source_resolver = self.create_resolver(source_audio_status="available")
+            source_backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                source_resolver,
+                audio_source_policy="prefer-game-audio",
+                audio_output=FakeAudioOutput(),
+            )
+            overridden_backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                self.create_resolver(),
+                audio_source_policy="prefer-generated",
+                audio_output=FakeAudioOutput(),
+            )
+            overridden_backend.voice_override = lambda _speaker: True
+
+            self.assertFalse(
+                source_backend.reserve_generated_line_for_early_playback(
+                    source_resolver.dialogue[0]
+                )
+            )
+            self.assertFalse(
+                overridden_backend.reserve_generated_line_for_early_playback(
+                    overridden_backend.line_resolver.dialogue[0]
+                )
+            )
+
+    def test_early_generated_reservation_accepts_exact_generated_route(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            resolver = self.create_resolver(source_audio_status="absent")
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                resolver,
+                audio_source_policy="prefer-game-audio",
+                audio_output=FakeAudioOutput(),
+            )
+
+            self.assertTrue(
+                backend.reserve_generated_line_for_early_playback(resolver.dialogue[0])
+            )
 
     def test_early_prefix_requires_verified_audio_and_carries_reserved_bytes(self):
         with TemporaryDirectory() as directory:
@@ -977,6 +1063,96 @@ class GeneratedAudioTest(unittest.TestCase):
         np.testing.assert_allclose(played, [0.0, 0.25, -0.25])
         self.assertEqual(sample_rate, 24_000)
         self.assertEqual(options["latency"], "low")
+
+    def test_generated_playback_uses_explicit_stream_across_mixed_rates(self):
+        audio_output = ExplicitStreamAudioOutput(sample_rate=48_000)
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(),
+            Mock(),
+            Mock(),
+            audio_output=audio_output,
+        )
+
+        outcomes = []
+        for sample_rate in (24_000, 48_000, 24_000):
+            route = GeneratedAudioRoute(
+                PreparedGeneratedAudio(
+                    f"game:{sample_rate}",
+                    hashlib.sha256(str(sample_rate).encode()).hexdigest(),
+                    np.zeros(sample_rate // 100, dtype=np.float32),
+                    sample_rate,
+                ),
+                Mock(effective_source="generated"),
+            )
+            outcomes.append(backend.play_route(route))
+
+        self.assertEqual(audio_output.plays, [])
+        self.assertEqual(len(audio_output.streams), 3)
+        for stream in audio_output.streams:
+            self.assertEqual(stream.options["samplerate"], 48_000)
+            self.assertEqual(stream.options["channels"], 1)
+            self.assertEqual(stream.options["dtype"], "float32")
+            self.assertEqual(stream.samples.shape, (480, 1))
+        self.assertEqual(
+            [outcome.source_sample_rate for outcome in outcomes],
+            [24_000, 48_000, 24_000],
+        )
+        self.assertEqual(
+            [outcome.playback_sample_rate for outcome in outcomes],
+            [48_000, 48_000, 48_000],
+        )
+        self.assertEqual(
+            [outcome.expected_playback_ms for outcome in outcomes],
+            [10.0, 10.0, 10.0],
+        )
+
+    def test_stop_aborts_active_explicit_generated_stream(self):
+        entered = Event()
+        released = Event()
+        audio_output = ExplicitStreamAudioOutput()
+        original_factory = audio_output.OutputStream
+
+        def blocking_stream(**options):
+            stream = original_factory(**options)
+
+            def write(samples):
+                stream.samples = np.asarray(samples)
+                entered.set()
+                released.wait(1)
+                return False
+
+            def abort():
+                stream.aborted = True
+                released.set()
+
+            stream.write = write
+            stream.abort = abort
+            return stream
+
+        audio_output.OutputStream = blocking_stream
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(), Mock(), Mock(), audio_output=audio_output
+        )
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                hashlib.sha256(b"Hello.").hexdigest(),
+                np.zeros(480, dtype=np.float32),
+                48_000,
+            ),
+            Mock(effective_source="generated"),
+        )
+        outcomes = []
+        worker = Thread(target=lambda: outcomes.append(backend.play_route(route)))
+
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        self.assertTrue(backend.stop())
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(audio_output.streams[0].aborted)
+        self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
 
     def test_generated_guard_change_during_wait_returns_interrupted(self):
         playable = True

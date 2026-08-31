@@ -511,6 +511,41 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("complete dialog line", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
+    def test_live_scope_failure_explains_story_match_instead_of_missing_text(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        controller.live_scope_identification_failure = "story-line-no-match"
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.live_scope_runner = Mock(active=False)
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._live_scope_finished(False, None)
+
+        self.assertIn("unambiguous line", tray_application.dashboard.status.text())
+        self.assertNotIn("not visible", tray_application.dashboard.status.text())
+        tray_application.shutdown()
+
+    def test_live_scope_failure_explains_empty_capture(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        controller.live_scope_identification_failure = "no-dialog-text"
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.live_scope_runner = Mock(active=False)
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._live_scope_finished(False, None)
+
+        self.assertIn("no dialog text", tray_application.dashboard.status.text())
+        tray_application.shutdown()
+
     def test_live_scope_identification_still_prompts_for_unresolved_speakers(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.side_effect = [None, ("Hotelier",)]
@@ -1360,6 +1395,10 @@ class TrayApplicationTest(unittest.TestCase):
     def test_history_dialog_uses_controller_session_and_replay(self):
         controller = Mock()
         controller.is_live_running = False
+        controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
+            None,
+            text="Fresh manual capture",
+        )
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1566,24 +1605,43 @@ class TrayApplicationTest(unittest.TestCase):
         save.assert_called_once_with()
         tray_application.shutdown()
 
-    def test_live_diagnostics_reuses_the_live_pipeline_snapshot(self):
-        snapshot = DiagnosticSnapshot(None, text="Already captured")
+    def test_live_diagnostics_refresh_captures_a_fresh_snapshot(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        stale = DiagnosticSnapshot(None, text="Already captured")
+        fresh = DiagnosticSnapshot(None, text="Fresh capture")
         controller = Mock()
         controller.is_live_running = True
-        controller.get_latest_diagnostic.return_value = snapshot
+        controller.get_latest_diagnostic.return_value = stale
+        controller.inspect_current_dialog.return_value = fresh
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
-        observed = []
-        tray_application.signals.diagnostics_changed.connect(observed.append)
+        diagnostics_dialog = Mock(refresh_in_flight=True)
+        tray_application.diagnostics_dialog = diagnostics_dialog
 
-        with patch("vntts.app.Thread") as thread:
+        with (
+            patch(
+                "vntts.app.get_macos_permission_status",
+                return_value={"screen_capture": True, "accessibility": True},
+            ),
+            patch(
+                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+            ),
+            patch("vntts.app.Thread", ImmediateThread),
+        ):
             tray_application.refresh_diagnostics()
 
-        self.assertEqual(observed, [snapshot])
-        thread.assert_not_called()
+        controller.inspect_current_dialog.assert_called_once_with(notify=False)
+        diagnostics_dialog.set_snapshot.assert_called_once_with(fresh)
+        diagnostics_dialog.conceal_for_capture.assert_called_once_with()
         tray_application.shutdown()
 
     def test_manual_diagnostics_hides_window_before_capture(self):
@@ -1596,6 +1654,10 @@ class TrayApplicationTest(unittest.TestCase):
 
         controller = Mock()
         controller.is_live_running = False
+        controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
+            None,
+            text="Fresh manual capture",
+        )
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1617,7 +1679,30 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.refresh_diagnostics()
 
         diagnostics_dialog.conceal_for_capture.assert_called_once_with()
-        controller.inspect_current_dialog.assert_called_once_with()
+        controller.inspect_current_dialog.assert_called_once_with(notify=False)
+        tray_application.shutdown()
+
+    def test_late_diagnostic_refresh_result_is_ignored(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        diagnostics_dialog = Mock(refresh_in_flight=True)
+        tray_application.diagnostics_dialog = diagnostics_dialog
+        tray_application.diagnostics_refresh_generation = 2
+
+        tray_application._diagnostics_refresh_finished(
+            1,
+            DiagnosticSnapshot(None, text="Stale capture"),
+        )
+        diagnostics_dialog.refresh_in_flight = False
+        tray_application._diagnostics_refresh_finished(
+            2,
+            DiagnosticSnapshot(None, text="Timed-out capture"),
+        )
+
+        diagnostics_dialog.set_snapshot.assert_not_called()
         tray_application.shutdown()
 
     def test_diagnostic_result_restores_concealed_window(self):

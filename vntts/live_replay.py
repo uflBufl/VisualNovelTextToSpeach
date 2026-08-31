@@ -253,6 +253,35 @@ class ReplayFrameSource:
                 self.unmapped_skipped += 1
             return event
 
+    def acknowledge_route(self, frame, *, route_kind):
+        """Record a route, preserving an earlier prefix-observation receipt."""
+        identity = frame.image.info.get("vntts_replay_declared_identity")
+        with self.condition:
+            event = self._event_for_identity(identity)
+            if (
+                event["dialogue_index"] is not None
+                and self.consumed[identity[0]][identity[1]]
+            ):
+                self.route_kinds[identity[0]][identity[1]] = str(route_kind)
+                event["consumed"] = True
+                event["skip_reason"] = None
+                return event
+        return self.acknowledge(frame, route_kind=route_kind)
+
+    def acknowledge_observation(self, frame, *, route_kind):
+        """Record an OCR receipt without penalizing an already routed frame."""
+        identity = frame.image.info.get("vntts_replay_declared_identity")
+        with self.condition:
+            event = self._event_for_identity(identity)
+            if (
+                event["dialogue_index"] is not None
+                and self.consumed[identity[0]][identity[1]]
+            ):
+                event["consumed"] = True
+                event["skip_reason"] = None
+                return event
+        return self.acknowledge(frame, route_kind=route_kind)
+
     def advance(self):
         return self._advance(manual=False)
 
@@ -734,6 +763,19 @@ class LiveReplayRunner:
                 if self.uses_default_recognizer
                 else self.recognizer(frame)
             )
+            ledger_event = frame_source._event_for_identity(
+                frame.image.info.get("vntts_replay_declared_identity")
+            )
+            if controller._sequence_prefix_recheck_required():
+                # In the game, later typewriter frames arrive independently of
+                # whether they are routed to speech. The deterministic replay
+                # source advances only when a frame is acknowledged, so record
+                # the OCR receipt here and let frame_routed reclassify the final
+                # canonical frame without double-counting it.
+                ledger_event = frame_source.acknowledge_observation(
+                    frame,
+                    route_kind="ocr-prefix-observation",
+                )
             recognized_frames.append(
                 {
                     "character": str(result[0]),
@@ -741,15 +783,13 @@ class LiveReplayRunner:
                     "source": frame.image.info.get(
                         "vntts_replay_recognition_source", "ocr"
                     ),
-                    **frame_source._event_for_identity(
-                        frame.image.info.get("vntts_replay_declared_identity")
-                    ),
+                    **ledger_event,
                 }
             )
             return result
 
         def frame_routed(frame, _fingerprint, route_kind, character, text):
-            ledger_event = frame_source.acknowledge(
+            ledger_event = frame_source.acknowledge_route(
                 frame,
                 route_kind=route_kind,
             )
@@ -866,6 +906,8 @@ class LiveReplayRunner:
             frame_presence=dialog_glyphs_visible,
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
+            frame_recheck_required=controller._sequence_prefix_recheck_required,
+            render_completion=controller._confirm_sequence_render_completion,
             frame_routed=frame_routed,
             line_id_resolver=controller._live_sequence_line_id,
             speak_chunk=lambda _chunk: None,

@@ -45,9 +45,12 @@ live line and the second into the approved generated route.
 
 An OCR body consisting exactly of `...` or `…` is an intentional silent
 dialogue, not background noise and not pronounceable text. OCR cleanup preserves
-it, the incremental tracker commits it without scheduling speech, and the same
-focus-checked auto-advance gate used after audio may continue. Other
-punctuation-only glyphs remain filtered.
+it and the incremental tracker commits it without scheduling speech. In
+sequence-owned `audio-auto`, the stronger authority is the unique immediate
+line-less silent successor after one application-owned key dispatch: a focused,
+changed and settled dialogue frame may confirm that event without depending on
+OCR's ability to read three dots. The same focus-checked auto-advance gate may
+then continue. Other punctuation-only glyphs remain filtered.
 
 Playback outcomes are `completed`, `interrupted`, `failed`, or
 `passthrough-unobserved`. Generated playback alone owns the local output device.
@@ -59,6 +62,26 @@ advance. It never falls through to live TTS merely to obtain a completion
 timer: the game has already spoken that line, so such a fallback would create
 audible duplicate dialogue. Player exceptions are recorded as a chunk-bound
 failed outcome before the normalized playback error is surfaced.
+
+Generated playback must not use `sounddevice.play()`. That convenience API owns
+process-global stream state, while Pocket and other live backends use explicit
+`OutputStream` instances. Mixing a 24 kHz Pocket route with a 48 kHz MOSS route
+through those two ownership models produced live-only time stretching even
+though the published WAVs were correct. In the 2026-08-30 Rhiannon run,
+`reverse1999:314601:6` was a valid 4.64 second WAV but its route reported 8.281
+seconds of playback; `reverse1999:314601:8` was 6.16 seconds but reported 11.028
+seconds. The preceding 24 kHz Pocket WAV differed from its expected duration by
+only 0.214 seconds, and direct playback of both 48 kHz files was confirmed
+normal.
+
+The generated route therefore resolves the output device rate, resamples its
+immutable PCM once, and writes mono float32 frames through its own explicit
+blocking `OutputStream`. Stop aborts that exact stream rather than a
+process-global convenience stream. Its typed outcome records source rate,
+playback rate, output sample count and expected PCM duration next to observed
+playback time. These fields distinguish a device/stream-format failure from a
+bad checksum-valid generation; the latter must not be rejected or regenerated
+solely because runtime playback negotiated the wrong format.
 
 `source_audio_status=available` proves that the configured Wwise event and
 media exist; it does not prove that the media reads the displayed sentence.

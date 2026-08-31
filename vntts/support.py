@@ -54,6 +54,7 @@ generation_timeline_stages = (
 # telemetry must never be able to abort dialog processing.
 sequence_timeline_stages = (
     "stable-frame-gate",
+    "canonical-prefix-recheck",
     "late-chunk-suppressed",
     "sequence-candidate-miss",
     "sequence-shadow",
@@ -99,6 +100,8 @@ generation_timeline_detail_fields = (
     "visible",
     "focused",
     "owner",
+    "completion_cue",
+    "recheck_interval_ms",
     "candidate_frames",
     "settled_ms",
     "ready",

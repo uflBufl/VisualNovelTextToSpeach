@@ -275,6 +275,41 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(noisy.line_id, "line-2")
         self.assertEqual(noisy_result, "expected-bounded-prefix")
 
+    def test_bounded_resolution_recovers_unknown_nameplate_with_frame_noise(self):
+        text = "Now now, what's all the fuss about?"
+        following = "Mrs. Owen, this young witch is trying to check in."
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "314601",
+                        "sequence": 52,
+                        "line_id": "reverse1999:314601:52",
+                        "speaker_name": "???",
+                        "text": text,
+                        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    },
+                    {
+                        "chapter": "314601",
+                        "sequence": 53,
+                        "line_id": "reverse1999:314601:53",
+                        "speaker_name": "Hotelier",
+                        "text": following,
+                        "text_sha256": hashlib.sha256(following.encode()).hexdigest(),
+                    },
+                ]
+            }
+        )
+
+        line, result = preloader.resolve_bounded_among(
+            "Narrator",
+            "ae 2? Now now, what's all the fuss about? bb ]",
+            ("reverse1999:314601:52", "reverse1999:314601:53"),
+        )
+
+        self.assertEqual(line.line_id, "reverse1999:314601:52")
+        self.assertEqual(result, "expected-bounded-ocr-suffix")
+
     def test_bounded_resolution_uses_nameplate_for_unique_short_line(self):
         rows = []
         for sequence, speaker, text in (

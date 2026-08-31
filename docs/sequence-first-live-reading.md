@@ -31,10 +31,16 @@ not control the game yet:
   background, effect or title step and VNTTS observes the successor without
   sending a key. This is distinct from an automatic `speech` or `silent` event,
   where VNTTS may eventually send exactly one configured advance key.
-- `audio-manual` uses an exact allowed line observation to update the cursor,
-  then replaces OCR speaker/text with the checksum-bound story-index record
-  before existing original/generated/live routing. Once locked, an unmatched,
-  unplanned or desynchronized observation is not spoken. The mode forces whole
+- `audio-manual` and `audio-auto` bootstrap inside the configured sequence plan.
+  Exact matching remains first; a complete line with minor OCR substitutions is
+  accepted only when bounded comparison leaves one high-confidence plan line.
+  Typewriter prefixes, low-coverage similarity and close competing candidates
+  remain unsynchronized. The captured Hotelier line from chapter `314601`, where
+  Tesseract read `Dŵr` as `DWr` at 95% confidence, resolves uniquely to line 20
+  and is replaced by its checksum-bound canonical speaker/text before existing
+  original/generated/live routing. Once locked, an unmatched, unplanned or
+  desynchronized observation is not spoken. An unsynchronized miss is consumed
+  without enqueueing an empty Pocket TTS request. `audio-manual` forces whole
   dialogue chunks and suppresses auto advance even if the saved general toggle
   is enabled; the player remains responsible for every transition.
 - `audio-manual` binds the first exact anchoring dialogue fingerprint. After its
@@ -299,15 +305,59 @@ therefore `audio complete or silent event`, plus `dialogue render settled`, plus
 In a linear successor step, a verified dialogue-region transition is enough to
 move without full OCR only when the bounded graph window contains exactly one
 visible candidate. A longer linear window still requires bounded recognition:
-manual input can cross multiple boxes between captures. The implemented gate
-requires plausible bright glyphs in the lower dialogue band, rejects empty and
-mostly bright popup-like crops, waits for two equal changed fingerprints for at
-least 120 ms, rechecks game focus in the consuming worker, and binds the
-candidate to the cursor event and frame-route epoch that first observed it.
+manual input can cross multiple boxes between captures. There is one narrower
+exception for a line-less silent successor. In `audio-auto`, while exactly one
+application-owned key dispatch is awaiting confirmation, a focused, changed and
+settled dialogue frame may bind the unique immediate silent successor even when
+later speech events also exist in the bounded lookahead. This does not apply in
+manual mode, across a branch, or to an immediate speech successor. The resulting
+`expected-silent-ellipsis` route schedules no audio and owns one subsequent
+advance. The implemented gate requires plausible bright glyphs in the lower
+dialogue band, rejects empty and mostly bright popup-like crops, waits for two
+equal changed fingerprints for at least 120 ms, rechecks game focus in the
+consuming worker, and binds the candidate to the cursor event and frame-route
+epoch that first observed it.
 Visibility loss, focus loss, a changed fingerprint, a changed owner or an
 explicit frame bind resets or invalidates the candidate. The three-pixel lower
 bound intentionally preserves a small anti-aliased `...` as a visible dialogue
 screen.
+
+The glyph fingerprint excludes the reserved bottom-right continue-indicator
+area before it measures the brightest dialogue pixel or builds the binary glyph
+mask. Reverse: 1999 animates a bright triangle in that margin after text is
+complete. Including it changed both the pixels and the global glyph threshold,
+so an early-prefix frame could never converge with the visibly unchanged full
+dialogue. The exclusion is limited to the rightmost 8% below 68% of the crop;
+speaker and dialogue glyph changes outside that game-chrome area remain part of
+the fingerprint. Tests vary indicator position, fill and peak brightness while
+also proving that a bottom-line glyph immediately left of the reserved margin
+still changes identity.
+
+That reserved indicator is also an independent completion cue for the narrow
+case where an exact generated WAV has already started from a verified canonical
+prefix but OCR never recovers the short suffix. It may close only the current
+owner-bound event after the dialogue frame is visible and stable. It records
+canonical full-text completion and updates the routed fingerprint, but never
+selects or advances to a successor. Missing indicators, empty captures and
+mostly bright popup-like crops remain in OCR recovery, so game chrome cannot
+silently move the story cursor.
+
+Indicator component thresholds scale with the captured dialogue width rather
+than using a fixed pixel count. The same game marker occupies about `10x9`
+pixels in a 1898-pixel crop but only `4x3` pixels in the active 861-pixel crop.
+Detection additionally constrains its normalized bottom-right center, compact
+aspect ratio and component bounds; tiny punctuation and text elsewhere in the
+dialogue band do not count as completion cues.
+
+Some completed dialogue screens do not show that indicator, and a short
+typewriter prefix can collide with the full line's downsampled glyph
+fingerprint. While and only while the current owner-bound event has canonical
+prefix confirmation pending, the OCR worker therefore bypasses the unchanged-
+frame cache at a bounded 600 ms interval. An exact or otherwise accepted full
+canonical observation clears the pending state immediately; ordinary stable
+frames remain cached. Rechecks require a visible focused capture, carry no text
+in telemetry, and cannot select a successor or schedule a second canonical
+utterance.
 
 When there are multiple successors, repeated identical lines, an early manual
 advance, or an unexpected fingerprint, use a small expected-candidate recognizer
@@ -342,6 +392,14 @@ advances require lookahead recovery; the system must not assume one key press or
 one changed frame equals one skipped line.
 
 ## UI and diagnostics
+
+`Refresh now` always requests a new capture and OCR result, including while the
+live reader is active. The diagnostic window is concealed before capture so it
+cannot photograph itself, and is restored after success, failure or timeout.
+Each request has a monotonically increasing generation; a late worker result
+from a timed-out or superseded refresh is ignored instead of replacing newer
+evidence. The passive live-pipeline snapshot remains available separately and
+is not treated as a manual refresh result.
 
 The tray/dashboard should expose one consistent live-session card:
 
@@ -392,8 +450,34 @@ Production timeline recording accepts the reader's stable-frame/suppression
 events and the controller's declared sequence and speaker-announcement stages
 as well as generation stages. The accepted fields remain allow-listed; an
 observational event must never abort dialogue routing.
+`canonical-prefix-recheck` is one of those declared observational stages. It
+records only the shortened fingerprint, visibility/focus booleans, cursor
+owner and recheck interval. Keeping it in the production allow-list is a
+runtime invariant: a same-frame OCR retry must not raise from diagnostics and
+therefore prevent the retry from confirming a fully rendered line.
 `auto-advance-withheld` records a reason enum for focus, owned-frame visibility
 and callback/cursor refusal without retaining dialogue text.
+
+Cursor-bounded text recovery also tolerates a small amount of OCR decoration
+before or after the canonical line. This is needed for portrait/nameplate crops
+such as a visible `???` speaker, where OCR may report Narrator and append frame
+glyphs around otherwise exact dialogue. The recovery remains fail-closed: only
+explicit current/successor line IDs are searched and exactly one sufficiently
+strong canonical candidate must remain. The visible `???` label is announced
+as Unknown while its story binding may still route the line through the
+configured Narrator voice.
+
+OCR profile selection must also distinguish confidence from structural
+completeness. A high-confidence profile that contains only a decorated
+nameplate, such as `: Hotelier`, or mistakes a short uppercase background token
+for a speaker and the real nameplate for dialogue, is not a complete dialogue
+result. The recognizer continues through its bounded preprocessing profiles
+instead of returning that result early. Once geometry proves a plausible
+nameplate above an aligned dialogue row, a complete row as short as three
+characters is valid; `This ...`, `No.` and `...` must not be discarded by a
+minimum-length heuristic. This does not weaken story matching: the resulting
+speaker/text still has to resolve uniquely inside the current checksum-bound
+cursor frontier before it can route audio or confirm a transition.
 
 ## Migration and acceptance gates
 
@@ -420,15 +504,32 @@ remain immediate. A uniquely bounded prefix of at least 20 normalized
 characters may confirm immediately only when it selects one cursor-authorized
 line and that line's generated WAV has already passed checksum/metadata
 preflight. Playback uses the complete canonical text and line ID, never the OCR
-fragment. A prefix-started event retains a separate canonical-full-text barrier:
-changed typewriter frames are forced through recognition rather than being
-mistaken for the next deterministic successor, and auto-advance remains in a
-retryable `visual-wait` until an exact/full observation clears the barrier. A
-synthetic replay deliberately uses a generated WAV shorter than the remaining
+fragment. A prefix-started event retains a separate canonical-full-text barrier.
+Screen identity and render completion deliberately use different evidence: the
+compact dialogue fingerprint owns transitions, while a higher-fidelity
+dialogue-glyph fingerprint only measures typewriter activity. Changed
+typewriter frames reset an owner-bound quiet timer and continue through
+recognition rather than being mistaken for the next deterministic successor.
+After playback, the barrier may close from canonical OCR, the continue cue, or
+800 ms of unchanged render activity on the focused, visible frame owned by the
+same current event. Render quiet can confirm only that current line; it cannot
+select or route a successor. The timeline records `canonical-full-text` with
+`owner-render-quiet` and the settled duration when that fallback is used,
+without retaining dialogue text. The user-facing wait says that the current
+line is still rendering instead of claiming that an already stable scene is
+unstable. A synthetic replay uses a generated WAV shorter than the remaining
 typewriter animation and proves one playback with no early key. Missing,
 corrupt, ambiguous and live-TTS-only prefix candidates keep waiting for the
 ordinary exact route. Choice, wait and manual boundaries retain the pending
 no-second-key state and expose bounded expected-event/resync actions.
+
+The same fail-closed rule applies while the cursor is `playing`. OCR continues
+to be available for a matched observation of the current line because that can
+close its canonical-full-text barrier, but an unmatched observation is consumed
+as visual noise. It cannot escape to the generic unknown-speaker path, mutate
+dialogue history or enqueue live TTS. This prevents transient nameplate/frame
+fragments such as `WP` from interrupting checksum-bound generated playback with
+a voice-decision dialog.
 
 When the current canonical line begins playback, the controller also inspects
 the sequence graph without changing cursor state. If exactly one next visible
@@ -439,6 +540,28 @@ focus/cursor/backend changes make the result stale, and the exact checksum key
 prevents stale bytes from routing as another line. This preflight never invokes
 live TTS, chooses a voice, plays audio or authorizes a key. Branch, silent,
 choice and manual frontiers are not crossed.
+
+The 2026-08-31 full-chapter trace isolated a remaining Narrator delay from the
+same boundary. Generated WAV playback reached first PCM 2-6 ms after route
+selection, but several long Narrator lines waited 4.8-6.1 seconds for an OCR
+prefix. The cursor had sent exactly one guarded key, knew one deterministic
+immediate successor and had already reserved its checksum-valid generated WAV;
+the stable-frame route nevertheless expanded its recovery window to three
+visible lines and refused to select the immediate event. `audio-auto` now uses
+that application-owned single dispatch as the narrow authority it actually is:
+after a focused, visible changed dialogue frame passes the existing stability
+gate, a reserved generated immediate successor routes without OCR. The shortcut
+does not apply to original-audio routes, live TTS, manual overrides, branches,
+choices or waits. It also opens the existing canonical-full/render-completion
+barrier, so audio may start during typewriter rendering while the next key stays
+blocked until that same cursor-owned line is complete. The cursor-supplied
+canonical text is tagged as routing authority rather than OCR evidence, so it
+cannot satisfy its own full-render barrier. Capture also remains on its fast
+cadence while this barrier is open; later typewriter frames and the final exact
+OCR observation cannot be skipped by the ordinary static-dialog backoff. This
+changes start latency only; it does not time-stretch, accelerate or alter the
+WAV.
+
 Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
 generation failure. It schedules another guarded attempt after focus returns.
 This avoids the former race where several consecutive macOS focus probes could

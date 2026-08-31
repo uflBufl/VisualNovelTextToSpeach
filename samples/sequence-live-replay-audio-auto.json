@@ -34,7 +34,7 @@
         "fixture:narrator:1"
       ],
       "ocr_calls": 3,
-      "bounded_recoveries": 2,
+      "bounded_recoveries": 1,
       "key_dispatch_attempts": 3,
       "confirmed_key_dispatches": 3
     }

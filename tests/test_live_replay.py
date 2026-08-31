@@ -544,8 +544,8 @@ class LiveReplayTest(unittest.TestCase):
                     ],
                 },
                 expected_counts={
-                    "ocr_calls": 4,
-                    "bounded_recoveries": 1,
+                    "ocr_calls": 3,
+                    "bounded_recoveries": 0,
                     "key_dispatch_attempts": 2,
                     "confirmed_key_dispatches": 2,
                 },
@@ -739,7 +739,7 @@ class LiveReplayTest(unittest.TestCase):
                 report["sequence"]["observed"]["bounded_recoveries"]
                 for report in reports
             ],
-            [0, 2, 2, 2],
+            [0, 2, 1, 1],
         )
 
     def test_sequence_contract_rejects_mode_and_canonical_identity_mismatches(self):

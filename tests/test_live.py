@@ -139,7 +139,15 @@ class RecordingCapturePolicy:
 
 
 class AutoAdvanceFakeFrameHarness:
-    def __init__(self, *, stable_frame_route=None, stable_frame_minimum_seconds=0.12):
+    def __init__(
+        self,
+        *,
+        stable_frame_route=None,
+        stable_frame_minimum_seconds=0.12,
+        dialog_observed=None,
+        frame_recheck_required=None,
+        frame_recheck_interval_seconds=0.6,
+    ):
         self.clock = FakeClock()
         self.completed_observations = Queue()
         self.speech_executor = QueuedExecutor()
@@ -163,8 +171,11 @@ class AutoAdvanceFakeFrameHarness:
             capture_frame=Mock(),
             recognize_frame=self._recognize,
             frame_presence=lambda frame: frame.get("visible", True),
+            frame_recheck_required=frame_recheck_required,
+            frame_recheck_interval_seconds=frame_recheck_interval_seconds,
             stable_frame_route=stable_frame_route,
             stable_frame_owner=lambda: self.frame_owner,
+            dialog_observed=dialog_observed,
             stable_frame_minimum_seconds=stable_frame_minimum_seconds,
             stable_frame_clock=self.clock,
             speak_chunk=Mock(),
@@ -212,6 +223,7 @@ class AutoAdvanceFakeFrameHarness:
         background,
         fingerprint="same-glyphs",
         visible=True,
+        complete=False,
         expected=None,
     ):
         frame = {
@@ -224,6 +236,7 @@ class AutoAdvanceFakeFrameHarness:
             self.reader.latest_frame = frame
             self.reader.latest_frame_fingerprint = fingerprint
             self.reader.latest_frame_visible = visible
+            self.reader.latest_frame_complete = complete
             self.reader.frame_version += 1
             self.reader.pause_condition.notify_all()
         observed = self.completed_observations.get(timeout=1)
@@ -287,6 +300,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             "still wrong",
             background="second-b",
             fingerprint="second-glyphs",
+            complete=True,
             expected=("Bea", "Canonical second line."),
         )
 
@@ -303,7 +317,119 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         self.assertEqual([event["ready"] for event in gate_events], [False, True])
         self.assertEqual(gate_events[-1]["owner"], "event-1")
         self.assertEqual(gate_events[-1]["settled_ms"], 120)
+        self.assertTrue(gate_events[-1]["completion_cue"])
         self.assertNotIn("text", gate_events[-1])
+        self.assertEqual(harness.errors, [])
+
+    def test_completion_cue_change_bypasses_same_fingerprint_ocr_cache(self):
+        harness = None
+
+        def stable_route(_fingerprint, settled, _owner, _route_epoch):
+            if not settled:
+                return False
+            if harness.reader.current_frame_has_completion_cue():
+                return ("Bea", "Canonical short line.")
+            return None
+
+        harness = AutoAdvanceFakeFrameHarness(
+            stable_frame_route=stable_route,
+            dialog_observed=lambda _character, text: text == "First line.",
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "First line.", background="first", fingerprint="first")
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="candidate-a",
+            fingerprint="short-line",
+            expected=("Ada", "First line."),
+        )
+        harness.clock.advance(0.12)
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="candidate-b",
+            fingerprint="short-line",
+        )
+        harness.push(
+            "bad OCR",
+            "partial",
+            background="candidate-with-cue",
+            fingerprint="short-line",
+            complete=True,
+            expected=("Bea", "Canonical short line."),
+        )
+
+        gate_events = [
+            details
+            for stage, _generation, _occurred_at, details in harness.pipeline_events
+            if stage == "stable-frame-gate"
+        ]
+        self.assertTrue(gate_events[-1]["completion_cue"])
+        self.assertEqual(harness.recognized_frames[-1]["text"], "partial")
+        self.assertEqual(harness.errors, [])
+
+    def test_pending_prefix_periodically_rechecks_same_fingerprint(self):
+        pending = [True]
+        canonical = "You DO have shillings, don't you, miss?"
+
+        def observe(character, text):
+            if text == canonical:
+                pending[0] = False
+            return character, canonical
+
+        harness = AutoAdvanceFakeFrameHarness(
+            frame_recheck_required=lambda: pending[0],
+            frame_recheck_interval_seconds=0.6,
+            dialog_observed=observe,
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+
+        harness.push(
+            "Hotelier",
+            "You DO have",
+            background="first",
+            fingerprint="same-glyphs",
+            expected=("Hotelier", canonical),
+        )
+        self.assertEqual(len(harness.recognized_frames), 1)
+        harness.clock.advance(0.4)
+        harness.push(
+            "Hotelier",
+            "You DO have",
+            background="cached",
+            fingerprint="same-glyphs",
+            expected=("Hotelier", canonical),
+        )
+        self.assertEqual(len(harness.recognized_frames), 1)
+        harness.clock.advance(0.2)
+        harness.push(
+            "Hotelier",
+            canonical,
+            background="rechecked",
+            fingerprint="same-glyphs",
+        )
+        self.assertEqual(len(harness.recognized_frames), 2)
+        self.assertFalse(pending[0])
+
+        harness.clock.advance(1.0)
+        harness.push(
+            "Hotelier",
+            canonical,
+            background="ordinary-cache",
+            fingerprint="same-glyphs",
+        )
+        self.assertEqual(len(harness.recognized_frames), 2)
+        rechecks = [
+            details
+            for stage, _generation, _occurred_at, details in harness.pipeline_events
+            if stage == "canonical-prefix-recheck"
+        ]
+        self.assertEqual(len(rechecks), 2)
+        self.assertEqual(rechecks[-1]["recheck_interval_ms"], 600)
+        self.assertNotIn("text", rechecks[-1])
         self.assertEqual(harness.errors, [])
 
     def test_stable_frame_route_waits_for_minimum_settled_time(self):
@@ -1542,6 +1668,78 @@ class LiveDialogReaderTest(unittest.TestCase):
         timer.assert_called_once()
         timer.return_value.start.assert_called_once_with()
         state_changed.assert_called_once_with("visual-wait", 3, 0)
+
+    def test_render_completion_can_bind_quiet_owner_frame_before_visual_gate(self):
+        state_changed = Mock()
+        auto_advance = Mock(return_value=True)
+        reader = None
+
+        def complete_render():
+            reader.routed_frame_fingerprint = reader.latest_frame_fingerprint
+            return True
+
+        reader = self.create_reader(
+            auto_advance=auto_advance,
+            render_completion=complete_render,
+            require_visible_auto_advance=True,
+            auto_advance_state_changed=state_changed,
+        )
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+        reader.latest_frame_visible = True
+        reader.latest_frame_fingerprint = "full-render"
+        reader.routed_frame_fingerprint = "early-prefix"
+
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+
+        auto_advance.assert_called_once_with()
+        state_changed.assert_called_once_with("dispatched", 3, 1)
+
+    def test_render_quiet_evidence_requires_focus_visibility_owner_and_time(self):
+        clock = FakeClock()
+        owner = ["event-1"]
+        focused = [True]
+        reader = self.create_reader(
+            stable_frame_clock=clock,
+            stable_frame_owner=lambda: owner[0],
+            focus_probe=lambda: focused[0],
+            render_quiet_minimum_seconds=0.8,
+        )
+        reader.latest_frame_visible = True
+        reader.latest_render_fingerprint = "full-glyphs"
+        reader.latest_render_owner = "event-1"
+        reader.latest_render_changed_at = clock()
+
+        clock.advance(0.79)
+        self.assertIsNone(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1")
+        )
+        clock.advance(0.01)
+        self.assertEqual(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1"),
+            800,
+        )
+        reader.latest_render_fingerprint = "more-glyphs"
+        reader.latest_render_changed_at = clock()
+        clock.advance(0.79)
+        self.assertIsNone(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1")
+        )
+        clock.advance(0.01)
+        self.assertEqual(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1"),
+            800,
+        )
+        owner[0] = "event-2"
+        self.assertIsNone(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1")
+        )
+        owner[0] = "event-1"
+        focused[0] = False
+        self.assertIsNone(
+            reader.current_frame_render_quiet_ms(expected_owner="event-1")
+        )
 
     def test_focused_callback_refusal_blocks_generation_without_retry(self):
         state_changed = Mock()

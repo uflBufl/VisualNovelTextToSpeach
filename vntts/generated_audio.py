@@ -396,6 +396,7 @@ class GeneratedAudioFallbackBackend:
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
         self.generated_reservations = BoundedCache(32)
+        self.active_generated_stream = None
         self.active_playback_source = None
         self.playback_active = False
         self.live_mode_active = False
@@ -501,6 +502,25 @@ class GeneratedAudioFallbackBackend:
                 return False
             self.generated_reservations.put(reservation_key, prepared)
         return True
+
+    def reserve_generated_line_for_early_playback(self, line):
+        """Reserve only an exact line whose effective early route is generated.
+
+        Prefix/cursor playback must not use the presence of a generated WAV to
+        bypass an original-audio route or a manual live-voice override. The
+        ordinary route builder remains authoritative once the line is queued.
+        """
+        if (
+            self.audio_source_policy not in {"prefer-generated", "prefer-game-audio"}
+            or self.speed != 1.0
+            or (self.voice_override is not None and self.voice_override(line.speaker))
+            or (
+                self.audio_source_policy == "prefer-game-audio"
+                and getattr(line, "source_audio_status", "unknown") == "available"
+            )
+        ):
+            return False
+        return self.has_generated_line(line)
 
     def prepare_route(self, character, text, *, line_id=None):
         voice_overridden = self.voice_override is not None and self.voice_override(
@@ -838,13 +858,38 @@ class GeneratedAudioFallbackBackend:
                     samples,
                     route.prepared.sample_rate,
                 )
-                self.audio_output.play(
-                    samples,
-                    sample_rate,
-                    latency=self.playback_latency,
-                )
-                status = self.audio_output.wait()
-                underflowed = bool(getattr(status, "output_underflow", False))
+                sample_count = int(len(samples))
+                expected_playback_ms = sample_count * 1000 / sample_rate
+                if self.generated_audio_stop.is_set() or (
+                    playback_guard is not None and not playback_guard()
+                ):
+                    return _route_outcome(
+                        route,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.clock() - started) * 1000,
+                        source_sample_rate=route.prepared.sample_rate,
+                        playback_sample_rate=sample_rate,
+                        sample_count=sample_count,
+                        expected_playback_ms=expected_playback_ms,
+                    )
+                stream_factory = getattr(self.audio_output, "OutputStream", None)
+                if callable(stream_factory):
+                    with stream_factory(
+                        samplerate=sample_rate,
+                        channels=1,
+                        dtype="float32",
+                        latency=self.playback_latency,
+                    ) as stream:
+                        self.active_generated_stream = stream
+                        underflowed = bool(stream.write(samples.reshape(-1, 1)))
+                else:
+                    self.audio_output.play(
+                        samples,
+                        sample_rate,
+                        latency=self.playback_latency,
+                    )
+                    status = self.audio_output.wait()
+                    underflowed = bool(getattr(status, "output_underflow", False))
                 playable = playback_guard is None or bool(playback_guard())
                 playback_status = (
                     PlaybackStatus.INTERRUPTED
@@ -857,6 +902,10 @@ class GeneratedAudioFallbackBackend:
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     first_audio_ms=route.first_audio_ms,
+                    source_sample_rate=route.prepared.sample_rate,
+                    playback_sample_rate=sample_rate,
+                    sample_count=sample_count,
+                    expected_playback_ms=expected_playback_ms,
                 )
             except Exception as error:
                 return _route_outcome(
@@ -867,6 +916,7 @@ class GeneratedAudioFallbackBackend:
                     error=str(error),
                 )
             finally:
+                self.active_generated_stream = None
                 self.playback_active = False
                 self.active_playback_source = None
 
@@ -952,7 +1002,15 @@ class GeneratedAudioFallbackBackend:
             self.source_audio_completion_stop.set()
         elif self.active_playback_source == "generated":
             self.generated_audio_stop.set()
-            self.audio_output.stop()
+            stream = self.active_generated_stream
+            if stream is not None:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    abort()
+                else:
+                    stream.stop()
+            else:
+                self.audio_output.stop()
         return bool(self.live_backend.stop()) or was_playing
 
 
@@ -1707,6 +1765,10 @@ def _route_outcome(
     generation_limited=False,
     first_audio_ms=None,
     error=None,
+    source_sample_rate=None,
+    playback_sample_rate=None,
+    sample_count=None,
+    expected_playback_ms=None,
 ):
     return PlaybackOutcome(
         status,
@@ -1718,4 +1780,8 @@ def _route_outcome(
         synthesis_ms=route.synthesis_ms,
         cache_source=route.cache_source,
         audio_source=route.trace.effective_source,
+        source_sample_rate=source_sample_rate,
+        playback_sample_rate=playback_sample_rate,
+        sample_count=sample_count,
+        expected_playback_ms=expected_playback_ms,
     )

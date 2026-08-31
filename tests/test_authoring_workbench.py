@@ -2948,32 +2948,37 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             "quality": {"duration_seconds": 6.0, "peak": 0.99},
             "speech_quality": {
                 "silence_ratio": 0.2,
+                "leading_silence_seconds": 1.0,
+                "trailing_silence_seconds": 1.0,
                 "longest_internal_silence_seconds": 0.6,
             },
         }
 
         duration, words_per_minute, peak, flags = (
-            workbench_module._review_technical_metrics(result, "Three deliberate words")
+            workbench_module._review_technical_metrics(
+                result, "Five deliberate words arrive slowly"
+            )
         )
 
         self.assertEqual(duration, 6.0)
-        self.assertEqual(words_per_minute, 30.0)
+        self.assertEqual(words_per_minute, 75.0)
         self.assertEqual(peak, 0.99)
-        self.assertEqual(
-            flags,
-            ("near clipping", "slow pace"),
-        )
+        self.assertEqual(flags, ("near clipping",))
         item = SimpleNamespace(
             duration_seconds=6.0,
             failure_category=None,
             internal_pause_seconds=None,
-            words_per_minute=30.0,
+            words_per_minute=75.0,
             peak=0.99,
             technical_flags=flags,
+            pace_advisories=(
+                "slow relative outlier 75 WPM vs 150 WPM same voice/short lines median",
+            ),
             repair_strategy=None,
         )
         summary = workbench_module.review_technical_summary(item)
         self.assertIn("advisory measurements (listen to decide):", summary)
+        self.assertIn("pace report only:", summary)
         self.assertNotIn("notable silence", summary)
         self.assertEqual(
             workbench_module._review_technical_metrics({}, "No WAV"),
@@ -2991,6 +2996,68 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ),
             "speech silence",
         )
+
+    def test_pace_report_is_relative_length_aware_and_never_a_technical_flag(self):
+        def review(queue_id, voice, text, words_per_minute):
+            return workbench_module.ReviewItem(
+                queue_id=queue_id,
+                line_id=f"line-{queue_id}",
+                speaker=voice,
+                voice_character=voice,
+                text=text,
+                status="generated",
+                review_status="pending_review",
+                attempts=1,
+                seed=0,
+                last_error=None,
+                audio=Path(f"{queue_id}.wav"),
+                duration_seconds=2.0,
+                words_per_minute=words_per_minute,
+                peak=0.2,
+                technical_flags=(),
+            )
+
+        records = (
+            review("slow", "Rhiannon", "one two three four five", 90.0),
+            review("short-a", "Rhiannon", "alpha beta gamma delta epsilon", 150.0),
+            review("short-b", "Rhiannon", "red blue green black white", 160.0),
+            review(
+                "medium-a",
+                "Rhiannon",
+                "one two three four five six seven eight nine ten",
+                80.0,
+            ),
+            review(
+                "medium-b",
+                "Rhiannon",
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+                82.0,
+            ),
+            review(
+                "medium-c",
+                "Rhiannon",
+                "red blue green black white orange purple silver gold bronze",
+                84.0,
+            ),
+            review("other-voice", "Narrator", "one two three four five", 60.0),
+            review("too-short", "Rhiannon", "one two three four", 20.0),
+        )
+
+        annotated = {
+            item.queue_id: item
+            for item in workbench_module._annotate_pace_advisories(records)
+        }
+
+        self.assertEqual(annotated["slow"].pace_baseline_wpm, 150.0)
+        self.assertEqual(
+            annotated["slow"].pace_baseline_scope, "same voice/short lines"
+        )
+        self.assertAlmostEqual(annotated["slow"].pace_ratio, 0.6)
+        self.assertTrue(annotated["slow"].pace_advisories)
+        self.assertEqual(annotated["slow"].technical_flags, ())
+        self.assertEqual(annotated["medium-a"].pace_advisories, ())
+        self.assertIsNone(annotated["too-short"].pace_baseline_wpm)
+        self.assertEqual(annotated["too-short"].pace_advisories, ())
         long_pause_failure = {
             "failure": {
                 "schema_version": 1,

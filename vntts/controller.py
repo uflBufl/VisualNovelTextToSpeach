@@ -19,8 +19,10 @@ from vntts.dialog_capture import (
     TTSInitializationError,
     analyze_dialog_snapshot,
     capture_live_frame,
+    dialog_completion_cue_visible,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
+    fingerprint_dialog_render_activity,
     get_screenshot_directory,
     read_dialog_safely,
     recognize_live_frame,
@@ -43,6 +45,7 @@ from vntts.history import DialogueHistory
 from vntts.live import (
     AdaptiveSpeechBackpressure,
     AutoAdvanceAttempt,
+    CanonicalDialogRoute,
     IncrementalDialogTracker,
     LiveDialogReader,
     SilentDialogRoute,
@@ -296,6 +299,7 @@ class AppController:
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
         )
+        self.live_scope_identification_failure = None
         self.history = history or DialogueHistory()
         self.chapter_voice_preloader = (
             chapter_voice_preloader
@@ -520,7 +524,11 @@ class AppController:
                 capture_frame=self._capture_live_frame,
                 recognize_frame=self._recognize_live_frame,
                 frame_fingerprint=fingerprint_dialog_frame,
+                frame_render_fingerprint=fingerprint_dialog_render_activity,
                 frame_presence=dialog_glyphs_visible,
+                frame_completion=dialog_completion_cue_visible,
+                frame_recheck_required=self._sequence_prefix_recheck_required,
+                render_completion=self._confirm_sequence_render_completion,
                 stable_frame_route=self._stable_live_frame_route,
                 stable_frame_owner=self._stable_live_frame_owner,
                 line_id_resolver=self._live_sequence_line_id,
@@ -589,6 +597,7 @@ class AppController:
         """Identify the visible story position without speaking or advancing it."""
         if not self.is_ready or self.is_live_running:
             return False
+        self.live_scope_identification_failure = None
         character, text = read_live_snapshot(
             get_screenshot_directory(self.settings),
             self.voice_router.registry,
@@ -602,12 +611,65 @@ class AppController:
             self.correction_dictionary,
         )
         if is_empty(text):
+            self.live_scope_identification_failure = "no-dialog-text"
             return False
         character = self._canonical_observed_character(character, text)
-        if self.chapter_voice_preloader.resolve_exact(character, text) is None:
+        line, _match_result = self._resolve_initial_live_sequence_line(
+            character,
+            text,
+        )
+        if line is None:
+            self.live_scope_identification_failure = "story-line-no-match"
             return False
-        self.dialog_handler(character, text)
+        self.dialog_handler(line.speaker, line.text)
         return True
+
+    def _resolve_initial_live_sequence_line(self, character, text):
+        """Resolve one complete startup line inside the configured sequence."""
+        plan = self.live_sequence_plan
+        if plan is None or self.settings.live_sequence_mode == "off":
+            resolve = getattr(
+                self.chapter_voice_preloader,
+                "resolve_exact_with_result",
+                None,
+            )
+            if callable(resolve):
+                return resolve(character, text)
+            line = self.chapter_voice_preloader.resolve_exact(character, text)
+            return line, "exact" if line is not None else "no-match"
+
+        line_ids = tuple(
+            event.line_id
+            for event in plan.events.values()
+            if event.is_speech and event.line_id is not None
+        )
+        previous_match = self.chapter_voice_preloader.current_match
+        line, match_result = self.chapter_voice_preloader.resolve_bounded_among(
+            character,
+            text,
+            line_ids,
+            allow_speaker_evidence=False,
+        )
+        if line is None:
+            return None, match_result
+
+        # Startup must not lock onto typewriter text that is still growing. A
+        # full line with a small OCR substitution is safe when it remains the
+        # only bounded candidate; a prefix is not proof that the line is done.
+        normalized_result = str(match_result)
+        observed = " ".join(str(text).casefold().split())
+        canonical = " ".join(str(line.text).casefold().split())
+        coverage = min(len(observed), len(canonical)) / max(
+            1,
+            len(observed),
+            len(canonical),
+        )
+        if "prefix" in normalized_result or (
+            "similarity" in normalized_result and coverage < 0.9
+        ):
+            self.chapter_voice_preloader.current_match = previous_match
+            return None, "expected-incomplete"
+        return line, match_result
 
     def toggle_live(self):
         if not self.is_ready:
@@ -1042,19 +1104,21 @@ class AppController:
             return None
         return self.live_reader.get_pipeline_metrics()
 
-    def inspect_current_dialog(self):
+    def inspect_current_dialog(self, *, notify=True):
         registry = self.voice_router.registry if self.voice_router is not None else None
-        _image, _output, result = analyze_dialog_snapshot(
+        snapshots = []
+        analyze_dialog_snapshot(
             get_screenshot_directory(self.settings),
             registry,
             capture_target=self.capture_target,
             minimum_confidence=self.settings.ocr_minimum_confidence,
-            diagnostic_handler=self._publish_diagnostic,
+            diagnostic_handler=snapshots.append,
             voice_resolver=self._resolve_voice_label,
             ocr_language=self.settings.ocr_language,
             correction_dictionary=self.correction_dictionary,
         )
-        return result
+        snapshot = self._publish_diagnostic(snapshots[-1], notify=notify)
+        return snapshot
 
     def test_current_dialog(self):
         if not self.is_ready:
@@ -1431,9 +1495,10 @@ class AppController:
                         # line. Consume the changing frame without ever routing
                         # its unbound OCR text to speech; a later exact frame can
                         # still establish the anchor.
-                        return (None, "")
+                        return False
                     if self.story_cursor.state in {
                         StoryCursorState.LOCKED,
+                        StoryCursorState.PLAYING,
                         StoryCursorState.WAITING_TRANSITION,
                         StoryCursorState.MANUAL,
                         StoryCursorState.DESYNCHRONIZED,
@@ -1698,16 +1763,10 @@ class AppController:
             StoryCursorState.UNSYNCHRONIZED,
             StoryCursorState.ANCHORING,
         }:
-            resolve = getattr(
-                self.chapter_voice_preloader,
-                "resolve_exact_with_result",
-                None,
+            line, match_result = self._resolve_initial_live_sequence_line(
+                character,
+                text,
             )
-            if callable(resolve):
-                line, match_result = resolve(character, text)
-            else:
-                line = self.chapter_voice_preloader.resolve_exact(character, text)
-                match_result = "exact" if line is not None else "no-match"
             snapshot = None if line is None else cursor.observe_line(line.line_id)
         else:
             current = cursor.current_event
@@ -1871,7 +1930,7 @@ class AppController:
         ):
             return False
         try:
-            return backend.has_generated_line(line)
+            return backend.reserve_generated_line_for_early_playback(line)
         except Exception as error:
             self.error_handler(error)
             return False
@@ -2173,13 +2232,63 @@ class AppController:
             if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
                 # The changed frame may be the remainder of a typewriter line
                 # whose exact WAV already started from a verified prefix. OCR
-                # must confirm that same full canonical line before a changed
-                # fingerprint can be interpreted as its successor.
-                return None
+                # normally confirms that same full canonical line. Some short
+                # lines keep a persistent OCR suffix miss even after the game
+                # shows its continue indicator; a stable owner-bound frame plus
+                # that reserved game-chrome cue is equivalent completion proof.
+                completion_probe = getattr(
+                    self.live_reader,
+                    "current_frame_has_completion_cue",
+                    None,
+                )
+                if not callable(completion_probe) or not completion_probe():
+                    return None
+                event = cursor.current_event
+                line = (
+                    None
+                    if event is None or event.line_id is None
+                    else self.chapter_voice_preloader.select_line_id(event.line_id)
+                )
+                if line is None:
+                    return False
+                self.sequence_prefix_confirmation_event_id = None
+                record_full_text = getattr(
+                    self.live_reader,
+                    "record_canonical_full_text",
+                    None,
+                )
+                if callable(record_full_text):
+                    record_full_text(line_id=line.line_id)
+                return (line.speaker, line.text)
             if not cursor.can_confirm_visual_transition:
                 return False
-            visible_candidates = cursor.bounded_visible_successors()
             event = cursor.deterministic_visual_successor()
+            application_owned_transition = bool(
+                self.settings.live_sequence_mode == "audio-auto"
+                and cursor.state == StoryCursorState.WAITING_TRANSITION
+            )
+            early_generated_line = None
+            if (
+                application_owned_transition
+                and event is not None
+                and event.is_speech
+                and event.line_id is not None
+            ):
+                candidate_line = self.chapter_voice_preloader.line_for_id(event.line_id)
+                if candidate_line is not None and self._reserve_generated_prefix(
+                    candidate_line
+                ):
+                    early_generated_line = candidate_line
+            application_owned_immediate_successor = bool(
+                application_owned_transition
+                and event is not None
+                and (event.kind == "silent" or early_generated_line is not None)
+            )
+            visible_candidates = cursor.bounded_visible_successors(
+                maximum_visible_depth=(
+                    1 if application_owned_immediate_successor else 3
+                )
+            )
             if (
                 event is None
                 or len(visible_candidates) != 1
@@ -2212,6 +2321,12 @@ class AppController:
                     line_id=None,
                     route="silent",
                     reason=cursor.reason,
+                    match_result="expected-silent-ellipsis",
+                    proof=(
+                        "application-owned-single-dispatch"
+                        if application_owned_transition
+                        else "unique-bounded-visible-successor"
+                    ),
                 )
                 self._publish_live_sequence_status()
                 return SilentDialogRoute(event.event_id)
@@ -2223,6 +2338,12 @@ class AppController:
                 )
                 self._publish_live_sequence_status()
                 return False
+            if early_generated_line is not None:
+                # Audio may now start from the cursor-owned transition before
+                # OCR sees the full typewriter text. Keep the same completion
+                # barrier used by a verified canonical prefix so auto advance
+                # cannot send the next key until this line finishes rendering.
+                self.sequence_prefix_confirmation_event_id = event.event_id
             self.pipeline_event_handler(
                 "sequence-visual-transition",
                 generation,
@@ -2233,8 +2354,19 @@ class AppController:
                 line_id=line.line_id,
                 route="canonical-story-line",
                 reason=cursor.reason,
+                proof=(
+                    "application-owned-single-dispatch-generated-preflight"
+                    if early_generated_line is not None
+                    else "unique-bounded-visible-successor"
+                ),
             )
             self._publish_live_sequence_status()
+            if early_generated_line is not None:
+                # This line identity comes from the application-owned cursor
+                # and generated-audio preflight, not from OCR of the current
+                # typewriter prefix. Keep that distinction so the synthetic
+                # canonical text cannot satisfy its own full-render barrier.
+                return CanonicalDialogRoute(line.speaker, line.text)
             return (line.speaker, line.text)
 
     def _stable_live_frame_owner(self):
@@ -2245,6 +2377,56 @@ class AppController:
             ):
                 return None
             return cursor.current_event_id
+
+    def _sequence_prefix_recheck_required(self):
+        with self.story_cursor_lock:
+            return bool(
+                self.story_cursor is not None
+                and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+                and self.sequence_prefix_confirmation_event_id is not None
+                and self.sequence_prefix_confirmation_event_id
+                == self.story_cursor.current_event_id
+            )
+
+    def _confirm_sequence_render_completion(self):
+        """Close only the current prefix barrier from owner-bound render quiet."""
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            reader = self.live_reader
+            if (
+                cursor is None
+                or reader is None
+                or self.settings.live_sequence_mode != "audio-auto"
+                or cursor.state != StoryCursorState.LOCKED
+                or self.sequence_prefix_confirmation_event_id != cursor.current_event_id
+            ):
+                return False
+            quiet_probe = getattr(reader, "current_frame_render_quiet_ms", None)
+            quiet_ms = (
+                quiet_probe(expected_owner=cursor.current_event_id)
+                if callable(quiet_probe)
+                else None
+            )
+            if quiet_ms is None:
+                return False
+            event = cursor.current_event
+            line = (
+                None
+                if event is None or event.line_id is None
+                else self.chapter_voice_preloader.line_for_id(event.line_id)
+            )
+            bind_frame = getattr(reader, "bind_current_frame_route", None)
+            if line is None or not callable(bind_frame) or not bind_frame():
+                return False
+            self.sequence_prefix_confirmation_event_id = None
+            record_full_text = getattr(reader, "record_canonical_full_text", None)
+            if callable(record_full_text):
+                record_full_text(
+                    line_id=line.line_id,
+                    reason="owner-render-quiet",
+                    settled_ms=quiet_ms,
+                )
+            return True
 
     def _live_sequence_line_id(self, character, text):
         """Return the exact cursor-owned line identity for a routed observation."""
@@ -2349,7 +2531,9 @@ class AppController:
         else:
             try:
                 outcome = (
-                    "reserved" if backend.has_generated_line(line) else "unavailable"
+                    "reserved"
+                    if backend.reserve_generated_line_for_early_playback(line)
+                    else "unavailable"
                 )
             except Exception as error:
                 outcome = "failed"
@@ -2660,8 +2844,7 @@ class AppController:
             )
         elif state == "visual-wait":
             self.status_handler(
-                "Auto advance is waiting for the current dialogue frame to remain "
-                "visible and stable"
+                "Auto advance is waiting for the current line to finish rendering"
             )
         elif state == "blocked":
             self.status_handler(
@@ -2716,7 +2899,14 @@ class AppController:
         elif regained_focus:
             self.status_handler("Game focus restored; live reading resumed")
 
-    def _publish_diagnostic(self, snapshot, route_metrics=None, audio_source=None):
+    def _publish_diagnostic(
+        self,
+        snapshot,
+        route_metrics=None,
+        audio_source=None,
+        *,
+        notify=True,
+    ):
         pipeline_metrics = self.get_live_pipeline_metrics()
         snapshot = replace(
             snapshot,
@@ -2750,7 +2940,9 @@ class AppController:
             )
         with self.diagnostic_lock:
             self.last_diagnostic = snapshot
-        self.diagnostic_handler(snapshot)
+        if notify:
+            self.diagnostic_handler(snapshot)
+        return snapshot
 
     def _speak_live_chunk(self, chunk):
         try:
@@ -2976,6 +3168,16 @@ class AppController:
                     first_audio_ms=(outcome.first_audio_ms if outcome else None),
                     cache_source=(outcome.cache_source if outcome else None),
                     effective_source=(outcome.audio_source if outcome else None),
+                    source_sample_rate=(
+                        outcome.source_sample_rate if outcome else None
+                    ),
+                    playback_sample_rate=(
+                        outcome.playback_sample_rate if outcome else None
+                    ),
+                    sample_count=(outcome.sample_count if outcome else None),
+                    expected_playback_ms=(
+                        outcome.expected_playback_ms if outcome else None
+                    ),
                     source_audio_lead_ms=source_audio_lead_ms,
                     chunk_id=chunk.chunk_id,
                     chunk_ordinal=chunk.ordinal,

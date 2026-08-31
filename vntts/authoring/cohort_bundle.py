@@ -1194,10 +1194,30 @@ def _load_source_sample_records(source, source_cohorts):
             queue=queue_path,
             duration_seconds=duration,
             words_per_minute=(
-                None if duration is None else float(words * 60 / duration)
+                sample.get("words_per_minute")
+                if isinstance(sample.get("words_per_minute"), (int, float))
+                else None
+                if duration is None
+                else float(words * 60 / duration)
             ),
             peak=peak,
             technical_flags=tuple(sample["technical_flags"]),
+            pace_baseline_wpm=(
+                float(sample["pace_baseline_wpm"])
+                if isinstance(sample.get("pace_baseline_wpm"), (int, float))
+                else None
+            ),
+            pace_ratio=(
+                float(sample["pace_ratio"])
+                if isinstance(sample.get("pace_ratio"), (int, float))
+                else None
+            ),
+            pace_baseline_scope=(
+                sample.get("pace_baseline_scope")
+                if isinstance(sample.get("pace_baseline_scope"), str)
+                else None
+            ),
+            pace_advisories=tuple(sample.get("pace_advisories") or ()),
         )
     for path, expected, label in (
         (
@@ -1477,21 +1497,30 @@ def _flatten_validated_sources(expected_cohorts):
             if item["queue_id"] not in sampled:
                 continue
             flags = item["technical_flags"]
-            samples.append(
-                {
-                    "queue_id": item["queue_id"],
-                    "line_id": item["line_id"],
-                    "text_sha256": item["text_sha256"],
-                    "audio_sha256": item["audio_sha256"],
-                    "length_bucket": item["length_bucket"],
-                    "technical_flags": list(flags),
-                    "required_reason": (
-                        "technical-attention: " + "; ".join(flags)
-                        if flags
-                        else f"deterministic clean {item['length_bucket']} sample"
-                    ),
-                }
-            )
+            sample = {
+                "queue_id": item["queue_id"],
+                "line_id": item["line_id"],
+                "text_sha256": item["text_sha256"],
+                "audio_sha256": item["audio_sha256"],
+                "length_bucket": item["length_bucket"],
+                "technical_flags": list(flags),
+                "required_reason": (
+                    "technical-attention: " + "; ".join(flags)
+                    if flags
+                    else f"deterministic clean {item['length_bucket']} sample"
+                ),
+            }
+            if "pace_advisories" in item:
+                sample.update(
+                    {
+                        "words_per_minute": item.get("words_per_minute"),
+                        "pace_baseline_wpm": item.get("pace_baseline_wpm"),
+                        "pace_ratio": item.get("pace_ratio"),
+                        "pace_baseline_scope": item.get("pace_baseline_scope"),
+                        "pace_advisories": list(item.get("pace_advisories") or ()),
+                    }
+                )
+            samples.append(sample)
         flattened.append(
             {
                 "workspace": path,

@@ -210,6 +210,17 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
         self.assertFalse(timelines.record("sequence-audio-auto", 0, 0.5))
         timelines.record(
+            "canonical-prefix-recheck",
+            1,
+            0.75,
+            fingerprint="same-glyphs",
+            visible=True,
+            focused=True,
+            owner="event-1",
+            recheck_interval_ms=600,
+            private_text="must not be retained",
+        )
+        timelines.record(
             "sequence-audio-auto",
             1,
             1.0,
@@ -237,16 +248,23 @@ class GenerationTimelineLogTest(unittest.TestCase):
         )
 
         events = timelines.snapshot()[0]["events"]
+        recheck = next(
+            event for event in events if event["stage"] == "canonical-prefix-recheck"
+        )
+        self.assertEqual(recheck["owner"], "event-1")
+        self.assertEqual(recheck["recheck_interval_ms"], 600)
+        self.assertNotIn("private_text", str(recheck))
 
         self.assertEqual(
             [event["stage"] for event in events],
             [
+                "canonical-prefix-recheck",
                 "sequence-audio-auto",
                 "sequence-successor-prefetch",
                 "sequence-key-dispatch-authorized",
             ],
         )
-        self.assertEqual(events[0]["event_id"], "event-1")
+        self.assertEqual(events[1]["event_id"], "event-1")
         self.assertNotIn("private_text", str(events))
 
     def test_accepts_every_declared_sequence_control_stage(self):

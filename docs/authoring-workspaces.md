@@ -977,9 +977,19 @@ filtered independently by synthesis character, review status, source
 collection and case-insensitive line text. `Narrator only` and `Characters
 only` remain explicit source-scope shortcuts; named characters use the general
 character filter instead of one-off buttons. `Technical attention` shows only awaiting
-review items with conservative pace, peak or silence flags. Every generated
-row displays duration, words per minute, peak and its attention flags; the
-metrics never substitute for listening. Failed rows display a normalized
+review items with conservative waveform, peak or silence flags. Every generated
+row displays duration, audible words per minute, peak and its attention flags;
+the metrics never substitute for listening. Audible WPM trims only measured
+leading and trailing silence, so internal pauses remain part of perceived pace.
+Speech shorter than five words and typed audio events are excluded from pace
+classification. Eligible lines are compared with the median for the same
+effective voice and length bucket when at least three samples exist, or with an
+all-length same-voice median when at least five exist. A line at most 80% of
+that median and at least 20 WPM below it receives a `pace report only` advisory
+showing measured and baseline WPM. Pace advisories are carried into cohort
+review displays but never enter `technical_flags`, force an attention sample,
+approve/reject/regenerate a WAV or modify playback speed or pitch. Failed rows
+display a normalized
 `audio limit / missed EOS`, `speech silence` or other cohort and can be filtered
 by the first two actionable classes without parsing volatile backend messages.
 Filtered and total counts remain visible, and a zero-row filter is never

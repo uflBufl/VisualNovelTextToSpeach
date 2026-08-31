@@ -860,7 +860,8 @@ class CohortReviewBundleDialog(QDialog):
         self.sample_identity.setText(
             f"Source label: {sample.item.speaker} | Generated role: "
             f"{sample.item.voice_character} | Required sample: "
-            f"{_display_required_reason(sample.required_reason)}"
+            f"{_display_required_reason(sample.required_reason)} | "
+            "Pace metrics are report-only; listening decides quality"
         )
         self.sample_text.setText(sample.item.text)
         cohort = self._current_cohort()

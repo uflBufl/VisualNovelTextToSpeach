@@ -196,6 +196,21 @@ def build_cohort_review_plan(
             "word_count": word_count,
             "length_bucket": _length_bucket(word_count),
             "technical_flags": list(item.technical_flags),
+            "words_per_minute": (
+                None
+                if item.words_per_minute is None
+                else round(item.words_per_minute, 3)
+            ),
+            "pace_baseline_wpm": (
+                None
+                if item.pace_baseline_wpm is None
+                else round(item.pace_baseline_wpm, 3)
+            ),
+            "pace_ratio": (
+                None if item.pace_ratio is None else round(item.pace_ratio, 4)
+            ),
+            "pace_baseline_scope": item.pace_baseline_scope,
+            "pace_advisories": list(item.pace_advisories),
         }
         cohort = cohorts.setdefault(
             cohort_id,

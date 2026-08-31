@@ -70,7 +70,11 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         cohort = first.document["cohorts"][0]
         self.assertEqual(cohort["sample_queue_ids"], [queue_id])
         self.assertEqual(cohort["items"][0]["queue_id"], queue_id)
-        self.assertTrue(cohort["items"][0]["technical_flags"])
+        # Pace is report-only. A slow line without a waveform defect stays in
+        # the ordinary clean sample instead of becoming mandatory attention.
+        self.assertEqual(cohort["items"][0]["technical_flags"], [])
+        self.assertGreater(cohort["items"][0]["words_per_minute"], 0)
+        self.assertEqual(cohort["items"][0]["pace_advisories"], [])
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
 

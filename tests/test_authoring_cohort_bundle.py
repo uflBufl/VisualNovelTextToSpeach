@@ -42,6 +42,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))
             bundle = build_cohort_review_bundle([value[0] for value in sources])
+            _loaded_bundle, loaded_samples = load_cohort_review_bundle_samples(bundle)
 
         self.assertEqual(bundle.document["workspace_count"], 2)
         self.assertEqual(bundle.document["cohort_count"], 2)
@@ -52,8 +53,17 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         for cohort in bundle.document["cohorts"]:
             self.assertEqual(len(cohort["samples"]), 1)
             self.assertIn(
-                "technical-attention", cohort["samples"][0]["required_reason"]
+                "deterministic clean", cohort["samples"][0]["required_reason"]
             )
+            self.assertGreater(cohort["samples"][0]["words_per_minute"], 0)
+            self.assertEqual(cohort["samples"][0]["pace_advisories"], [])
+        self.assertEqual(len(loaded_samples), 2)
+        self.assertTrue(
+            all(sample.item.words_per_minute > 0 for sample in loaded_samples)
+        )
+        self.assertTrue(
+            all(sample.item.pace_advisories == () for sample in loaded_samples)
+        )
 
     def test_duplicate_source_and_tampered_inventory_are_rejected(self):
         with TemporaryDirectory() as directory:

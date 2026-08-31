@@ -12,11 +12,12 @@ import socket
 import sys
 import tempfile
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from statistics import median
 
 from platformdirs import user_data_path
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -164,6 +165,11 @@ WORKSPACE_VERSION = 1
 REVIEW_ATTENTION_POLICY_VERSION = 2
 REVIEW_NOTABLE_SILENCE_RATIO = 0.30
 REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.0
+PACE_MINIMUM_WORDS = 5
+PACE_MINIMUM_LENGTH_BUCKET_SAMPLES = 3
+PACE_MINIMUM_VOICE_SAMPLES = 5
+PACE_SLOW_RELATIVE_RATIO = 0.80
+PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
 _IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
@@ -265,6 +271,10 @@ class ReviewItem:
     words_per_minute: float | None = None
     peak: float | None = None
     technical_flags: tuple[str, ...] = ()
+    pace_baseline_wpm: float | None = None
+    pace_ratio: float | None = None
+    pace_baseline_scope: str | None = None
+    pace_advisories: tuple[str, ...] = ()
     failure_category: str | None = None
     internal_pause_seconds: float | None = None
     repair_strategy: str | None = None
@@ -318,6 +328,9 @@ def review_technical_summary(item):
         )
     else:
         metrics.append("technical pass")
+    pace_advisories = getattr(item, "pace_advisories", ())
+    if pace_advisories:
+        metrics.append("pace report only: " + ", ".join(pace_advisories))
     if (
         item.repair_strategy
         in {
@@ -1900,14 +1913,6 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
         duration = float(duration)
     peak = float(peak) if isinstance(peak, (int, float)) else None
     is_audio_event = result.get("provider") == AUDIO_EVENT_PROVIDER
-    word_count = (
-        0 if is_audio_event else len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-    )
-    words_per_minute = (
-        None
-        if is_audio_event or duration is None
-        else float(word_count * 60 / duration)
-    )
     speech_quality = (
         projected_speech_quality
         if projected_speech_quality is not None
@@ -1920,16 +1925,29 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
         if isinstance(speech_quality, dict)
         else {}
     )
+    word_count = 0 if is_audio_event else _pace_word_count(text)
+    leading_silence = speech_quality.get("leading_silence_seconds")
+    trailing_silence = speech_quality.get("trailing_silence_seconds")
+    trimmed_seconds = sum(
+        float(value)
+        for value in (leading_silence, trailing_silence)
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+    audible_duration = (
+        None if duration is None else max(0.0, duration - trimmed_seconds)
+    )
+    words_per_minute = (
+        None
+        if is_audio_event or not audible_duration
+        else float(word_count * 60 / audible_duration)
+    )
     silence_ratio = speech_quality.get("silence_ratio")
     internal_silence = speech_quality.get("longest_internal_silence_seconds")
     flags = []
     if peak is not None and peak >= 0.98:
         flags.append("near clipping")
-    if word_count >= 3 and words_per_minute is not None:
-        if words_per_minute < 110:
-            flags.append("slow pace")
-        elif words_per_minute > 200:
-            flags.append("fast pace")
     if (
         isinstance(silence_ratio, (int, float))
         and silence_ratio >= REVIEW_NOTABLE_SILENCE_RATIO
@@ -1941,6 +1959,81 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
     ):
         flags.append("notable pause")
     return duration, words_per_minute, peak, tuple(flags)
+
+
+def _pace_word_count(text):
+    return len(re.findall(r"[\w’'-]+", str(text or ""), flags=re.UNICODE))
+
+
+def _pace_length_bucket(word_count):
+    if word_count <= 9:
+        return "short"
+    if word_count <= 20:
+        return "medium"
+    return "long"
+
+
+def _pace_voice_key(item):
+    return str(item.voice_character or item.speaker or "").strip().casefold()
+
+
+def _annotate_pace_advisories(records):
+    """Project relative slow-pace outliers without changing review authority."""
+    eligible = [
+        item
+        for item in records
+        if item.words_per_minute is not None
+        and item.words_per_minute > 0
+        and _pace_word_count(item.text) >= PACE_MINIMUM_WORDS
+    ]
+    by_voice = {}
+    by_voice_and_length = {}
+    for item in eligible:
+        voice = _pace_voice_key(item)
+        length = _pace_length_bucket(_pace_word_count(item.text))
+        by_voice.setdefault(voice, []).append(item.words_per_minute)
+        by_voice_and_length.setdefault((voice, length), []).append(
+            item.words_per_minute
+        )
+
+    annotated = []
+    for item in records:
+        word_count = _pace_word_count(item.text)
+        voice = _pace_voice_key(item)
+        length = _pace_length_bucket(word_count)
+        same_length = by_voice_and_length.get((voice, length), ())
+        same_voice = by_voice.get(voice, ())
+        baseline = None
+        scope = None
+        if word_count >= PACE_MINIMUM_WORDS and item.words_per_minute is not None:
+            if len(same_length) >= PACE_MINIMUM_LENGTH_BUCKET_SAMPLES:
+                baseline = float(median(same_length))
+                scope = f"same voice/{length} lines"
+            elif len(same_voice) >= PACE_MINIMUM_VOICE_SAMPLES:
+                baseline = float(median(same_voice))
+                scope = "same voice/all eligible lengths"
+        advisories = ()
+        ratio = None
+        if baseline is not None and baseline > 0:
+            ratio = float(item.words_per_minute / baseline)
+            if (
+                ratio <= PACE_SLOW_RELATIVE_RATIO
+                and baseline - item.words_per_minute >= PACE_SLOW_MINIMUM_DELTA_WPM
+            ):
+                advisories = (
+                    f"slow relative outlier {item.words_per_minute:.0f} WPM "
+                    f"vs {baseline:.0f} WPM {scope} median",
+                )
+        annotated.append(
+            replace(
+                item,
+                pace_baseline_wpm=baseline,
+                pace_ratio=ratio,
+                pace_baseline_scope=scope,
+                pace_advisories=advisories,
+            )
+        )
+    return tuple(annotated)
 
 
 @lru_cache(maxsize=2048)
@@ -2106,7 +2199,7 @@ def list_review_items(workspace_directory, queue_ids=None):
             raise AuthoringWorkbenchError(
                 f"Requested review outcomes are unavailable: {missing}"
             )
-    return tuple(records)
+    return _annotate_pace_advisories(records)
 
 
 def review_workspace_item(

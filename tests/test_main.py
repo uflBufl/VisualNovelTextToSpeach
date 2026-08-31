@@ -28,7 +28,12 @@ from vntts.generated_audio import (
     PreparedSourceAudioPassThrough,
     SourceAudioRoute,
 )
-from vntts.live import AdaptiveSpeechBackpressure, SpeechChunk
+from vntts.live import (
+    AdaptiveSpeechBackpressure,
+    CanonicalDialogRoute,
+    SilentDialogRoute,
+    SpeechChunk,
+)
 from vntts.live_sequence import (
     LiveSequenceChapter,
     LiveSequenceEvent,
@@ -44,8 +49,10 @@ from vntts.main import (
     capture_dialog,
     create_dialog_read_scheduler,
     create_screenshot_path,
+    dialog_completion_cue_visible,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
+    fingerprint_dialog_render_activity,
     get_live_configuration,
     get_screenshot_directory,
     get_tts_configuration,
@@ -156,6 +163,37 @@ def stub_route_trace(source, line_id=None):
     )
 
 
+def stub_live_sequence_plan(*lines):
+    events = {}
+    line_events = {}
+    event_ids = []
+    for index, line in enumerate(lines, start=1):
+        event_id = f"event-{index}"
+        event_ids.append(event_id)
+        events[event_id] = LiveSequenceEvent(
+            event_id,
+            line.chapter,
+            line.sequence,
+            "speech",
+            "terminal",
+            (),
+            line.line_id,
+        )
+        line_events[line.line_id] = event_id
+    return LiveSequencePlan(
+        Path("plan.json"),
+        "reverse1999",
+        "test",
+        "1",
+        Path("story.jsonl"),
+        "1" * 64,
+        "2" * 64,
+        (LiveSequenceChapter("1", tuple(event_ids), tuple(event_ids)),),
+        events,
+        line_events,
+    )
+
+
 class MainTest(unittest.TestCase):
     def test_dialog_fingerprint_changes_when_only_the_text_changes(self):
         first = Image.new("RGB", (1200, 240), "#202020")
@@ -219,6 +257,58 @@ class MainTest(unittest.TestCase):
             fingerprint_dialog_frame(CapturedDialogFrame(second, 0)),
         )
 
+    def test_dialog_fingerprint_ignores_animated_continue_indicator(self):
+        first = Image.new("RGB", (1200, 240), "#202020")
+        second = first.copy()
+        for image in (first, second):
+            ImageDraw.Draw(image).text(
+                (60, 100),
+                "The completed dialogue remains visible.",
+                fill="#fefefe",
+            )
+        ImageDraw.Draw(first).polygon(
+            ((1130, 180), (1170, 180), (1150, 215)),
+            outline="#fefefe",
+            width=4,
+        )
+        ImageDraw.Draw(second).polygon(
+            ((1130, 188), (1170, 188), (1150, 223)),
+            fill="white",
+        )
+
+        self.assertEqual(
+            fingerprint_dialog_frame(CapturedDialogFrame(first, 0)),
+            fingerprint_dialog_frame(CapturedDialogFrame(second, 0)),
+        )
+
+    def test_dialog_fingerprint_keeps_bottom_line_glyphs_outside_indicator(self):
+        first = Image.new("RGB", (1200, 240), "#202020")
+        second = first.copy()
+        for image in (first, second):
+            ImageDraw.Draw(image).text((60, 100), "Same dialogue", fill="white")
+        ImageDraw.Draw(second).rectangle((1040, 180, 1080, 220), fill="white")
+
+        self.assertNotEqual(
+            fingerprint_dialog_frame(CapturedDialogFrame(first, 0)),
+            fingerprint_dialog_frame(CapturedDialogFrame(second, 0)),
+        )
+
+    def test_render_activity_fingerprint_keeps_small_new_dialogue_glyphs(self):
+        first = Image.new("RGB", (1200, 240), "#202020")
+        second = first.copy()
+        for image in (first, second):
+            ImageDraw.Draw(image).text(
+                (280, 100),
+                "The dialogue is almost complete",
+                fill="white",
+            )
+        ImageDraw.Draw(second).text((820, 100), "I", fill="white")
+
+        self.assertNotEqual(
+            fingerprint_dialog_render_activity(CapturedDialogFrame(first, 0)),
+            fingerprint_dialog_render_activity(CapturedDialogFrame(second, 0)),
+        )
+
     def test_dialog_glyph_presence_accepts_ellipsis_and_rejects_empty_crop(self):
         empty = Image.new("RGB", (1200, 240), "#202020")
         ellipsis = empty.copy()
@@ -231,6 +321,44 @@ class MainTest(unittest.TestCase):
         popup = Image.new("RGB", (1200, 240), "white")
 
         self.assertFalse(dialog_glyphs_visible(CapturedDialogFrame(popup, 0)))
+
+    def test_dialog_completion_cue_detects_reserved_continue_indicator(self):
+        image = Image.new("RGB", (1898, 362), "#202020")
+        draw = ImageDraw.Draw(image)
+        draw.text((60, 140), "Sharpodonties, sir.", fill="white")
+        draw.polygon(
+            ((1818, 307), (1828, 307), (1823, 316)),
+            fill="#d0d0d0",
+        )
+
+        for width in (1898, 1200, 861):
+            height = round(image.height * width / image.width)
+            resized = image.resize((width, height), Image.Resampling.LANCZOS)
+            with self.subTest(size=resized.size):
+                self.assertTrue(
+                    dialog_completion_cue_visible(CapturedDialogFrame(resized, 0))
+                )
+
+    def test_dialog_completion_cue_rejects_text_only_and_bright_popup(self):
+        text_only = Image.new("RGB", (1200, 240), "#202020")
+        ImageDraw.Draw(text_only).text(
+            (60, 100),
+            "Sharpodonties, sir.",
+            fill="white",
+        )
+        popup = Image.new("RGB", (1200, 240), "white")
+        punctuation = text_only.copy()
+        draw = ImageDraw.Draw(punctuation)
+        draw.rectangle((1154, 204, 1155, 205), fill="white")
+        draw.rectangle((1160, 204, 1161, 205), fill="white")
+
+        self.assertFalse(
+            dialog_completion_cue_visible(CapturedDialogFrame(text_only, 0))
+        )
+        self.assertFalse(dialog_completion_cue_visible(CapturedDialogFrame(popup, 0)))
+        self.assertFalse(
+            dialog_completion_cue_visible(CapturedDialogFrame(punctuation, 0))
+        )
 
     def test_one_time_read_routes_text_by_detected_character(self):
         voice_router = Mock()
@@ -1750,6 +1878,280 @@ class MainTest(unittest.TestCase):
         controller.capture_target.is_focused.assert_called_once_with()
         controller._auto_advance_dialog.assert_not_called()
 
+    def test_sequence_audio_auto_confirms_unique_immediate_silent_ellipsis(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": "Mrs. Owen",
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, text in (
+                (77, "Your family was prominent back then."),
+                (79, "Huh."),
+                (80, "A later line prevents terminal-only inference."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-77": LiveSequenceEvent(
+                "event-77",
+                "1",
+                77,
+                "speech",
+                "automatic",
+                ("event-78",),
+                "reverse1999:1:77",
+            ),
+            "event-78": LiveSequenceEvent(
+                "event-78",
+                "1",
+                78,
+                "silent",
+                "automatic",
+                ("event-79",),
+                None,
+            ),
+            "event-79": LiveSequenceEvent(
+                "event-79",
+                "1",
+                79,
+                "speech",
+                "automatic",
+                ("event-80",),
+                "reverse1999:1:79",
+            ),
+            "event-80": LiveSequenceEvent(
+                "event-80",
+                "1",
+                80,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:80",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-77",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:77": "event-77",
+                "reverse1999:1:79": "event-79",
+                "reverse1999:1:80": "event-80",
+            },
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=True,
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        controller.live_reader = Mock(active_generation=20)
+        controller.live_reader.frame_route_epoch_is_current.return_value = True
+        controller.story_cursor.anchor_event("event-77")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+
+        routed = controller._stable_live_frame_route(
+            "ellipsis-frame",
+            True,
+            expected_owner="event-77",
+            route_epoch=4,
+        )
+
+        self.assertEqual(routed, SilentDialogRoute("event-78"))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-78")
+        self.assertTrue(controller.story_cursor.can_auto_advance)
+        controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
+        self.assertEqual(pipeline[-1][0][0], "sequence-visual-transition")
+        self.assertEqual(pipeline[-1][1]["match_result"], "expected-silent-ellipsis")
+        self.assertEqual(pipeline[-1][1]["proof"], "application-owned-single-dispatch")
+
+    def test_sequence_silent_ellipsis_is_not_inferred_without_owned_dispatch(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": "Mrs. Owen",
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, text in ((77, "Before."), (79, "After."), (80, "Later."))
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-77": LiveSequenceEvent(
+                "event-77",
+                "1",
+                77,
+                "speech",
+                "automatic",
+                ("event-78",),
+                "reverse1999:1:77",
+            ),
+            "event-78": LiveSequenceEvent(
+                "event-78",
+                "1",
+                78,
+                "silent",
+                "automatic",
+                ("event-79",),
+                None,
+            ),
+            "event-79": LiveSequenceEvent(
+                "event-79",
+                "1",
+                79,
+                "speech",
+                "automatic",
+                ("event-80",),
+                "reverse1999:1:79",
+            ),
+            "event-80": LiveSequenceEvent(
+                "event-80",
+                "1",
+                80,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:80",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-77",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:77": "event-77",
+                "reverse1999:1:79": "event-79",
+                "reverse1999:1:80": "event-80",
+            },
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.story_cursor.anchor_event("event-77")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+
+        self.assertIsNone(controller._stable_live_frame_route("ellipsis-frame", True))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-77")
+
+    def test_sequence_transition_accepts_complete_short_successor(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": text_sha256(text),
+            }
+            for sequence, speaker, text in (
+                (1, "Mrs. Owen", "Come now. We don't make scenes here."),
+                (2, "Hotelier", "This ..."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            "event-1": LiveSequenceEvent(
+                "event-1",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("event-2",),
+                "reverse1999:1:1",
+            ),
+            "event-2": LiveSequenceEvent(
+                "event-2",
+                "1",
+                2,
+                "speech",
+                "terminal",
+                (),
+                "reverse1999:1:2",
+            ),
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                "reverse1999:1:1": "event-1",
+                "reverse1999:1:2": "event-2",
+            },
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=True,
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(active_generation=7)
+        controller._offer_unknown_speaker_mapping = Mock(return_value=False)
+        controller._auto_advance_dialog = Mock(return_value=True)
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+
+        self.assertTrue(controller._live_auto_advance_callback()())
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.WAITING_TRANSITION,
+        )
+
+        routed = controller._dialog_observed("Hotelier", "This ...")
+
+        self.assertEqual(routed, ("Hotelier", "This ..."))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+        controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
+
     def test_sequence_audio_manual_rejects_unexpected_known_line_and_stays_closed(self):
         rows = [
             {
@@ -1988,6 +2390,16 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(event_id, "event-1")
         self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
+        controller._offer_unknown_speaker_mapping = Mock(return_value=True)
+        controller.history = Mock()
+        self.assertFalse(
+            controller._dialog_observed(
+                "WP",
+                "Unmatched decorative OCR while canonical audio is playing.",
+            )
+        )
+        controller._offer_unknown_speaker_mapping.assert_not_called()
+        controller.history.add.assert_not_called()
         self.assertFalse(controller._stable_live_frame_route("new", True))
         controller._finish_sequence_playback(
             event_id,
@@ -2104,6 +2516,114 @@ class MainTest(unittest.TestCase):
         self.assertEqual(pipeline[-1][0][0], "sequence-successor-prefetch")
         self.assertEqual(pipeline[-1][1]["line_id"], "reverse1999:1:2")
         self.assertEqual(pipeline[-1][1]["outcome"], "reserved")
+
+    def test_owned_auto_transition_routes_reserved_generated_successor_before_ocr(self):
+        rows = [
+            {
+                "chapter": "1",
+                "sequence": sequence,
+                "line_id": f"reverse1999:1:{sequence}",
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": text_sha256(text),
+                "source_audio_status": "absent",
+            }
+            for sequence, speaker, text in (
+                (1, "Rhiannon", "The current line."),
+                (2, "Narrator", "A long narration starts during typewriter rendering."),
+                (3, "Rhiannon", "A later visible line."),
+                (4, "Mrs. Owen", "Another later visible line."),
+            )
+        ]
+        preloader = ChapterVoicePreloader.from_document({"dialogue": rows})
+        events = {
+            f"event-{sequence}": LiveSequenceEvent(
+                f"event-{sequence}",
+                "1",
+                sequence,
+                "speech",
+                "automatic" if sequence < 4 else "terminal",
+                (f"event-{sequence + 1}",) if sequence < 4 else (),
+                f"reverse1999:1:{sequence}",
+            )
+            for sequence in range(1, 5)
+        }
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", ("event-1",), tuple(events)),),
+            events,
+            {
+                f"reverse1999:1:{sequence}": f"event-{sequence}"
+                for sequence in range(1, 5)
+            },
+        )
+        pipeline = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+                auto_advance_enabled=True,
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
+        )
+        backend = GeneratedAudioFallbackBackend(
+            Mock(),
+            Mock(),
+            preloader,
+            audio_output=Mock(),
+        )
+        backend.reserve_generated_line_for_early_playback = Mock(return_value=True)
+        controller.speech_backend = backend
+        controller.live_reader = Mock(active_generation=12)
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+
+        routed = controller._stable_live_frame_route(
+            "first-stable-successor-frame",
+            True,
+            expected_owner="event-1",
+        )
+
+        self.assertEqual(
+            routed,
+            CanonicalDialogRoute(
+                "Narrator",
+                "A long narration starts during typewriter rendering.",
+            ),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-2")
+        backend.reserve_generated_line_for_early_playback.assert_called_once_with(
+            preloader.dialogue[1]
+        )
+        controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
+        transition = next(
+            event for event in pipeline if event[0][0] == "sequence-visual-transition"
+        )
+        self.assertEqual(
+            transition[1]["proof"],
+            "application-owned-single-dispatch-generated-preflight",
+        )
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        self.assertEqual(
+            controller._sequence_auto_advance_dialog().reason,
+            "visual-wait",
+        )
 
     def test_sequence_audio_manual_failed_playback_keeps_current_event_closed(self):
         preloader = ChapterVoicePreloader.from_document(
@@ -2495,6 +3015,305 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.history.snapshot(), [])
         controller.voice_router.speak.assert_not_called()
         read_snapshot.assert_called_once()
+
+    def test_controller_identifies_complete_plan_line_with_small_ocr_drift(self):
+        canonical = (
+            "You know, we once had a guest who insisted on bringing his Ceffyl "
+            "Dŵr inside. That water horse nearly flooded the whole room!"
+        )
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:20",
+                    "1",
+                    20,
+                    "Hotelier",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        dialogs = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            dialog_handler=lambda character, text: dialogs.append((character, text)),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+        observed = canonical.replace("Dŵr", "DWr")
+
+        with patch(
+            "vntts.controller.read_live_snapshot",
+            return_value=("Hotelier", observed),
+        ):
+            identified = controller.identify_live_scope()
+
+        self.assertTrue(identified)
+        self.assertIsNone(controller.live_scope_identification_failure)
+        self.assertEqual(dialogs, [("Hotelier", canonical)])
+        self.assertEqual(
+            controller._dialog_observed("Hotelier", observed),
+            ("Hotelier", canonical),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+
+    def test_controller_rejects_ambiguous_plan_bounded_startup_match(self):
+        texts = (
+            "Take the lantern into the western hall before midnight.",
+            "Take the lantern into the eastern hall before midnight.",
+        )
+        preloader = ChapterVoicePreloader(
+            tuple(
+                ChapterDialogue(
+                    f"reverse1999:1:{index}",
+                    "1",
+                    index,
+                    "Hotelier",
+                    text,
+                    text_sha256(text),
+                )
+                for index, text in enumerate(texts, start=1)
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        with patch(
+            "vntts.controller.read_live_snapshot",
+            return_value=(
+                "Hotelier",
+                "Take the lantern into the hall before midnight.",
+            ),
+        ):
+            identified = controller.identify_live_scope()
+
+        self.assertFalse(identified)
+        self.assertEqual(
+            controller.live_scope_identification_failure,
+            "story-line-no-match",
+        )
+        self.assertIsNone(preloader.current_match)
+
+    def test_unsynchronized_sequence_miss_does_not_enqueue_empty_tts(self):
+        canonical = "A complete canonical line that is still being rendered."
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:1",
+                    "1",
+                    1,
+                    "Rhiannon",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        accepted = controller._enqueue_dialog(
+            "Rhiannon",
+            "A complete canonical line that is still",
+        )
+
+        self.assertFalse(accepted)
+        controller.live_reader.enqueue.assert_not_called()
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.UNSYNCHRONIZED)
+
+    def test_stable_completion_cue_closes_current_prefix_without_advancing(self):
+        canonical = "Sharpodonties, sir."
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:27",
+                    "1",
+                    27,
+                    "Rhiannon",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.frame_route_epoch_is_current.return_value = True
+        controller.live_reader.current_frame_has_completion_cue.return_value = True
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.sequence_prefix_confirmation_event_id = "event-1"
+
+        routed = controller._stable_live_frame_route(
+            "full-frame",
+            True,
+            "event-1",
+            1,
+        )
+
+        self.assertEqual(routed, ("Rhiannon", canonical))
+        self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        controller.live_reader.record_canonical_full_text.assert_called_once_with(
+            line_id="reverse1999:1:27"
+        )
+
+    def test_stable_current_prefix_without_completion_cue_remains_closed(self):
+        canonical = "Sharpodonties, sir."
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:27",
+                    "1",
+                    27,
+                    "Rhiannon",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.frame_route_epoch_is_current.return_value = True
+        controller.live_reader.current_frame_has_completion_cue.return_value = False
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.sequence_prefix_confirmation_event_id = "event-1"
+
+        routed = controller._stable_live_frame_route(
+            "full-frame",
+            True,
+            "event-1",
+            1,
+        )
+
+        self.assertIsNone(routed)
+        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
+        controller.live_reader.record_canonical_full_text.assert_not_called()
+
+    def test_owner_render_quiet_closes_current_prefix_after_playback(self):
+        canonical = "A complete line with a persistent OCR substitution."
+        line = ChapterDialogue(
+            "reverse1999:1:83",
+            "1",
+            83,
+            "Mrs. Owen",
+            canonical,
+            text_sha256(canonical),
+        )
+        preloader = ChapterVoicePreloader((line,))
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=stub_live_sequence_plan(line)),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.current_frame_render_quiet_ms.return_value = 900
+        controller.live_reader.bind_current_frame_route.return_value = True
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.sequence_prefix_confirmation_event_id = "event-1"
+
+        self.assertTrue(controller._confirm_sequence_render_completion())
+
+        self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
+        controller.live_reader.current_frame_render_quiet_ms.assert_called_once_with(
+            expected_owner="event-1"
+        )
+        controller.live_reader.record_canonical_full_text.assert_called_once_with(
+            line_id="reverse1999:1:83",
+            reason="owner-render-quiet",
+            settled_ms=900,
+        )
+
+    def test_same_owner_pending_prefix_requests_bounded_ocr_rechecks(self):
+        canonical = "You DO have shillings, don't you, miss?"
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:36",
+                    "1",
+                    36,
+                    "Hotelier",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.story_cursor.anchor_event("event-1")
+
+        self.assertFalse(controller._sequence_prefix_recheck_required())
+        controller.sequence_prefix_confirmation_event_id = "event-1"
+        self.assertTrue(controller._sequence_prefix_recheck_required())
+        controller.sequence_prefix_confirmation_event_id = "stale-event"
+        self.assertFalse(controller._sequence_prefix_recheck_required())
 
     def test_controller_does_not_claim_scope_for_an_unmatched_dialog(self):
         preloader = ChapterVoicePreloader.from_document(

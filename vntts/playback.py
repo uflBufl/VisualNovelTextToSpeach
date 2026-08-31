@@ -34,6 +34,10 @@ class PlaybackOutcome:
     synthesis_ms: float | None = None
     cache_source: str | None = None
     audio_source: str | None = None
+    source_sample_rate: int | None = None
+    playback_sample_rate: int | None = None
+    sample_count: int | None = None
+    expected_playback_ms: float | None = None
 
     @property
     def successful(self):
