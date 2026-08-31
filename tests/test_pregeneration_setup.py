@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -10,6 +11,10 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
 
+from vntts.game_content_importer import (  # noqa: E402
+    GameContentImportCancelled,
+    ImporterAvailability,
+)
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -231,6 +236,82 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self.assertIn("Importer is not installed", dialog.source_status.text())
         self.assertFalse(dialog.continue_button.isEnabled())
         self.assertTrue(dialog.browse_button.isEnabled())
+        dialog.deleteLater()
+
+    def test_installed_game_import_runs_off_ui_thread_and_adds_content(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        with TemporaryDirectory() as temporary_directory:
+            content = inspect_story_index(
+                write_story_index(Path(temporary_directory) / "content")
+            )
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.import_installed.return_value = content
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(temporary_directory) / "jobs"),
+                importer=importer,
+                thread_pool=pool,
+            )
+
+            dialog.import_button.click()
+            self.assertTrue(dialog.importing)
+            self.assertFalse(dialog.source.isEnabled())
+            self.assertEqual(dialog.cancel_button.text(), "Cancel import")
+            self.assertEqual(len(pool.tasks), 1)
+
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.importing)
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.stories.count(), 2)
+            self.assertIn("successfully", dialog.source_status.text())
+            dialog.deleteLater()
+
+    def test_import_cancel_waits_for_worker_terminal_result(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        importer = Mock()
+        importer.availability.return_value = ImporterAvailability(True, "Ready")
+
+        def import_installed(cancel_event):
+            if cancel_event.is_set():
+                raise GameContentImportCancelled("cancelled")
+            raise AssertionError("cancel event was not delivered")
+
+        importer.import_installed.side_effect = import_installed
+        pool = ManualThreadPool()
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery(()),
+            importer=importer,
+            thread_pool=pool,
+        )
+
+        dialog.import_button.click()
+        dialog.cancel_button.click()
+
+        self.assertTrue(dialog.importing)
+        self.assertIn("Cancelling", dialog.source_status.text())
+        pool.tasks.pop().run()
+        self.application.processEvents()
+
+        self.assertFalse(dialog.importing)
+        self.assertEqual(dialog.source_status.text(), "Game import cancelled.")
         dialog.deleteLater()
 
 

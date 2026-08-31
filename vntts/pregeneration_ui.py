@@ -1,6 +1,9 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
+from threading import Event
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -14,6 +17,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.async_ui import LatestTaskRunner
+from vntts.game_content_importer import (
+    GameContentImportCancelled,
+    Reverse1999GameImporter,
+)
 from vntts.pregeneration_setup import (
     ContentDiscovery,
     PregenerationJobStore,
@@ -31,12 +39,19 @@ class OfflineAudioPreparationDialog(QDialog):
         *,
         discovery=None,
         job_store=None,
+        importer=None,
+        thread_pool=None,
         parent=None,
     ):
         super().__init__(parent)
         self.settings = settings
         self.discovery = discovery or (lambda: discover_game_content(settings))
         self.job_store = job_store or PregenerationJobStore()
+        self.importer = importer or Reverse1999GameImporter()
+        self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.import_runner.finished.connect(self._import_finished)
+        self.import_cancel_event = Event()
+        self.importing = False
         self._content = ()
         self._job = None
         self.setWindowTitle("Prepare offline audio")
@@ -58,11 +73,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self.refresh_button.clicked.connect(self.refresh)
         self.browse_button = QPushButton("Choose extracted content...")
         self.browse_button.clicked.connect(self.browse)
+        self.import_button = QPushButton("Import installed Reverse: 1999")
+        self.import_button.clicked.connect(self.import_installed_game)
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("Game content"))
         source_row.addWidget(self.source, 1)
         source_row.addWidget(self.refresh_button)
         source_row.addWidget(self.browse_button)
+        source_row.addWidget(self.import_button)
 
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
@@ -89,7 +107,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.resume_status = QLabel()
         self.resume_status.setWordWrap(True)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.buttons = QDialogButtonBox()
+        self.cancel_button = self.buttons.addButton(
+            "Cancel",
+            QDialogButtonBox.ButtonRole.RejectRole,
+        )
         self.continue_button = self.buttons.addButton(
             "Continue",
             QDialogButtonBox.ButtonRole.AcceptRole,
@@ -99,7 +121,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Save this selection and continue or resume offline audio preparation"
         )
         self.continue_button.clicked.connect(self._save_selection)
-        self.buttons.rejected.connect(self.reject)
+        self.cancel_button.clicked.connect(self._cancel_or_reject)
 
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
@@ -111,6 +133,9 @@ class OfflineAudioPreparationDialog(QDialog):
         layout.addWidget(self.summary)
         layout.addWidget(self.resume_status)
         layout.addWidget(self.buttons)
+        availability = self.importer.availability()
+        self.import_button.setEnabled(availability.available)
+        self.import_button.setToolTip(availability.message)
         self.refresh()
 
     def refresh(self):
@@ -179,6 +204,26 @@ class OfflineAudioPreparationDialog(QDialog):
             existing = len(self._content) - 1
         self.source.setCurrentIndex(existing)
         self.source_status.setText("Selected extracted game content is ready.")
+
+    def import_installed_game(self):
+        if self.importing:
+            return
+        availability = self.importer.availability()
+        if not availability.available:
+            self.source_status.setText(availability.message)
+            return
+        self.importing = True
+        self.import_cancel_event.clear()
+        self._set_import_controls(False)
+        self.cancel_button.setText("Cancel import")
+        self.cancel_button.setEnabled(True)
+        self.source_status.setText(
+            "Finding the installed game and importing story content..."
+        )
+        self.import_runner.start(
+            self.importer.import_installed,
+            self.import_cancel_event,
+        )
 
     def current_content(self):
         index = self.source.currentIndex()
@@ -270,6 +315,64 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to save preparation: {error}")
             return
         self.accept()
+
+    def _import_finished(self, content, error):
+        self.importing = False
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        if error is not None:
+            self.source_status.setText(
+                "Game import cancelled."
+                if isinstance(error, GameContentImportCancelled)
+                else f"Unable to import the installed game: {error}"
+            )
+            return
+        existing = next(
+            (
+                index
+                for index, value in enumerate(self._content)
+                if value.story_index_sha256 == content.story_index_sha256
+            ),
+            None,
+        )
+        if existing is None:
+            self._content = (*self._content, content)
+            self.source.addItem(
+                f"{content.display_name} - {content.story_index.name}",
+                content.story_index_sha256,
+            )
+            existing = len(self._content) - 1
+        self.source.setCurrentIndex(existing)
+        self.source_status.setText("Installed game content imported successfully.")
+
+    def _set_import_controls(self, enabled):
+        self.source.setEnabled(enabled)
+        self.refresh_button.setEnabled(enabled)
+        self.browse_button.setEnabled(enabled)
+        self.import_button.setEnabled(
+            enabled and self.importer.availability().available
+        )
+        self.stories.setEnabled(enabled)
+        self.select_all_button.setEnabled(enabled)
+        self.select_none_button.setEnabled(enabled)
+        self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
+
+    def _cancel_or_reject(self):
+        if not self.importing:
+            self.reject()
+            return
+        self.import_cancel_event.set()
+        self.cancel_button.setEnabled(False)
+        self.source_status.setText("Cancelling game import...")
+
+    def closeEvent(self, event: QCloseEvent):
+        if self.importing:
+            self._cancel_or_reject()
+            event.ignore()
+            return
+        self.import_runner.cancel()
+        super().closeEvent(event)
 
 
 __all__ = ["OfflineAudioPreparationDialog"]

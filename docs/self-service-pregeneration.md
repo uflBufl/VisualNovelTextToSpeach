@@ -90,6 +90,16 @@ for explicit resume. Known discovery locations are bounded to the configured
 story index and the extractor's platform application-data output. A file chooser
 is the recovery path; VNTTS never scans arbitrary user directories.
 
+Reverse: 1999 import runs behind a bounded subprocess adapter. VNTTS resolves a
+packaged `r1999extractor.bootstrap` module or the `r1999-bootstrap` executable,
+passes an exact application-owned output directory, and consumes only the
+resulting shared `vntts.story-index` artifact. It never parses extractor-private
+files or invokes a shell. Import runs outside the UI thread. Cancelling signals
+and terminates only that exact child process; a nonzero exit is reduced to the
+last actionable error line, and a missing output is rejected. The remaining
+production work is packaging the provider and allowing one install-folder choice
+when the extractor cannot auto-discover the game.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

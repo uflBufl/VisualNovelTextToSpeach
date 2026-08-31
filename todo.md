@@ -16,11 +16,11 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       Preserve cancellation/restart resume throughout and keep workspaces,
       manifests, queue IDs, model IDs, seeds, retries and publication commands
       out of the player UI.
-- [ ] Introduce a stable game-content importer boundary. For Reverse: 1999 it
-      must invoke or embed the supported extractor through a versioned artifact
-      contract, auto-discover the installed game when possible, and otherwise
-      ask for one game/install folder rather than individual JSON/WEM files.
-      Extraction and parsing failures need plain-language remediation.
+- [ ] Extend the installed Reverse: 1999 importer with one game/install-folder
+      fallback when automatic discovery fails. Keep the existing bounded
+      subprocess/shared-artifact boundary and never ask for individual JSON/WEM
+      files. Add packaged-provider availability and a plain-language installation
+      remediation before declaring the importer production-ready.
 - [ ] Build the minimal voice-confirmation stage. Reuse source audio, known
       character aliases and prior checksum-bound decisions automatically; group
       remaining references by speaker/portrait/age evidence; and ask for at most
