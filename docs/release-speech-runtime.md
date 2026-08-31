@@ -58,3 +58,12 @@ weights. A release is complete only when a clean macOS and Windows package can:
 
 The package self-test must record interpreter, module, model and voice origins so
 a developer machine cannot make a broken bundle appear healthy.
+
+`uv venv --relocatable` alone is not a self-contained runtime: the environment's
+Python launcher can still refer to the developer's base Python installation.
+Release staging therefore includes an adjacent uv-managed CPython distribution,
+rewrites the POSIX environment launcher to a relative link, and rejects the
+staging tree unless a copied-to-a-new-path probe imports every required module
+from that copied tree. The same relocation probe is mandatory on Windows; a uv
+or CPython change that breaks the portable launcher must fail the build rather
+than ship a package that silently uses a machine-local Python.

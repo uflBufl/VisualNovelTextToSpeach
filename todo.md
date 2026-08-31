@@ -100,10 +100,11 @@ intentional omission as distinct terminal authorities.
     Keep the safe download-on-first-run policy until a release owner explicitly
     approves redistribution of the exact pinned gated weights and allowlisted
     voice files; do not claim an offline bundled model before that gate passes.
-  - Build Pocket from its locked backend project into a fresh `uv venv
-    --relocatable` staging directory on macOS and Windows. Keep model cache under
-    that staging root, include the exact runtime in the bundle and resolve it
-    from the frozen bundle root without checkout or environment assumptions.
+  - Run the Pocket lock through `vntts.release_runtime` on macOS and Windows:
+    stage an adjacent managed CPython plus a fresh `uv venv --relocatable`, then
+    require its copied-to-a-new-path provenance probe to pass. Include that exact
+    staging tree in the bundle; never rely on a developer Python, checkout or
+    backend environment override.
   - Limit frozen Settings/onboarding choices to backends whose runtime contract
     the package actually supplies; preserve explicit existing user settings but
     surface a direct remediation instead of recommending an absent backend.

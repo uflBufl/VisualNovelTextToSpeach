@@ -1,0 +1,184 @@
+import json
+import os
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+from vntts.release_runtime import (
+    _find_managed_interpreter,
+    _probe_relocated_runtime,
+    _replace_posix_interpreter_link,
+    _runtime_interpreter,
+    _runtime_site,
+    _sha256,
+    stage_pocket_runtime,
+)
+
+
+class ReleaseRuntimeTest(unittest.TestCase):
+    def test_stages_locked_runtime_and_requires_relocation_probe(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            backend = project / "backends" / "pocket-tts"
+            backend.mkdir(parents=True)
+            (backend / "uv.lock").write_text("locked", encoding="utf-8")
+            (project / "pyproject.toml").write_text("[project]", encoding="utf-8")
+            destination = Path(directory) / "build" / "speech-runtimes"
+            calls = []
+
+            def runner(command, **options):
+                calls.append((command, options))
+                if command[1:3] == ["python", "install"]:
+                    managed_root = Path(command[command.index("--install-dir") + 1])
+                    managed_python = (
+                        managed_root / "cpython-3.11-test" / "bin" / "python3.11"
+                    )
+                    managed_python.parent.mkdir(parents=True)
+                    managed_python.write_bytes(b"python")
+                    return SimpleNamespace(stdout="")
+                if command[1] == "venv":
+                    runtime = Path(command[-1])
+                    interpreter = runtime / "bin/python"
+                    interpreter.parent.mkdir(parents=True)
+                    interpreter.write_bytes(b"launcher")
+                    (runtime / "lib/python3.11/site-packages").mkdir(parents=True)
+                    return SimpleNamespace(stdout="")
+                if command[1] == "sync" or command[1:3] == ["pip", "install"]:
+                    return SimpleNamespace(stdout="")
+                interpreter = Path(command[0])
+                speech_runtimes = interpreter.parents[2]
+                runtime = speech_runtimes / "pocket-tts"
+                site = runtime / "lib/python3.11/site-packages"
+                report = {
+                    "executable": str(interpreter),
+                    "prefix": str(runtime),
+                    "base_prefix": str(
+                        speech_runtimes / "_python" / "cpython-3.11-test"
+                    ),
+                    "modules": {
+                        name: str(site / name / "__init__.py")
+                        for name in (
+                            "durable_file",
+                            "numpy",
+                            "platformdirs",
+                            "pocket_tts",
+                            "safetensors",
+                            "scipy",
+                            "torch",
+                            "vntts",
+                            "vntts_artifacts",
+                        )
+                    },
+                }
+                return SimpleNamespace(stdout=json.dumps(report))
+
+            manifest_path = stage_pocket_runtime(
+                project,
+                destination,
+                platform_name="darwin",
+                run=runner,
+            )
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            interpreter = destination / "pocket-tts/bin/python"
+            self.assertEqual(manifest["backend"], "pocket-tts")
+            self.assertTrue(interpreter.is_symlink())
+            self.assertFalse(os.readlink(interpreter).startswith("/"))
+            flattened = [part for command, _options in calls for part in command]
+            self.assertIn("--no-bin", flattened)
+            self.assertIn("--no-registry", flattened)
+            self.assertIn("--frozen", flattened)
+            self.assertEqual(
+                sum("vntts-runtime-relocation-" in part for part in flattened),
+                1,
+            )
+
+    def test_runtime_paths_are_platform_specific(self):
+        root = Path("runtime")
+
+        self.assertEqual(
+            _runtime_interpreter(root, "win32"), root / "Scripts/python.exe"
+        )
+        self.assertEqual(_runtime_interpreter(root, "darwin"), root / "bin/python")
+
+    def test_managed_interpreter_must_be_unique_and_contained(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            interpreter = root / "cpython-3.11-test/bin/python3.11"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            alias = root / "cpython-3.11-alias/bin/python3.11"
+            alias.parent.mkdir(parents=True)
+            alias.symlink_to(interpreter)
+
+            self.assertEqual(
+                _find_managed_interpreter(root, "darwin", "3.11"),
+                interpreter.resolve(),
+            )
+
+    def test_replaces_posix_interpreter_with_relative_managed_python_link(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "speech-runtimes" / "pocket-tts"
+            interpreter = runtime / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"old")
+            managed = (
+                root / "speech-runtimes" / "_python" / "cpython" / "bin/python3.11"
+            )
+            managed.parent.mkdir(parents=True)
+            managed.write_bytes(b"python")
+
+            _replace_posix_interpreter_link(runtime, managed)
+
+            self.assertTrue(interpreter.is_symlink())
+            self.assertFalse(os.readlink(interpreter).startswith("/"))
+            self.assertEqual(interpreter.resolve(), managed.resolve())
+
+    def test_runtime_site_rejects_ambiguous_posix_layout(self):
+        with TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            for version in ("python3.11", "python3.12"):
+                (runtime / "lib" / version / "site-packages").mkdir(parents=True)
+
+            with self.assertRaisesRegex(RuntimeError, "Expected one site-packages"):
+                _runtime_site(runtime, "darwin")
+
+    def test_relocation_probe_rejects_dependency_outside_bundle(self):
+        with TemporaryDirectory() as directory:
+            speech_runtimes = Path(directory) / "speech-runtimes"
+            runtime = speech_runtimes / "pocket-tts"
+            interpreter = runtime / "bin/python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            report = {
+                "executable": str(interpreter),
+                "prefix": str(runtime),
+                "base_prefix": str(speech_runtimes / "_python"),
+                "modules": {"numpy": "/developer/.venv/numpy/__init__.py"},
+            }
+            runner = Mock()
+            runner.return_value.stdout = json.dumps(report)
+
+            with self.assertRaisesRegex(RuntimeError, "escaped its staging root"):
+                _probe_relocated_runtime(
+                    speech_runtimes,
+                    platform_name="darwin",
+                    run=runner,
+                )
+
+    def test_sha256_is_stable(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "value"
+            path.write_bytes(b"abc")
+
+            self.assertEqual(
+                _sha256(path),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
