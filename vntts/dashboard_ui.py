@@ -249,7 +249,11 @@ class ControlDashboard(QMainWindow):
             if Path(manifest).expanduser().is_file()
             else "missing; open Settings"
         )
-        sequence_audio = is_live_sequence_audio_mode(settings.live_sequence_mode)
+        sequence_audio = bool(
+            is_live_sequence_audio_mode(settings.live_sequence_mode)
+            and settings.live_sequence_plan
+            and settings.story_index
+        )
         self.sequence_group.setVisible(sequence_audio)
         self.sequence_resync_button.setAccessibleDescription(
             "Choose the visible story event to anchor or recover sequence-first reading"

@@ -190,6 +190,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 game_window_title="Reverse: 1999",
                 tts_model="xtts_v2",
                 narrator_speaker="Narrator",
+                auto_advance_enabled=False,
             )
         )
 

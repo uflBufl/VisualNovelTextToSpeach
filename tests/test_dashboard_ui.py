@@ -106,7 +106,13 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertTrue(dashboard.sequence_group.isHidden())
 
-        dashboard.set_configuration(AppSettings(live_sequence_mode="audio-manual"))
+        dashboard.set_configuration(
+            AppSettings(
+                live_sequence_mode="audio-manual",
+                live_sequence_plan="live-sequence.json",
+                story_index="story-index.jsonl",
+            )
+        )
         dashboard.set_ready(True)
 
         self.assertFalse(dashboard.sequence_group.isHidden())
@@ -116,7 +122,13 @@ class ControlDashboardTest(unittest.TestCase):
             dashboard.sequence_resync_button.accessibleDescription(),
         )
 
-        dashboard.set_configuration(AppSettings(live_sequence_mode="audio-auto"))
+        dashboard.set_configuration(
+            AppSettings(
+                live_sequence_mode="audio-auto",
+                live_sequence_plan="live-sequence.json",
+                story_index="story-index.jsonl",
+            )
+        )
 
         self.assertFalse(dashboard.sequence_group.isHidden())
         self.assertIn(
