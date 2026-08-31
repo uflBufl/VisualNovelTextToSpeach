@@ -115,10 +115,6 @@ intentional omission as distinct terminal authorities.
       the background lifecycle runner, show cancellable progress, prevent
       overlapping configuration actions and prove with an event-loop test that
       a blocked live reader cannot freeze either dialog.
-- [ ] Validate voice manifests outside the Qt thread. Bind each result to the
-      exact selected path and digest, disable Save only while validation is
-      pending, surface progress for checksum creation/hashing, and discard stale
-      results when the selection changes.
 - [ ] Make isolated backend environments reproducible. Stop appending every host
       `site-packages` directory to worker `sys.path`; package the narrowly shared
       VNTTS support dependencies in each worker runtime and validate origins for

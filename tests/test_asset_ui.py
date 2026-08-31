@@ -14,9 +14,11 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QMessageBox,
 )
+from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from vntts.asset_ui import AssetManagerDialog, default_model  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -176,9 +178,10 @@ class AssetManagerDialogTest(unittest.TestCase):
                 return_value=(str(manifest), "JSON files (*.json)"),
             ):
                 dialog.browse_manifest_button.click()
+            self.wait_for(lambda: not dialog.manifest_runner.active)
 
             self.assertEqual(dialog.voice_manifest.text(), str(manifest))
-            voice_manager.validate.assert_called_once_with(str(manifest))
+            voice_manager.validate.assert_called_once_with(manifest.resolve())
             self.assertIn("passed checksum validation", dialog.voice_status.text())
             self.assertTrue(dialog.voice_manifest.accessibleName())
             self.assertTrue(dialog.browse_manifest_button.accessibleDescription())
@@ -191,26 +194,31 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager.validate.reset_mock()
             dialog.validate_manifest_button.setFocus()
             QTest.keyClick(dialog.validate_manifest_button, Qt.Key.Key_Return)
-            voice_manager.validate.assert_called_once_with(str(manifest))
+            self.wait_for(lambda: not dialog.manifest_runner.active)
+            voice_manager.validate.assert_called_once_with(manifest.resolve())
 
     def test_invalid_manifest_stays_inline_and_focuses_field_on_save(self):
-        model_manager = Mock()
-        model_manager.model_path.return_value = Path("managed/model")
-        voice_manager = Mock()
-        voice_manager.validate.side_effect = ValueError("checksum mismatch")
-        dialog = AssetManagerDialog(
-            AppSettings(voice_manifest="broken.json"),
-            model_manager=model_manager,
-            voice_manager=voice_manager,
-        )
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "broken.json"
+            manifest.write_text("{}", encoding="utf-8")
+            model_manager = Mock()
+            model_manager.model_path.return_value = Path("managed/model")
+            voice_manager = Mock()
+            voice_manager.validate.side_effect = ValueError("checksum mismatch")
+            dialog = AssetManagerDialog(
+                AppSettings(voice_manifest=str(manifest)),
+                model_manager=model_manager,
+                voice_manager=voice_manager,
+            )
 
-        with patch.object(QMessageBox, "warning") as warning:
-            dialog.accept_settings()
+            with patch.object(QMessageBox, "warning") as warning:
+                dialog.accept_settings()
+                self.wait_for(lambda: not dialog.manifest_runner.active)
 
-        warning.assert_not_called()
-        self.assertIn("checksum mismatch", dialog.voice_status.text())
-        self.assertEqual(dialog.voice_manifest.selectedText(), "broken.json")
-        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            warning.assert_not_called()
+            self.assertIn("checksum mismatch", dialog.voice_status.text())
+            self.assertEqual(dialog.voice_manifest.selectedText(), str(manifest))
+            self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_manifest_controls_follow_operation_state_and_empty_is_valid(self):
         model_manager = Mock()
@@ -239,6 +247,90 @@ class AssetManagerDialogTest(unittest.TestCase):
         dialog.layout().activate()
         self.assertEqual(dialog.size().width(), 680)
         self.assertEqual(dialog.size().height(), 440)
+
+    def test_manifest_validation_is_nonblocking_and_discards_stale_path_result(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.json"
+            second = root / "second.json"
+            first.write_text("{}", encoding="utf-8")
+            second.write_text("{}", encoding="utf-8")
+            started = Event()
+            release = Event()
+            voice_manager = Mock()
+
+            def validate(path):
+                path = Path(path)
+                if path == first.resolve():
+                    started.set()
+                    release.wait(3)
+                return path
+
+            voice_manager.validate.side_effect = validate
+            model_manager = Mock()
+            model_manager.model_path.return_value = Path("managed/model")
+            dialog = AssetManagerDialog(
+                AppSettings(),
+                model_manager=model_manager,
+                voice_manager=voice_manager,
+            )
+            heartbeat = []
+            dialog.voice_manifest.setText(str(first))
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+
+            dialog.validate_voice_manifest()
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
+            self.assertTrue(dialog.voice_manifest.isEnabled())
+            self.assertTrue(
+                dialog.buttons.button(
+                    QDialogButtonBox.StandardButton.Cancel
+                ).isEnabled()
+            )
+            self.assertFalse(
+                dialog.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
+            )
+
+            dialog.voice_manifest.setText(str(second))
+            dialog.validate_voice_manifest()
+            release.set()
+            self.wait_for(lambda: not dialog.manifest_runner.active)
+
+            self.assertEqual(
+                dialog._validated_manifest_identity,
+                (str(second.resolve()), sha256_file(second)),
+            )
+            self.assertIn(str(second), dialog.voice_status.text())
+            self.assertNotIn(str(first), dialog.voice_status.text())
+
+    def test_save_waits_for_exact_manifest_validation_then_accepts(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            started = Event()
+            release = Event()
+            voice_manager = Mock()
+
+            def validate(path):
+                started.set()
+                release.wait(3)
+                return Path(path)
+
+            voice_manager.validate.side_effect = validate
+            model_manager = Mock()
+            model_manager.model_path.return_value = Path("managed/model")
+            dialog = AssetManagerDialog(
+                AppSettings(voice_manifest=str(manifest)),
+                model_manager=model_manager,
+                voice_manager=voice_manager,
+            )
+
+            dialog.accept_settings()
+            self.wait_for(started.is_set)
+            self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            release.set()
+            self.wait_for(lambda: dialog.result() == QDialog.DialogCode.Accepted)
+
+            self.assertEqual(dialog.settings().voice_manifest, str(manifest))
 
 
 if __name__ == "__main__":

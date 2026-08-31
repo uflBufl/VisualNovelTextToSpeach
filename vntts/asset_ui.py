@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.assets import (
     ModelAssetManager,
@@ -110,12 +111,16 @@ class AssetManagerDialog(QDialog):
         self.voice_manager = voice_manager or VoicePackManager()
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.voice_runner.finished.connect(self._voice_import_finished)
+        self.manifest_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.manifest_runner.finished.connect(self._manifest_validation_finished)
         self.signals = AssetSignals()
         self.cancel_event = Event()
         self.operation_running = False
         self.operation_kind = None
         self._close_pending = False
         self._voice_import_message = None
+        self._validated_manifest_identity = None
+        self._accept_after_manifest_validation = False
         self.setWindowTitle("Models and character voices")
         self.setMinimumSize(680, 440)
 
@@ -240,6 +245,11 @@ class AssetManagerDialog(QDialog):
 
     def _voice_manifest_edited(self):
         manifest = self.voice_manifest.text().strip()
+        self.manifest_runner.cancel()
+        self._validated_manifest_identity = None
+        self._accept_after_manifest_validation = False
+        self._set_manifest_validation_pending(False)
+        self.voice_progress.setValue(0)
         self.validate_manifest_button.setEnabled(
             bool(manifest) and not self.operation_running
         )
@@ -276,17 +286,61 @@ class AssetManagerDialog(QDialog):
                 "No active voice manifest selected. Live voice assignments are disabled."
             )
             return True
-        try:
-            validated = self.voice_manager.validate(manifest)
-        except Exception as error:
+        self._set_manifest_validation_pending(True)
+        self.voice_status.setText(
+            "Checksum-validating the selected manifest and voice files..."
+        )
+        self.manifest_runner.start(self._validate_manifest_snapshot, manifest)
+        return False
+
+    def _validate_manifest_snapshot(self, manifest):
+        path = Path(manifest).expanduser().resolve()
+        before = sha256_file(path)
+        validated = self.voice_manager.validate(path)
+        after = sha256_file(path)
+        if after != before:
+            raise ValueError("Voice manifest changed while validation was running")
+        return str(path), after, str(validated)
+
+    def _manifest_validation_finished(self, result, error):
+        self._set_manifest_validation_pending(False)
+        selected = self.voice_manifest.text().strip()
+        if error is not None:
+            self._validated_manifest_identity = None
+            self._accept_after_manifest_validation = False
             self.voice_status.setText(f"Voice manifest is invalid: {error}")
             self.voice_manifest.setFocus()
             self.voice_manifest.selectAll()
-            return False
+            self.voice_progress.setValue(0)
+            return
+        path, digest, validated = result
+        try:
+            selected_path = str(Path(selected).expanduser().resolve())
+            selected_digest = sha256_file(selected_path)
+        except OSError:
+            return
+        if selected_path != path or selected_digest != digest:
+            return
+        self._validated_manifest_identity = (path, digest)
+        self.voice_progress.setValue(100)
         self.voice_status.setText(
             f"Voice manifest passed checksum validation: {validated}"
         )
-        return True
+        if self._accept_after_manifest_validation:
+            self._accept_after_manifest_validation = False
+            self._accept_validated_settings()
+
+    def _set_manifest_validation_pending(self, pending):
+        pending = bool(pending)
+        self.voice_progress.setRange(0, 0 if pending else 100)
+        self.validate_manifest_button.setEnabled(
+            not pending
+            and not self.operation_running
+            and bool(self.voice_manifest.text().strip())
+        )
+        if hasattr(self, "buttons"):
+            save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+            save.setEnabled(not pending and not self.operation_running)
 
     def model_name(self):
         return self.model.currentText().strip()
@@ -383,6 +437,7 @@ class AssetManagerDialog(QDialog):
             not running and bool(self.voice_manifest.text().strip())
         )
         self.buttons.setEnabled(not running)
+        self._set_manifest_validation_pending(self.manifest_runner.active)
 
     def import_voice_pack(self):
         source, _selected_filter = QFileDialog.getOpenFileName(
@@ -434,8 +489,8 @@ class AssetManagerDialog(QDialog):
                 f"Voice import failed: {error}. Choose the source again to retry."
             )
         else:
-            self.voice_progress.setValue(100)
             self.voice_imported(str(manifest), message or "Voice import complete")
+            self.voice_progress.setValue(100)
         if self._close_pending:
             self._close_pending = False
             self.close()
@@ -449,8 +504,25 @@ class AssetManagerDialog(QDialog):
         if self.operation_running:
             return
         manifest = self.voice_manifest.text().strip() or None
-        if not self.validate_voice_manifest():
+        if manifest is None:
+            self._accept_validated_settings()
             return
+        try:
+            identity = (
+                str(Path(manifest).expanduser().resolve()),
+                sha256_file(manifest),
+            )
+        except OSError:
+            identity = None
+        if identity != self._validated_manifest_identity:
+            self._accept_after_manifest_validation = True
+            if not self.manifest_runner.active:
+                self.validate_voice_manifest()
+            return
+        self._accept_validated_settings()
+
+    def _accept_validated_settings(self):
+        manifest = self.voice_manifest.text().strip() or None
         self.settings_value = self.settings_value.updated(
             tts_model=self.model_name() or None,
             voice_manifest=manifest,
@@ -461,6 +533,9 @@ class AssetManagerDialog(QDialog):
         return self.settings_value
 
     def reject(self):
+        if self.manifest_runner.active:
+            self.manifest_runner.cancel()
+            self._accept_after_manifest_validation = False
         if self.operation_running:
             self._close_pending = True
             if self.operation_kind == "download":
@@ -478,6 +553,9 @@ class AssetManagerDialog(QDialog):
         super().reject()
 
     def closeEvent(self, event):
+        if self.manifest_runner.active:
+            self.manifest_runner.cancel()
+            self._accept_after_manifest_validation = False
         if self.operation_running:
             self._close_pending = True
             if self.operation_kind == "download":
