@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.readiness_ui import ReadinessDialog  # noqa: E402
@@ -16,6 +16,19 @@ class ReadinessDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_intro_describes_live_reading_not_starting_the_game(self):
+        dialog = ReadinessDialog(
+            AppSettings(),
+            type("Diagnostics", (), {"run": lambda _self, _settings: ()})(),
+            thread_pool=ManualThreadPool(),
+        )
+        labels = [label.text() for label in dialog.findChildren(QLabel)]
+
+        self.assertTrue(any("before starting live reading" in text for text in labels))
+        self.assertFalse(any("before starting the game" in text for text in labels))
+        dialog.close()
+        dialog.deleteLater()
 
     def test_summarizes_errors_and_warnings(self):
         pool = ManualThreadPool()

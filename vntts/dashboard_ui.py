@@ -665,7 +665,7 @@ class CompactController(QWidget):
         if not self._ready:
             self._set_action_reason(
                 f"Controls unavailable: {message}. Open Full controls, then "
-                "run Check readiness."
+                "open Setup and diagnostics."
             )
         self._fit_content()
 

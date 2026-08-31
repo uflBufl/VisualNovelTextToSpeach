@@ -315,6 +315,16 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(requests, ["expected"])
         controller.set_ready(False)
         self.assertFalse(controller.sequence_expected_button.isEnabled())
+
+    def test_compact_recovery_uses_current_dashboard_action_name(self):
+        controller = CompactController(platform="darwin")
+
+        controller.set_status("Speech model failed to load")
+
+        self.assertIn("Setup and diagnostics", controller.action_reason.text())
+        self.assertNotIn("Check readiness", controller.action_reason.text())
+        controller.close()
+        controller.deleteLater()
         controller.deleteLater()
 
     def test_compact_status_and_warning_remain_visible_during_live_mode(self):

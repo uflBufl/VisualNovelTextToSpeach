@@ -35,7 +35,7 @@ class ReadinessDialog(QDialog):
         self.resize(820, 500)
 
         intro = QLabel(
-            "Check the complete OCR-to-speech path before starting the game. "
+            "Check the complete OCR-to-speech path before starting live reading. "
             "Warnings are usable fallbacks; errors need attention."
         )
         intro.setWordWrap(True)
