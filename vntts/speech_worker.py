@@ -54,7 +54,8 @@ from vntts.voices import (
 _FRAME_LENGTH = struct.Struct(">I")
 _BOOTSTRAP = (
     "import sys;"
-    "sys.path.insert(0,sys.argv.pop(1));"
+    "source=sys.argv.pop(1);"
+    "source and sys.path.insert(0,source);"
     "from vntts.speech_worker import worker_main;"
     "raise SystemExit(worker_main())"
 )
@@ -531,6 +532,9 @@ class IsolatedSpeechBackend:
             backend, runtime_directory
         )
         self.project_root = Path(__file__).resolve().parents[1]
+        self.bundle_root = get_bundle_root()
+        self.worker_source_root = None if self.bundle_root else self.project_root
+        self.worker_working_directory = self.bundle_root or self.project_root
         self.process = None
         self.health = None
         self._messages = queue.Queue()
@@ -560,7 +564,7 @@ class IsolatedSpeechBackend:
             "-u",
             "-c",
             _BOOTSTRAP,
-            str(self.project_root),
+            "" if self.worker_source_root is None else str(self.worker_source_root),
         ]
         environment = dict(os.environ)
         environment["PYTHONNOUSERSITE"] = "1"
@@ -569,7 +573,7 @@ class IsolatedSpeechBackend:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=str(self.project_root),
+            cwd=str(self.worker_working_directory),
             env=environment,
             bufsize=0,
         )

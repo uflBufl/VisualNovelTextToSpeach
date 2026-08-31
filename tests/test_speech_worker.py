@@ -321,6 +321,45 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertNotIn("site-packages", command)
             backend.shutdown()
 
+    def test_frozen_parent_imports_worker_from_bundled_runtime(self):
+        registry = CharacterVoiceRegistry()
+        with TemporaryDirectory() as directory:
+            bundle_root = Path(directory).resolve()
+            runtime_root = bundle_root / "speech-runtimes/pocket-tts"
+            interpreter = runtime_root / "bin/python"
+            runtime_site = runtime_root / "lib/python3.11/site-packages"
+            captured = {}
+
+            def process_factory(command, **options):
+                captured["command"] = command
+                captured["options"] = options
+                return FakeProcess(
+                    {
+                        "type": "health",
+                        "backend": "pocket-tts",
+                        "interpreter": str(interpreter.resolve()),
+                        "prefix": str(runtime_root),
+                        "runtime_site": str(runtime_site),
+                        "sample_rate": 24_000,
+                        "modules": {},
+                    }
+                )
+
+            with (
+                patch(
+                    "vntts.speech_worker._runtime_paths",
+                    return_value=(runtime_root, interpreter, runtime_site),
+                ),
+                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+            ):
+                backend = IsolatedSpeechBackend(
+                    "pocket-tts", registry, process_factory=process_factory
+                )
+
+            self.assertEqual(captured["command"][-1], "")
+            self.assertEqual(captured["options"]["cwd"], str(bundle_root))
+            backend.shutdown()
+
     def test_moss_worker_defaults_to_its_supported_stable_profile(self):
         backend = object.__new__(IsolatedSpeechBackend)
 
