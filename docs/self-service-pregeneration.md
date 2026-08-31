@@ -108,6 +108,20 @@ worker argument instead of assuming that the bundled application is a general
 Python interpreter. The worker runs before Qt is created, so importer failures
 cannot create a second dashboard or tray process.
 
+Voice routing is planned in a separate atomic `voice-plan.json` beside the
+selection job. The planner reopens the checksum-bound story index, excludes
+original and non-speakable lines, and groups remaining lines by canonical voice
+character plus exact portrait, age, source-bank and source-voice evidence. It
+resolves explicit saved assignments and exact manifest names/aliases before any
+audition; narrator dialogue and named roles without a usable candidate receive
+an explicit narrator route without asking the player to confirm an already-known
+absence. Each group records ordered line IDs, one representative phrase, the
+chosen source and reference hashes. Its control digest depends only on that
+group's selected voice and synthesis settings, so changing an unrelated voice
+reference does not invalidate compatible work. Future player decisions use a
+separate group/evidence/control digest and are never inferred from filenames or
+mutable paths.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic
