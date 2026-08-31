@@ -80,6 +80,7 @@ vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", re
 [dependency-groups]
 dev = [
     "deptree>=0.0.12",
+    "mypy>=1.19,<2",
     "nbstripout>=0.8.2",
     "pyinstaller",
     "ruff==0.16.2",
@@ -111,3 +112,20 @@ extend-exclude = ["exps", "README.md"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "vntts/authoring/cli_dispatch.py",
+    "vntts/game_pack.py",
+    "vntts/playback.py",
+    "vntts/speech_worker_messages.py",
+    "vntts/synthesis.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true

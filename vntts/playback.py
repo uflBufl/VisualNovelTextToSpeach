@@ -40,7 +40,7 @@ class PlaybackOutcome:
     expected_playback_ms: float | None = None
 
     @property
-    def successful(self):
+    def successful(self) -> bool:
         return self.status in {
             PlaybackStatus.COMPLETED,
             PlaybackStatus.PASSTHROUGH_UNOBSERVED,
@@ -48,16 +48,16 @@ class PlaybackOutcome:
 
 
 def outcome_for_prepared(
-    prepared,
-    status,
-    playback_ms,
+    prepared: PreparedPlayback,
+    status: PlaybackStatus,
+    playback_ms: float | None,
     *,
-    underflowed=False,
-    generation_limited=False,
-    first_audio_ms=None,
-    error=None,
-    error_type=None,
-):
+    underflowed: bool = False,
+    generation_limited: bool = False,
+    first_audio_ms: float | None = None,
+    error: str | None = None,
+    error_type: type[Exception] | None = None,
+) -> PlaybackOutcome:
     return PlaybackOutcome(
         status=status,
         playback_ms=playback_ms,

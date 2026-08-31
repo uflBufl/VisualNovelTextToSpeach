@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -9,6 +10,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
+from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -26,7 +28,12 @@ class GamePackImport:
     live_sequence_plan: Path | None
     source_audio_semantic_evidence: Path | None
 
-    def apply_to(self, settings, *, preserve_external_sequence=False):
+    def apply_to(
+        self,
+        settings: AppSettings,
+        *,
+        preserve_external_sequence: bool = False,
+    ) -> AppSettings:
         """Return settings routed to this pack without modifying app or pack data."""
         sequence_plan = (
             str(self.live_sequence_plan)
@@ -51,7 +58,7 @@ class GamePackImport:
         )
 
 
-def import_game_pack(path):
+def import_game_pack(path: str | Path) -> GamePackImport:
     """Load and fully preflight a versioned game pack for VNTTS consumption."""
     pack = load_game_pack(path)
     semantic_evidence = _source_audio_semantic_evidence(pack)
@@ -71,7 +78,7 @@ def import_game_pack(path):
     )
 
 
-def _source_audio_semantic_evidence(pack):
+def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
     authoring = pack.extensions.get("vntts.authoring")
     extension = (
         authoring.get("source_audio_semantic_evidence")
@@ -131,7 +138,10 @@ def _source_audio_semantic_evidence(pack):
     return evidence_path
 
 
-def apply_game_pack(settings, path=None):
+def apply_game_pack(
+    settings: AppSettings,
+    path: str | Path | None = None,
+) -> AppSettings:
     """Preflight and apply ``path`` (or ``settings.game_pack``) in one step."""
     configured_path = path if path is not None else settings.game_pack
     if not configured_path:
@@ -142,7 +152,7 @@ def apply_game_pack(settings, path=None):
     )
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     """Preflight a game pack and print its resolved VNTTS input paths."""
     parser = argparse.ArgumentParser(
         description="Validate a vntts.game-pack and resolve its VNTTS inputs"

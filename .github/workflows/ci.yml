@@ -35,6 +35,9 @@ jobs:
       - name: Lint
         run: uv run --frozen ruff check .
 
+      - name: Check scoped static types
+        run: uv run --frozen mypy
+
       - name: Run unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
 

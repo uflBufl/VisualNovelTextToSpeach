@@ -95,9 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Improve maintainability without changing behavior
 
-- [ ] Introduce gradual static typing at artifact schemas, synthesis/playback
-      protocols, worker messages and orchestration inputs/results. Add a scoped
-      mypy or pyright CI ratchet instead of requiring a repository-wide rewrite.
 - [ ] Add maintainability ratchets for forbidden cross-module private imports
       and bounded module/function complexity, with explicit compatibility
       exceptions for existing debt.

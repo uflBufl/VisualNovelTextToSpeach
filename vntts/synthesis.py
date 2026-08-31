@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -89,14 +89,14 @@ class SynthesisResult:
 class SynthesisChunkStream(Iterator[SynthesisChunk]):
     """A render iterator whose typed result becomes available after exhaustion."""
 
-    def __init__(self, producer: Iterator[SynthesisChunk]):
+    def __init__(self, producer: Generator[SynthesisChunk, None, SynthesisResult]):
         self._producer = producer
         self._result: SynthesisResult | None = None
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[SynthesisChunk]:
         return self
 
-    def __next__(self):
+    def __next__(self) -> SynthesisChunk:
         try:
             return next(self._producer)
         except StopIteration as stopped:
@@ -117,7 +117,7 @@ class SynthesisChunkStream(Iterator[SynthesisChunk]):
             pass
         return self.result
 
-    def close(self):
+    def close(self) -> None:
         close = getattr(self._producer, "close", None)
         if callable(close):
             close()

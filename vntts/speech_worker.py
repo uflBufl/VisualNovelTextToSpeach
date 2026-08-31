@@ -15,7 +15,7 @@ import threading
 import uuid
 from collections import deque
 from contextlib import redirect_stdout
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from itertools import chain
 from pathlib import Path
 from time import monotonic
@@ -33,6 +33,7 @@ from vntts.speech_backend import (
     validate_speed,
     validate_volume,
 )
+from vntts.speech_worker_messages import RemotePreparedSpeech
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisChunk,
@@ -76,15 +77,6 @@ _CAPABILITIES = {
     "moss-tts": MossTTSVoiceRouterBackend.capabilities,
     "moss-tts-delay": MossTTSDelayVoiceRouterBackend.capabilities,
 }
-
-
-@dataclass(frozen=True)
-class RemotePreparedSpeech:
-    voice: str
-    voice_key: str
-    text: str
-    generation_profile: str
-    cache_policy: SynthesisCachePolicy
 
 
 def _write_frame(stream, document, payload=b""):
