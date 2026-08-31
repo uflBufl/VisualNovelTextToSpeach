@@ -81,6 +81,15 @@ chapter creates incremental work and reuses compatible voice decisions, source
 audio and WAVs. Cancellation leaves the last fully published pack active. A new
 pack replaces it only after full preflight and an atomic settings update.
 
+The initial selection boundary stores `job.json` under the application data
+directory. Its deterministic identity binds the exact story-index SHA-256 and
+ordered selected story IDs. It also stores the exact selected line IDs and a
+player-level estimate. Reopening the same content restores the newest compatible
+selection; damaged or conflicting state is ignored for discovery and rejected
+for explicit resume. Known discovery locations are bounded to the configured
+story index and the extractor's platform application-data output. A file chooser
+is the recovery path; VNTTS never scans arbitrary user directories.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

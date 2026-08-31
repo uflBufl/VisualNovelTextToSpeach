@@ -11,11 +11,11 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Add `Prepare offline audio` to the main application and implement a guided,
-      resumable wizard. It must discover supported game content, let the user
-      select stories/chapters, estimate line count/time/disk, and resume the same
-      job after cancellation or restart. Do not expose workspaces, manifests,
-      queue IDs, model IDs, seeds, retries or publication commands.
+- [ ] Continue the existing `Prepare offline audio` flow from its durable story
+      selection into voice matching, generation progress and final activation.
+      Preserve cancellation/restart resume throughout and keep workspaces,
+      manifests, queue IDs, model IDs, seeds, retries and publication commands
+      out of the player UI.
 - [ ] Introduce a stable game-content importer boundary. For Reverse: 1999 it
       must invoke or embed the supported extractor through a versioned artifact
       contract, auto-discover the installed game when possible, and otherwise

@@ -65,11 +65,33 @@ class ControlDashboardTest(unittest.TestCase):
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {
                 "Reading",
+                "Offline audio",
                 "Playback",
                 "Sequence-first story cursor",
                 "Setup and support",
             },
         )
+        dashboard.deleteLater()
+
+    def test_offline_audio_is_a_visible_player_action(self):
+        dashboard = ControlDashboard(AppSettings())
+        requests = []
+        dashboard.pregeneration_requested.connect(
+            lambda: requests.append("pregeneration")
+        )
+        dashboard.show()
+        self.application.processEvents()
+
+        self.assertTrue(dashboard.prepare_audio_button.isVisibleTo(dashboard))
+        self.assertIn(
+            "guided defaults",
+            dashboard.prepare_audio_button.accessibleDescription(),
+        )
+
+        dashboard.prepare_audio_button.click()
+
+        self.assertEqual(requests, ["pregeneration"])
+        dashboard.close()
         dashboard.deleteLater()
 
     def test_primary_reading_surface_hides_technical_details_by_default(self):

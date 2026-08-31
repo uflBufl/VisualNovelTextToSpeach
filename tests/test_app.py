@@ -86,6 +86,10 @@ class TrayApplicationTest(unittest.TestCase):
             "Review uncertain OCR...",
         )
         self.assertEqual(
+            tray_application.pregeneration_action.text(),
+            "Prepare offline audio...",
+        )
+        self.assertEqual(
             tray_application.assets_action.text(),
             "Manage models and voices...",
         )
@@ -109,6 +113,34 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_offline_audio_action_opens_guided_selection_and_reports_saved_scope(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        job = Mock()
+        job.estimate.selected_lines = 42
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.job.return_value = job
+
+        with patch(
+            "vntts.app.OfflineAudioPreparationDialog",
+            return_value=dialog,
+        ) as create_dialog:
+            result = tray_application.open_pregeneration()
+
+        self.assertIs(result, job)
+        create_dialog.assert_called_once_with(
+            tray_application.settings,
+            parent=tray_application.dashboard,
+        )
+        self.assertIn("42 lines", tray_application.dashboard.status.text())
+        self.assertIn("Voice matching", tray_application.dashboard.status.text())
+        tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):
         controller = Mock()

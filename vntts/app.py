@@ -72,6 +72,7 @@ from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -1120,6 +1121,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_dialog = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = None
+        self.pregeneration_dialog = None
         self.support_dialog = None
         self.unknown_speaker_prompt = None
         self.unknown_speaker_choose_button = None
@@ -1164,6 +1166,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.profiles_action = QAction("Game profiles...")
         self.corrections_action = QAction("OCR corrections...")
         self.ocr_review_action = QAction("Review uncertain OCR...")
+        self.pregeneration_action = QAction("Prepare offline audio...")
         self.setup_action = QAction("Run setup...")
         self.assets_action = QAction("Manage models and voices...")
         self.voice_preview_action = QAction("Choose narrator voice...")
@@ -1214,6 +1217,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addAction(self.profiles_action)
         self.menu.addAction(self.corrections_action)
         self.menu.addAction(self.ocr_review_action)
+        self.menu.addAction(self.pregeneration_action)
         self.menu.addAction(self.setup_action)
         self.menu.addAction(self.assets_action)
         self.menu.addAction(self.voice_preview_action)
@@ -1248,6 +1252,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.profiles_action.triggered.connect(self.open_profiles)
         self.corrections_action.triggered.connect(self.open_corrections)
         self.ocr_review_action.triggered.connect(self.open_ocr_review)
+        self.pregeneration_action.triggered.connect(self.open_pregeneration)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
@@ -1298,6 +1303,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.skip_requested.connect(self.skip_current_speech)
         self.dashboard.repeat_requested.connect(self.repeat_last_speech)
         self.dashboard.stop_requested.connect(self.emergency_stop)
+        self.dashboard.pregeneration_requested.connect(self.open_pregeneration)
         self.dashboard.readiness_requested.connect(self.open_readiness)
         self.dashboard.calibration_requested.connect(self.calibrate)
         self.dashboard.voices_requested.connect(self.open_voice_previews)
@@ -1975,6 +1981,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "to reopen it or quit.",
             QSystemTrayIcon.MessageIcon.Information,
         )
+
+    def open_pregeneration(self):
+        dialog = OfflineAudioPreparationDialog(self.settings, parent=self.dashboard)
+        self.pregeneration_dialog = dialog
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.pregeneration_dialog = None
+            return None
+        job = dialog.job()
+        self.pregeneration_dialog = None
+        if job is None:
+            return None
+        self.set_status(
+            f"Offline preparation saved for {job.estimate.selected_lines} lines. "
+            "Voice matching is the next step."
+        )
+        return job
 
     def open_readiness(self):
         if self.readiness_dialog is None:

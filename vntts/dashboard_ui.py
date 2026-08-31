@@ -31,6 +31,7 @@ class ControlDashboard(QMainWindow):
     skip_requested = Signal()
     repeat_requested = Signal()
     stop_requested = Signal()
+    pregeneration_requested = Signal()
     readiness_requested = Signal()
     calibration_requested = Signal()
     voices_requested = Signal()
@@ -146,6 +147,20 @@ class ControlDashboard(QMainWindow):
         reading.addWidget(self.live_button, 2)
         reading.addWidget(self.read_button)
 
+        offline_group = QGroupBox("Offline audio")
+        offline = QHBoxLayout(offline_group)
+        offline_description = QLabel(
+            "Prepare selected stories locally for faster, character-aware playback."
+        )
+        offline_description.setWordWrap(True)
+        offline.addWidget(offline_description, 1)
+        self.prepare_audio_button = QPushButton("Prepare offline audio...")
+        self.prepare_audio_button.setAccessibleDescription(
+            "Choose stories and prepare their voices locally with guided defaults"
+        )
+        self.prepare_audio_button.clicked.connect(self.pregeneration_requested.emit)
+        offline.addWidget(self.prepare_audio_button)
+
         self.sequence_state = QLabel("Unavailable")
         self.sequence_position = QLabel("-")
         self.sequence_identity = QLabel("-")
@@ -236,6 +251,7 @@ class ControlDashboard(QMainWindow):
         layout.addWidget(card)
         layout.addWidget(self.action_reason)
         layout.addWidget(reading_group)
+        layout.addWidget(offline_group)
         layout.addWidget(transport_group)
         layout.addWidget(self.details_toggle)
         layout.addWidget(self.details_content)
