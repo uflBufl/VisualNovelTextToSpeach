@@ -79,10 +79,16 @@ fallback, and atomic publication. Settings, profile edits, and voice assignments
 are published to the running application only after their durable write succeeds;
 write failures leave the previous in-memory state active and are reported in the
 UI. A failed settings write also restores the prior macOS login-item state. On
-first launch, complete the setup
-wizard to select the game, verify OCR and audio, calibrate the dialogue area,
-and run an OCR-to-speech test. Use **Manage models and voices** in the app to
-download or verify the speech model and import local character voice references.
+first launch, start the game in windowed or borderless mode, select its
+discovered window, let the wizard verify OCR and audio, calibrate the dialogue
+area, and run one OCR-to-speech test. The default Pocket TTS path does not
+require choosing a model or voice manifest. A game pack is optional; when
+supplied, one verified file configures story-aware reading, character voices and
+pregenerated audio. Technical choices remain under **Advanced options**. After
+the successful test, choose **Finish setup**, then **Start live reading** on the
+dashboard; setup does not start playback automatically. Use **Manage models and
+voices** in the app to download or verify the speech model and import local
+character voice references.
 The Character voices tab also lets you Browse to an existing active manifest
 and checksum-validate it inline before Save; an invalid path remains selected
 for correction instead of being reported in a separate modal dialog.

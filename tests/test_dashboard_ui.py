@@ -56,7 +56,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(dashboard.live_button.isEnabled())
         self.assertIn("Speech model failed to load", dashboard.action_reason.text())
-        self.assertIn("Check readiness", dashboard.action_reason.text())
+        self.assertIn("Setup and diagnostics", dashboard.action_reason.text())
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
         )
@@ -70,6 +70,63 @@ class ControlDashboardTest(unittest.TestCase):
                 "Setup and support",
             },
         )
+        dashboard.deleteLater()
+
+    def test_primary_reading_surface_hides_technical_details_by_default(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.show()
+        self.application.processEvents()
+
+        self.assertTrue(dashboard.dialogue.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
+
+        dashboard.details_toggle.click()
+
+        self.assertTrue(dashboard.details_content.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.configuration.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.details_toggle.text(), "Hide technical details")
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_setup_surface_keeps_one_primary_entry_until_expanded(self):
+        dashboard = ControlDashboard(AppSettings())
+        requests = []
+        dashboard.readiness_requested.connect(lambda: requests.append("readiness"))
+        dashboard.show()
+        self.application.processEvents()
+
+        self.assertTrue(dashboard.setup_primary_button.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.setup_more_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
+
+        dashboard.setup_primary_button.click()
+        dashboard.setup_more_button.click()
+
+        self.assertEqual(requests, ["readiness"])
+        self.assertTrue(dashboard.setup_secondary_content.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.setup_more_button.text(), "Fewer setup options")
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_sequence_diagnostics_are_available_inside_technical_details(self):
+        dashboard = ControlDashboard(
+            AppSettings(
+                live_sequence_mode="audio-manual",
+                live_sequence_plan="live-sequence.json",
+                story_index="story-index.jsonl",
+            )
+        )
+        dashboard.show()
+        self.application.processEvents()
+
+        self.assertFalse(dashboard.sequence_group.isVisibleTo(dashboard))
+
+        dashboard.details_toggle.click()
+
+        self.assertTrue(dashboard.sequence_group.isVisibleTo(dashboard))
+        dashboard.close()
         dashboard.deleteLater()
 
     def test_primary_live_action_is_keyboard_operable(self):

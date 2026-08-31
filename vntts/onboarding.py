@@ -59,12 +59,13 @@ class OnboardingDiagnostics:
         status = self.permission_status_provider()
         screen_capture = status.get("screen_capture")
         accessibility = status.get("accessibility")
+        needs_accessibility = _auto_advance_requires_accessibility(settings)
         if screen_capture is None and accessibility is None:
             return None
         missing = []
         if screen_capture is False:
             missing.append("Screen Recording for game capture")
-        if accessibility is False and settings.auto_advance_enabled:
+        if accessibility is False and needs_accessibility:
             missing.append("Accessibility for auto advance")
         if missing:
             return DiagnosticResult(
@@ -74,9 +75,7 @@ class OnboardingDiagnostics:
                 "under System Settings -> Privacy & Security, then restart it.",
                 "permissions",
             )
-        if screen_capture is None or (
-            settings.auto_advance_enabled and accessibility is None
-        ):
+        if screen_capture is None or (needs_accessibility and accessibility is None):
             return DiagnosticResult(
                 "macOS permissions",
                 "warning",
@@ -84,7 +83,7 @@ class OnboardingDiagnostics:
                 "permissions",
             )
         message = "Screen Recording is granted"
-        if settings.auto_advance_enabled:
+        if needs_accessibility:
             message += " and Accessibility is granted"
         return DiagnosticResult("macOS permissions", "ok", message)
 
@@ -231,6 +230,14 @@ def probe_audio_output():
     if isinstance(device, dict):
         return device.get("name") or "Default output device"
     return getattr(device, "name", None) or str(device)
+
+
+def _auto_advance_requires_accessibility(settings):
+    if not settings.auto_advance_enabled:
+        return False
+    if settings.live_sequence_mode == "audio-auto":
+        return bool(settings.story_index and settings.live_sequence_plan)
+    return settings.live_sequence_mode != "audio-manual"
 
 
 def get_model_cache_path(model_name):

@@ -2401,6 +2401,39 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.status_action.text(), "Setup required")
         tray_application.shutdown()
 
+    def test_successful_onboarding_returns_to_focused_start_action_without_playing(
+        self,
+    ):
+        controller = Mock()
+        controller.is_ready = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=False),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.run_onboarding()
+        wizard = tray_application.onboarding_wizard
+        wizard.test_page.set_result(True, "Success. Recognized Rhiannon: Hello.")
+
+        with patch(
+            "vntts.settings.AppSettings.save",
+            return_value=Path("settings.json"),
+        ):
+            wizard.accept()
+            self.application.processEvents()
+
+        self.assertIsNone(tray_application.onboarding_wizard)
+        self.assertTrue(tray_application.dashboard.isVisible())
+        self.assertIs(
+            tray_application.dashboard.focusWidget(),
+            tray_application.dashboard.live_button,
+        )
+        self.assertIn(
+            "Next: click Start live reading", tray_application.status_action.text()
+        )
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
+
     def test_onboarding_test_runs_controller_end_to_end(self):
         class ImmediateThread:
             def __init__(self, *, target, daemon):

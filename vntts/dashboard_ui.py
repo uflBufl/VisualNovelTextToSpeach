@@ -97,6 +97,16 @@ class ControlDashboard(QMainWindow):
         details.addRow("OCR confidence", self.confidence)
         details.addRow("Latest latency", self.latency)
         details.addRow("Configuration", self.configuration)
+        self.details_content = QWidget()
+        self.details_layout = QVBoxLayout(self.details_content)
+        self.details_layout.setContentsMargins(0, 0, 0, 0)
+        self.details_layout.addLayout(details)
+        self.details_toggle = QPushButton("Show technical details")
+        self.details_toggle.setCheckable(True)
+        self.details_toggle.setAccessibleDescription(
+            "Show or hide voice, audio source, OCR, latency and configuration details"
+        )
+        self.details_toggle.toggled.connect(self._set_details_expanded)
 
         self.read_button = QPushButton("Read current dialogue")
         self.live_button = QPushButton("Start live reading")
@@ -161,6 +171,7 @@ class ControlDashboard(QMainWindow):
         sequence_layout.addWidget(self.sequence_guidance)
         sequence_layout.addWidget(self.sequence_expected_button)
         sequence_layout.addWidget(self.sequence_resync_button)
+        self.details_layout.addWidget(self.sequence_group)
 
         transport_group = QGroupBox("Playback")
         transport = QHBoxLayout(transport_group)
@@ -170,24 +181,42 @@ class ControlDashboard(QMainWindow):
         transport.addStretch()
         transport.addWidget(self.stop_button)
 
-        setup_buttons = (
-            ("Check readiness", self.readiness_requested),
+        setup_group = QGroupBox("Setup and support")
+        setup = QVBoxLayout(setup_group)
+        setup_primary = QHBoxLayout()
+        self.setup_primary_button = QPushButton("Setup and diagnostics...")
+        self.setup_primary_button.setAccessibleDescription(
+            "Check readiness and open the direct fix for any setup problem"
+        )
+        self.setup_primary_button.clicked.connect(self.readiness_requested.emit)
+        setup_primary.addWidget(self.setup_primary_button, 1)
+        self.setup_more_button = QPushButton("More setup options")
+        self.setup_more_button.setCheckable(True)
+        self.setup_more_button.setAccessibleDescription(
+            "Show or hide calibration, voice, support and settings shortcuts"
+        )
+        setup_primary.addWidget(self.setup_more_button)
+        setup.addLayout(setup_primary)
+        self.setup_secondary_content = QWidget()
+        setup_secondary = QHBoxLayout(self.setup_secondary_content)
+        setup_secondary.setContentsMargins(0, 0, 0, 0)
+        self.setup_buttons = [self.setup_primary_button, self.setup_more_button]
+        for label, signal in (
             ("Calibrate capture", self.calibration_requested),
             ("Narrator voice", self.voices_requested),
-            ("Diagnostics and logs", self.diagnostics_requested),
+            ("Support and logs", self.diagnostics_requested),
             ("Settings", self.settings_requested),
-        )
-        setup_group = QGroupBox("Setup and support")
-        setup = QHBoxLayout(setup_group)
-        self.setup_buttons = []
-        for label, signal in setup_buttons:
+        ):
             button = QPushButton(label)
             button.clicked.connect(signal.emit)
-            setup.addWidget(button)
+            setup_secondary.addWidget(button)
             self.setup_buttons.append(button)
         quit_button = QPushButton("Quit VNTTS")
         quit_button.clicked.connect(self.request_quit)
-        setup.addWidget(quit_button)
+        setup_secondary.addWidget(quit_button)
+        self.setup_buttons.append(quit_button)
+        setup.addWidget(self.setup_secondary_content)
+        self.setup_more_button.toggled.connect(self._set_setup_expanded)
 
         card = QFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
@@ -204,12 +233,12 @@ class ControlDashboard(QMainWindow):
         self.compact_button.clicked.connect(self.compact_requested.emit)
         header.addWidget(self.compact_button)
         layout.addLayout(header)
-        layout.addLayout(details)
         layout.addWidget(card)
-        layout.addWidget(self.sequence_group)
         layout.addWidget(self.action_reason)
         layout.addWidget(reading_group)
         layout.addWidget(transport_group)
+        layout.addWidget(self.details_toggle)
+        layout.addWidget(self.details_content)
         layout.addWidget(setup_group)
 
         self.content_scroll = QScrollArea()
@@ -220,8 +249,30 @@ class ControlDashboard(QMainWindow):
         )
         self.content_scroll.setWidget(central)
         self.setCentralWidget(self.content_scroll)
+        self._set_details_expanded(False)
+        self._set_setup_expanded(False)
         self.set_ready(False)
         self.set_configuration(settings)
+
+    def _set_details_expanded(self, expanded):
+        expanded = bool(expanded)
+        self.details_toggle.blockSignals(True)
+        self.details_toggle.setChecked(expanded)
+        self.details_toggle.setText(
+            "Hide technical details" if expanded else "Show technical details"
+        )
+        self.details_toggle.blockSignals(False)
+        self.details_content.setVisible(expanded)
+
+    def _set_setup_expanded(self, expanded):
+        expanded = bool(expanded)
+        self.setup_more_button.blockSignals(True)
+        self.setup_more_button.setChecked(expanded)
+        self.setup_more_button.setText(
+            "Fewer setup options" if expanded else "More setup options"
+        )
+        self.setup_more_button.blockSignals(False)
+        self.setup_secondary_content.setVisible(expanded)
 
     def set_configuration(self, settings):
         self.keep_running_on_close = settings.keep_running_on_close
@@ -325,7 +376,7 @@ class ControlDashboard(QMainWindow):
         if not self._ready:
             self._set_action_reason(
                 f"Reading controls are unavailable: {message}. "
-                "Run Check readiness or open Settings to recover."
+                "Open Setup and diagnostics to recover."
             )
 
     def set_dialogue(self, speaker, text):
@@ -356,7 +407,7 @@ class ControlDashboard(QMainWindow):
             self._set_action_reason(
                 reason
                 or "Reading controls are unavailable while VNTTS is starting. "
-                "Run Check readiness if this does not clear."
+                "Open Setup and diagnostics if this does not clear."
             )
 
     def _set_action_reason(self, message):

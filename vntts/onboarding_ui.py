@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
 from vntts.calibration import show_calibration_overlay
+from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
     HotkeyValidationError,
@@ -55,12 +57,17 @@ def _add_composite_form_row(form, label_text, field, field_layout):
 
 
 class ConfigurationPage(QWizardPage):
-    def __init__(self, settings):
+    def __init__(self, settings, *, window_loader=list_windows):
         super().__init__()
         self.original_settings = settings
         self.flow = None
+        self.window_loader = window_loader
+        self.windows_refreshed = False
         self.setTitle("Configure the game and speech engine")
-        self.setSubTitle("These values can be changed later from the tray menu.")
+        self.setSubTitle(
+            "Recommended setup only needs the running game window. "
+            "Technical controls are available under Advanced options."
+        )
 
         self.capture_mode = QComboBox()
         self.capture_mode.setSizePolicy(
@@ -95,6 +102,31 @@ class ConfigurationPage(QWizardPage):
         self.window_layout.setContentsMargins(0, 0, 0, 0)
         self.window_layout.addWidget(self.game_window, 1)
         self.window_layout.addWidget(self.refresh_button)
+        self.window_help = QLabel(
+            "Start the game in windowed or borderless mode, then select it here."
+        )
+        self.window_help.setWordWrap(True)
+        self.game_pack = QLineEdit(settings.game_pack or "")
+        self.game_pack.setAccessibleName("Game pack")
+        self.game_pack.setAccessibleDescription(
+            "Optional verified pack that configures story, voices and generated audio"
+        )
+        self.game_pack_button = QPushButton("Browse...")
+        self.game_pack_button.setAccessibleName("Browse for game pack")
+        self.game_pack_button.setAccessibleDescription(
+            "Choose an optional verified VNTTS game-pack JSON file"
+        )
+        self.game_pack_button.setMinimumWidth(120)
+        self.game_pack_button.clicked.connect(self.browse_game_pack)
+        self.game_pack_layout = QHBoxLayout()
+        self.game_pack_layout.setContentsMargins(0, 0, 0, 0)
+        self.game_pack_layout.addWidget(self.game_pack, 1)
+        self.game_pack_layout.addWidget(self.game_pack_button)
+        self.game_pack_help = QLabel(
+            "Optional: one verified game pack configures character voices, "
+            "pregenerated audio and story-aware reading."
+        )
+        self.game_pack_help.setWordWrap(True)
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
@@ -196,39 +228,71 @@ class ConfigurationPage(QWizardPage):
         self.validation_summary.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.addRow("Capture source", self.capture_mode)
-        _add_composite_form_row(
-            form, "Game window", self.game_window, self.window_layout
+        recommended_form = QFormLayout()
+        recommended_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
-        form.addRow("Read once hotkey", self.read_hotkey)
-        form.addRow("Live reading hotkey", self.live_hotkey)
-        if sys.platform == "darwin":
-            form.addRow("macOS controls", self.macos_hotkey_notice)
-        form.addRow("Speech engine", self.speech_backend)
-        form.addRow("TTS model", self.tts_model)
-        form.addRow("OCR language", self.ocr_language)
-        form.addRow("TTS language", self.tts_language)
+        recommended_form.addRow("Capture source", self.capture_mode)
         _add_composite_form_row(
-            form,
+            recommended_form, "Game window", self.game_window, self.window_layout
+        )
+        recommended_form.addRow("", self.window_help)
+        _add_composite_form_row(
+            recommended_form,
+            "Game pack (optional)",
+            self.game_pack,
+            self.game_pack_layout,
+        )
+        recommended_form.addRow("", self.game_pack_help)
+
+        advanced_form = QFormLayout()
+        advanced_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        advanced_form.addRow("Read once hotkey", self.read_hotkey)
+        advanced_form.addRow("Live reading hotkey", self.live_hotkey)
+        if sys.platform == "darwin":
+            advanced_form.addRow("macOS controls", self.macos_hotkey_notice)
+        advanced_form.addRow("Speech engine", self.speech_backend)
+        advanced_form.addRow("TTS model", self.tts_model)
+        advanced_form.addRow("OCR language", self.ocr_language)
+        advanced_form.addRow("TTS language", self.tts_language)
+        _add_composite_form_row(
+            advanced_form,
             "Narrator reference",
             self.narrator_reference,
             self.narrator_reference_layout,
         )
         _add_composite_form_row(
-            form, "Voice manifest", self.voice_manifest, self.manifest_layout
+            advanced_form,
+            "Voice manifest",
+            self.voice_manifest,
+            self.manifest_layout,
         )
-        form.addRow("Narrator speaker", self.narrator_speaker)
-        form.addRow("", self.terms)
-        form.addRow("", self.license_label)
-        form.addRow("", self.pocket_gated_model)
-        form.addRow("", self.pocket_terms_label)
-        form.addRow("Assets", self.manage_assets_button)
+        advanced_form.addRow("Narrator speaker", self.narrator_speaker)
+        advanced_form.addRow("", self.terms)
+        advanced_form.addRow("", self.license_label)
+        advanced_form.addRow("", self.pocket_gated_model)
+        advanced_form.addRow("", self.pocket_terms_label)
+        advanced_form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
-            form.addRow("Permissions", self.macos_permissions_button)
+            advanced_form.addRow("Permissions", self.macos_permissions_button)
+
+        self.advanced_content = QWidget()
+        self.advanced_content.setLayout(advanced_form)
+        self.advanced_toggle = QPushButton("Show advanced options")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setAccessibleDescription(
+            "Show or hide speech engine, language, voice and keyboard settings"
+        )
+        self.advanced_toggle.toggled.connect(self._set_advanced_expanded)
         form_content = QWidget()
-        form_content.setLayout(form)
+        form_layout = QVBoxLayout(form_content)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.addLayout(recommended_form)
+        form_layout.addWidget(self.advanced_toggle)
+        form_layout.addWidget(self.advanced_content)
+        form_layout.addStretch()
         self.configuration_scroll = QScrollArea()
         self.configuration_scroll.setWidgetResizable(True)
         self.configuration_scroll.setHorizontalScrollBarPolicy(
@@ -247,19 +311,63 @@ class ConfigurationPage(QWizardPage):
         self.update_capture_controls()
         self.update_backend_controls()
         self.update_terms_control()
+        self._set_advanced_expanded(settings.speech_backend != "pocket-tts")
         self.update_validation_summary()
 
-    def refresh_windows(self):
+    def initializePage(self):
+        if self.windows_refreshed:
+            return
+        self.windows_refreshed = True
+        self.refresh_windows(show_error=False)
+
+    def refresh_windows(self, _checked=False, *, show_error=True):
         selected = self.game_window.currentText().strip()
         try:
-            windows = list_windows()
+            windows = self.window_loader()
         except WindowCaptureError as error:
-            QMessageBox.warning(self, "Window capture unavailable", str(error))
+            self.window_help.setText(
+                "Windows could not be listed automatically. Enter the exact game "
+                "window title or use Refresh after granting capture permission."
+            )
+            if show_error:
+                QMessageBox.warning(self, "Window capture unavailable", str(error))
             return
+        titles = tuple(
+            dict.fromkeys(window.title for window in windows if window.title)
+        )
+        self.game_window.blockSignals(True)
         self.game_window.clear()
-        self.game_window.addItems(window.title for window in windows)
+        self.game_window.addItems(titles)
         if selected:
             self.game_window.setCurrentText(selected)
+        self.game_window.blockSignals(False)
+        self.window_help.setText(
+            f"Found {len(titles)} capturable window(s). Select the running game."
+            if titles
+            else "No capturable windows found. Start the game in windowed or "
+            "borderless mode, then press Refresh."
+        )
+        self.update_validation_summary()
+
+    def browse_game_pack(self):
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose optional game pack",
+            self.game_pack.text(),
+            "VNTTS game packs (*.json);;All files (*)",
+        )
+        if path:
+            self.game_pack.setText(path)
+
+    def _set_advanced_expanded(self, expanded):
+        expanded = bool(expanded)
+        self.advanced_toggle.blockSignals(True)
+        self.advanced_toggle.setChecked(expanded)
+        self.advanced_toggle.setText(
+            "Hide advanced options" if expanded else "Show advanced options"
+        )
+        self.advanced_toggle.blockSignals(False)
+        self.advanced_content.setVisible(expanded)
 
     def browse_voice_manifest(self):
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -339,6 +447,7 @@ class ConfigurationPage(QWizardPage):
             field.textChanged.connect(self.update_validation_summary)
         self.capture_mode.currentIndexChanged.connect(self.update_validation_summary)
         self.game_window.currentTextChanged.connect(self.update_validation_summary)
+        self.game_pack.textChanged.connect(self.update_validation_summary)
         self.speech_backend.currentIndexChanged.connect(self.update_validation_summary)
         self.terms.toggled.connect(self.update_validation_summary)
 
@@ -399,12 +508,18 @@ class ConfigurationPage(QWizardPage):
                 "Narrator reference: choose a recording or assign an imported "
                 "character voice to Narrator before using MOSS-TTS.",
             )
+        game_pack = self.game_pack.text().strip()
         manifest = self.voice_manifest.text().strip()
-        if manifest and not Path(manifest).expanduser().is_file():
+        if not game_pack and manifest and not Path(manifest).expanduser().is_file():
             add(
                 self.voice_manifest,
                 "Voice manifest: the selected file does not exist.",
             )
+        if game_pack:
+            try:
+                apply_game_pack(self._base_settings(), game_pack)
+            except (GamePackError, OSError) as error:
+                add(self.game_pack, f"Game pack: {error}.")
         return tuple(errors)
 
     def update_validation_summary(self, *_args):
@@ -424,6 +539,8 @@ class ConfigurationPage(QWizardPage):
         errors = self.update_validation_summary()
         if errors:
             widget, _message = errors[0]
+            if self.advanced_content.isAncestorOf(widget):
+                self._set_advanced_expanded(True)
             self.configuration_scroll.ensureWidgetVisible(widget, 0, 16)
             widget.setFocus(Qt.FocusReason.OtherFocusReason)
             return False
@@ -431,7 +548,7 @@ class ConfigurationPage(QWizardPage):
         self.flow.draft_settings = self.settings()
         return True
 
-    def settings(self):
+    def _base_settings(self):
         def optional_text(widget):
             return widget.text().strip() or None
 
@@ -441,6 +558,7 @@ class ConfigurationPage(QWizardPage):
                 **asdict(self.original_settings),
                 "capture_mode": self.capture_mode.currentData(),
                 "game_window_title": self.game_window.currentText().strip() or None,
+                "game_pack": optional_text(self.game_pack),
                 "read_hotkey": hotkeys["Read once"],
                 "live_hotkey": hotkeys["Live reading"],
                 "speech_backend": self.speech_backend.currentData(),
@@ -455,6 +573,10 @@ class ConfigurationPage(QWizardPage):
             }
         )
 
+    def settings(self):
+        settings = self._base_settings()
+        return apply_game_pack(settings) if settings.game_pack else settings
+
     def hotkey_assignments(self):
         return {
             "Read once": self.read_hotkey.hotkey(),
@@ -468,6 +590,7 @@ class DiagnosticsPage(QWizardPage):
         self.diagnostics = diagnostics
         self.flow = None
         self.complete = False
+        self.diagnostic_results = ()
         self.runner = LatestTaskRunner(self)
         self.runner.finished.connect(self._checks_finished)
         self.setTitle("Check required components")
@@ -478,6 +601,20 @@ class DiagnosticsPage(QWizardPage):
         self.progress.setRange(0, 0)
         self.progress.hide()
         self.results = QListWidget()
+        self.results.setAccessibleName("Setup diagnostic results")
+        self.results.itemSelectionChanged.connect(self._update_remediation)
+        self.remediation_reason = QLabel()
+        self.remediation_reason.setWordWrap(True)
+        self.remediation_reason.setAccessibleName("Selected setup issue guidance")
+        self.remediation_button = QPushButton("Fix selected issue")
+        self.remediation_button.setEnabled(False)
+        self.remediation_button.setAccessibleDescription(
+            "Open the most direct available action for the selected setup issue"
+        )
+        self.remediation_button.clicked.connect(self._run_remediation)
+        remediation = QHBoxLayout()
+        remediation.addWidget(self.remediation_reason, 1)
+        remediation.addWidget(self.remediation_button)
         actions = QHBoxLayout()
         self.retry_button = QPushButton("Run checks again")
         self.retry_button.clicked.connect(self.start_checks)
@@ -491,6 +628,7 @@ class DiagnosticsPage(QWizardPage):
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
         layout.addWidget(self.results)
+        layout.addLayout(remediation)
         layout.addLayout(actions)
 
     def initializePage(self):
@@ -499,11 +637,13 @@ class DiagnosticsPage(QWizardPage):
     def start_checks(self):
         self.runner.cancel()
         self.results.clear()
+        self.diagnostic_results = ()
         self.complete = False
         self.status.setText("Checking OCR, audio, permissions, and speech assets...")
         self.progress.show()
         self.retry_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self._update_remediation()
         self.completeChanged.emit()
         self.runner.start(self.diagnostics.run, self.flow.draft_settings)
 
@@ -511,10 +651,12 @@ class DiagnosticsPage(QWizardPage):
         if not self.runner.cancel():
             return
         self.complete = False
+        self.diagnostic_results = ()
         self.progress.hide()
         self.retry_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.status.setText("Checks cancelled. Run them again to continue.")
+        self._update_remediation()
         self.completeChanged.emit()
 
     def cleanupPage(self):
@@ -526,13 +668,16 @@ class DiagnosticsPage(QWizardPage):
         self.cancel_button.setEnabled(False)
         if error is not None:
             self.complete = False
+            self.diagnostic_results = ()
             self.results.clear()
             self.results.addItem(f"[ERROR] Diagnostics failed: {error}")
             self.status.setText("Checks failed. Fix the error or run them again.")
+            self._update_remediation()
             self.completeChanged.emit()
             return
-        self.complete = all(result.passed for result in diagnostics)
-        for result in diagnostics:
+        self.diagnostic_results = tuple(diagnostics)
+        self.complete = all(result.passed for result in self.diagnostic_results)
+        for result in self.diagnostic_results:
             prefix = {
                 "ok": "[OK]",
                 "warning": "[WARNING]",
@@ -544,7 +689,70 @@ class DiagnosticsPage(QWizardPage):
             if self.complete
             else "Checks complete with errors that must be fixed."
         )
+        preferred_row = next(
+            (
+                row
+                for row, result in enumerate(self.diagnostic_results)
+                if result.status == "error"
+            ),
+            next(
+                (
+                    row
+                    for row, result in enumerate(self.diagnostic_results)
+                    if result.status == "warning" and result.remediation
+                ),
+                0 if self.diagnostic_results else None,
+            ),
+        )
+        if preferred_row is not None:
+            self.results.setCurrentRow(preferred_row)
+        self._update_remediation()
         self.completeChanged.emit()
+
+    def _selected_result(self):
+        row = self.results.currentRow()
+        if row < 0 or row >= len(self.diagnostic_results):
+            return None
+        return self.diagnostic_results[row]
+
+    def _update_remediation(self):
+        result = self._selected_result()
+        if result is None or result.status == "ok":
+            self.remediation_reason.setText(
+                "Select a warning or error to see the next action."
+            )
+            self.remediation_button.setEnabled(False)
+            self.remediation_button.setText("Fix selected issue")
+            return
+        self.remediation_reason.setText(result.message)
+        labels = {
+            "settings": "Open setup options",
+            "voices": "Manage models and voices",
+            "permissions": "Open macOS permissions",
+        }
+        self.remediation_button.setText(
+            labels.get(result.remediation, "Show installation help")
+        )
+        self.remediation_button.setEnabled(True)
+
+    def _run_remediation(self):
+        result = self._selected_result()
+        if result is None or result.status == "ok":
+            return
+        if result.remediation == "permissions":
+            self.flow.configuration_page.open_macos_permissions()
+            return
+        if result.remediation in {"settings", "voices"}:
+            self.flow.show_page(1)
+            self.flow.configuration_page._set_advanced_expanded(True)
+            if result.remediation == "voices":
+                QTimer.singleShot(0, self.flow.configuration_page.manage_assets)
+            return
+        self.remediation_reason.setText(
+            f"{result.message} Install the missing component using the "
+            "Requirements section in the VNTTS README, then run checks again."
+        )
+        self.remediation_button.setEnabled(False)
 
     def isComplete(self):
         return self.complete
@@ -692,7 +900,14 @@ class EndToEndTestPage(QWizardPage):
         self.progress.setRange(0, 100)
         if successful:
             self.progress.setValue(100)
-        self.status.setText(message)
+        self.status.setText(
+            f"{message}\n\nSetup is ready. Finish setup, then use Start live reading."
+            if successful
+            else message
+        )
+        self.button.setText(
+            "Run test again" if successful else "Run OCR-to-speech test"
+        )
         self.completeChanged.emit()
 
     def isComplete(self):
@@ -709,6 +924,8 @@ class OnboardingWizard(QDialog):
         *,
         diagnostics=None,
         capture_target_factory=WindowCaptureTarget,
+        window_loader=list_windows,
+        auto_discover_windows=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -719,6 +936,11 @@ class OnboardingWizard(QDialog):
         self.completed_settings = None
         self.pages = []
         self.current_page_index = 0
+        self.auto_discover_windows = (
+            QApplication.platformName() != "offscreen"
+            if auto_discover_windows is None
+            else bool(auto_discover_windows)
+        )
 
         welcome = QWizardPage()
         welcome.setTitle("Set up Visual Novel Text to Speech")
@@ -731,7 +953,10 @@ class OnboardingWizard(QDialog):
         welcome_layout.addWidget(welcome_text)
         welcome_layout.addStretch()
 
-        self.configuration_page = ConfigurationPage(settings)
+        self.configuration_page = ConfigurationPage(
+            settings,
+            window_loader=window_loader,
+        )
         self.diagnostics_page = DiagnosticsPage(diagnostics or OnboardingDiagnostics())
         self.calibration_page = CalibrationPage(capture_target_factory)
         self.test_page = EndToEndTestPage()
@@ -760,7 +985,11 @@ class OnboardingWizard(QDialog):
         self.page_subtitle.setWordWrap(True)
         self.back_button = QPushButton("Back")
         self.next_button = QPushButton("Next")
-        self.finish_button = QPushButton("Done")
+        self.finish_button = QPushButton("Finish setup")
+        self.finish_button.setDefault(True)
+        self.finish_button.setAccessibleDescription(
+            "Save setup and return to the dashboard without starting playback"
+        )
         self.cancel_button = QPushButton("Cancel")
         self.back_button.clicked.connect(self.previous_page)
         self.next_button.clicked.connect(self.next_page)
@@ -795,7 +1024,11 @@ class OnboardingWizard(QDialog):
         self.page_title.setText(page.title())
         self.page_subtitle.setText(page.subTitle())
         initializer = getattr(page, "initializePage", None)
-        if callable(initializer) and self.current_page_index:
+        if (
+            callable(initializer)
+            and self.current_page_index
+            and (page is not self.configuration_page or self.auto_discover_windows)
+        ):
             initializer()
         self.update_navigation()
 

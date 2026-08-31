@@ -53,8 +53,13 @@ class DurableSettingsMixin:
         self.settings = candidate
         self.controller.apply_settings(candidate)
         self.set_ready(self.controller.is_ready)
-        self.set_status(f"Setup completed; settings saved to {path}")
         wizard.deleteLater()
+        self.show_dashboard()
+        self.dashboard.live_button.setFocus()
+        self.set_status(
+            f"Setup completed; settings saved to {path}. "
+            "Next: click Start live reading."
+        )
         self.signals.hotkeys_requested.emit()
 
     def _save_compact_preference(self, enabled):

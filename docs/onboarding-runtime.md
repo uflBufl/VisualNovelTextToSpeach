@@ -1,5 +1,42 @@
 # Onboarding runtime behavior
 
+## First-run contract
+
+The recommended first run is intentionally usable without knowledge of OCR
+engines, model identifiers, manifests or sequence plans:
+
+1. Start the game in windowed or borderless mode.
+2. Select its automatically discovered window. A manually entered title is
+   preserved across refreshes.
+3. Optionally select one verified game-pack JSON. The pack is fully preflighted
+   before any draft setting changes; when valid it supplies story, character
+   voices, pregenerated audio and the sequence plan as one atomic configuration.
+4. Let diagnostics verify capture, OCR, audio and speech. The first blocking
+   result is selected and exposes one direct remediation action. External tools
+   that cannot be repaired in-app point to the Requirements documentation.
+5. Calibrate the dialogue region, run one explicit OCR-to-speech test, then
+   choose `Finish setup`.
+
+Pocket TTS is the recommended default. Hotkeys, backend/model selection,
+language codes, narrator references, voice manifests and gated-model terms are
+available under `Advanced options`; they do not block or dominate that default
+path. A game pack is optional, so a new user can validate basic live narration
+with only a selected window.
+
+`Finish setup` saves the validated draft and returns to the dashboard with
+`Start live reading` focused. It never replays the test line, starts capture or
+sends an auto-advance key. The dashboard keeps status, current dialogue and
+reading/playback controls visible. Technical telemetry and sequence-cursor state
+are collapsed under `Show technical details`; specialist setup shortcuts are
+collapsed under `More setup options` behind the single `Setup and diagnostics`
+entry.
+
+The default `audio-auto` value is dormant until both a story index and sequence
+plan are loaded. Dormant auto advance does not trigger an Accessibility
+permission request because the runtime has no action it can perform. Screen
+Recording is still required for window capture. Once an actionable automatic
+sequence is configured, Accessibility becomes a blocking diagnostic on macOS.
+
 The end-to-end OCR-to-speech test has one cancellation scope across model
 download, backend startup and OCR/playback. The page exposes `Cancel test`,
 switches to `Cancelling...`, and disables wizard back/close navigation until the
