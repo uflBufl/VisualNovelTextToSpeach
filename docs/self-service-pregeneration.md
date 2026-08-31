@@ -156,6 +156,11 @@ through the manifest control instead of attempting to hash the preset name as a
 path. With the default Pocket backend, a user who has no character voice pack can
 therefore prepare a selected story entirely with embedded `alba` narrator speech.
 MOSS and every cloning route still require real checksum-bound reference audio.
+Pocket's effective generation profile is always its supported `default` profile,
+even when an older saved application setting or resumable plan says `stable`.
+This keeps the first pass and the exact automatic live-fallback evidence on the
+same provider/model/profile identity; otherwise one failed Pocket line could
+block finalization despite all audio work having completed.
 
 The selection dialog runs voice planning and private-input publication as two
 consecutive background phases before reporting success. Content and selection
@@ -241,3 +246,12 @@ backend journey proves all of the following:
 - no per-line listening is required on the default path;
 - a verified local game pack is published and activated atomically; and
 - the existing expert authoring tools can still explain every automatic route.
+
+The zero-ambiguity synthetic acceptance journey exercises this chain with the
+real job, voice-plan, private-input, recovery, acceptance, publication and
+activation components. One Pocket-style render succeeds and one reaches its
+typed limit; the latter becomes an explicit live fallback. The test then opens
+the completed result through the desktop action, saves `prefer-generated`, and
+verifies that the pack is active without exposing authoring vocabulary or asking
+for per-line review. The remaining acceptance extension is an actual ambiguous
+voice audition plus interruption/resume at that user decision.

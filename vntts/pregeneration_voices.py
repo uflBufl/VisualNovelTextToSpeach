@@ -230,7 +230,7 @@ class VoicePlanStore:
             synthesis_backend=settings.speech_backend,
             synthesis_model=settings.tts_model,
             synthesis_language=settings.tts_language,
-            synthesis_profile=settings.tts_profile,
+            synthesis_profile=controls["profile"],
             synthesis_controls_sha256=controls_sha256,
             groups=groups,
         )
@@ -445,7 +445,11 @@ def _synthesis_controls(settings):
         "backend": settings.speech_backend,
         "model": settings.tts_model,
         "language": settings.tts_language,
-        "profile": settings.tts_profile,
+        "profile": (
+            "default"
+            if settings.speech_backend == "pocket-tts"
+            else settings.tts_profile
+        ),
         "narrator_speaker": settings.narrator_speaker,
         "narrator_reference": _path_identity(settings.tts_speaker_wav),
     }

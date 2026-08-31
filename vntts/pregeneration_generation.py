@@ -106,6 +106,11 @@ class OfflineGenerationWorker:
             raise OfflineGenerationError("Offline generation input identity changed")
         if retries is None:
             retries = 0 if voice_plan.synthesis_backend == "pocket-tts" else 2
+        generation_profile = (
+            "default"
+            if voice_plan.synthesis_backend == "pocket-tts"
+            else voice_plan.synthesis_profile
+        )
         arguments = [
             *self.command(),
             "generate",
@@ -118,7 +123,7 @@ class OfflineGenerationWorker:
             "--backend",
             voice_plan.synthesis_backend,
             "--generation-profile",
-            voice_plan.synthesis_profile,
+            generation_profile,
             "--narrator-character",
             "Narrator",
             "--retries",

@@ -203,6 +203,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(hotelier.resolution, "automatic-narrator-fallback")
             self.assertEqual(unknown.resolution, "narrator-dialogue")
             self.assertEqual(plan.audition_count, 0)
+            self.assertEqual(plan.synthesis_profile, "default")
 
     def test_saved_alias_assignment_is_reused_automatically(self):
         with TemporaryDirectory() as temporary_directory:

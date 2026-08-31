@@ -45,6 +45,8 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       generation -> automatic repairs/fallback -> atomically activate the pack.
       Acceptance requires every selected dialogue line to have a terminal route,
       zero authoring vocabulary in the default UI and no mandatory per-line review.
+  - [ ] Extend the same journey with one persisted ambiguous-voice audition and
+        an interrupt/resume boundary after the minimal audition UI exists.
 
 ## P1 - Improve the self-service generation engine
 

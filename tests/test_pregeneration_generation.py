@@ -137,6 +137,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         arguments = popen.call_args.args[0]
         retries = arguments.index("--retries")
         self.assertEqual(arguments[retries + 1], "0")
+        profile = arguments.index("--generation-profile")
+        self.assertEqual(arguments[profile + 1], "default")
 
     def test_repair_scopes_one_typed_batch_without_regenerating_successes(self):
         with TemporaryDirectory() as temporary_directory:
