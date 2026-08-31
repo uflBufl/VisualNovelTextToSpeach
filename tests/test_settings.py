@@ -224,6 +224,7 @@ class SettingsTest(unittest.TestCase):
             settings = AppSettings(
                 onboarding_completed=True,
                 xtts_terms_accepted=True,
+                pocket_gated_model_accepted=True,
                 read_hotkey="<ctrl>+r",
                 pause_hotkey="<ctrl>+p",
                 skip_hotkey="<ctrl>+s",

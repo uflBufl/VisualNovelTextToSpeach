@@ -324,6 +324,21 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.validatePage())
         wizard.deleteLater()
 
+    def test_configuration_defaults_pocket_to_public_presets_and_persists_opt_in(self):
+        wizard = OnboardingWizard(AppSettings(speech_backend="pocket-tts"))
+        page = wizard.configuration_page
+        wizard.show_page(1)
+        wizard.show()
+
+        self.assertTrue(page.pocket_gated_model.isVisibleTo(wizard))
+        self.assertFalse(page.pocket_gated_model.isChecked())
+        self.assertFalse(page.terms.isVisibleTo(wizard))
+
+        page.pocket_gated_model.setChecked(True)
+
+        self.assertTrue(page.settings().pocket_gated_model_accepted)
+        wizard.deleteLater()
+
     def test_configuration_scrolls_at_scaled_fonts(self):
         base_font = QApplication.font()
         base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0

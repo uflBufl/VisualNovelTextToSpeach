@@ -414,6 +414,10 @@ class RuntimeLifecycleComponent:
                 "narrator_reference": narrator_reference,
                 "volume": controller.settings.output_volume_percent / 100,
             }
+            if controller.settings.speech_backend == "pocket-tts":
+                backend_options["allow_gated_model_access"] = (
+                    controller.settings.pocket_gated_model_accepted
+                )
             if getattr(backend_factory, "supports_startup_cancellation", False) is True:
                 backend_options["startup_cancellation"] = controller.shutdown_requested
             if controller.settings.speech_backend == "moss-tts":

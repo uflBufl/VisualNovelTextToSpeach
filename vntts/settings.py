@@ -10,7 +10,7 @@ from vntts.application_directories import get_config_directory, get_local_data_d
 from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-settings_schema_version = 25
+settings_schema_version = 26
 
 audio_source_policies = {
     "live-tts-only",
@@ -39,6 +39,7 @@ restart_required_setting_names = (
     "tts_speaker_wav",
     "voice_manifest",
     "narrator_speaker",
+    "pocket_gated_model_accepted",
 )
 
 
@@ -55,6 +56,7 @@ class AppSettings:
     schema_version: int = settings_schema_version
     onboarding_completed: bool = False
     xtts_terms_accepted: bool = False
+    pocket_gated_model_accepted: bool = False
     read_hotkey: str = field(default_factory=lambda: default_hotkey("h"))
     live_hotkey: str = field(default_factory=lambda: default_hotkey("l"))
     pause_hotkey: str = field(default_factory=lambda: default_hotkey("p"))
@@ -188,6 +190,7 @@ class AppSettings:
         boolean_fields = (
             "onboarding_completed",
             "xtts_terms_accepted",
+            "pocket_gated_model_accepted",
             "retain_uncertain_frames",
             "warm_up_voices",
             "launch_at_login",

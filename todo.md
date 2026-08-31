@@ -97,12 +97,9 @@ intentional omission as distinct terminal authorities.
 
 - [ ] Make release packages able to run the backend they recommend by default.
   - Follow [`docs/release-speech-runtime.md`](docs/release-speech-runtime.md).
-    Add an explicit first-run choice between the public preset-only Pocket model
-    and authenticated gated voice-cloning access. Show the upstream terms before
-    enabling credentials, retain repository/revision/checksum evidence, and keep
-    frozen workers token-free until the user opts in. Do not bundle gated weights
-    or unclear/non-commercial voices without a release-owner approval covering
-    those exact files.
+    Retain repository/revision/checksum evidence for every downloaded model and
+    voice. Do not bundle gated weights or unclear/non-commercial voices without
+    a release-owner approval covering those exact files.
   - Extend the now-contained package self-test from runtime imports to an actual
     clean-cache Pocket render with non-empty PCM. Record model and selected voice
     origins/revisions/checksums as well as interpreter/module origins; the render

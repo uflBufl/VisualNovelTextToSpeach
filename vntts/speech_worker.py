@@ -490,6 +490,7 @@ class IsolatedSpeechBackend:
         startup_cancellation=None,
         playback_latency=None,
         generation_profile=None,
+        allow_gated_model_access=False,
         **worker_options,
     ):
         self.name = backend
@@ -527,6 +528,7 @@ class IsolatedSpeechBackend:
         self.playback_latency = playback_latency or (
             "high" if backend == "chatterbox-nano" else "low"
         )
+        self.allow_gated_model_access = bool(allow_gated_model_access)
         self.worker_options = worker_options
         self.runtime_root, self.interpreter, self.runtime_site = _runtime_paths(
             backend, runtime_directory
@@ -568,7 +570,11 @@ class IsolatedSpeechBackend:
         ]
         environment = dict(os.environ)
         environment["PYTHONNOUSERSITE"] = "1"
-        if self.name == "pocket-tts" and self.bundle_root is not None:
+        if (
+            self.name == "pocket-tts"
+            and self.bundle_root is not None
+            and not self.allow_gated_model_access
+        ):
             environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
             environment.pop("HF_TOKEN", None)
             environment.pop("HUGGING_FACE_HUB_TOKEN", None)

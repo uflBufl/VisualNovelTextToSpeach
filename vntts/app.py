@@ -75,6 +75,10 @@ from vntts.package_self_test import run_package_self_test
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
+from vntts.release_backends import (
+    packaged_speech_backend_available,
+    speech_backend_options,
+)
 from vntts.release_smoke_test import (
     default_smoke_test_model,
     run_release_smoke_test,
@@ -238,19 +242,13 @@ class SettingsDialog(QDialog):
         window_layout.addWidget(refresh_windows_button)
         self.tts_model = QLineEdit(settings.tts_model or "")
         self.speech_backend = QComboBox()
-        self.speech_backend.addItem(
-            "Pocket TTS (default streaming)",
-            "pocket-tts",
-        )
-        self.speech_backend.addItem("XTTS (compatible)", "coqui-xtts")
-        self.speech_backend.addItem(
-            "Chatterbox Nano (faster English CPU)",
-            "chatterbox-nano",
-        )
-        self.speech_backend.addItem(
-            "MOSS-TTS v1.5 (high quality, Apple Silicon)",
-            "moss-tts",
-        )
+        for label, backend, available in speech_backend_options(
+            settings.speech_backend
+        ):
+            self.speech_backend.addItem(label, backend)
+            if not available:
+                item = self.speech_backend.model().item(self.speech_backend.count() - 1)
+                item.setEnabled(False)
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
@@ -361,6 +359,20 @@ class SettingsDialog(QDialog):
         self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
+        self.pocket_gated_model = QCheckBox(
+            "Enable authenticated voice cloning after accepting upstream terms"
+        )
+        self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
+        self.pocket_gated_model.setAccessibleDescription(
+            "Unchecked uses the public preset-only Pocket model. Checked permits "
+            "the isolated worker to use explicitly configured Hugging Face credentials."
+        )
+        self.pocket_terms_label = QLabel(
+            "Public presets need no account. Voice cloning requires access to the "
+            '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket model terms</a>.'
+        )
+        self.pocket_terms_label.setWordWrap(True)
+        self.pocket_terms_label.setOpenExternalLinks(True)
 
         (
             screenshot_layout,
@@ -525,6 +537,8 @@ class SettingsDialog(QDialog):
         speech_form.addRow("Narrator speaker (restart required)", self.narrator_speaker)
         speech_form.addRow("Voice profile", self.tts_profile)
         speech_form.addRow("XTTS license", self.xtts_terms)
+        speech_form.addRow("", self.pocket_gated_model)
+        speech_form.addRow("", self.pocket_terms_label)
 
         playback_form = QFormLayout()
         playback_form.addRow("Output volume", self.output_volume)
@@ -785,6 +799,14 @@ class SettingsDialog(QDialog):
             and not self.xtts_terms.isChecked()
         ):
             add(2, self.xtts_terms, "XTTS license: accept the CPML terms.")
+        backend = self.speech_backend.currentData()
+        if not packaged_speech_backend_available(backend):
+            add(
+                2,
+                self.speech_backend,
+                f"Speech engine: {backend} is not included in this application "
+                "package. Choose an available engine.",
+            )
         narrator_assignment = find_voice_assignment(
             self.original_settings.voice_assignments,
             "Narrator",
@@ -913,10 +935,16 @@ class SettingsDialog(QDialog):
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
 
     def update_terms_control(self):
-        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
+        backend = self.speech_backend.currentData()
+        uses_xtts = backend == "coqui-xtts"
+        uses_pocket = backend == "pocket-tts"
         self.xtts_terms.setEnabled(
             uses_xtts and "xtts" in self.tts_model.text().casefold()
         )
+        self.xtts_terms.setVisible(uses_xtts)
+        self.pocket_gated_model.setEnabled(uses_pocket)
+        self.pocket_gated_model.setVisible(uses_pocket)
+        self.pocket_terms_label.setVisible(uses_pocket)
 
     def update_speech_backend_controls(self):
         backend = self.speech_backend.currentData()
@@ -1004,6 +1032,7 @@ class SettingsDialog(QDialog):
                 "launch_at_login": self.launch_at_login.isChecked(),
                 "keep_running_on_close": self.keep_running_on_close.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
+                "pocket_gated_model_accepted": (self.pocket_gated_model.isChecked()),
             }
         )
 

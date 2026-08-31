@@ -161,11 +161,24 @@ class ConfigurationPage(QWizardPage):
         )
         self.terms = QCheckBox("I agree to the non-commercial CPML terms used by XTTS")
         self.terms.setChecked(settings.xtts_terms_accepted)
-
         self.license_label = QLabel(
             '<a href="https://coqui.ai/cpml">Read the Coqui Public Model License</a>'
         )
         self.license_label.setOpenExternalLinks(True)
+        self.pocket_gated_model = QCheckBox(
+            "Enable authenticated Pocket voice cloning after accepting upstream terms"
+        )
+        self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
+        self.pocket_gated_model.setAccessibleDescription(
+            "Unchecked uses the public preset-only Pocket model. Checked permits "
+            "the isolated worker to use explicitly configured Hugging Face credentials."
+        )
+        self.pocket_terms_label = QLabel(
+            "Public presets need no account. Voice cloning requires access to the "
+            '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket model terms</a>.'
+        )
+        self.pocket_terms_label.setWordWrap(True)
+        self.pocket_terms_label.setOpenExternalLinks(True)
         self.manage_assets_button = QPushButton("Download model or import voices...")
         self.manage_assets_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -209,6 +222,8 @@ class ConfigurationPage(QWizardPage):
         form.addRow("Narrator speaker", self.narrator_speaker)
         form.addRow("", self.terms)
         form.addRow("", self.license_label)
+        form.addRow("", self.pocket_gated_model)
+        form.addRow("", self.pocket_terms_label)
         form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
             form.addRow("Permissions", self.macos_permissions_button)
@@ -281,10 +296,15 @@ class ConfigurationPage(QWizardPage):
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
 
     def update_terms_control(self):
-        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
+        backend = self.speech_backend.currentData()
+        uses_xtts = backend == "coqui-xtts"
+        uses_pocket = backend == "pocket-tts"
         self.terms.setEnabled(uses_xtts)
         self.terms.setVisible(uses_xtts)
         self.license_label.setVisible(uses_xtts)
+        self.pocket_gated_model.setEnabled(uses_pocket)
+        self.pocket_gated_model.setVisible(uses_pocket)
+        self.pocket_terms_label.setVisible(uses_pocket)
 
     def update_backend_controls(self):
         backend = self.speech_backend.currentData()
@@ -431,6 +451,7 @@ class ConfigurationPage(QWizardPage):
                 "voice_manifest": optional_text(self.voice_manifest),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "xtts_terms_accepted": self.terms.isChecked(),
+                "pocket_gated_model_accepted": (self.pocket_gated_model.isChecked()),
             }
         )
 

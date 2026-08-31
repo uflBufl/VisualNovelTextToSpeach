@@ -1077,8 +1077,12 @@ class TrayApplicationTest(unittest.TestCase):
         dialog = SettingsDialog(AppSettings(speech_backend="pocket-tts"))
 
         self.assertEqual(dialog.speech_backend.currentData(), "pocket-tts")
-        self.assertIn("default", dialog.speech_backend.currentText().casefold())
+        self.assertIn("recommended", dialog.speech_backend.currentText().casefold())
         self.assertFalse(dialog.speech_rate.isEnabled())
+        self.assertTrue(dialog.pocket_gated_model.isVisibleTo(dialog))
+        self.assertFalse(dialog.pocket_gated_model.isChecked())
+        dialog.pocket_gated_model.setChecked(True)
+        self.assertTrue(dialog.settings().pocket_gated_model_accepted)
         dialog.deleteLater()
 
     def test_settings_select_explicit_audio_source_policy(self):

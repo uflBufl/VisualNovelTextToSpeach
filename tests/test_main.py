@@ -1173,6 +1173,7 @@ class MainTest(unittest.TestCase):
             registry,
             narrator_reference=None,
             volume=1.0,
+            allow_gated_model_access=False,
         )
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
@@ -1207,6 +1208,34 @@ class MainTest(unittest.TestCase):
 
         self.assertIs(received["registry"], registry)
         self.assertIs(received["startup_cancellation"], controller.shutdown_requested)
+        self.assertFalse(received["allow_gated_model_access"])
+        controller.shutdown()
+
+    def test_controller_explicitly_allows_pocket_gated_model_access(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "Pocket TTS default"
+        backend.capabilities.concurrent_prepare_and_play = False
+        pocket_factory = Mock(return_value=backend)
+        registry = Mock()
+        with (
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(
+                    speech_backend="pocket-tts",
+                    pocket_gated_model_accepted=True,
+                ),
+                pocket_backend_factory=pocket_factory,
+                model_asset_manager_factory=Mock(),
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertTrue(pocket_factory.call_args.kwargs["allow_gated_model_access"])
         controller.shutdown()
 
     def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):

@@ -44,12 +44,18 @@ voice checksums, license texts, attribution and prohibited-use notice in the
 release evidence. An approval for one revision does not automatically cover a
 new upstream model or voice.
 
-Until the application has an explicit gated-access consent flow, a frozen Pocket
-worker strips inherited Hugging Face tokens and disables implicit-token use. The
-upstream loader can then use its public preset-only model fallback, but it cannot
-silently turn a developer login into approval to download voice-cloning weights.
-Source/development workers retain their explicitly configured Hugging Face
-environment.
+Onboarding and Settings default Pocket to its public preset-only model and link
+to the upstream access terms. A frozen Pocket worker strips inherited Hugging
+Face tokens and disables implicit-token use unless the user explicitly enables
+authenticated voice-cloning access. Enabling that option is restart-required and
+permits only credentials already configured for the application process; the
+project does not persist a token in its settings file. Source/development workers
+retain their explicitly configured Hugging Face environment.
+
+The package UI must offer only speech backends whose runtime is present. A
+previously saved but unavailable backend may remain visible as a disabled item so
+the state can be diagnosed, but it cannot pass validation or become the active
+release configuration.
 
 ## Technical release gate
 
