@@ -108,10 +108,6 @@ intentional omission as distinct terminal authorities.
       packaged path without source-tree assumptions, and make package self-test
       initialize and render through the effective default backend on a clean
       machine without uv, a checkout or backend environment variables.
-- [ ] Make the static-typing ratchet non-shrinkable. Store a versioned minimum
-      checked-module inventory outside the mutable mypy configuration and fail
-      CI when `tool.mypy.files` stops being a superset; retire an entry only via
-      an explicit reviewed schema/version change.
 - [ ] Close maintainability-ratchet false negatives and stale ceilings:
   - treat `TryStar`/`except*` branches like `Try` in complexity accounting;
   - detect module-alias private access such as

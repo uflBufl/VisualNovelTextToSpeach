@@ -1,8 +1,12 @@
 # Scoped static typing ratchet
 
 Static typing is introduced as a narrow CI ratchet rather than a repository-wide
-conversion. `pyproject.toml` owns the authoritative `mypy` file list and the
-macOS quality job runs it with the locked development dependencies.
+conversion. `pyproject.toml` owns the active `mypy` file list and the macOS
+quality job runs it with the locked development dependencies. The independent
+versioned minimum in `tests/fixtures/mypy-scope-v1.json` prevents that mutable
+configuration from silently shrinking: CI requires `tool.mypy.files` to remain
+a superset. Removing a minimum entry requires an explicit baseline schema or
+version change; adding configured modules does not require baseline churn.
 
 The initial scope covers one runtime boundary from each high-value category:
 

@@ -36,7 +36,9 @@ jobs:
         run: uv run --frozen ruff check .
 
       - name: Check scoped static types
-        run: uv run --frozen mypy
+        run: |
+          uv run --frozen python scripts/check_mypy_scope.py
+          uv run --frozen mypy
 
       - name: Check maintainability ratchets
         run: uv run --frozen python scripts/check_maintainability.py

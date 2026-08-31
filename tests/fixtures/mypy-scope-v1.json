@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "minimum_files": [
+    "vntts/authoring/cli_dispatch.py",
+    "vntts/game_pack.py",
+    "vntts/live_speech.py",
+    "vntts/playback.py",
+    "vntts/speech_worker_messages.py",
+    "vntts/synthesis.py"
+  ]
+}
