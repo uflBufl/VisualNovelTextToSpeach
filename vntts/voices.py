@@ -497,6 +497,7 @@ def _read_owned_voice_reference(root, reference):
 
 def read_voice_reference_bytes(voice, reference):
     """Read one declared reference without following or racing path links."""
+
     def canonical_parent_path(value):
         value = Path(value).expanduser().absolute()
         return value.parent.resolve() / value.name

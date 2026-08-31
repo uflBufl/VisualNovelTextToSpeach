@@ -137,9 +137,7 @@ class ConfigurationApplyMixin:
         )
         if launch_changed:
             try:
-                self._configure_macos_launch_at_login(
-                    updated_settings.launch_at_login
-                )
+                self._configure_macos_launch_at_login(updated_settings.launch_at_login)
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return

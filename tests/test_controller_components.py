@@ -185,9 +185,13 @@ class ControllerComponentsTest(unittest.TestCase):
         }
         violations = []
         for method in controller.body:
-            if not isinstance(method, ast.FunctionDef) or not method.name.startswith("_"):
+            if not isinstance(method, ast.FunctionDef) or not method.name.startswith(
+                "_"
+            ):
                 continue
-            for call in (node for node in ast.walk(method) if isinstance(node, ast.Call)):
+            for call in (
+                node for node in ast.walk(method) if isinstance(node, ast.Call)
+            ):
                 target = call.func
                 if (
                     isinstance(target, ast.Attribute)

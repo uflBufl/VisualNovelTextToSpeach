@@ -341,10 +341,10 @@ class RuntimeLifecycleComponent:
         use_xtts = controller.settings.speech_backend == "coqui-xtts"
         controller.status_handler(
             {
-            "coqui-xtts": "Loading TTS model...",
-            "chatterbox-nano": "Loading Chatterbox Nano...",
-            "moss-tts": "Loading MOSS-TTS...",
-            "pocket-tts": "Loading Pocket TTS...",
+                "coqui-xtts": "Loading TTS model...",
+                "chatterbox-nano": "Loading Chatterbox Nano...",
+                "moss-tts": "Loading MOSS-TTS...",
+                "pocket-tts": "Loading Pocket TTS...",
             }[controller.settings.speech_backend]
         )
         if not self._initialize_backend(use_xtts):
@@ -414,10 +414,7 @@ class RuntimeLifecycleComponent:
                 "narrator_reference": narrator_reference,
                 "volume": controller.settings.output_volume_percent / 100,
             }
-            if (
-                getattr(backend_factory, "supports_startup_cancellation", False)
-                is True
-            ):
+            if getattr(backend_factory, "supports_startup_cancellation", False) is True:
                 backend_options["startup_cancellation"] = controller.shutdown_requested
             if controller.settings.speech_backend == "moss-tts":
                 backend_options.update(
@@ -442,9 +439,7 @@ class RuntimeLifecycleComponent:
             if controller.voice_router is None:
                 controller._stop_tts()
                 return False
-            controller.speech_backend = XTTSVoiceRouterBackend(
-                controller.voice_router
-            )
+            controller.speech_backend = XTTSVoiceRouterBackend(controller.voice_router)
         else:
             controller.voice_router = controller.tts
             controller.speech_backend = controller.tts
@@ -642,9 +637,7 @@ class RuntimeLifecycleComponent:
             controller.correction_dictionary,
         )
         live_configuration = controller._get_live_configuration()
-        controller.live_reader.interval_seconds = live_configuration[
-            "interval_seconds"
-        ]
+        controller.live_reader.interval_seconds = live_configuration["interval_seconds"]
         controller.live_reader.tracker_options = live_configuration["tracker_options"]
         controller.live_reader.require_visible_auto_advance = (
             controller.settings.live_sequence_mode == "audio-auto"
@@ -676,9 +669,7 @@ class RuntimeLifecycleComponent:
 
     def cancel_settings_apply(self, cancellation: Any) -> bool:
         reader = self.controller.live_reader
-        release_waiters = (
-            reader.release_waiters if reader is not None else lambda: None
-        )
+        release_waiters = reader.release_waiters if reader is not None else lambda: None
         return self.settings_apply_guard.cancel(cancellation, release_waiters)
 
     def shutdown(self) -> Any:

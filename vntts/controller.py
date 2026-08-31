@@ -321,7 +321,9 @@ class AppController:
         return self.runtime_lifecycle.start()
 
     def apply_settings(self, settings, *, cancellation=None):
-        return self.runtime_lifecycle.apply_settings(settings, cancellation=cancellation)
+        return self.runtime_lifecycle.apply_settings(
+            settings, cancellation=cancellation
+        )
 
     def cancel_settings_apply(self, cancellation):
         return self.runtime_lifecycle.cancel_settings_apply(cancellation)

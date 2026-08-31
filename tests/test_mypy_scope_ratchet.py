@@ -44,9 +44,7 @@ class MypyScopeRatchetTest(unittest.TestCase):
             baseline = self._write(
                 root,
                 "baseline.json",
-                json.dumps(
-                    {"schema_version": 1, "minimum_files": ["vntts/a.py"]}
-                ),
+                json.dumps({"schema_version": 1, "minimum_files": ["vntts/a.py"]}),
             )
             config = self._write(
                 root,
