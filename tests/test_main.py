@@ -3968,19 +3968,20 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.live_reader.toggle.return_value = True
-        controller._unresolved_live_speakers_impl = Mock(
-            side_effect=[("Selone",), (), ()]
-        )
+        with patch.object(
+            type(controller.voice_assignments),
+            "unresolved_live_speakers",
+            side_effect=[("Selone",), (), ()],
+        ):
+            self.assertFalse(controller.toggle_live())
+            controller.approve_live_narrator_fallbacks(["Selone"])
 
-        self.assertFalse(controller.toggle_live())
-        controller.approve_live_narrator_fallbacks(["Selone"])
+            self.assertFalse(controller.toggle_live())
+            self.assertEqual(controller.next_live_narrator_fallback_names, {})
+            self.assertIn("scope changed", statuses[-1])
+            controller.live_reader.toggle.assert_not_called()
 
-        self.assertFalse(controller.toggle_live())
-        self.assertEqual(controller.next_live_narrator_fallback_names, {})
-        self.assertIn("scope changed", statuses[-1])
-        controller.live_reader.toggle.assert_not_called()
-
-        self.assertTrue(controller.toggle_live())
+            self.assertTrue(controller.toggle_live())
         controller.live_reader.toggle.assert_called_once_with()
 
     def test_live_mode_uses_playback_safe_backend_threads(self):

@@ -222,6 +222,7 @@ class ControllerComponentsTest(unittest.TestCase):
             "_available_voice_choices_impl",
             "_voice_assignment_for_impl",
             "_preview_voice_choice_impl",
+            "_unresolved_live_speakers_impl",
             "_stop_voice_preview_impl",
             "_allow_narrator_fallback_impl",
             "_approve_live_narrator_fallbacks_impl",

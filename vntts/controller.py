@@ -810,7 +810,7 @@ class AppController:
                 f"invalid: {self.live_speaker_corpus_error}"
             )
             return False
-        unresolved = self._unresolved_live_speakers_impl()
+        unresolved = self.voice_assignments.unresolved_live_speakers()
         if unresolved is None:
             if self.live_speaker_corpus_error:
                 self.status_handler(
@@ -843,32 +843,6 @@ class AppController:
             f"Narrator for {', '.join(unresolved)}"
         )
         return False
-
-    def _unresolved_live_speakers_impl(self):
-        """Return scoped named speakers, or ``None`` until the chapter is known."""
-        scope = self.chapter_voice_preloader.live_voice_preflight_rows()
-        if not self.chapter_voice_preloader.dialogue:
-            if self.live_speaker_corpus_error:
-                return None
-            if self.live_speaker_corpus is not None:
-                scope = self.live_speaker_corpus.speakers
-        if scope is None:
-            return None
-        unresolved = []
-        seen = set()
-        for line in scope:
-            character = str(getattr(line, "speaker", line) or "").strip()
-            text = getattr(line, "text", None)
-            key = normalize_character_name(character)
-            if key in seen or not self._speaker_requires_voice_decision(
-                character,
-                text,
-                live_preflight=True,
-            ):
-                continue
-            seen.add(key)
-            unresolved.append(character)
-        return tuple(unresolved)
 
     def _load_live_speaker_corpus(self):
         self.live_speaker_corpus = None

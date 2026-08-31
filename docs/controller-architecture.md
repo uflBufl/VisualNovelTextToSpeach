@@ -29,9 +29,9 @@ emergency stop and auto-advance setting. The larger story-scope and session
 toggle state machines remain behind explicit private callbacks until their state
 is moved as a coherent unit.
 `VoiceAssignmentComponent` owns voice inventory, assignment mutations,
-narrator-fallback staging and voice preview lifecycle. Scoped preflight
-discovery is still callback-backed until its chapter/corpus source state moves
-with it.
+narrator-fallback staging, scoped chapter/corpus preflight discovery and voice
+preview lifecycle. Backend preview, narrator application and cache invalidation
+remain injected low-level collaborators rather than parallel public operations.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New

@@ -80,8 +80,11 @@ class _LiveSessionPort(Protocol):
 
 
 class _VoiceAssignmentPort(Protocol):
+    chapter_voice_preloader: Any
     is_ready: bool
     is_live_running: bool
+    live_speaker_corpus: Any
+    live_speaker_corpus_error: Any
     narrator_fallback_names: dict[str, str]
     next_live_narrator_fallback_names: dict[str, str]
     speech_backend: Any
@@ -94,8 +97,6 @@ class _VoiceAssignmentPort(Protocol):
     narrator_fallback_speakers: set[str]
     status_handler: Callable[[str], Any]
 
-    def _unresolved_live_speakers_impl(self) -> Any: ...
-
     def _apply_narrator_voice(self, voice: Any) -> Any: ...
 
     def _clear_voice_runtime_cache(self) -> Any: ...
@@ -103,6 +104,14 @@ class _VoiceAssignmentPort(Protocol):
     def _preview_voice(self, character: str, text: str) -> Any: ...
 
     def _preview_voice_choice(self, choice: Any, text: str) -> Any: ...
+
+    def _speaker_requires_voice_decision(
+        self,
+        character: str,
+        text: str | None,
+        *,
+        live_preflight: bool = False,
+    ) -> bool: ...
 
 
 class _DiagnosticsPort(Protocol):
@@ -521,7 +530,30 @@ class VoiceAssignmentComponent:
         return True
 
     def unresolved_live_speakers(self) -> Any:
-        return self.controller._unresolved_live_speakers_impl()
+        controller = self.controller
+        scope = controller.chapter_voice_preloader.live_voice_preflight_rows()
+        if not controller.chapter_voice_preloader.dialogue:
+            if controller.live_speaker_corpus_error:
+                return None
+            if controller.live_speaker_corpus is not None:
+                scope = controller.live_speaker_corpus.speakers
+        if scope is None:
+            return None
+        unresolved = []
+        seen: set[str] = set()
+        for line in scope:
+            character = str(getattr(line, "speaker", line) or "").strip()
+            text = getattr(line, "text", None)
+            key = normalize_character_name(character)
+            if key in seen or not controller._speaker_requires_voice_decision(
+                character,
+                text,
+                live_preflight=True,
+            ):
+                continue
+            seen.add(key)
+            unresolved.append(character)
+        return tuple(unresolved)
 
     def approve_narrator_fallbacks(self, characters: Any) -> Any:
         controller = self.controller
