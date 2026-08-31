@@ -103,11 +103,10 @@ class _VoiceAssignmentPort(Protocol):
 
 
 class _DiagnosticsPort(Protocol):
-    def _get_capture_geometry_impl(self) -> Any: ...
-
-    def _get_latest_diagnostic_impl(self) -> Any: ...
-
-    def _get_live_pipeline_metrics_impl(self) -> Any: ...
+    capture_target: Any
+    diagnostic_lock: Any
+    last_diagnostic: Any
+    live_reader: Any
 
     def _inspect_current_dialog_impl(self, *, notify: bool = True) -> Any: ...
 
@@ -369,13 +368,16 @@ class DiagnosticsComponent:
     controller: _DiagnosticsPort
 
     def capture_geometry(self) -> Any:
-        return self.controller._get_capture_geometry_impl()
+        target = self.controller.capture_target
+        return None if target is None else target.get_geometry()
 
     def latest(self) -> Any:
-        return self.controller._get_latest_diagnostic_impl()
+        with self.controller.diagnostic_lock:
+            return self.controller.last_diagnostic
 
     def pipeline_metrics(self) -> Any:
-        return self.controller._get_live_pipeline_metrics_impl()
+        reader = self.controller.live_reader
+        return None if reader is None else reader.get_pipeline_metrics()
 
     def inspect_current_dialog(self, *, notify: bool = True) -> Any:
         return self.controller._inspect_current_dialog_impl(notify=notify)

@@ -20,7 +20,9 @@ assignment. `controller_components.py` is part of the non-shrinkable mypy scope.
 This keeps the existing cancellation, routing, callback and thread-safety
 behavior intact while separating the application entry points by responsibility.
 Stateful implementation methods are private and are not a supported caller
-surface.
+surface. `DiagnosticsComponent` already owns the read-only capture-geometry,
+latest-snapshot and pipeline-metrics implementations directly; these are no
+longer proxy callbacks on `AppController`.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New

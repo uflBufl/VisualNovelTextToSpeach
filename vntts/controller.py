@@ -1106,20 +1106,6 @@ class AppController:
     def _replay_dialog_impl(self, character, text):
         return self._preview_voice_impl(character, text)
 
-    def _get_capture_geometry_impl(self):
-        if self.capture_target is None:
-            return None
-        return self.capture_target.get_geometry()
-
-    def _get_latest_diagnostic_impl(self):
-        with self.diagnostic_lock:
-            return self.last_diagnostic
-
-    def _get_live_pipeline_metrics_impl(self):
-        if self.live_reader is None:
-            return None
-        return self.live_reader.get_pipeline_metrics()
-
     def _inspect_current_dialog_impl(self, *, notify=True):
         registry = self.voice_router.registry if self.voice_router is not None else None
         snapshots = []
@@ -2929,7 +2915,7 @@ class AppController:
         *,
         notify=True,
     ):
-        pipeline_metrics = self._get_live_pipeline_metrics_impl()
+        pipeline_metrics = self.diagnostics.pipeline_metrics()
         snapshot = replace(
             snapshot,
             capture_interval_ms=self.capture_interval_ms,
