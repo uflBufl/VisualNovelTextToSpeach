@@ -2661,10 +2661,19 @@ def main(argv=None):
         default=default_smoke_test_model,
     )
     parser.add_argument("--release-smoke-test-expected-speaker")
+    parser.add_argument(
+        "--game-content-import-worker",
+        choices=("reverse1999",),
+        help=argparse.SUPPRESS,
+    )
     arguments, qt_arguments = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
     )
     configure_bundled_dependencies()
+    if arguments.game_content_import_worker == "reverse1999":
+        from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
+
+        return reverse1999_bootstrap_main(qt_arguments)
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
     if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:

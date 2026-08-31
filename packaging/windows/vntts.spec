@@ -41,6 +41,11 @@ binaries.extend(
 )
 hidden_imports = collect_submodules("transformers.models.gpt2")
 
+provider_datas, provider_binaries, provider_imports = collect_all("r1999extractor")
+datas.extend(provider_datas)
+binaries.extend(provider_binaries)
+hidden_imports.extend(provider_imports)
+
 for package in ("TTS", "coqpit", "gruut", "ko_speech_tools", "trainer"):
     package_datas, package_binaries, package_imports = collect_all(package)
     datas.extend(package_datas)
@@ -56,6 +61,7 @@ for distribution in (
     "torchaudio",
     "trainer",
     "transformers",
+    "reverse1999-extractor",
 ):
     try:
         datas.extend(copy_metadata(distribution))

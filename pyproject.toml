@@ -29,6 +29,7 @@ dependencies = [
     "pytesseract>=0.3.13",
     "numpy>=1.24",
     "platformdirs>=4.3,<5",
+    "reverse1999-extractor",
     # Inteface
     "PySide6==6.10.1",
     # Needs eSpeak to run
@@ -76,6 +77,7 @@ torchaudio = [
     { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "08cee9d36d05cabe6186cb85119e1a66b2b000cb" }
 
 [dependency-groups]
 dev = [

@@ -1,3 +1,4 @@
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,7 @@ from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
     Reverse1999GameImporter,
+    resolve_reverse1999_installation,
 )
 
 
@@ -109,6 +111,55 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
         self.assertFalse(availability.available)
         importer.popen_factory.assert_not_called()
+
+    def test_frozen_app_uses_its_hidden_provider_worker_entrypoint(self):
+        importer = Reverse1999GameImporter()
+
+        with (
+            patch(
+                "vntts.game_content_importer.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch.object(sys, "frozen", True, create=True),
+        ):
+            command = importer.command()
+
+        self.assertEqual(
+            command,
+            (
+                sys.executable,
+                "--game-content-import-worker",
+                "reverse1999",
+            ),
+        )
+
+    def test_one_selected_installation_folder_resolves_all_importer_inputs(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "Reverse1999"
+            resources = root / "ResLib" / "iOS"
+            (resources / "bundles").mkdir(parents=True)
+            configs = resources / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").touch()
+            (configs / "language" / "json_language_en.json.dat").touch()
+            audio = resources / "audios" / "iOS" / "en"
+            audio.mkdir(parents=True)
+            (audio / "activity.bnk").touch()
+
+            resolved = resolve_reverse1999_installation(root)
+
+        self.assertEqual(
+            resolved,
+            (resources.resolve(), configs.resolve(), audio.resolve()),
+        )
+
+    def test_incomplete_selected_installation_explains_missing_parts(self):
+        with TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                GameContentImportError,
+                "story bundles, game configuration, English voice banks",
+            ):
+                resolve_reverse1999_installation(temporary_directory)
 
 
 if __name__ == "__main__":

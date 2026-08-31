@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from types import ModuleType
 from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -113,6 +114,35 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.pause_action.isEnabled())
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_packaged_content_import_worker_runs_without_creating_qt(self):
+        package = ModuleType("r1999extractor")
+        package.__path__ = []
+        bootstrap_module = ModuleType("r1999extractor.bootstrap")
+        bootstrap = Mock(return_value=0)
+        bootstrap_module.main = bootstrap
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "r1999extractor": package,
+                    "r1999extractor.bootstrap": bootstrap_module,
+                },
+            ),
+            patch("vntts.app.QApplication") as qt_application,
+        ):
+            result = main(
+                [
+                    "--game-content-import-worker",
+                    "reverse1999",
+                    "--data-directory",
+                    "/tmp/import-output",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        bootstrap.assert_called_once_with(["--data-directory", "/tmp/import-output"])
+        qt_application.assert_not_called()
 
     def test_offline_audio_action_opens_guided_selection_and_reports_saved_scope(self):
         controller = Mock()

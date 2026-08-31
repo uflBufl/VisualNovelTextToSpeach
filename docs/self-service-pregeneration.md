@@ -97,8 +97,16 @@ resulting shared `vntts.story-index` artifact. It never parses extractor-private
 files or invokes a shell. Import runs outside the UI thread. Cancelling signals
 and terminates only that exact child process; a nonzero exit is reduced to the
 last actionable error line, and a missing output is rejected. The remaining
-production work is packaging the provider and allowing one install-folder choice
-when the extractor cannot auto-discover the game.
+fallback asks for one game-installation folder, searches only beneath that
+explicit root, resolves the resource, config and English bank directories, and
+passes all three exact paths to the same importer.
+
+`reverse1999-extractor` is an exact-revision runtime dependency. macOS and Windows
+PyInstaller specifications collect its modules, data, binaries and distribution
+metadata. A frozen VNTTS executable relaunches itself with a hidden provider
+worker argument instead of assuming that the bundled application is a general
+Python interpreter. The worker runs before Qt is created, so importer failures
+cannot create a second dashboard or tray process.
 
 ## Acceptance gates
 

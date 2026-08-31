@@ -75,12 +75,15 @@ class OfflineAudioPreparationDialog(QDialog):
         self.browse_button.clicked.connect(self.browse)
         self.import_button = QPushButton("Import installed Reverse: 1999")
         self.import_button.clicked.connect(self.import_installed_game)
+        self.game_folder_button = QPushButton("Choose game folder...")
+        self.game_folder_button.clicked.connect(self.choose_game_folder)
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("Game content"))
         source_row.addWidget(self.source, 1)
         source_row.addWidget(self.refresh_button)
         source_row.addWidget(self.browse_button)
         source_row.addWidget(self.import_button)
+        source_row.addWidget(self.game_folder_button)
 
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
@@ -136,6 +139,8 @@ class OfflineAudioPreparationDialog(QDialog):
         availability = self.importer.availability()
         self.import_button.setEnabled(availability.available)
         self.import_button.setToolTip(availability.message)
+        self.game_folder_button.setEnabled(availability.available)
+        self.game_folder_button.setToolTip(availability.message)
         self.refresh()
 
     def refresh(self):
@@ -206,6 +211,17 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.setText("Selected extracted game content is ready.")
 
     def import_installed_game(self):
+        self._start_import(None)
+
+    def choose_game_folder(self):
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Choose the Reverse: 1999 installation folder",
+        )
+        if path:
+            self._start_import(path)
+
+    def _start_import(self, installation_root):
         if self.importing:
             return
         availability = self.importer.availability()
@@ -223,6 +239,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_runner.start(
             self.importer.import_installed,
             self.import_cancel_event,
+            installation_root,
         )
 
     def current_content(self):
@@ -351,6 +368,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.refresh_button.setEnabled(enabled)
         self.browse_button.setEnabled(enabled)
         self.import_button.setEnabled(
+            enabled and self.importer.availability().available
+        )
+        self.game_folder_button.setEnabled(
             enabled and self.importer.availability().available
         )
         self.stories.setEnabled(enabled)

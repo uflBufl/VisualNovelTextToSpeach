@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -262,7 +262,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
-            dialog.import_button.click()
+            with patch(
+                "vntts.pregeneration_ui.QFileDialog.getExistingDirectory",
+                return_value="/selected/game",
+            ):
+                dialog.game_folder_button.click()
             self.assertTrue(dialog.importing)
             self.assertFalse(dialog.source.isEnabled())
             self.assertEqual(dialog.cancel_button.text(), "Cancel import")
@@ -271,6 +275,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
+            self.assertEqual(
+                importer.import_installed.call_args.args[1],
+                "/selected/game",
+            )
             self.assertFalse(dialog.importing)
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.stories.count(), 2)
@@ -288,7 +296,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
 
-        def import_installed(cancel_event):
+        def import_installed(cancel_event, installation_root):
+            self.assertIsNone(installation_root)
             if cancel_event.is_set():
                 raise GameContentImportCancelled("cancelled")
             raise AssertionError("cancel event was not delivered")
