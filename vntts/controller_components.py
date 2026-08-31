@@ -10,6 +10,7 @@ from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
     OCRError,
     OCRUncertainError,
+    ScreenCaptureError,
     analyze_dialog_snapshot,
     get_screenshot_directory,
 )
@@ -65,20 +66,33 @@ class _RuntimeLifecyclePort(Protocol):
 
 class _LiveSessionPort(Protocol):
     capture_target: Any
+    chapter_voice_preloader: Any
     correction_dictionary: Any
     dialog_handler: Callable[[str, str], Any]
+    error_handler: Callable[[Exception], Any]
+    explicit_sequence_anchor_pending: bool
     is_ready: bool
     is_live_running: bool
+    last_visible_speaker_key: Any
     live_reader: Any
     live_scope_identification_failure: str | None
+    live_speaker_corpus_error: Any
+    live_speech_backpressure: Any
+    narrator_fallback_names: dict[str, str]
+    narrator_fallback_speakers: set[str]
+    next_live_narrator_fallback_names: dict[str, str]
+    pending_unknown_speakers: set[str]
+    reported_unknown_speakers: set[str]
     schedule_dialog_read: Callable[[], Any]
     settings: Any
+    speaker_announcement_lock: Any
     speech_backend: Any
     status_handler: Callable[[str], Any]
+    story_cursor: Any
+    story_cursor_lock: Any
     uncertain_frame_recorder: Any
+    voice_assignments: Any
     voice_router: Any
-
-    def _toggle_live_impl(self) -> Any: ...
 
     def _canonical_observed_character(
         self,
@@ -99,6 +113,10 @@ class _LiveSessionPort(Protocol):
     def _resolve_voice_label(self, character: str) -> Any: ...
 
     def _live_auto_advance_callback(self) -> Any: ...
+
+    def _publish_live_sequence_status(self) -> Any: ...
+
+    def _revalidate_live_speaker_corpus(self) -> bool: ...
 
     def _set_backend_live_mode(self, active: bool) -> Any: ...
 
@@ -287,7 +305,100 @@ class LiveSessionComponent:
         return True
 
     def toggle(self) -> Any:
-        return self.controller._toggle_live_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        starting = not controller.live_reader.is_running
+        if starting and not self._voice_preflight_allows_start():
+            return False
+        if starting and controller.capture_target is not None:
+            try:
+                controller.capture_target.get_geometry()
+            except Exception as error:
+                controller.error_handler(ScreenCaptureError(str(error)))
+                controller.status_handler("Live reading could not start")
+                return False
+        if starting:
+            # Unknown-speaker prompts are deduplicated within one live session,
+            # not for the entire application lifetime.
+            controller.reported_unknown_speakers.clear()
+            controller.pending_unknown_speakers.clear()
+            controller.narrator_fallback_speakers.clear()
+            controller.narrator_fallback_names.clear()
+            controller.narrator_fallback_speakers.update(
+                controller.next_live_narrator_fallback_names
+            )
+            controller.narrator_fallback_names.update(
+                controller.next_live_narrator_fallback_names
+            )
+            with controller.speaker_announcement_lock:
+                controller.last_visible_speaker_key = None
+            with controller.story_cursor_lock:
+                if controller.story_cursor is not None:
+                    if controller.explicit_sequence_anchor_pending:
+                        controller.explicit_sequence_anchor_pending = False
+                    else:
+                        controller.story_cursor.reset("live-session-started")
+                    controller._publish_live_sequence_status()
+        running = controller.live_reader.toggle()
+        if running:
+            controller.next_live_narrator_fallback_names.clear()
+            controller.live_reader.max_speech_jobs = (
+                controller.live_speech_backpressure.reset()
+            )
+        elif not starting:
+            controller.narrator_fallback_speakers.clear()
+            controller.narrator_fallback_names.clear()
+        controller._set_backend_live_mode(running)
+        controller.status_handler(
+            "Live reading started" if running else "Live reading stopping"
+        )
+        return running
+
+    def _voice_preflight_allows_start(self) -> bool:
+        controller = self.controller
+        if (
+            not controller.chapter_voice_preloader.dialogue
+            and not controller._revalidate_live_speaker_corpus()
+        ):
+            controller.status_handler(
+                "Live reading could not start: configured speaker corpus is "
+                f"invalid: {controller.live_speaker_corpus_error}"
+            )
+            return False
+        unresolved = controller.voice_assignments.unresolved_live_speakers()
+        if unresolved is None:
+            if controller.live_speaker_corpus_error:
+                controller.status_handler(
+                    "Live reading could not start: configured speaker corpus is "
+                    f"invalid: {controller.live_speaker_corpus_error}"
+                )
+            else:
+                controller.status_handler(
+                    "Live reading could not start: read the current dialog once to "
+                    "identify the story chapter"
+                )
+            return False
+        unresolved = tuple(unresolved)
+        approved = tuple(controller.next_live_narrator_fallback_names.values())
+        if not unresolved:
+            if approved:
+                controller.next_live_narrator_fallback_names.clear()
+                controller.status_handler(
+                    "Live reading could not start: voice preflight scope changed; "
+                    "start live reading again"
+                )
+                return False
+            controller.next_live_narrator_fallback_names.clear()
+            return True
+        if approved == unresolved:
+            return True
+        controller.next_live_narrator_fallback_names.clear()
+        controller.status_handler(
+            "Live reading could not start: choose voices or explicitly approve "
+            f"Narrator for {', '.join(unresolved)}"
+        )
+        return False
 
     def toggle_speech_pause(self) -> Any:
         controller = self.controller

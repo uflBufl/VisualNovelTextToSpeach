@@ -25,10 +25,11 @@ pipeline metrics and the explicit inspect/test flows directly; these are no
 longer proxy callbacks on `AppController`. It receives only the capture, OCR,
 voice and reporting collaborators described by its narrow protocol.
 `LiveSessionComponent` also owns the one-shot read, playback queue controls,
-story-scope identification, emergency stop and auto-advance setting. Its capture
+story-scope identification, session preflight/start/stop, emergency stop and
+auto-advance setting. Its capture
 helper lives in `live_snapshot.py`, so the component does not depend circularly
-on the compatibility facade. The larger session toggle state machine remains
-behind an explicit private callback until its state is moved as a coherent unit.
+on the compatibility facade. Low-level sequence publication, backend live-mode
+switching and speaker-corpus revalidation remain injected collaborators.
 `VoiceAssignmentComponent` owns voice inventory, assignment mutations,
 narrator-fallback staging, scoped chapter/corpus preflight discovery and voice
 preview lifecycle. Backend preview, narrator application and cache invalidation

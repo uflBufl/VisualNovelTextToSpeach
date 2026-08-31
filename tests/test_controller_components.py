@@ -207,6 +207,8 @@ class ControllerComponentsTest(unittest.TestCase):
         migrated = (
             "_read_once_live",
             "_identify_live_scope_impl",
+            "_toggle_live_impl",
+            "_live_voice_preflight_allows_start",
             "_toggle_speech_pause_impl",
             "_skip_current_speech_impl",
             "_repeat_last_speech_impl",

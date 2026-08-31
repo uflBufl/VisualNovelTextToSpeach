@@ -22,7 +22,6 @@ from vntts.controller_components import (
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog_capture import (
-    ScreenCaptureError,
     TTSInitializationError,
     capture_live_frame,
     dialog_completion_cue_visible,
@@ -687,98 +686,6 @@ class AppController:
             return None, "expected-incomplete"
         return line, match_result
 
-    def _toggle_live_impl(self):
-        if not self.is_ready:
-            return False
-        starting = not self.live_reader.is_running
-        if starting and not self._live_voice_preflight_allows_start():
-            return False
-        if starting and self.capture_target is not None:
-            try:
-                self.capture_target.get_geometry()
-            except Exception as error:
-                self.error_handler(ScreenCaptureError(str(error)))
-                self.status_handler("Live reading could not start")
-                return False
-        if starting:
-            # Unknown-speaker prompts are deduplicated within one live session,
-            # not for the entire application lifetime. A speaker dismissed
-            # during a one-time read must still be reported when live reading
-            # begins.
-            self.reported_unknown_speakers.clear()
-            self.pending_unknown_speakers.clear()
-            self.narrator_fallback_speakers.clear()
-            self.narrator_fallback_names.clear()
-            self.narrator_fallback_speakers.update(
-                self.next_live_narrator_fallback_names
-            )
-            self.narrator_fallback_names.update(self.next_live_narrator_fallback_names)
-            with self.speaker_announcement_lock:
-                self.last_visible_speaker_key = None
-            with self.story_cursor_lock:
-                if self.story_cursor is not None:
-                    if self.explicit_sequence_anchor_pending:
-                        self.explicit_sequence_anchor_pending = False
-                    else:
-                        self.story_cursor.reset("live-session-started")
-                    self._publish_live_sequence_status()
-        running = self.live_reader.toggle()
-        if running:
-            self.next_live_narrator_fallback_names.clear()
-            self.live_reader.max_speech_jobs = self.live_speech_backpressure.reset()
-        elif not starting:
-            self.narrator_fallback_speakers.clear()
-            self.narrator_fallback_names.clear()
-        self._set_backend_live_mode(running)
-        self.status_handler(
-            "Live reading started" if running else "Live reading stopping"
-        )
-        return running
-
-    def _live_voice_preflight_allows_start(self):
-        if (
-            not self.chapter_voice_preloader.dialogue
-            and not self._revalidate_live_speaker_corpus()
-        ):
-            self.status_handler(
-                "Live reading could not start: configured speaker corpus is "
-                f"invalid: {self.live_speaker_corpus_error}"
-            )
-            return False
-        unresolved = self.voice_assignments.unresolved_live_speakers()
-        if unresolved is None:
-            if self.live_speaker_corpus_error:
-                self.status_handler(
-                    "Live reading could not start: configured speaker corpus is "
-                    f"invalid: {self.live_speaker_corpus_error}"
-                )
-            else:
-                self.status_handler(
-                    "Live reading could not start: read the current dialog once to "
-                    "identify the story chapter"
-                )
-            return False
-        unresolved = tuple(unresolved)
-        approved = tuple(self.next_live_narrator_fallback_names.values())
-        if not unresolved:
-            if approved:
-                self.next_live_narrator_fallback_names.clear()
-                self.status_handler(
-                    "Live reading could not start: voice preflight scope changed; "
-                    "start live reading again"
-                )
-                return False
-            self.next_live_narrator_fallback_names.clear()
-            return True
-        if approved == unresolved:
-            return True
-        self.next_live_narrator_fallback_names.clear()
-        self.status_handler(
-            "Live reading could not start: choose voices or explicitly approve "
-            f"Narrator for {', '.join(unresolved)}"
-        )
-        return False
-
     def _load_live_speaker_corpus(self):
         self.live_speaker_corpus = None
         self.live_speaker_corpus_error = None
@@ -815,7 +722,7 @@ class AppController:
 
         if not commit():
             if was_live:
-                self._toggle_live_impl()
+                self.live_session.toggle()
             return False
 
         self.settings = settings
@@ -889,7 +796,7 @@ class AppController:
             correction_dictionary=self.correction_dictionary,
         )
         if was_live:
-            self._toggle_live_impl()
+            self.live_session.toggle()
         return True
 
     def _get_live_configuration(self):

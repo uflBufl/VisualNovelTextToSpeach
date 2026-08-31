@@ -25,21 +25,26 @@ class SpeechBackendAPIBoundaryTest(unittest.TestCase):
         self.assertIn("prepare_playback", called_by_helper)
         self.assertIn("play_prepared", called_by_helper)
 
-        controller_tree = self._tree("vntts/controller.py")
-        controller_functions = {
-            node.name: node
-            for node in ast.walk(controller_tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        helper_sources = {
+            "speak_live_chunk": "vntts/controller_components.py",
+            "_speak_with_live_backend": "vntts/controller.py",
         }
-        for name in ("speak_live_chunk", "_speak_with_live_backend"):
+        for name, relative in helper_sources.items():
+            helper = next(
+                node
+                for node in ast.walk(self._tree(relative))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name
+                and node.body
+            )
             called_names = {
                 node.func.id
-                for node in ast.walk(controller_functions[name])
+                for node in ast.walk(helper)
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
             }
             called = {
                 node.func.attr
-                for node in ast.walk(controller_functions[name])
+                for node in ast.walk(helper)
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             }
             self.assertIn("play_typed_text", called_names, name)
