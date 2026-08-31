@@ -129,6 +129,10 @@ class _ComplexityVisitor(ast.NodeVisitor):
         self.value += len(node.handlers) + bool(node.orelse)
         self.generic_visit(node)
 
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self.value += len(node.handlers) + bool(node.orelse)
+        self.generic_visit(node)
+
     def visit_Match(self, node: ast.Match) -> None:
         self.value += max(0, len(node.cases) - 1)
         self.generic_visit(node)
@@ -156,14 +160,31 @@ def build_inventory(source_root: Path, thresholds: dict[str, int]) -> Inventory:
         if line_count > thresholds["module_lines"]:
             module_lines[module] = line_count
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            imported_module = _resolved_import(package, node)
-            if not imported_module.startswith("vntts") or imported_module == module:
-                continue
-            for alias in node.names:
-                if alias.name.startswith("_") and alias.name != "__future__":
-                    private_imports.add(f"{module} -> {imported_module}:{alias.name}")
+            if isinstance(node, ast.ImportFrom):
+                imported_module = _resolved_import(package, node)
+                if imported_module.startswith("vntts") and imported_module != module:
+                    for alias in node.names:
+                        if alias.name.startswith("_") and alias.name != "__future__":
+                            private_imports.add(
+                                f"{module} -> {imported_module}:{alias.name}"
+                            )
+        module_aliases = {
+            alias.asname: alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.asname and alias.name.startswith("vntts") and alias.name != module
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr.startswith("_")
+                and isinstance(node.value, ast.Name)
+                and node.value.id in module_aliases
+            ):
+                private_imports.add(
+                    f"{module} -> {module_aliases[node.value.id]}:{node.attr}"
+                )
         functions = _FunctionInventory(module)
         functions.visit(tree)
         function_lines.update(
@@ -213,6 +234,16 @@ def check_repository(source_root: Path, baseline_path: Path) -> list[str]:
             elif value > ceiling:
                 failures.append(
                     f"grown {category} debt: {name} is {value} (baseline {ceiling})"
+                )
+            elif value < ceiling:
+                failures.append(
+                    f"stale {category} ceiling: {name} is {value} (baseline {ceiling})"
+                )
+        for name, ceiling in sorted(allowed.items()):
+            if name not in current:
+                failures.append(
+                    f"stale {category} ceiling: {name} no longer exceeds "
+                    f"threshold {thresholds[category]} (baseline {ceiling})"
                 )
     return failures
 

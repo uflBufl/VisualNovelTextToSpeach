@@ -108,16 +108,6 @@ intentional omission as distinct terminal authorities.
       packaged path without source-tree assumptions, and make package self-test
       initialize and render through the effective default backend on a clean
       machine without uv, a checkout or backend environment variables.
-- [ ] Close maintainability-ratchet false negatives and stale ceilings:
-  - treat `TryStar`/`except*` branches like `Try` in complexity accounting;
-  - detect module-alias private access such as
-    `import vntts.owner as owner; owner._private()` in addition to
-    `ImportFrom` dependencies;
-  - add focused negative tests for both cases and lower every over-threshold
-    baseline ceiling when current debt shrinks, beginning with
-    `vntts.controller` from 3706 to 3700 lines;
-  - add a baseline-freshness check so removed debt cannot silently regrow under
-    an older higher ceiling.
 - [ ] Strengthen the authoring CLI compatibility contract. Include all command
       names in their public help order in the hashed fixture, and assert exact
       equality between parser commands and the union of `COMMAND_FAMILIES` as

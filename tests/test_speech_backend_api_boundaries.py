@@ -48,7 +48,7 @@ class SpeechBackendAPIBoundaryTest(unittest.TestCase):
             self.assertNotIn("speak", called, name)
 
     def test_runtime_protocol_exposes_only_typed_playback_operations(self):
-        tree = self._tree("vntts/speech_backend.py")
+        tree = self._tree("vntts/speech_backend_contract.py")
         protocol = next(
             node
             for node in tree.body

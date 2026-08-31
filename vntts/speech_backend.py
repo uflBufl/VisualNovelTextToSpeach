@@ -7,14 +7,13 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import MethodType
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_cache import PersistentAudioCache
 from vntts.playback import (
-    PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
     outcome_for_prepared,
@@ -27,6 +26,7 @@ from vntts.services.tts_engine import (
     match_output_sample_rate,
 )
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import (
     BoundedCache,
     SpeechCacheKeyFactory,
@@ -47,29 +47,7 @@ from vntts.synthesis import (
 )
 from vntts.voices import is_narrator, normalize_character_name
 
-
-@dataclass(frozen=True)
-class SpeechBackendCapabilities:
-    voice_cloning: bool
-    streaming: bool
-    concurrent_prepare_and_play: bool
-    interrupt_on_dialog_replacement: bool = False
-
-
-class SpeechBackend(Protocol):
-    name: str
-    capabilities: SpeechBackendCapabilities
-
-    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
-
-    def play_prepared(
-        self,
-        prepared: PreparedPlayback,
-        *,
-        playback_guard=None,
-    ) -> PlaybackOutcome: ...
-
-    def stop(self) -> bool: ...
+__all__ = ["SpeechBackend", "SpeechBackendCapabilities"]
 
 
 def _raise_playback_failure(outcome, default_message):

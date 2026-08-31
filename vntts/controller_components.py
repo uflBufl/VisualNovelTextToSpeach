@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from vntts.voices import normalize_character_name
+
 
 class _ControllerImplementation(Protocol):
     """Private implementation surface consumed by controller components."""
@@ -26,9 +28,6 @@ class _ControllerImplementation(Protocol):
     def _voice_assignment_for_impl(self, character): ...
     def _preview_voice_choice_impl(self, source_id, text): ...
     def _stop_voice_preview_impl(self): ...
-    def _assign_voice_impl(self, character, source_id, *, commit_settings=None): ...
-    def _clear_voice_assignment_impl(self, character, *, commit_settings=None): ...
-    def _set_force_live_narrator_impl(self, enabled, *, commit_settings=None): ...
     def _allow_narrator_fallback_impl(self, character): ...
     def _unresolved_live_speakers_impl(self): ...
     def _approve_live_narrator_fallbacks_impl(self, characters): ...
@@ -107,23 +106,93 @@ class VoiceAssignmentComponent:
         return self.controller._stop_voice_preview_impl()
 
     def assign(self, character, source_id, *, commit_settings=None):
-        return self.controller._assign_voice_impl(
-            character,
-            source_id,
-            commit_settings=commit_settings,
+        character = (character or "").strip()
+        if not character:
+            raise ValueError("Enter a narrator or character name")
+        controller = self.controller
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before changing a voice")
+        choice = next(
+            (item for item in self.available_choices() if item.id == source_id),
+            None,
         )
+        if choice is None:
+            raise ValueError("The selected voice is no longer available")
+        character_key = normalize_character_name(character)
+        assignments = {
+            configured_character: configured_source
+            for configured_character, configured_source in (
+                controller.settings.voice_assignments or {}
+            ).items()
+            if normalize_character_name(configured_character) != character_key
+        }
+        assignments[character] = source_id
+        updated_settings = controller.settings.updated(voice_assignments=assignments)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
+        controller.voice_router.registry.set_assignment(character, source_id)
+        controller.settings = updated_settings
+        if character_key == "narrator":
+            controller._apply_narrator_voice(
+                controller.voice_router.registry.resolve_source(source_id)
+            )
+        controller._clear_voice_runtime_cache()
+        controller.reported_unknown_speakers.discard(character_key)
+        controller.pending_unknown_speakers.discard(character_key)
+        controller.narrator_fallback_speakers.discard(character_key)
+        controller.status_handler(f"{choice.label} assigned to {character}")
+        return controller.settings
 
     def clear(self, character, *, commit_settings=None):
-        return self.controller._clear_voice_assignment_impl(
-            character,
-            commit_settings=commit_settings,
+        character = (character or "").strip()
+        if not character:
+            raise ValueError("Enter a narrator or character name")
+        controller = self.controller
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before changing a voice")
+        character_key = normalize_character_name(character)
+        assignments = {
+            configured_character: configured_source
+            for configured_character, configured_source in (
+                controller.settings.voice_assignments or {}
+            ).items()
+            if normalize_character_name(configured_character) != character_key
+        }
+        update = {"voice_assignments": assignments}
+        if character_key == "narrator":
+            update["force_live_narrator"] = False
+        updated_settings = controller.settings.updated(**update)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
+        controller.voice_router.registry.assignments.pop(character_key, None)
+        controller.settings = updated_settings
+        if character_key == "narrator":
+            controller._apply_narrator_voice(None)
+        controller._clear_voice_runtime_cache()
+        controller.status_handler(
+            "Pregenerated narrator tracks enabled when available"
+            if character_key == "narrator"
+            else f"Automatic voice routing restored for {character}"
         )
+        return controller.settings
 
     def set_force_live_narrator(self, enabled, *, commit_settings=None):
-        return self.controller._set_force_live_narrator_impl(
-            enabled,
-            commit_settings=commit_settings,
+        controller = self.controller
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before changing Narrator routing")
+        enabled = bool(enabled)
+        if enabled and self.assignment_for("Narrator") is None:
+            raise ValueError("Choose a Narrator voice before forcing live TTS")
+        updated_settings = controller.settings.updated(force_live_narrator=enabled)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
+        controller.settings = updated_settings
+        controller.status_handler(
+            "Narrator will always use live TTS"
+            if enabled
+            else "Pregenerated Narrator tracks enabled with live voice fallback"
         )
+        return controller.settings
 
     def allow_narrator_fallback(self, character):
         return self.controller._allow_narrator_fallback_impl(character)
