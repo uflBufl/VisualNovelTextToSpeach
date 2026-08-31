@@ -495,6 +495,22 @@ def _read_owned_voice_reference(root, reference):
         os.close(descriptor)
 
 
+def read_voice_reference_bytes(voice, reference):
+    """Read one declared reference without following or racing path links."""
+    def canonical_parent_path(value):
+        value = Path(value).expanduser().absolute()
+        return value.parent.resolve() / value.name
+
+    reference = canonical_parent_path(reference)
+    declared = tuple(canonical_parent_path(value) for value in voice.references)
+    if reference not in declared:
+        raise VoiceManifestError("Voice reference is not declared by this voice")
+    root = voice.reference_root
+    if root is None:
+        root = reference.parent
+    return _read_owned_voice_reference(root, reference)
+
+
 def synthesis_character(character):
     """Return the voice identity used for live and authoring synthesis."""
     original = str(character or "Narrator").strip() or "Narrator"

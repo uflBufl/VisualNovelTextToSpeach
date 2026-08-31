@@ -80,6 +80,12 @@ uv run vntts-benchmark-models \
 Use `--queue /path/to/queue.jsonl --sample-size 24` instead of `--corpus` to
 build the shared corpus from a generation queue.
 
+The benchmark treats the voice manifest as an owned input boundary. Reference
+paths must remain inside its directory and may not traverse symlinks. Each
+published `voice-controls` file is read once through a no-follow descriptor,
+with inode and size/mtime checks before and after the read, so a path swap cannot
+copy unrelated host data into benchmark output.
+
 ### Verified Centurion and Paper Heron narrator comparison
 
 On 2026-08-17, the extractor-owned playable-voice index supplied one compact

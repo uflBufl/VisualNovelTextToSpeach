@@ -19,7 +19,7 @@ import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_bytes, atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
-from vntts_artifacts.voice_manifest import VoiceManifestError, validate_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.bulk_generation import (
     load_generation_state,
@@ -38,6 +38,7 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
     is_narrator,
+    read_voice_reference_bytes,
 )
 
 CORPUS_SCHEMA = "vntts.tts-benchmark-corpus"
@@ -305,28 +306,13 @@ def _comparison_voice_context(manifest_path, narrator_character):
     try:
         payload = manifest_path.read_bytes()
         document = json.loads(payload)
-        entries = validate_voice_manifest(document)
+        registry = CharacterVoiceRegistry.from_file(manifest_path)
     except (OSError, json.JSONDecodeError, VoiceManifestError) as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison voice manifest: {error}"
         ) from error
     if not isinstance(document, dict):
         raise ModelBenchmarkError("Comparison voice manifest must be an object")
-    registry = CharacterVoiceRegistry(
-        CharacterVoice(
-            character=entry.character,
-            speaker=entry.speaker,
-            reference=(manifest_path.parent / entry.references[0]).resolve()
-            if entry.references
-            else None,
-            aliases=entry.aliases,
-            references=tuple(
-                (manifest_path.parent / reference).resolve()
-                for reference in entry.references
-            ),
-        )
-        for entry in entries
-    )
     narrator_character = (
         str(narrator_character).strip() if narrator_character is not None else None
     )
@@ -857,13 +843,13 @@ def _snapshot_voice_registry(
     ):
         references = []
         for reference_index, source in enumerate(voice.references, start=1):
-            source = Path(source).expanduser().resolve()
             try:
-                payload = source.read_bytes()
-            except OSError as error:
+                payload = read_voice_reference_bytes(voice, source)
+            except (OSError, VoiceManifestError) as error:
                 raise ModelBenchmarkError(
                     f"Unable to capture comparison voice reference {source}: {error}"
                 ) from error
+            source = Path(source).expanduser().resolve()
             suffix = source.suffix.lower() or ".audio"
             relative = Path(f"voice-{voice_index:03d}") / (
                 f"reference-{reference_index:03d}{suffix}"

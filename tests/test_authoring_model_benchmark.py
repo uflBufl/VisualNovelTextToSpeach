@@ -10,6 +10,7 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
     ModelVariant,
+    _comparison_voice_context,
     benchmark_model_variants,
     benchmark_renderer,
     build_benchmark_corpus,
@@ -75,6 +76,34 @@ class FakeRenderBackend:
 
 
 class AuthoringModelBenchmarkTest(unittest.TestCase):
+    def test_comparison_manifest_rejects_reference_symlink_outside_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside.wav"
+            outside.write_bytes(b"must-not-be-published")
+            pack = root / "pack"
+            pack.mkdir()
+            (pack / "reference.wav").symlink_to(outside)
+            manifest = pack / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Rhiannon",
+                                "speaker": "rhiannon",
+                                "references": ["reference.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ModelBenchmarkError, "must not use symlinks"):
+                _comparison_voice_context(manifest, "Rhiannon")
+
     def test_selects_emotion_buckets_round_robin_and_skips_review(self):
         items = [
             {
