@@ -25,6 +25,9 @@ surface.
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New
 application operations must be assigned to the appropriate component instead
-of adding coordination logic to a public `AppController` method. A later
-implementation extraction can move private stateful algorithms behind the same
-component protocol without another UI-facing API migration.
+of adding coordination logic to a public `AppController` method. Private
+implementation methods may call other private implementation methods, but may
+not re-enter any public component-backed facade operation; an AST gate enforces
+that one-way dependency. A later implementation extraction can move the
+remaining private stateful algorithms behind the same component protocol
+without another UI-facing API migration.

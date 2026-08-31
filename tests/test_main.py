@@ -3968,7 +3968,9 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.live_reader.toggle.return_value = True
-        controller.unresolved_live_speakers = Mock(side_effect=[("Selone",), (), ()])
+        controller._unresolved_live_speakers_impl = Mock(
+            side_effect=[("Selone",), (), ()]
+        )
 
         self.assertFalse(controller.toggle_live())
         controller.approve_live_narrator_fallbacks(["Selone"])

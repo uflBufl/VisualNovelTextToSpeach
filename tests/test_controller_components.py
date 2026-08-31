@@ -139,6 +139,66 @@ class ControllerComponentsTest(unittest.TestCase):
             self.assertIsInstance(owner, ast.Attribute, name)
             self.assertEqual(owner.attr, component_name, name)
 
+    def test_private_implementation_does_not_reenter_public_facade(self):
+        tree = ast.parse(
+            (Path(__file__).parents[1] / "vntts" / "controller.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        controller = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AppController"
+        )
+        public_operations = {
+            "start",
+            "apply_settings",
+            "cancel_settings_apply",
+            "shutdown",
+            "read_once",
+            "identify_live_scope",
+            "toggle_live",
+            "toggle_speech_pause",
+            "skip_current_speech",
+            "repeat_last_speech",
+            "clear_speech_queue",
+            "emergency_stop",
+            "set_auto_advance_enabled",
+            "available_voice_characters",
+            "available_voice_choices",
+            "voice_assignment_for",
+            "preview_voice_choice",
+            "stop_voice_preview",
+            "assign_voice",
+            "clear_voice_assignment",
+            "set_force_live_narrator",
+            "allow_narrator_fallback",
+            "unresolved_live_speakers",
+            "approve_live_narrator_fallbacks",
+            "preview_voice",
+            "replay_dialog",
+            "get_capture_geometry",
+            "get_latest_diagnostic",
+            "get_live_pipeline_metrics",
+            "inspect_current_dialog",
+            "test_current_dialog",
+        }
+        violations = []
+        for method in controller.body:
+            if not isinstance(method, ast.FunctionDef) or not method.name.startswith("_"):
+                continue
+            for call in (node for node in ast.walk(method) if isinstance(node, ast.Call)):
+                target = call.func
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr in public_operations
+                ):
+                    violations.append(f"{method.name} -> {target.attr}")
+
+        self.assertEqual(violations, [])
+
 
 if __name__ == "__main__":
     unittest.main()

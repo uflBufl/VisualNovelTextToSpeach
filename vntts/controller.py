@@ -671,7 +671,7 @@ class AppController:
             )
         except Exception as error:
             self.error_handler(error)
-            self.shutdown()
+            self._shutdown_runtime()
             return False
 
         if not self.settings.warm_up_voices:
@@ -824,7 +824,7 @@ class AppController:
                 f"invalid: {self.live_speaker_corpus_error}"
             )
             return False
-        unresolved = self.unresolved_live_speakers()
+        unresolved = self._unresolved_live_speakers_impl()
         if unresolved is None:
             if self.live_speaker_corpus_error:
                 self.status_handler(
@@ -989,7 +989,7 @@ class AppController:
         if not text or not text.strip():
             raise ValueError("Enter preview text")
         choice = next(
-            (item for item in self.available_voice_choices() if item.id == source_id),
+            (item for item in self._available_voice_choices_impl() if item.id == source_id),
             None,
         )
         if choice is None:
@@ -1104,7 +1104,7 @@ class AppController:
         )
 
     def _replay_dialog_impl(self, character, text):
-        return self.preview_voice(character, text)
+        return self._preview_voice_impl(character, text)
 
     def _get_capture_geometry_impl(self):
         if self.capture_target is None:
@@ -1189,7 +1189,7 @@ class AppController:
 
         if not commit():
             if was_live:
-                self.toggle_live()
+                self._toggle_live_impl()
             return False
 
         self.settings = settings
@@ -1263,7 +1263,7 @@ class AppController:
             correction_dictionary=self.correction_dictionary,
         )
         if was_live:
-            self.toggle_live()
+            self._toggle_live_impl()
         return True
 
     def _get_live_configuration(self):
@@ -2929,7 +2929,7 @@ class AppController:
         *,
         notify=True,
     ):
-        pipeline_metrics = self.get_live_pipeline_metrics()
+        pipeline_metrics = self._get_live_pipeline_metrics_impl()
         snapshot = replace(
             snapshot,
             capture_interval_ms=self.capture_interval_ms,
