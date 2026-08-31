@@ -95,11 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Improve maintainability without changing behavior
 
-- [ ] Decompose `AppController` into runtime lifecycle, live-session
-      coordination, voice assignment and diagnostics components. Keep it as the
-      compatibility facade and composition root; preserve cancellation,
-      shutdown, routing, auto-advance and UI callbacks through focused and full
-      regression tests.
 - [ ] Introduce gradual static typing at artifact schemas, synthesis/playback
       protocols, worker messages and orchestration inputs/results. Add a scoped
       mypy or pyright CI ratchet instead of requiring a repository-wide rewrite.

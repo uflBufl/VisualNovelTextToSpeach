@@ -10,6 +10,12 @@ from time import monotonic
 from vntts.assets import ModelAssetManager
 from vntts.auto_advance import DialogueAdvancer
 from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.controller_components import (
+    DiagnosticsComponent,
+    LiveSessionComponent,
+    RuntimeLifecycleComponent,
+    VoiceAssignmentComponent,
+)
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
@@ -361,6 +367,10 @@ class AppController:
         self.next_live_narrator_fallback_names = {}
         self.voice_prime_futures = set()
         self.shutdown_requested = Event()
+        self.runtime_lifecycle = RuntimeLifecycleComponent(self)
+        self.live_session = LiveSessionComponent(self)
+        self.voice_assignments = VoiceAssignmentComponent(self)
+        self.diagnostics = DiagnosticsComponent(self)
 
     @property
     def is_ready(self):
@@ -371,6 +381,96 @@ class AppController:
         return self.live_reader is not None and self.live_reader.is_running
 
     def start(self):
+        return self.runtime_lifecycle.start()
+
+    def apply_settings(self, settings):
+        return self.runtime_lifecycle.apply_settings(settings)
+
+    def shutdown(self):
+        return self.runtime_lifecycle.shutdown()
+
+    def read_once(self):
+        return self.live_session.read_once()
+
+    def identify_live_scope(self):
+        return self.live_session.identify_scope()
+
+    def toggle_live(self):
+        return self.live_session.toggle()
+
+    def toggle_speech_pause(self):
+        return self.live_session.toggle_speech_pause()
+
+    def skip_current_speech(self):
+        return self.live_session.skip_current_speech()
+
+    def repeat_last_speech(self):
+        return self.live_session.repeat_last_speech()
+
+    def clear_speech_queue(self):
+        return self.live_session.clear_speech_queue()
+
+    def emergency_stop(self):
+        return self.live_session.emergency_stop()
+
+    def set_auto_advance_enabled(self, enabled):
+        return self.live_session.set_auto_advance_enabled(enabled)
+
+    def available_voice_characters(self):
+        return self.voice_assignments.available_characters()
+
+    def available_voice_choices(self):
+        return self.voice_assignments.available_choices()
+
+    def voice_assignment_for(self, character):
+        return self.voice_assignments.assignment_for(character)
+
+    def preview_voice_choice(self, source_id, text):
+        return self.voice_assignments.preview_choice(source_id, text)
+
+    def stop_voice_preview(self):
+        return self.voice_assignments.stop_preview()
+
+    def assign_voice(self, character, source_id):
+        return self.voice_assignments.assign(character, source_id)
+
+    def clear_voice_assignment(self, character):
+        return self.voice_assignments.clear(character)
+
+    def set_force_live_narrator(self, enabled):
+        return self.voice_assignments.set_force_live_narrator(enabled)
+
+    def allow_narrator_fallback(self, character):
+        return self.voice_assignments.allow_narrator_fallback(character)
+
+    def unresolved_live_speakers(self):
+        return self.voice_assignments.unresolved_live_speakers()
+
+    def approve_live_narrator_fallbacks(self, characters):
+        return self.voice_assignments.approve_narrator_fallbacks(characters)
+
+    def preview_voice(self, character, text):
+        return self.voice_assignments.preview(character, text)
+
+    def replay_dialog(self, character, text):
+        return self.voice_assignments.replay(character, text)
+
+    def get_capture_geometry(self):
+        return self.diagnostics.capture_geometry()
+
+    def get_latest_diagnostic(self):
+        return self.diagnostics.latest()
+
+    def get_live_pipeline_metrics(self):
+        return self.diagnostics.pipeline_metrics()
+
+    def inspect_current_dialog(self, *, notify=True):
+        return self.diagnostics.inspect_current_dialog(notify=notify)
+
+    def test_current_dialog(self):
+        return self.diagnostics.test_current_dialog()
+
+    def _start_runtime(self):
         if self.is_ready:
             return True
 
@@ -584,7 +684,7 @@ class AppController:
         self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
         return True
 
-    def read_once(self):
+    def _read_once_live(self):
         if not self.is_ready:
             return False
         self.live_reader.resume_after_emergency()
@@ -593,7 +693,7 @@ class AppController:
             self.status_handler("Reading current dialog")
         return accepted
 
-    def identify_live_scope(self):
+    def _identify_live_scope_impl(self):
         """Identify the visible story position without speaking or advancing it."""
         if not self.is_ready or self.is_live_running:
             return False
@@ -671,7 +771,7 @@ class AppController:
             return None, "expected-incomplete"
         return line, match_result
 
-    def toggle_live(self):
+    def _toggle_live_impl(self):
         if not self.is_ready:
             return False
         starting = not self.live_reader.is_running
@@ -763,14 +863,14 @@ class AppController:
         )
         return False
 
-    def toggle_speech_pause(self):
+    def _toggle_speech_pause_impl(self):
         if not self.is_ready:
             return False
         paused = self.live_reader.toggle_pause()
         self.status_handler("Speech paused" if paused else "Speech resumed")
         return paused
 
-    def skip_current_speech(self):
+    def _skip_current_speech_impl(self):
         if not self.is_ready:
             return False
         skipped = self.live_reader.skip_current()
@@ -779,7 +879,7 @@ class AppController:
         )
         return skipped
 
-    def repeat_last_speech(self):
+    def _repeat_last_speech_impl(self):
         if not self.is_ready:
             return False
         repeated = self.live_reader.repeat_last()
@@ -788,14 +888,14 @@ class AppController:
         )
         return repeated
 
-    def clear_speech_queue(self):
+    def _clear_speech_queue_impl(self):
         if not self.is_ready:
             return False
         cleared = self.live_reader.clear_queue()
         self.status_handler("Speech queue cleared")
         return cleared
 
-    def emergency_stop(self):
+    def _emergency_stop_impl(self):
         if not self.is_ready:
             return False
         stopped = self.live_reader.emergency_stop()
@@ -803,7 +903,7 @@ class AppController:
         self.status_handler("Emergency stop: live reading and speech stopped")
         return stopped
 
-    def set_auto_advance_enabled(self, enabled):
+    def _set_auto_advance_enabled_impl(self, enabled):
         self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
         if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
             # Never replace audio already spoken by the game with live TTS just
@@ -821,7 +921,7 @@ class AppController:
         )
         return bool(enabled)
 
-    def available_voice_characters(self):
+    def _available_voice_characters_impl(self):
         if self.voice_router is None:
             return ["Narrator"]
         voices = {
@@ -837,7 +937,7 @@ class AppController:
             ),
         ]
 
-    def available_voice_choices(self):
+    def _available_voice_choices_impl(self):
         if self.voice_router is None:
             return []
         choices = [
@@ -874,7 +974,7 @@ class AppController:
             if not (choice.id in seen or seen.add(choice.id))
         ]
 
-    def voice_assignment_for(self, character):
+    def _voice_assignment_for_impl(self, character):
         configured = find_voice_assignment(
             self.settings.voice_assignments,
             character,
@@ -886,7 +986,7 @@ class AppController:
             return default_voice_choice_id
         return f"character:{normalize_character_name(voice.character)}"
 
-    def preview_voice_choice(self, source_id, text):
+    def _preview_voice_choice_impl(self, source_id, text):
         if not self.is_ready:
             raise RuntimeError("The speech engine is not ready")
         if self.is_live_running:
@@ -906,7 +1006,7 @@ class AppController:
             text.strip(),
         )
 
-    def stop_voice_preview(self):
+    def _stop_voice_preview_impl(self):
         if self.is_live_running:
             raise RuntimeError("Stop live reading before stopping a voice preview")
         backend = self.speech_backend
@@ -918,7 +1018,7 @@ class AppController:
             return True
         return False
 
-    def assign_voice(self, character, source_id):
+    def _assign_voice_impl(self, character, source_id):
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -954,7 +1054,7 @@ class AppController:
         self.status_handler(f"{choice.label} assigned to {character}")
         return self.settings
 
-    def clear_voice_assignment(self, character):
+    def _clear_voice_assignment_impl(self, character):
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -983,7 +1083,7 @@ class AppController:
         )
         return self.settings
 
-    def set_force_live_narrator(self, enabled):
+    def _set_force_live_narrator_impl(self, enabled):
         if self.is_live_running:
             raise RuntimeError("Stop live reading before changing Narrator routing")
         enabled = bool(enabled)
@@ -997,7 +1097,7 @@ class AppController:
         )
         return self.settings
 
-    def allow_narrator_fallback(self, character):
+    def _allow_narrator_fallback_impl(self, character):
         character = (character or "").strip()
         key = normalize_character_name(character)
         if not key or key == "narrator":
@@ -1008,7 +1108,7 @@ class AppController:
         self.status_handler(f"Using narrator voice for {character}")
         return True
 
-    def unresolved_live_speakers(self):
+    def _unresolved_live_speakers_impl(self):
         """Return scoped named speakers, or ``None`` until the chapter is known."""
         scope = self.chapter_voice_preloader.live_voice_preflight_rows()
         if not self.chapter_voice_preloader.dialogue:
@@ -1059,7 +1159,7 @@ class AppController:
         self.live_speaker_corpus_error = None
         return True
 
-    def approve_live_narrator_fallbacks(self, characters):
+    def _approve_live_narrator_fallbacks_impl(self, characters):
         """Stage explicit narrator choices for the next live session only."""
         if self.is_live_running:
             raise RuntimeError("Stop live reading before approving narrator fallbacks")
@@ -1073,7 +1173,7 @@ class AppController:
         self.next_live_narrator_fallback_names = approved
         return tuple(approved.values())
 
-    def preview_voice(self, character, text):
+    def _preview_voice_impl(self, character, text):
         if not self.is_ready:
             raise RuntimeError("The speech engine is not ready")
         if self.is_live_running:
@@ -1087,24 +1187,24 @@ class AppController:
             text.strip(),
         )
 
-    def replay_dialog(self, character, text):
+    def _replay_dialog_impl(self, character, text):
         return self.preview_voice(character, text)
 
-    def get_capture_geometry(self):
+    def _get_capture_geometry_impl(self):
         if self.capture_target is None:
             return None
         return self.capture_target.get_geometry()
 
-    def get_latest_diagnostic(self):
+    def _get_latest_diagnostic_impl(self):
         with self.diagnostic_lock:
             return self.last_diagnostic
 
-    def get_live_pipeline_metrics(self):
+    def _get_live_pipeline_metrics_impl(self):
         if self.live_reader is None:
             return None
         return self.live_reader.get_pipeline_metrics()
 
-    def inspect_current_dialog(self, *, notify=True):
+    def _inspect_current_dialog_impl(self, *, notify=True):
         registry = self.voice_router.registry if self.voice_router is not None else None
         snapshots = []
         analyze_dialog_snapshot(
@@ -1120,7 +1220,7 @@ class AppController:
         snapshot = self._publish_diagnostic(snapshots[-1], notify=notify)
         return snapshot
 
-    def test_current_dialog(self):
+    def _test_current_dialog_impl(self):
         if not self.is_ready:
             raise RuntimeError("The speech engine is not ready")
         image, _output, result = analyze_dialog_snapshot(
@@ -1162,7 +1262,7 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return character, text
 
-    def apply_settings(self, settings):
+    def _apply_runtime_settings(self, settings):
         if self.tts is not None or self.speech_backend is not None:
             settings = preserve_loaded_runtime_settings(self.settings, settings)
         was_live = self.is_live_running
@@ -3555,7 +3655,7 @@ class AppController:
         if snapshot is not None:
             self._publish_diagnostic(snapshot, route_metrics, audio_source)
 
-    def shutdown(self):
+    def _shutdown_runtime(self):
         self.shutdown_requested.set()
         self._set_backend_live_mode(False)
         if self.live_reader is not None:
