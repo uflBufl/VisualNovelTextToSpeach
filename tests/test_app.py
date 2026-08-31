@@ -144,6 +144,26 @@ class TrayApplicationTest(unittest.TestCase):
         bootstrap.assert_called_once_with(["--data-directory", "/tmp/import-output"])
         qt_application.assert_not_called()
 
+    def test_packaged_generation_worker_runs_without_creating_qt(self):
+        with (
+            patch("vntts.authoring.cli.main", return_value=0) as generation_main,
+            patch("vntts.app.QApplication") as qt_application,
+        ):
+            result = main(
+                [
+                    "--offline-generation-worker",
+                    "generate",
+                    "--queue",
+                    "/tmp/queue.jsonl",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        generation_main.assert_called_once_with(
+            ["generate", "--queue", "/tmp/queue.jsonl"]
+        )
+        qt_application.assert_not_called()
+
     def test_offline_audio_action_opens_guided_selection_and_reports_saved_scope(self):
         controller = Mock()
         tray_application = TrayApplication(

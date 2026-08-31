@@ -157,6 +157,16 @@ The dashboard completion message reports matched voice groups, narrator
 fallbacks and the exact number of runnable generation lines; it no longer claims
 that voice matching is an unspecified future manual step.
 
+Offline rendering runs in one owned subprocess against that exact private input.
+The command binds queue, effective manifest, backend, model, profile and each
+narrator-fallback role; Pocket receives its required single unseeded attempt,
+while cloning generation keeps the bounded provider retry count. Reusing the same
+input directory resumes the bulk generator's atomic state. The parent drains both
+output pipes while polling, terminates only its child on cancellation, validates
+the published state/manifest and reduces terminal outcomes to generated, failed
+and other terminal counts. Frozen packages relaunch the app through a hidden
+generation-worker argument that dispatches before Qt is created.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic
