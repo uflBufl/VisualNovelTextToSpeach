@@ -95,9 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Improve maintainability without changing behavior
 
-- [ ] Add maintainability ratchets for forbidden cross-module private imports
-      and bounded module/function complexity, with explicit compatibility
-      exceptions for existing debt.
 - [ ] After an external API usage audit and documented major-release migration
       window, remove the deprecated concrete-backend `prepare()`/`play()` and
       mutable `last_*` compatibility facade.

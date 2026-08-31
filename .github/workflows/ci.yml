@@ -38,6 +38,9 @@ jobs:
       - name: Check scoped static types
         run: uv run --frozen mypy
 
+      - name: Check maintainability ratchets
+        run: uv run --frozen python scripts/check_maintainability.py
+
       - name: Run unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
 
