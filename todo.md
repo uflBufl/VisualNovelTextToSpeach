@@ -12,8 +12,6 @@ content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
 - [ ] Restore all local CI quality gates after the self-service pipeline changes.
-  - [ ] Complete the runtime lifecycle protocol used by the extracted controller
-        coordinator and keep scoped mypy green.
   - [ ] Replace the two new cross-module private runtime imports with public
         boundaries. Reconcile the maintainability ratchet with the already
         accepted large-module changes, recording only genuine remaining debt;
