@@ -162,6 +162,11 @@ def _probe_script() -> str:
     )
 
 
+def runtime_probe_script() -> str:
+    """Return the isolated runtime provenance probe used by release checks."""
+    return _probe_script()
+
+
 def _probe_relocated_runtime(
     speech_runtimes: Path,
     *,

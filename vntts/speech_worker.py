@@ -201,6 +201,11 @@ def _runtime_paths(backend, runtime_directory=None):
     return root, interpreter, site_packages.resolve()
 
 
+def resolve_speech_runtime_paths(backend, runtime_directory=None):
+    """Resolve one isolated backend runtime without starting its worker."""
+    return _runtime_paths(backend, runtime_directory)
+
+
 def _serialize_registry(registry):
     voices = []
     for voice in registry.unique_voices():

@@ -12,10 +12,9 @@ content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
 - [ ] Restore all local CI quality gates after the self-service pipeline changes.
-  - [ ] Replace the two new cross-module private runtime imports with public
-        boundaries. Reconcile the maintainability ratchet with the already
-        accepted large-module changes, recording only genuine remaining debt;
-        the gate must pass rather than silently dropping checks.
+  - [ ] Reconcile the maintainability ratchet with the already accepted
+        large-module changes, recording only genuine remaining debt; the gate
+        must pass rather than silently dropping checks.
   - [ ] Stabilize the typewriter-prefix replay assertion if the full suite can
         reproduce its duplicate recognized frame; retain the stronger invariant
         that the expected event is routed once.

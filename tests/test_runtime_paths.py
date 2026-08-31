@@ -253,7 +253,7 @@ class RuntimePathsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.package_self_test._runtime_paths",
+                    "vntts.package_self_test.resolve_speech_runtime_paths",
                     return_value=(runtime, interpreter, site),
                 ),
                 self.assertRaisesRegex(RuntimeError, "module:torch"),

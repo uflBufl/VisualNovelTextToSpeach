@@ -12,14 +12,14 @@ from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import CLIReportResult
 from vntts.onboarding import probe_tesseract
-from vntts.release_runtime import PROBE_MODULES, _probe_script
+from vntts.release_runtime import PROBE_MODULES, runtime_probe_script
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
     find_bundled_espeak,
     get_bundle_root,
 )
 from vntts.settings import get_local_data_directory
-from vntts.speech_worker import IsolatedSpeechBackend, _runtime_paths
+from vntts.speech_worker import IsolatedSpeechBackend, resolve_speech_runtime_paths
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -76,13 +76,13 @@ def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
     if bundle_root is None:
         raise RuntimeError("Pocket runtime provenance requires a frozen bundle")
     allowed_root = (bundle_root / "speech-runtimes").resolve()
-    runtime_root, interpreter, runtime_site = _runtime_paths("pocket-tts")
+    runtime_root, interpreter, runtime_site = resolve_speech_runtime_paths("pocket-tts")
     if runtime_root != allowed_root / "pocket-tts":
         raise RuntimeError(
             f"Pocket runtime is outside the frozen bundle: {runtime_root}"
         )
     completed = runner(
-        [str(interpreter), "-I", "-B", "-c", _probe_script()],
+        [str(interpreter), "-I", "-B", "-c", runtime_probe_script()],
         capture_output=True,
         check=True,
         text=True,
