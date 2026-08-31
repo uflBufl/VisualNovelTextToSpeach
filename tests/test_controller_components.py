@@ -218,6 +218,10 @@ class ControllerComponentsTest(unittest.TestCase):
 
     def test_basic_voice_actions_are_not_retained_on_controller(self):
         migrated = (
+            "_available_voice_characters_impl",
+            "_available_voice_choices_impl",
+            "_voice_assignment_for_impl",
+            "_preview_voice_choice_impl",
             "_stop_voice_preview_impl",
             "_allow_narrator_fallback_impl",
             "_approve_live_narrator_fallbacks_impl",

@@ -94,13 +94,10 @@ from vntts.speech_worker import (
     create_pocket_worker_backend,
 )
 from vntts.voices import (
-    VoiceChoice,
-    default_voice_choice_id,
     find_voice_assignment,
     is_narrator,
     is_unattributed_speaker,
     normalize_character_name,
-    pocket_tts_preset_voices,
     synthesis_character,
 )
 from vntts.window_capture import WindowCaptureTarget
@@ -846,91 +843,6 @@ class AppController:
             f"Narrator for {', '.join(unresolved)}"
         )
         return False
-
-    def _available_voice_characters_impl(self):
-        if self.voice_router is None:
-            return ["Narrator"]
-        voices = {
-            id(voice): voice for voice in self.voice_router.registry.voices.values()
-        }
-        return [
-            "Narrator",
-            *(
-                voice.character
-                for voice in sorted(
-                    voices.values(), key=lambda item: item.character.casefold()
-                )
-            ),
-        ]
-
-    def _available_voice_choices_impl(self):
-        if self.voice_router is None:
-            return []
-        choices = [
-            VoiceChoice(
-                default_voice_choice_id,
-                "Backend default live voice",
-                "Use the speech backend's default live voice",
-            )
-        ]
-        if self.settings.speech_backend == "pocket-tts":
-            choices.extend(
-                VoiceChoice(
-                    f"preset:{name}",
-                    name.replace("_", " ").title(),
-                    "Pocket TTS built-in voice",
-                )
-                for name in pocket_tts_preset_voices
-            )
-        elif self.settings.speech_backend == "coqui-xtts":
-            speakers = getattr(getattr(self.tts, "tts", None), "speakers", None)
-            choices.extend(
-                VoiceChoice(
-                    f"preset:{speaker}",
-                    str(speaker),
-                    "XTTS model speaker",
-                )
-                for speaker in (speakers or ())
-            )
-        choices.extend(self.voice_router.registry.choices())
-        seen = set()
-        return [
-            choice
-            for choice in choices
-            if not (choice.id in seen or seen.add(choice.id))
-        ]
-
-    def _voice_assignment_for_impl(self, character):
-        configured = find_voice_assignment(
-            self.settings.voice_assignments,
-            character,
-        )
-        if configured is not None:
-            return configured
-        voice = self.voice_router.registry.resolve(character)
-        if voice is None:
-            return default_voice_choice_id
-        return f"character:{normalize_character_name(voice.character)}"
-
-    def _preview_voice_choice_impl(self, source_id, text):
-        if not self.is_ready:
-            raise RuntimeError("The speech engine is not ready")
-        if self.is_live_running:
-            raise RuntimeError("Stop live reading before previewing a voice")
-        if not text or not text.strip():
-            raise ValueError("Enter preview text")
-        choice = next(
-            (item for item in self._available_voice_choices_impl() if item.id == source_id),
-            None,
-        )
-        if choice is None:
-            raise ValueError("The selected voice is no longer available")
-        self.status_handler(f"Previewing {choice.label} voice")
-        return self.speech_executor.submit(
-            self._preview_voice_choice,
-            choice,
-            text.strip(),
-        )
 
     def _unresolved_live_speakers_impl(self):
         """Return scoped named speakers, or ``None`` until the chapter is known."""

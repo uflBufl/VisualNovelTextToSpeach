@@ -15,7 +15,14 @@ from vntts.dialog_capture import (
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live_speech import play_typed_text
-from vntts.voices import is_narrator, normalize_character_name
+from vntts.voices import (
+    VoiceChoice,
+    default_voice_choice_id,
+    find_voice_assignment,
+    is_narrator,
+    normalize_character_name,
+    pocket_tts_preset_voices,
+)
 
 
 def create_live_toggle(live_reader: Any) -> Callable[[], None]:
@@ -80,19 +87,12 @@ class _VoiceAssignmentPort(Protocol):
     speech_backend: Any
     speech_executor: Any
     settings: Any
+    tts: Any
     voice_router: Any
     reported_unknown_speakers: set[str]
     pending_unknown_speakers: set[str]
     narrator_fallback_speakers: set[str]
     status_handler: Callable[[str], Any]
-
-    def _available_voice_characters_impl(self) -> Any: ...
-
-    def _available_voice_choices_impl(self) -> Any: ...
-
-    def _voice_assignment_for_impl(self, character: str) -> Any: ...
-
-    def _preview_voice_choice_impl(self, source_id: str, text: str) -> Any: ...
 
     def _unresolved_live_speakers_impl(self) -> Any: ...
 
@@ -101,6 +101,8 @@ class _VoiceAssignmentPort(Protocol):
     def _clear_voice_runtime_cache(self) -> Any: ...
 
     def _preview_voice(self, character: str, text: str) -> Any: ...
+
+    def _preview_voice_choice(self, choice: Any, text: str) -> Any: ...
 
 
 class _DiagnosticsPort(Protocol):
@@ -300,16 +302,93 @@ class VoiceAssignmentComponent:
     controller: _VoiceAssignmentPort
 
     def available_characters(self) -> Any:
-        return self.controller._available_voice_characters_impl()
+        router = self.controller.voice_router
+        if router is None:
+            return ["Narrator"]
+        voices = {id(voice): voice for voice in router.registry.voices.values()}
+        return [
+            "Narrator",
+            *(
+                voice.character
+                for voice in sorted(
+                    voices.values(), key=lambda item: item.character.casefold()
+                )
+            ),
+        ]
 
     def available_choices(self) -> Any:
-        return self.controller._available_voice_choices_impl()
+        controller = self.controller
+        if controller.voice_router is None:
+            return []
+        choices = [
+            VoiceChoice(
+                default_voice_choice_id,
+                "Backend default live voice",
+                "Use the speech backend's default live voice",
+            )
+        ]
+        if controller.settings.speech_backend == "pocket-tts":
+            choices.extend(
+                VoiceChoice(
+                    f"preset:{name}",
+                    name.replace("_", " ").title(),
+                    "Pocket TTS built-in voice",
+                )
+                for name in pocket_tts_preset_voices
+            )
+        elif controller.settings.speech_backend == "coqui-xtts":
+            speakers = getattr(getattr(controller.tts, "tts", None), "speakers", None)
+            choices.extend(
+                VoiceChoice(
+                    f"preset:{speaker}",
+                    str(speaker),
+                    "XTTS model speaker",
+                )
+                for speaker in (speakers or ())
+            )
+        choices.extend(controller.voice_router.registry.choices())
+        seen: set[str] = set()
+        unique_choices: list[VoiceChoice] = []
+        for choice in choices:
+            if choice.id in seen:
+                continue
+            seen.add(choice.id)
+            unique_choices.append(choice)
+        return unique_choices
 
     def assignment_for(self, character: str) -> Any:
-        return self.controller._voice_assignment_for_impl(character)
+        controller = self.controller
+        configured = find_voice_assignment(
+            controller.settings.voice_assignments,
+            character,
+        )
+        if configured is not None:
+            return configured
+        voice = controller.voice_router.registry.resolve(character)
+        if voice is None:
+            return default_voice_choice_id
+        return f"character:{normalize_character_name(voice.character)}"
 
     def preview_choice(self, source_id: str, text: str) -> Any:
-        return self.controller._preview_voice_choice_impl(source_id, text)
+        controller = self.controller
+        if not controller.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before previewing a voice")
+        if not text or not text.strip():
+            raise ValueError("Enter preview text")
+        choice = next(
+            (item for item in self.available_choices() if item.id == source_id),
+            None,
+        )
+        if choice is None:
+            raise ValueError("The selected voice is no longer available")
+        controller.status_handler(f"Previewing {choice.label} voice")
+        return controller.speech_executor.submit(
+            controller._preview_voice_choice,
+            choice,
+            text.strip(),
+        )
 
     def stop_preview(self) -> Any:
         controller = self.controller
