@@ -35,6 +35,10 @@ from vntts.hotkeys import (
 )
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.onboarding import OnboardingDiagnostics
+from vntts.release_backends import (
+    packaged_speech_backend_available,
+    speech_backend_options,
+)
 from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
@@ -102,10 +106,13 @@ class ConfigurationPage(QWizardPage):
             self.live_hotkey.setEnabled(False)
         self.tts_model = QLineEdit(settings.tts_model or default_onboarding_model)
         self.speech_backend = QComboBox()
-        self.speech_backend.addItem("Pocket TTS (recommended)", "pocket-tts")
-        self.speech_backend.addItem("XTTS", "coqui-xtts")
-        self.speech_backend.addItem("Chatterbox Nano", "chatterbox-nano")
-        self.speech_backend.addItem("MOSS-TTS v1.5 (Apple Silicon)", "moss-tts")
+        for label, backend, available in speech_backend_options(
+            settings.speech_backend
+        ):
+            self.speech_backend.addItem(label, backend)
+            if not available:
+                item = self.speech_backend.model().item(self.speech_backend.count() - 1)
+                item.setEnabled(False)
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
@@ -335,6 +342,12 @@ class ConfigurationPage(QWizardPage):
                 "Game window: start the game, refresh the list, and select its window.",
             )
         backend = self.speech_backend.currentData()
+        if not packaged_speech_backend_available(backend):
+            add(
+                self.speech_backend,
+                f"Speech engine: {backend} is not included in this application "
+                "package. Choose Pocket TTS or XTTS.",
+            )
         if backend in {"coqui-xtts", "moss-tts"} and not self.tts_model.text().strip():
             add(self.tts_model, "Speech model: choose a model.")
         if (

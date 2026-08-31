@@ -4,6 +4,7 @@ from pathlib import Path
 from vntts.assets import ModelAssetManager
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
+from vntts.release_backends import packaged_speech_backend_available
 from vntts.speech_backend import (
     activate_chatterbox_runtime,
     activate_moss_tts_runtime,
@@ -129,6 +130,14 @@ class OnboardingDiagnostics:
         return DiagnosticResult("Audio output", "ok", str(device))
 
     def _check_model(self, settings):
+        if not packaged_speech_backend_available(settings.speech_backend):
+            return DiagnosticResult(
+                "Speech runtime",
+                "error",
+                f"{settings.speech_backend} is not included in this application "
+                "package. Choose Pocket TTS or XTTS in Settings.",
+                "settings",
+            )
         isolated_runtime = {
             "pocket-tts": ("Pocket TTS runtime", activate_pocket_tts_runtime),
             "chatterbox-nano": (
