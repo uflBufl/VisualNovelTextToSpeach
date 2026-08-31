@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
+    OfflineGenerationResult,
     OfflineGenerationWorker,
 )
 from vntts.pregeneration_queue import PregenerationInput
@@ -136,6 +137,50 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         arguments = popen.call_args.args[0]
         retries = arguments.index("--retries")
         self.assertEqual(arguments[retries + 1], "0")
+
+    def test_repair_scopes_one_typed_batch_without_regenerating_successes(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generation_input, plan = generation_inputs(
+                root, backend="moss-tts", model="model-id"
+            )
+            output = generation_input.directory.parent / (
+                f"generation-output-{generation_input.identity[:16]}"
+            )
+            output.mkdir()
+            (output / "generation-state.json").write_text("{}", encoding="utf-8")
+            (output / "manifest.json").write_text("{}", encoding="utf-8")
+            generation_result = OfflineGenerationResult(
+                output,
+                output / "generation-state.json",
+                output / "manifest.json",
+                1,
+                2,
+                0,
+            )
+            popen = Mock(return_value=FinishedProcess())
+            worker = OfflineGenerationWorker(
+                command=("worker",), popen_factory=popen
+            )
+            state = {"items": {"one": {"status": "generated"}}}
+
+            with patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                return_value=state,
+            ):
+                worker.repair(
+                    generation_input,
+                    plan,
+                    generation_result,
+                    action="sentence_boundary_segmentation",
+                    queue_ids=("two", "one"),
+                )
+
+        arguments = popen.call_args.args[0]
+        self.assertEqual(arguments.count("--queue-id"), 2)
+        self.assertEqual(arguments.count("--sentence-segment-failed"), 2)
+        self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
+        self.assertNotIn("--regenerate-existing", arguments)
 
     def test_cancellation_terminates_only_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:

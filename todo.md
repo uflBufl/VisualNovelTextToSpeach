@@ -30,6 +30,12 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       artifacts, clipping, abnormal silence and pacing; apply only bounded typed
       repairs; then use the configured offline fallback. A residual bad/failed
       line must receive an explicit live fallback and must not stop the pack.
+  - [ ] Define and persist the self-service terminal fallback authority for
+        failures left after bounded recovery. It must retain the failed outcome
+        provenance, name the Pocket live route explicitly and pass the existing
+        generation-state validator rather than disguising failure as success.
+  - [ ] Wire recovery into the setup wizard and report player-level progress;
+        technical action names and queue IDs remain available only in logs.
 - [ ] Replace per-line approval with automatic cohort acceptance. Run technical
       checks on every WAV and synthesize a small fixed preview corpus per voice;
       show optional exception samples only when confidence is insufficient.

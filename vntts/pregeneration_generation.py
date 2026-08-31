@@ -47,6 +47,51 @@ class OfflineGenerationWorker:
         return (sys.executable, "-m", "vntts.authoring.cli")
 
     def generate(self, generation_input, voice_plan, cancel_event=None):
+        output = _generation_output(generation_input)
+        arguments = self._base_arguments(generation_input, voice_plan, output)
+        return self._execute(
+            arguments,
+            generation_input,
+            output,
+            cancel_event=cancel_event,
+        )
+
+    def repair(
+        self,
+        generation_input,
+        voice_plan,
+        generation_result,
+        *,
+        action,
+        queue_ids,
+        cancel_event=None,
+    ):
+        """Apply one exact, typed repair batch to the resumable output."""
+        if not isinstance(generation_result, OfflineGenerationResult):
+            raise OfflineGenerationError("Offline generation result is invalid")
+        output = _generation_output(generation_input)
+        if generation_result.output.resolve() != output.resolve():
+            raise OfflineGenerationError("Offline repair output identity changed")
+        option, retries = _repair_option(action)
+        queue_ids = _queue_ids(queue_ids)
+        arguments = self._base_arguments(
+            generation_input,
+            voice_plan,
+            output,
+            retries=retries,
+        )
+        for queue_id in queue_ids:
+            arguments.extend(("--queue-id", queue_id))
+            if option is not None:
+                arguments.extend((option, queue_id))
+        return self._execute(
+            arguments,
+            generation_input,
+            output,
+            cancel_event=cancel_event,
+        )
+
+    def _base_arguments(self, generation_input, voice_plan, output, *, retries=None):
         if not isinstance(generation_input, PregenerationInput):
             raise OfflineGenerationError("Offline generation input is invalid")
         if not isinstance(voice_plan, VoicePlan):
@@ -55,11 +100,8 @@ class OfflineGenerationWorker:
             generation_input.identity[:16]
         ):
             raise OfflineGenerationError("Offline generation input identity changed")
-        if cancel_event is not None and cancel_event.is_set():
-            raise OfflineGenerationCancelled("Offline speech generation was cancelled")
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
+        if retries is None:
+            retries = 0 if voice_plan.synthesis_backend == "pocket-tts" else 2
         arguments = [
             *self.command(),
             "generate",
@@ -76,12 +118,24 @@ class OfflineGenerationWorker:
             "--narrator-character",
             "Narrator",
             "--retries",
-            "0" if voice_plan.synthesis_backend == "pocket-tts" else "2",
+            str(retries),
         ]
         if voice_plan.synthesis_model:
             arguments.extend(("--model", voice_plan.synthesis_model))
         for role in generation_input.narrator_fallback_roles:
             arguments.extend(("--narrator-fallback-role", role))
+        return arguments
+
+    def _execute(
+        self,
+        arguments,
+        generation_input,
+        output,
+        *,
+        cancel_event=None,
+    ):
+        if cancel_event is not None and cancel_event.is_set():
+            raise OfflineGenerationCancelled("Offline speech generation was cancelled")
         try:
             process = self.popen_factory(
                 tuple(arguments),
@@ -110,35 +164,76 @@ class OfflineGenerationWorker:
                 "Offline speech could not be generated"
                 + (f": {detail}" if detail else ".")
             )
-        state_path = output / "generation-state.json"
-        manifest_path = output / "manifest.json"
-        if not state_path.is_file() or not manifest_path.is_file():
-            raise OfflineGenerationError(
-                "Offline generation finished without publishing its result"
-            )
-        try:
-            state = load_generation_state(state_path, generation_input.queue)
-        except (BulkGenerationError, OSError, ValueError) as error:
-            raise OfflineGenerationError(
-                f"Offline generation result is invalid: {error}"
-            ) from error
-        counts = {"generated": 0, "failed": 0, "other": 0}
-        for item in state.get("items", {}).values():
-            status = item.get("status") if isinstance(item, dict) else None
-            if status in {"generated", "approved"}:
-                counts["generated"] += 1
-            elif status == "failed":
-                counts["failed"] += 1
-            else:
-                counts["other"] += 1
-        return OfflineGenerationResult(
-            output=output,
-            state=state_path,
-            manifest=manifest_path,
-            generated=counts["generated"],
-            failed=counts["failed"],
-            other_terminal=counts["other"],
+        return _load_result(output, generation_input)
+
+
+def _generation_output(generation_input):
+    if not isinstance(generation_input, PregenerationInput):
+        raise OfflineGenerationError("Offline generation input is invalid")
+    return generation_input.directory.parent / (
+        f"generation-output-{generation_input.identity[:16]}"
+    )
+
+
+def _load_result(output, generation_input):
+    state_path = output / "generation-state.json"
+    manifest_path = output / "manifest.json"
+    if not state_path.is_file() or not manifest_path.is_file():
+        raise OfflineGenerationError(
+            "Offline generation finished without publishing its result"
         )
+    try:
+        state = load_generation_state(state_path, generation_input.queue)
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise OfflineGenerationError(
+            f"Offline generation result is invalid: {error}"
+        ) from error
+    counts = {"generated": 0, "failed": 0, "other": 0}
+    for item in state.get("items", {}).values():
+        status = item.get("status") if isinstance(item, dict) else None
+        if status in {"generated", "approved"}:
+            counts["generated"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        else:
+            counts["other"] += 1
+    return OfflineGenerationResult(
+        output=output,
+        state=state_path,
+        manifest=manifest_path,
+        generated=counts["generated"],
+        failed=counts["failed"],
+        other_terminal=counts["other"],
+    )
+
+
+def _queue_ids(values):
+    if not isinstance(values, (tuple, list)) or not values:
+        raise OfflineGenerationError("Offline repair requires exact queue IDs")
+    result = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise OfflineGenerationError("Offline repair queue ID is invalid")
+        result.append(value)
+    if len(result) != len(set(result)):
+        raise OfflineGenerationError("Offline repair queue IDs are duplicated")
+    return tuple(sorted(result))
+
+
+def _repair_option(action):
+    options = {
+        "safe_resume": (None, 0),
+        "sentence_boundary_segmentation": ("--sentence-segment-failed", 0),
+        "edge_silence_trim": ("--trim-edge-silence-failed", 0),
+        "bounded_seed_retry": ("--bounded-seed-failed", 2),
+    }
+    try:
+        option, retries = options[action]
+    except KeyError as error:
+        raise OfflineGenerationError(
+            f"Offline repair action is unsupported: {action!r}"
+        ) from error
+    return option, retries
 
 
 def _terminate_process(process):

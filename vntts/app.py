@@ -72,6 +72,7 @@ from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.pregeneration_recovery import OfflineRecoveryResult
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
@@ -1992,6 +1993,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         voice_plan = dialog.voice_plan()
         generation_input = dialog.generation_input()
         generation_result = dialog.generation_result()
+        recovery_result = dialog.recovery_result()
+        if not isinstance(recovery_result, OfflineRecoveryResult):
+            recovery_result = None
         self.pregeneration_dialog = None
         if (
             job is None
@@ -2005,7 +2009,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             f"Matched {len(voice_plan.groups)} voice groups; "
             f"{voice_plan.narrator_fallback_count} will use narrator. "
             f"Generated {generation_result.generated}; "
-            f"{generation_result.failed} need automatic recovery."
+            + (
+                f"automatic recovery fixed {recovery_result.recovered}; "
+                f"{generation_result.failed} still need a fallback."
+                if recovery_result is not None
+                else f"{generation_result.failed} need automatic recovery."
+            )
         )
         return job
 

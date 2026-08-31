@@ -168,6 +168,18 @@ the published state/manifest and reduces terminal outcomes to generated, failed
 and other terminal counts. Frozen packages relaunch the app through a hidden
 generation-worker argument that dispatches before Qt is created.
 
+After the first pass, the player workflow derives a fresh failure-repair plan
+from the checksum-bound queue and generation state. It batches only deterministic
+safe actions: resume an interrupted item once, split at validated complete
+sentence boundaries, trim excessive edge-only silence, or spend the remaining
+bounded MOSS seed attempts. Pocket is unseeded, so it never receives a seed
+retry. Every subprocess is scoped to the exact failed queue IDs and one repair
+strategy; successful and unrelated outcomes are not regenerated. The plan is
+recomputed after every batch, and one queue/action pair is never repeated in the
+same recovery run. Thus a persistent defect becomes a deferred fallback instead
+of an infinite retry loop. Recovery shares the generation cancellation signal
+and resumes from the same output after restart.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

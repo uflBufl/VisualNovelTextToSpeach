@@ -268,6 +268,49 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Previous selection restored", dialog.resume_status.text())
             dialog.deleteLater()
 
+    def test_failed_first_pass_runs_automatic_recovery_before_accepting(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            first = Mock(generated=1, failed=2)
+            final = Mock(generated=2, failed=1)
+            recovery_result = Mock(generation=final, recovered=1)
+            generator = Mock()
+            generator.generate.return_value = first
+            recovery = Mock()
+            recovery.recover.return_value = recovery_result
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                generator=generator,
+                recovery=recovery,
+                thread_pool=pool,
+            )
+
+            dialog.continue_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.recovering)
+            self.assertEqual(
+                dialog.cancel_button.text(), "Cancel automatic recovery"
+            )
+            self.assertIn("2 unfinished lines", dialog.resume_status.text())
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.recovering)
+            self.assertIs(dialog.generation_result(), final)
+            self.assertIs(dialog.recovery_result(), recovery_result)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            dialog.deleteLater()
+
     def test_missing_content_has_one_plain_recovery_action(self):
         dialog = OfflineAudioPreparationDialog(
             AppSettings(),

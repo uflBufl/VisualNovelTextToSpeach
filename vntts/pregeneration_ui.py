@@ -31,6 +31,7 @@ from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueCancelled,
 )
+from vntts.pregeneration_recovery import OfflineRecoveryWorker
 from vntts.pregeneration_setup import (
     ContentDiscovery,
     PregenerationJobStore,
@@ -56,6 +57,7 @@ class OfflineAudioPreparationDialog(QDialog):
         voice_plan_store=None,
         input_store=None,
         generator=None,
+        recovery=None,
         importer=None,
         thread_pool=None,
         parent=None,
@@ -74,6 +76,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.input_store = input_store or PregenerationInputStore(self.job_store)
         self.generator = generator or OfflineGenerationWorker()
+        self.recovery = recovery or OfflineRecoveryWorker(self.generator)
         self.importer = importer or Reverse1999GameImporter()
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
@@ -83,18 +86,22 @@ class OfflineAudioPreparationDialog(QDialog):
         self.input_runner.finished.connect(self._generation_input_finished)
         self.generation_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.generation_runner.finished.connect(self._generation_finished)
+        self.recovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.recovery_runner.finished.connect(self._recovery_finished)
         self.import_cancel_event = Event()
         self.voice_cancel_event = Event()
         self.importing = False
         self.planning_voices = False
         self.preparing_inputs = False
         self.generating = False
+        self.recovering = False
         self._close_after_voice_cancel = False
         self._content = ()
         self._job = None
         self._voice_plan = None
         self._generation_input = None
         self._generation_result = None
+        self._recovery_result = None
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(700, 500)
 
@@ -306,6 +313,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def generation_result(self):
         return self._generation_result
 
+    def recovery_result(self):
+        return self._recovery_result
+
     def _source_changed(self, _index):
         self._populate_stories(self.current_content())
 
@@ -475,6 +485,42 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to generate offline audio: {error}")
             return
         self._generation_result = result
+        if result.failed < 1:
+            self.accept()
+            return
+        self.recovering = True
+        self._set_import_controls(False)
+        self.cancel_button.setText("Cancel automatic recovery")
+        self.cancel_button.setEnabled(True)
+        self.resume_status.setText(
+            f"Trying safe automatic fixes for {result.failed} unfinished lines..."
+        )
+        self.recovery_runner.start(
+            self.recovery.recover,
+            self._generation_input,
+            self._voice_plan,
+            result,
+            self.voice_cancel_event,
+        )
+
+    def _recovery_finished(self, result, error):
+        self.recovering = False
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        if self._close_after_voice_cancel:
+            self.reject()
+            return
+        if error is not None:
+            if isinstance(error, OfflineGenerationCancelled):
+                self.resume_status.setText(
+                    "Automatic recovery cancelled. Continue later to resume saved lines."
+                )
+                return
+            self.resume_status.setText(f"Unable to recover offline audio: {error}")
+            return
+        self._recovery_result = result
+        self._generation_result = result.generation
         self.accept()
 
     def _import_finished(self, content, error):
@@ -523,12 +569,19 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
 
     def _cancel_or_reject(self):
-        if self.planning_voices or self.preparing_inputs or self.generating:
+        if (
+            self.planning_voices
+            or self.preparing_inputs
+            or self.generating
+            or self.recovering
+        ):
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
             self.cancel_button.setEnabled(False)
             stage = (
-                "generation"
+                "automatic recovery"
+                if self.recovering
+                else "generation"
                 if self.generating
                 else "offline preparation"
                 if self.preparing_inputs
@@ -544,7 +597,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.setText("Cancelling game import...")
 
     def closeEvent(self, event: QCloseEvent):
-        if self.planning_voices or self.preparing_inputs or self.generating:
+        if (
+            self.planning_voices
+            or self.preparing_inputs
+            or self.generating
+            or self.recovering
+        ):
             self._cancel_or_reject()
             event.ignore()
             return
@@ -556,6 +614,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_runner.cancel()
         self.input_runner.cancel()
         self.generation_runner.cancel()
+        self.recovery_runner.cancel()
         super().closeEvent(event)
 
 
