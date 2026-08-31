@@ -351,6 +351,13 @@ class SpeechWorkerTest(unittest.TestCase):
                     return_value=(runtime_root, interpreter, runtime_site),
                 ),
                 patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                patch.dict(
+                    os.environ,
+                    {
+                        "HF_TOKEN": "developer-token",
+                        "HUGGING_FACE_HUB_TOKEN": "legacy-token",
+                    },
+                ),
             ):
                 backend = IsolatedSpeechBackend(
                     "pocket-tts", registry, process_factory=process_factory
@@ -358,6 +365,12 @@ class SpeechWorkerTest(unittest.TestCase):
 
             self.assertEqual(captured["command"][-1], "")
             self.assertEqual(captured["options"]["cwd"], str(bundle_root))
+            self.assertEqual(
+                captured["options"]["env"]["HF_HUB_DISABLE_IMPLICIT_TOKEN"],
+                "1",
+            )
+            self.assertNotIn("HF_TOKEN", captured["options"]["env"])
+            self.assertNotIn("HUGGING_FACE_HUB_TOKEN", captured["options"]["env"])
             backend.shutdown()
 
     def test_moss_worker_defaults_to_its_supported_stable_profile(self):

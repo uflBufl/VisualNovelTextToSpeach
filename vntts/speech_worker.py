@@ -568,6 +568,10 @@ class IsolatedSpeechBackend:
         ]
         environment = dict(os.environ)
         environment["PYTHONNOUSERSITE"] = "1"
+        if self.name == "pocket-tts" and self.bundle_root is not None:
+            environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+            environment.pop("HF_TOKEN", None)
+            environment.pop("HUGGING_FACE_HUB_TOKEN", None)
         process = self.process_factory(
             command,
             stdin=subprocess.PIPE,
