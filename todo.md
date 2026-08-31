@@ -108,10 +108,6 @@ intentional omission as distinct terminal authorities.
       packaged path without source-tree assumptions, and make package self-test
       initialize and render through the effective default backend on a clean
       machine without uv, a checkout or backend environment variables.
-- [ ] Restore the byte-level JSON compatibility of
-      `rebase-workspace-config`: retain its historical ASCII escaping or publish
-      an explicitly versioned output change. Add a Unicode-path stdout test that
-      compares exact bytes rather than reparsing JSON.
 - [ ] Make the static-typing ratchet non-shrinkable. Store a versioned minimum
       checked-module inventory outside the mutable mypy configuration and fail
       CI when `tool.mypy.files` stops being a superset; retire an entry only via

@@ -116,7 +116,7 @@ def _print_workspace(result) -> None:
     print(
         json.dumps(
             {"directory": str(result.directory), "created": result.created},
-            ensure_ascii=False,
+            ensure_ascii=True,
             indent=2,
             sort_keys=True,
         )

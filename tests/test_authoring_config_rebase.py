@@ -422,6 +422,34 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             self.assertTrue(result["created"])
             self.assertTrue(Path(result["directory"]).is_dir())
 
+    def test_cli_preserves_ascii_escaped_workspace_output_bytes(self):
+        with TemporaryDirectory(prefix="рабочая-область-") as directory:
+            root = Path(directory)
+            _fixture, source, target = _prepare(root)
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = authoring_main(
+                    [
+                        "rebase-workspace-config",
+                        str(source),
+                        str(target),
+                        "--workspaces-root",
+                        str(root / "рабочие-области"),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            published = next((root / "рабочие-области").iterdir()).resolve()
+            expected = json.dumps(
+                {"created": True, "directory": str(published)},
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            self.assertEqual(stdout.getvalue(), f"{expected}\n")
+            self.assertIn("\\u", stdout.getvalue())
+
     def test_rebases_exact_terminal_item_without_mutating_authorities(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -43,8 +43,11 @@ uv run vntts-pregenerate rebase-workspace-config REVIEWED_WORKSPACE \
 ```
 
 The command locks both source outputs, requires one import identity, and
-publishes a third no-replace workspace. The target queue must either be
-byte-identical to the source queue or be its validated strict additive
+publishes a third no-replace workspace. The stdout result retains the original
+indented, sorted JSON representation
+with non-ASCII path characters escaped, so existing byte-oriented automation
+continues to receive the version-1 command format. The target queue must either
+be byte-identical to the source queue or be its validated strict additive
 successor. In the additive case every source item must remain byte-equivalent,
 both queue hashes and every added item are bound, and added IDs deliberately
 start without state. Its base state and top-level synthesis controls come from
