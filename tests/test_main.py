@@ -380,6 +380,10 @@ class MainTest(unittest.TestCase):
 
     def test_live_chunk_routes_text_by_detected_character(self):
         voice_router = Mock()
+        voice_router.play_prepared.return_value = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            1.0,
+        )
 
         with redirect_stdout(io.StringIO()):
             speak_live_chunk(
@@ -387,11 +391,21 @@ class MainTest(unittest.TestCase):
                 SpeechChunk(1, "Regulus", "Rock and roll!"),
             )
 
-        voice_router.speak.assert_called_once_with("Regulus", "Rock and roll!")
+        voice_router.prepare_playback.assert_called_once_with(
+            "Regulus", "Rock and roll!"
+        )
+        voice_router.play_prepared.assert_called_once_with(
+            voice_router.prepare_playback.return_value
+        )
+        voice_router.speak.assert_not_called()
 
     def test_live_chunk_passes_stale_playback_guard(self):
         voice_router = Mock()
         playback_guard = Mock(return_value=True)
+        voice_router.play_prepared.return_value = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            1.0,
+        )
 
         with redirect_stdout(io.StringIO()):
             speak_live_chunk(
@@ -400,11 +414,14 @@ class MainTest(unittest.TestCase):
                 playback_guard,
             )
 
-        voice_router.speak.assert_called_once_with(
-            "Regulus",
-            "Still current.",
+        voice_router.prepare_playback.assert_called_once_with(
+            "Regulus", "Still current."
+        )
+        voice_router.play_prepared.assert_called_once_with(
+            voice_router.prepare_playback.return_value,
             playback_guard=playback_guard,
         )
+        voice_router.speak.assert_not_called()
 
     def test_one_time_read_can_enqueue_speech_in_shared_queue(self):
         voice_router = Mock()
@@ -1362,23 +1379,35 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(character, "Marcus")
         self.assertEqual(text, "This is a complete test.")
-        controller.voice_router.speak.assert_called_once_with(
+        controller.voice_router.prepare_playback.assert_called_once_with(
             "Marcus",
             "This is a complete test.",
         )
+        controller.voice_router.play_prepared.assert_called_once_with(
+            controller.voice_router.prepare_playback.return_value
+        )
+        controller.voice_router.speak.assert_not_called()
 
     def test_controller_preview_uses_live_backend_rendering_boundary(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.voice_router = Mock()
         controller.speech_backend = Mock()
+        controller.speech_backend.play_prepared.return_value = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            1.0,
+        )
 
         controller._preview_voice("Marcus", "Preview this.")
 
-        controller.speech_backend.speak.assert_called_once_with(
+        controller.speech_backend.prepare_playback.assert_called_once_with(
             "Marcus",
             "Preview this.",
         )
-        controller.voice_router.speak.assert_not_called()
+        controller.speech_backend.play_prepared.assert_called_once_with(
+            controller.speech_backend.prepare_playback.return_value
+        )
+        controller.speech_backend.speak.assert_not_called()
+        controller.voice_router.prepare_playback.assert_not_called()
 
     def test_controller_exposes_speech_queue_controls(self):
         statuses = []

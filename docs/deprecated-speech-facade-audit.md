@@ -7,7 +7,7 @@ boundary or documented external migration window. Repository search cannot
 prove the absence of downstream Python callers. Removing the facade now would
 therefore violate the published compatibility gate in `synthesis-rendering.md`.
 
-The 2026-08-17 repository audit searched production and test Python callers for
+The audit was repeated on 2026-08-31 across production and test Python callers for
 `.prepare(`, `.play(` and the concrete mutable metric names. Controller live
 routing uses `prepare_playback()`/`play_prepared()` or typed route decisions;
 replay uses typed routes; benchmarks and authoring use `render()` results.
@@ -18,8 +18,12 @@ exercise both typed behavior and the retained compatibility surface.
 One internal MOSS warm-up call still used `prepare()` even though it needed the
 typed request payload. It was migrated to `SynthesisRequest` plus the same
 internal prepared-request path, without opening an output device or changing the
-warm-up cache/generation limit. No remaining application orchestration consumes
-the deprecated facade or reads its mutable fields for correctness.
+warm-up cache/generation limit. The remaining live preview and fallback helper
+calls were migrated from `speak()` to `prepare_playback()` plus
+`play_prepared()`. No application orchestration now consumes the deprecated
+concrete-backend facade or reads its mutable fields for correctness.
+`tests/test_speech_backend_api_boundaries.py` keeps the runtime protocol and
+controller helpers on that typed boundary.
 
 Removal remains blocked until a future major release has all of the following:
 

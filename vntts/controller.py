@@ -63,6 +63,7 @@ from vntts.live_sequence import (
     StoryCursorState,
 )
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
+from vntts.live_speech import play_typed_text
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PreparedPlayback
@@ -247,14 +248,9 @@ def read_live_snapshot(
 def speak_live_chunk(voice_router, chunk, playback_guard=None):
     print(f"{chunk.character} is speaking now (live)")
     print(chunk.text)
-    speak_dialog(
-        chunk.text,
-        lambda value: voice_router.speak(
-            chunk.character,
-            value,
-            **({"playback_guard": playback_guard} if playback_guard else {}),
-        ),
-    )
+    if is_empty(chunk.text):
+        return None
+    return play_typed_text(voice_router, chunk.character, chunk.text, playback_guard)
 
 
 def create_live_toggle(live_reader):
@@ -1510,10 +1506,8 @@ class AppController:
         backend = self.speech_backend
         if isinstance(backend, GeneratedAudioFallbackBackend):
             backend = backend.live_backend
-        speak = getattr(backend, "speak", None)
-        if callable(speak):
-            return speak(character, text)
-        return self.voice_router.speak(character, text)
+        backend = backend or self.voice_router
+        return play_typed_text(backend, character, text)
 
     def _apply_narrator_voice(self, voice):
         set_narrator_voice = getattr(self.voice_router, "set_narrator_voice", None)

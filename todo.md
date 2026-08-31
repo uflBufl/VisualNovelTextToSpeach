@@ -93,12 +93,6 @@ intentional omission as distinct terminal authorities.
       line. Judge speaker similarity, pronunciation, prosody, artifacts,
       repetition and trailing silence before changing sampling controls.
 
-## P1 - Improve maintainability without changing behavior
-
-- [ ] After an external API usage audit and documented major-release migration
-      window, remove the deprecated concrete-backend `prepare()`/`play()` and
-      mutable `last_*` compatibility facade.
-
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.
