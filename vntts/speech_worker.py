@@ -7,7 +7,6 @@ import json
 import os
 import platform
 import queue
-import site
 import struct
 import subprocess
 import sys
@@ -53,17 +52,40 @@ from vntts.voices import (
 
 _FRAME_LENGTH = struct.Struct(">I")
 _BOOTSTRAP = (
-    "import json,sys;"
+    "import sys;"
     "sys.path.insert(0,sys.argv.pop(1));"
-    "[sys.path.append(p) for p in json.loads(sys.argv.pop(1))];"
     "from vntts.speech_worker import worker_main;"
     "raise SystemExit(worker_main())"
 )
+_COMMON_REQUIRED_MODULES = (
+    "numpy",
+    "scipy",
+    "platformdirs",
+    "vntts_artifacts",
+    "durable_file",
+)
 _REQUIRED_MODULES = {
-    "pocket-tts": ("numpy", "torch"),
-    "chatterbox-nano": ("numpy", "torch", "transformers"),
-    "moss-tts": ("numpy", "mlx.core"),
-    "moss-tts-delay": ("numpy", "torch", "transformers"),
+    "pocket-tts": _COMMON_REQUIRED_MODULES
+    + ("pocket_tts", "torch", "safetensors"),
+    "chatterbox-nano": _COMMON_REQUIRED_MODULES
+    + (
+        "chatterbox",
+        "torch",
+        "torchaudio",
+        "transformers",
+        "tokenizers",
+        "safetensors",
+    ),
+    "moss-tts": _COMMON_REQUIRED_MODULES
+    + (
+        "mlx.core",
+        "mlx_audio",
+        "transformers",
+        "tokenizers",
+        "safetensors",
+    ),
+    "moss-tts-delay": _COMMON_REQUIRED_MODULES
+    + ("torch", "transformers", "tokenizers", "safetensors"),
 }
 _BACKEND_CLASSES = {
     "pocket-tts": PocketTTSVoiceRouterBackend,
@@ -171,14 +193,6 @@ def _runtime_paths(backend, runtime_directory=None):
             f"--project backends/{folder}`, then restart the app."
         )
     return root, interpreter, site_packages.resolve()
-
-
-def _support_paths():
-    import vntts_artifacts
-
-    values = [Path(vntts_artifacts.__file__).resolve().parents[1]]
-    values.extend(Path(value).resolve() for value in site.getsitepackages())
-    return tuple(dict.fromkeys(str(value) for value in values if value.is_dir()))
 
 
 def _serialize_registry(registry):
@@ -542,7 +556,6 @@ class IsolatedSpeechBackend:
             "-c",
             _BOOTSTRAP,
             str(self.project_root),
-            json.dumps(_support_paths()),
         ]
         environment = dict(os.environ)
         environment["PYTHONNOUSERSITE"] = "1"

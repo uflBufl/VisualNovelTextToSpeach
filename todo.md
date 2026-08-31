@@ -118,11 +118,6 @@ intentional omission as distinct terminal authorities.
       cancellation must safely interrupt the live-reader wait, retain the saved
       configuration for restart and report that distinction without shutting
       down an unrelated controller generation.
-- [ ] Make isolated backend environments reproducible. Stop appending every host
-      `site-packages` directory to worker `sys.path`; package the narrowly shared
-      VNTTS support dependencies in each worker runtime and validate origins for
-      model dependencies, including transitives that can load binary packages.
-
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.

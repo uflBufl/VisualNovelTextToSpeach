@@ -109,6 +109,11 @@ wheels = [
 ]
 
 [[package]]
+name = "durable-file"
+version = "0.1.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=durable-file-v0.1.0#3557679180502da3bf2695dd2646224ef012c6b6" }
+
+[[package]]
 name = "filelock"
 version = "3.32.3"
 source = { registry = "https://pypi.org/simple" }
@@ -505,6 +510,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79", size = 313412, upload-time = "2026-08-04T18:15:28.737Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", size = 129956, upload-time = "2026-08-04T18:15:27.159Z" },
+]
+
+[[package]]
+name = "platformdirs"
+version = "4.11.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/06/cf1564dcc2e2261c8c8c6c05628dc8b418943bdae2a4e58640ceb2f770fa/platformdirs-4.11.5.tar.gz", hash = "sha256:e8b31f4f8bcbbedef91a6b57a706255e4f148d2a4e01648382a0a47342539173", size = 34823, upload-time = "2026-08-27T21:36:37.46Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/12/6f3fcd5067a9cbf4f8664b32957973498da8b083455203c8d9cab83a725c/platformdirs-4.11.5-py3-none-any.whl", hash = "sha256:89f8d42695853b89c7170bd49bc3dc593f98a71e695ede88e06a3b247bc4563b", size = 23900, upload-time = "2026-08-27T21:36:36.227Z" },
 ]
 
 [[package]]
@@ -919,12 +933,35 @@ wheels = [
 ]
 
 [[package]]
+name = "vntts-artifacts"
+version = "0.7.2"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=dd0459df41d596d649a5a3e33fb03f93024d5af9#dd0459df41d596d649a5a3e33fb03f93024d5af9" }
+dependencies = [
+    { name = "durable-file" },
+]
+
+[package.optional-dependencies]
+audio = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[[package]]
 name = "vntts-moss-tts-runtime"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "mlx-audio" },
+    { name = "platformdirs" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "vntts-artifacts", extra = ["audio"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mlx-audio", specifier = "==0.4.6" }]
+requires-dist = [
+    { name = "mlx-audio", specifier = "==0.4.6" },
+    { name = "platformdirs", specifier = ">=4.3,<5" },
+    { name = "scipy", specifier = ">=1.11,<2" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=dd0459df41d596d649a5a3e33fb03f93024d5af9" },
+]

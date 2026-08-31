@@ -200,9 +200,13 @@ class SettingsTest(unittest.TestCase):
         data_path = Path("/data/vntts")
         with (
             patch(
-                "vntts.settings.user_config_path", return_value=config_path
+                "vntts.application_directories.user_config_path",
+                return_value=config_path,
             ) as config,
-            patch("vntts.settings.user_data_path", return_value=data_path) as data,
+            patch(
+                "vntts.application_directories.user_data_path",
+                return_value=data_path,
+            ) as data,
         ):
             self.assertEqual(get_config_directory(), config_path)
             self.assertEqual(get_local_data_directory(), data_path)

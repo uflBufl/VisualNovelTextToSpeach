@@ -1,4 +1,3 @@
-import json
 import queue
 import sys
 import unittest
@@ -13,6 +12,7 @@ import numpy as np
 
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
+    _REQUIRED_MODULES,
     IsolatedSpeechBackend,
     _module_health,
     _read_frame,
@@ -98,6 +98,32 @@ class FakeProcess:
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_health_gate_covers_shared_and_binary_sensitive_dependencies(self):
+        common = {
+            "numpy",
+            "scipy",
+            "platformdirs",
+            "vntts_artifacts",
+            "durable_file",
+        }
+        for modules in _REQUIRED_MODULES.values():
+            self.assertTrue(common.issubset(modules))
+        self.assertTrue(
+            {"pocket_tts", "torch", "safetensors"}.issubset(
+                _REQUIRED_MODULES["pocket-tts"]
+            )
+        )
+        self.assertTrue(
+            {"torch", "torchaudio", "transformers", "tokenizers"}.issubset(
+                _REQUIRED_MODULES["chatterbox-nano"]
+            )
+        )
+        self.assertTrue(
+            {"mlx.core", "mlx_audio", "transformers", "tokenizers"}.issubset(
+                _REQUIRED_MODULES["moss-tts"]
+            )
+        )
+
     def test_worker_protocol_streams_typed_pcm_and_results(self):
         registry = CharacterVoiceRegistry()
         input_stream = BytesIO()
@@ -204,7 +230,7 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertEqual(resolved_python, interpreter)
             self.assertEqual(resolved_site, site_packages.resolve())
 
-    def test_parent_launches_isolated_interpreter_with_json_support_paths(self):
+    def test_parent_launches_isolated_interpreter_without_host_support_paths(self):
         registry = CharacterVoiceRegistry()
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -232,10 +258,6 @@ class SpeechWorkerTest(unittest.TestCase):
                     "vntts.speech_worker._runtime_paths",
                     return_value=(root, interpreter, runtime_site),
                 ),
-                patch(
-                    "vntts.speech_worker._support_paths",
-                    return_value=("/app-support", "/artifact-support"),
-                ),
             ):
                 backend = IsolatedSpeechBackend(
                     "pocket-tts", registry, process_factory=process_factory
@@ -244,10 +266,8 @@ class SpeechWorkerTest(unittest.TestCase):
             command = captured["command"]
             self.assertEqual(command[0], str(interpreter))
             self.assertIn("-I", command)
-            self.assertEqual(
-                json.loads(command[-1]), ["/app-support", "/artifact-support"]
-            )
-            self.assertNotIn("\0", command[-1])
+            self.assertEqual(command[-1], str(Path(__file__).resolve().parents[1]))
+            self.assertNotIn("site-packages", command)
             backend.shutdown()
 
     def test_moss_worker_defaults_to_its_supported_stable_profile(self):
@@ -351,7 +371,6 @@ class SpeechWorkerTest(unittest.TestCase):
                     "vntts.speech_worker._runtime_paths",
                     return_value=(root, interpreter, runtime_site),
                 ),
-                patch("vntts.speech_worker._support_paths", return_value=()),
                 self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
             ):
                 IsolatedSpeechBackend(

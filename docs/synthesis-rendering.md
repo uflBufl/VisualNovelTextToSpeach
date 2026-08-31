@@ -23,9 +23,19 @@ same completion, limits, timing and diagnostic result used by in-process
 renderers.
 
 Startup is fail closed. Before reporting health, the worker verifies the file
-origin and version of each backend's ABI-sensitive modules: NumPy and Torch for
-Pocket, NumPy/Torch/Transformers for Chatterbox, and NumPy/MLX Core for MOSS.
-Every origin must be beneath that backend environment's `site-packages`.
+origin and version of each backend's direct model package, its shared VNTTS
+runtime dependencies and ABI-sensitive transitives. The gate includes NumPy,
+SciPy, the model framework, tokenizer/safetensors bindings where present, and
+VNTTS Artifacts with its durable-file dependency. Every origin must be beneath
+that backend environment's `site-packages`. The bootstrap adds only the VNTTS
+source or bundled application root; it never appends the desktop interpreter's
+`site-packages`. Each backend lock therefore carries the narrow shared support
+set explicitly, and an incomplete or mixed environment fails before model load.
+The contract is exercised against every locked local runtime: Pocket reports 8
+checked modules, Chatterbox 11, MOSS Local 10 and MOSS Delay 9, all rooted under
+the selected runtime. Lock regeneration and sync must precede changing this
+allowlist; relying on an import that happens to exist in the desktop environment
+is a release failure.
 Missing runtimes, mixed imports, an unexpected interpreter, malformed frames or
 worker exit prevent the backend from becoming ready. Cancellation terminates
 the exact worker process, which also makes non-cooperative model calls bounded;

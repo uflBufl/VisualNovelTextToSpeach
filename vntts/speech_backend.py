@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_output_path
 
+from vntts.application_directories import get_local_data_directory
 from vntts.audio_cache import PersistentAudioCache
 from vntts.playback import (
     PlaybackStatus,
@@ -25,7 +26,6 @@ from vntts.services.tts_engine import (
     get_tts_profile,
     match_output_sample_rate,
 )
-from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import (
     BoundedCache,
