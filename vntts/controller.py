@@ -1,6 +1,5 @@
 """Application controller and live-reading orchestration."""
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
@@ -22,12 +21,7 @@ from vntts.controller_components import (
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog_capture import (
-    TTSInitializationError,
     capture_live_frame,
-    dialog_completion_cue_visible,
-    dialog_glyphs_visible,
-    fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     get_screenshot_directory,
     read_dialog_safely,
     recognize_live_frame,
@@ -51,7 +45,6 @@ from vntts.live import (
     AdaptiveSpeechBackpressure,
     AutoAdvanceAttempt,
     CanonicalDialogRoute,
-    IncrementalDialogTracker,
     LiveDialogReader,
     SilentDialogRoute,
 )
@@ -61,7 +54,7 @@ from vntts.live_sequence import (
     StoryCursorError,
     StoryCursorState,
 )
-from vntts.live_snapshot import read_live_snapshot
+from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import play_typed_text
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
@@ -69,7 +62,6 @@ from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.runtime_config import (
     get_live_configuration,
-    get_tts_configuration,
     initialize_voice_registry,
     initialize_voice_router,
 )
@@ -83,7 +75,6 @@ from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     PocketTTSVoiceRouterBackend,
-    XTTSVoiceRouterBackend,
 )
 from vntts.speech_worker import (
     create_chatterbox_worker_backend,
@@ -243,6 +234,10 @@ class AppController:
         self.pocket_backend_factory = pocket_backend_factory
         self.speech_backpressure_factory = speech_backpressure_factory
         self.dialog_read_scheduler_factory = create_dialog_read_scheduler
+        self.thread_pool_executor_factory = ThreadPoolExecutor
+        self.live_reader_factory = LiveDialogReader
+        self.voice_registry_initializer = initialize_voice_registry
+        self.voice_router_initializer = initialize_voice_router
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -424,220 +419,6 @@ class AppController:
 
     def test_current_dialog(self):
         return self.diagnostics.test_current_dialog()
-
-    def _start_runtime(self):
-        if self.is_ready:
-            return True
-
-        self.shutdown_requested.clear()
-        use_xtts = self.settings.speech_backend == "coqui-xtts"
-        loading_status = {
-            "coqui-xtts": "Loading TTS model...",
-            "chatterbox-nano": "Loading Chatterbox Nano...",
-            "moss-tts": "Loading MOSS-TTS...",
-            "pocket-tts": "Loading Pocket TTS...",
-        }[self.settings.speech_backend]
-        self.status_handler(loading_status)
-        try:
-            if use_xtts:
-                self.model_assets.configure_environment()
-                if self.settings.xtts_terms_accepted:
-                    os.environ["COQUI_TOS_AGREED"] = "1"
-                self.tts = self.tts_factory(**get_tts_configuration(self.settings))
-            else:
-                if self.settings.speech_backend in {
-                    "chatterbox-nano",
-                    "moss-tts",
-                }:
-                    self.model_assets.configure_huggingface_environment()
-                registry = initialize_voice_registry(
-                    self.settings,
-                    self.error_handler,
-                )
-                if registry is None:
-                    return False
-                backend_factory = {
-                    "chatterbox-nano": self.chatterbox_backend_factory,
-                    "moss-tts": self.moss_backend_factory,
-                    "pocket-tts": self.pocket_backend_factory,
-                }[self.settings.speech_backend]
-                narrator_reference = self.settings.tts_speaker_wav
-                narrator_source_id = find_voice_assignment(
-                    self.settings.voice_assignments,
-                    "Narrator",
-                )
-                if narrator_source_id is not None:
-                    narrator_voice = registry.resolve_source(narrator_source_id)
-                    if narrator_voice is None:
-                        narrator_reference = self.settings.tts_speaker_wav
-                    elif narrator_voice.references:
-                        narrator_reference = narrator_voice.references[0]
-                    elif self.settings.speech_backend == "pocket-tts":
-                        narrator_reference = narrator_voice.speaker
-                backend_options = {
-                    "narrator_reference": narrator_reference,
-                    "volume": self.settings.output_volume_percent / 100,
-                }
-                if (
-                    getattr(backend_factory, "supports_startup_cancellation", False)
-                    is True
-                ):
-                    backend_options["startup_cancellation"] = self.shutdown_requested
-                if self.settings.speech_backend == "moss-tts":
-                    backend_options.update(
-                        model_name=self.settings.tts_model,
-                        language=self.settings.tts_language or "English",
-                        generation_profile=self.settings.tts_profile,
-                    )
-                self.tts = backend_factory(
-                    registry,
-                    **backend_options,
-                )
-        except Exception as error:
-            self.error_handler(TTSInitializationError(str(error)))
-            return False
-
-        if self.shutdown_requested.is_set():
-            self._stop_tts()
-            return False
-
-        try:
-            if use_xtts:
-                self.voice_router = initialize_voice_router(
-                    self.tts,
-                    self.settings,
-                    self.error_handler,
-                )
-                if self.voice_router is None:
-                    self._stop_tts()
-                    return False
-                self.speech_backend = XTTSVoiceRouterBackend(self.voice_router)
-            else:
-                self.voice_router = self.tts
-                self.speech_backend = self.tts
-
-            self._configure_generated_audio_backend()
-
-            if self.settings.warm_up_voices:
-                self.status_handler("Warming speech model and voices...")
-                try:
-                    warmed = self.voice_router.warm_up(progress=self._warmup_progress)
-                except Exception as error:
-                    self.error_handler(error)
-                    self.status_handler(
-                        "Voice warm-up was incomplete; voices will load on demand"
-                    )
-                else:
-                    self.status_handler(f"Speech model and {warmed} voices ready")
-
-            self.capture_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="dialog-capture",
-            )
-            self.ocr_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="dialog-ocr",
-            )
-            self.speech_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="dialog-synthesis",
-            )
-            self.playback_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="dialog-playback",
-            )
-            backend_capabilities = getattr(self.speech_backend, "capabilities", None)
-            can_prepare_during_playback = bool(
-                getattr(
-                    backend_capabilities,
-                    "concurrent_prepare_and_play",
-                    True,
-                )
-            )
-            max_speech_jobs = 2 if can_prepare_during_playback else 1
-            self.live_speech_backpressure = self.speech_backpressure_factory(
-                normal_jobs=max_speech_jobs,
-            )
-            screenshot_directory = get_screenshot_directory(self.settings)
-            self.live_reader = LiveDialogReader(
-                capture_executor=self.capture_executor,
-                ocr_executor=self.ocr_executor,
-                speech_executor=self.speech_executor,
-                playback_executor=self.playback_executor,
-                read_snapshot=lambda: read_live_snapshot(
-                    screenshot_directory,
-                    self.voice_router.registry,
-                    self.capture_target,
-                    self.settings.ocr_minimum_confidence,
-                    self._ocr_uncertain,
-                    self.uncertain_frame_recorder,
-                    self._publish_diagnostic,
-                    self._resolve_voice_label,
-                    self.settings.ocr_language,
-                    self.correction_dictionary,
-                ),
-                capture_frame=self._capture_live_frame,
-                recognize_frame=self._recognize_live_frame,
-                frame_fingerprint=fingerprint_dialog_frame,
-                frame_render_fingerprint=fingerprint_dialog_render_activity,
-                frame_presence=dialog_glyphs_visible,
-                frame_completion=dialog_completion_cue_visible,
-                frame_recheck_required=self._sequence_prefix_recheck_required,
-                render_completion=self._confirm_sequence_render_completion,
-                stable_frame_route=self._stable_live_frame_route,
-                stable_frame_owner=self._stable_live_frame_owner,
-                line_id_resolver=self._live_sequence_line_id,
-                speak_chunk=self._speak_live_chunk,
-                prepare_chunk=self._prepare_live_chunk,
-                play_prepared=self._play_live_chunk,
-                report_error=self.error_handler,
-                interrupt_speech=self._interrupt_speech,
-                dialog_observed=self._dialog_observed,
-                focus_probe=self._is_game_focused,
-                capture_state_changed=self._capture_state_changed,
-                tracker_factory=IncrementalDialogTracker,
-                auto_advance=self._live_auto_advance_callback(),
-                require_visible_auto_advance=(
-                    self.settings.live_sequence_mode == "audio-auto"
-                ),
-                auto_advance_delay_seconds=(self.settings.auto_advance_delay_ms / 1000),
-                auto_advance_state_changed=self._auto_advance_state_changed,
-                pipeline_event_handler=self.pipeline_event_handler,
-                max_speech_jobs=max_speech_jobs,
-                interrupt_on_dialog_replacement=bool(
-                    getattr(
-                        backend_capabilities,
-                        "interrupt_on_dialog_replacement",
-                        False,
-                    )
-                ),
-                first_pcm_on_prepare=False,
-                **self._get_live_configuration(),
-            )
-            self.schedule_dialog_read = create_dialog_read_scheduler(
-                self.capture_executor,
-                self.voice_router,
-                screenshot_directory,
-                live_reader=self.live_reader,
-                error_handler=self.error_handler,
-                capture_target=self.capture_target,
-                speech_handler=self._enqueue_dialog,
-                minimum_confidence=self.settings.ocr_minimum_confidence,
-                uncertain_frame_recorder=self.uncertain_frame_recorder,
-                diagnostic_handler=self._publish_diagnostic,
-                voice_resolver=self._resolve_voice_label,
-                ocr_language=self.settings.ocr_language,
-                correction_dictionary=self.correction_dictionary,
-            )
-        except Exception as error:
-            self.error_handler(error)
-            self.runtime_lifecycle.shutdown()
-            return False
-
-        if not self.settings.warm_up_voices:
-            self.status_handler("Speech model loaded; voice warm-up skipped")
-        self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
-        return True
 
     def _resolve_initial_live_sequence_line(self, character, text):
         """Resolve one complete startup line inside the configured sequence."""

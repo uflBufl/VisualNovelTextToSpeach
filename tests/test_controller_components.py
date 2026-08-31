@@ -241,6 +241,9 @@ class ControllerComponentsTest(unittest.TestCase):
     def test_settings_apply_implementation_is_not_retained_on_controller(self):
         self.assertFalse(hasattr(AppController, "_apply_runtime_settings"))
 
+    def test_startup_implementation_is_not_retained_on_controller(self):
+        self.assertFalse(hasattr(AppController, "_start_runtime"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,7 +78,7 @@
     "vntts.authoring.generation_state": 2293,
     "vntts.authoring.workbench": 5662,
     "vntts.authoring.workbench_ui": 2827,
-    "vntts.controller": 3055,
+    "vntts.controller": 2836,
     "vntts.live": 2298,
     "vntts.speech_backend": 2581
   },
@@ -138,7 +138,6 @@
     "vntts.authoring.workbench.create_audio_event_composition_workspace": 294,
     "vntts.authoring.workbench.create_resume_workspace": 300,
     "vntts.authoring.workbench_ui.AuthoringWorkbenchDialog.__init__": 549,
-    "vntts.controller.AppController._start_runtime": 213,
     "vntts.generated_audio.GeneratedAudioFallbackBackend.prepare_route": 230,
     "vntts.live_replay.LiveReplayRunner._run_legacy": 267,
     "vntts.live_replay.LiveReplayRunner._run_sequence": 335,

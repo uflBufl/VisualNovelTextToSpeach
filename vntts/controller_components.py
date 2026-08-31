@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Callable, Protocol
@@ -12,13 +13,21 @@ from vntts.dialog_capture import (
     OCRError,
     OCRUncertainError,
     ScreenCaptureError,
+    TTSInitializationError,
     analyze_dialog_snapshot,
+    dialog_completion_cue_visible,
+    dialog_glyphs_visible,
+    fingerprint_dialog_frame,
+    fingerprint_dialog_render_activity,
     get_screenshot_directory,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.live import IncrementalDialogTracker
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
+from vntts.runtime_config import get_tts_configuration
 from vntts.settings import preserve_loaded_runtime_settings
+from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.voices import (
     VoiceChoice,
     default_voice_choice_id,
@@ -52,31 +61,52 @@ def speak_live_chunk(
 
 
 class _RuntimeLifecyclePort(Protocol):
+    auto_advance_state_changed: Callable[..., Any]
+    chatterbox_backend_factory: Callable[..., Any]
     capture_executor: Any
     capture_target: Any
     chapter_voice_preloader: Any
     correction_dictionary: Any
     dialog_read_scheduler_factory: Callable[..., Any]
     error_handler: Callable[[Exception], Any]
+    is_ready: bool
     is_live_running: bool
     last_visible_speaker_key: Any
     live_session: Any
     live_reader: Any
+    live_reader_factory: Callable[..., Any]
+    live_speech_backpressure: Any
+    model_assets: Any
+    moss_backend_factory: Callable[..., Any]
     ocr_executor: Any
     playback_executor: Any
+    pipeline_event_handler: Callable[..., Any]
+    pocket_backend_factory: Callable[..., Any]
     schedule_dialog_read: Any
     settings: Any
     shutdown_requested: Any
     speaker_announcement_lock: Any
     speech_backend: Any
+    speech_backpressure_factory: Callable[..., Any]
     speech_executor: Any
+    status_handler: Callable[[str], Any]
+    thread_pool_executor_factory: Callable[..., Any]
     tts: Any
+    tts_factory: Callable[..., Any]
     uncertain_frame_recorder: Any
     voice_router: Any
+    voice_registry_initializer: Callable[..., Any]
+    voice_router_initializer: Callable[..., Any]
     voice_prime_futures: Any
     voice_prime_lock: Any
 
-    def _start_runtime(self) -> Any: ...
+    def _auto_advance_state_changed(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _capture_live_frame(self) -> Any: ...
+
+    def _capture_state_changed(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _confirm_sequence_render_completion(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _configure_generated_audio_backend(self) -> Any: ...
 
@@ -90,6 +120,10 @@ class _RuntimeLifecyclePort(Protocol):
 
     def _interrupt_speech(self) -> Any: ...
 
+    def _is_game_focused(self) -> Any: ...
+
+    def _live_sequence_line_id(self, *args: Any, **kwargs: Any) -> Any: ...
+
     def _live_auto_advance_callback(self) -> Any: ...
 
     def _load_live_sequence_plan(self) -> Any: ...
@@ -98,13 +132,31 @@ class _RuntimeLifecyclePort(Protocol):
 
     def _ocr_uncertain(self, result: Any, minimum_confidence: float) -> Any: ...
 
+    def _play_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _prepare_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
+
     def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
 
     def _resolve_voice_label(self, character: str) -> Any: ...
 
+    def _sequence_prefix_recheck_required(self, *args: Any, **kwargs: Any) -> Any: ...
+
     def _set_backend_live_mode(self, active: bool) -> Any: ...
 
     def _stop_tts(self) -> Any: ...
+
+    def _stable_live_frame_owner(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _stable_live_frame_route(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _speak_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _warmup_progress(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _dialog_observed(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _recognize_live_frame(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def refresh_corrections(self) -> Any: ...
 
@@ -281,7 +333,235 @@ class RuntimeLifecycleComponent:
     )
 
     def start(self) -> Any:
-        return self.controller._start_runtime()
+        controller = self.controller
+        if controller.is_ready:
+            return True
+
+        controller.shutdown_requested.clear()
+        use_xtts = controller.settings.speech_backend == "coqui-xtts"
+        controller.status_handler(
+            {
+            "coqui-xtts": "Loading TTS model...",
+            "chatterbox-nano": "Loading Chatterbox Nano...",
+            "moss-tts": "Loading MOSS-TTS...",
+            "pocket-tts": "Loading Pocket TTS...",
+            }[controller.settings.speech_backend]
+        )
+        if not self._initialize_backend(use_xtts):
+            return False
+        if controller.shutdown_requested.is_set():
+            controller._stop_tts()
+            return False
+
+        try:
+            if not self._initialize_voice_routing(use_xtts):
+                return False
+            screenshot_directory = self._construct_live_runtime()
+        except Exception as error:
+            controller.error_handler(error)
+            self.shutdown()
+            return False
+
+        if not controller.settings.warm_up_voices:
+            controller.status_handler("Speech model loaded; voice warm-up skipped")
+        controller.status_handler(
+            f"Screenshots will be stored in {screenshot_directory}"
+        )
+        return True
+
+    def _initialize_backend(self, use_xtts: bool) -> bool:
+        controller = self.controller
+        try:
+            if use_xtts:
+                controller.model_assets.configure_environment()
+                if controller.settings.xtts_terms_accepted:
+                    os.environ["COQUI_TOS_AGREED"] = "1"
+                controller.tts = controller.tts_factory(
+                    **get_tts_configuration(controller.settings)
+                )
+                return True
+            if controller.settings.speech_backend in {
+                "chatterbox-nano",
+                "moss-tts",
+            }:
+                controller.model_assets.configure_huggingface_environment()
+            registry = controller.voice_registry_initializer(
+                controller.settings,
+                controller.error_handler,
+            )
+            if registry is None:
+                return False
+            backend_factory = {
+                "chatterbox-nano": controller.chatterbox_backend_factory,
+                "moss-tts": controller.moss_backend_factory,
+                "pocket-tts": controller.pocket_backend_factory,
+            }[controller.settings.speech_backend]
+            narrator_reference = controller.settings.tts_speaker_wav
+            narrator_source_id = find_voice_assignment(
+                controller.settings.voice_assignments,
+                "Narrator",
+            )
+            if narrator_source_id is not None:
+                narrator_voice = registry.resolve_source(narrator_source_id)
+                if narrator_voice is None:
+                    narrator_reference = controller.settings.tts_speaker_wav
+                elif narrator_voice.references:
+                    narrator_reference = narrator_voice.references[0]
+                elif controller.settings.speech_backend == "pocket-tts":
+                    narrator_reference = narrator_voice.speaker
+            backend_options = {
+                "narrator_reference": narrator_reference,
+                "volume": controller.settings.output_volume_percent / 100,
+            }
+            if (
+                getattr(backend_factory, "supports_startup_cancellation", False)
+                is True
+            ):
+                backend_options["startup_cancellation"] = controller.shutdown_requested
+            if controller.settings.speech_backend == "moss-tts":
+                backend_options.update(
+                    model_name=controller.settings.tts_model,
+                    language=controller.settings.tts_language or "English",
+                    generation_profile=controller.settings.tts_profile,
+                )
+            controller.tts = backend_factory(registry, **backend_options)
+            return True
+        except Exception as error:
+            controller.error_handler(TTSInitializationError(str(error)))
+            return False
+
+    def _initialize_voice_routing(self, use_xtts: bool) -> bool:
+        controller = self.controller
+        if use_xtts:
+            controller.voice_router = controller.voice_router_initializer(
+                controller.tts,
+                controller.settings,
+                controller.error_handler,
+            )
+            if controller.voice_router is None:
+                controller._stop_tts()
+                return False
+            controller.speech_backend = XTTSVoiceRouterBackend(
+                controller.voice_router
+            )
+        else:
+            controller.voice_router = controller.tts
+            controller.speech_backend = controller.tts
+        controller._configure_generated_audio_backend()
+        if controller.settings.warm_up_voices:
+            controller.status_handler("Warming speech model and voices...")
+            try:
+                warmed = controller.voice_router.warm_up(
+                    progress=controller._warmup_progress
+                )
+            except Exception as error:
+                controller.error_handler(error)
+                controller.status_handler(
+                    "Voice warm-up was incomplete; voices will load on demand"
+                )
+            else:
+                controller.status_handler(f"Speech model and {warmed} voices ready")
+        return True
+
+    def _construct_live_runtime(self) -> Any:
+        controller = self.controller
+        executor_specs = (
+            ("capture_executor", "dialog-capture"),
+            ("ocr_executor", "dialog-ocr"),
+            ("speech_executor", "dialog-synthesis"),
+            ("playback_executor", "dialog-playback"),
+        )
+        for attribute, thread_name_prefix in executor_specs:
+            setattr(
+                controller,
+                attribute,
+                controller.thread_pool_executor_factory(
+                    max_workers=1,
+                    thread_name_prefix=thread_name_prefix,
+                ),
+            )
+        backend_capabilities = getattr(controller.speech_backend, "capabilities", None)
+        can_prepare_during_playback = bool(
+            getattr(backend_capabilities, "concurrent_prepare_and_play", True)
+        )
+        max_speech_jobs = 2 if can_prepare_during_playback else 1
+        controller.live_speech_backpressure = controller.speech_backpressure_factory(
+            normal_jobs=max_speech_jobs,
+        )
+        screenshot_directory = get_screenshot_directory(controller.settings)
+        controller.live_reader = controller.live_reader_factory(
+            capture_executor=controller.capture_executor,
+            ocr_executor=controller.ocr_executor,
+            speech_executor=controller.speech_executor,
+            playback_executor=controller.playback_executor,
+            read_snapshot=lambda: read_live_snapshot(
+                screenshot_directory,
+                controller.voice_router.registry,
+                controller.capture_target,
+                controller.settings.ocr_minimum_confidence,
+                controller._ocr_uncertain,
+                controller.uncertain_frame_recorder,
+                controller._publish_diagnostic,
+                controller._resolve_voice_label,
+                controller.settings.ocr_language,
+                controller.correction_dictionary,
+            ),
+            capture_frame=controller._capture_live_frame,
+            recognize_frame=controller._recognize_live_frame,
+            frame_fingerprint=fingerprint_dialog_frame,
+            frame_render_fingerprint=fingerprint_dialog_render_activity,
+            frame_presence=dialog_glyphs_visible,
+            frame_completion=dialog_completion_cue_visible,
+            frame_recheck_required=controller._sequence_prefix_recheck_required,
+            render_completion=controller._confirm_sequence_render_completion,
+            stable_frame_route=controller._stable_live_frame_route,
+            stable_frame_owner=controller._stable_live_frame_owner,
+            line_id_resolver=controller._live_sequence_line_id,
+            speak_chunk=controller._speak_live_chunk,
+            prepare_chunk=controller._prepare_live_chunk,
+            play_prepared=controller._play_live_chunk,
+            report_error=controller.error_handler,
+            interrupt_speech=controller._interrupt_speech,
+            dialog_observed=controller._dialog_observed,
+            focus_probe=controller._is_game_focused,
+            capture_state_changed=controller._capture_state_changed,
+            tracker_factory=IncrementalDialogTracker,
+            auto_advance=controller._live_auto_advance_callback(),
+            require_visible_auto_advance=(
+                controller.settings.live_sequence_mode == "audio-auto"
+            ),
+            auto_advance_delay_seconds=(
+                controller.settings.auto_advance_delay_ms / 1000
+            ),
+            auto_advance_state_changed=controller._auto_advance_state_changed,
+            pipeline_event_handler=controller.pipeline_event_handler,
+            max_speech_jobs=max_speech_jobs,
+            interrupt_on_dialog_replacement=bool(
+                getattr(
+                    backend_capabilities,
+                    "interrupt_on_dialog_replacement",
+                    False,
+                )
+            ),
+            first_pcm_on_prepare=False,
+            **controller._get_live_configuration(),
+        )
+        controller.schedule_dialog_read = controller.dialog_read_scheduler_factory(
+            controller.capture_executor,
+            controller.voice_router,
+            screenshot_directory,
+            live_reader=controller.live_reader,
+            error_handler=controller.error_handler,
+            capture_target=controller.capture_target,
+            speech_handler=controller._enqueue_dialog,
+            minimum_confidence=controller.settings.ocr_minimum_confidence,
+            uncertain_frame_recorder=controller.uncertain_frame_recorder,
+            diagnostic_handler=controller._publish_diagnostic,
+            voice_resolver=controller._resolve_voice_label,
+            ocr_language=controller.settings.ocr_language,
+            correction_dictionary=controller.correction_dictionary,
+        )
+        return screenshot_directory
 
     def apply_settings(self, settings: Any, *, cancellation: Any = None) -> Any:
         self.settings_apply_guard.begin(cancellation)
