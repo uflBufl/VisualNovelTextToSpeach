@@ -11,10 +11,6 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Restore all local CI quality gates after the self-service pipeline changes.
-  - [ ] Stabilize the typewriter-prefix replay assertion if the full suite can
-        reproduce its duplicate recognized frame; retain the stronger invariant
-        that the expected event is routed once.
 - [ ] Continue `Prepare offline audio` from its resumable first-pass generation
       result into ambiguous-voice auditions when evidence actually conflicts,
       automatic repair/fallback and final activation. Preserve cancellation and

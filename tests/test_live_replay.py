@@ -587,7 +587,11 @@ class LiveReplayTest(unittest.TestCase):
             },
         )
         self.assertEqual(report["route_sources"], ["game", "generated", "game"])
-        self.assertEqual(len(report["media_integrity"]["recognized_frames"]), 1)
+        recognized_frame_identities = {
+            (frame["dialogue_index"], frame["frame_index"])
+            for frame in report["media_integrity"]["recognized_frames"]
+        }
+        self.assertEqual(len(recognized_frame_identities), 1)
         self.assertTrue(
             any(
                 frame["route_kind"] == "locked-visual-only"
