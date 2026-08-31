@@ -35,6 +35,21 @@ class PregenerationVoiceCancelled(PregenerationVoiceError):
 
 
 @dataclass(frozen=True)
+class VoiceCandidate:
+    """One immutable synthesis source that may be auditioned for a group."""
+
+    source_id: str
+    source_character: str
+    source_speaker: str
+    reference_sha256s: tuple[str, ...]
+
+    def to_document(self):
+        value = asdict(self)
+        value["reference_sha256s"] = list(self.reference_sha256s)
+        return value
+
+
+@dataclass(frozen=True)
 class VoiceGroup:
     group_id: str
     character: str
@@ -53,11 +68,13 @@ class VoiceGroup:
     decision_context_sha256: str
     control_sha256: str
     resolution: str
+    candidates: tuple[VoiceCandidate, ...] = ()
 
     def to_document(self):
         value = asdict(self)
         for field in ("speakers", "line_ids", "reference_sha256s"):
             value[field] = list(value[field])
+        value["candidates"] = [candidate.to_document() for candidate in self.candidates]
         return value
 
 
@@ -307,6 +324,11 @@ class VoicePlanStore:
         selected_identity = _candidate_identity(
             (source_id, candidate) if candidate is not None else None
         )
+        candidates = (
+            (_voice_candidate(selected_identity),)
+            if route == "voice" and selected_identity is not None
+            else ()
+        )
         return VoiceGroup(
             group_id=group_id,
             character=character,
@@ -327,6 +349,7 @@ class VoicePlanStore:
                 {"controls": controls, "selected": selected_identity}
             ),
             resolution=resolution,
+            candidates=candidates,
         )
 
 
@@ -411,6 +434,15 @@ def _candidate_identity(candidate):
         "speaker": voice.speaker,
         "references": [sha256_file(path) for path in voice.references],
     }
+
+
+def _voice_candidate(identity):
+    return VoiceCandidate(
+        source_id=identity["source_id"],
+        source_character=identity["character"],
+        source_speaker=identity["speaker"],
+        reference_sha256s=tuple(identity["references"]),
+    )
 
 
 def _variant_evidence(record):
@@ -502,6 +534,7 @@ __all__ = [
     "PregenerationVoiceCancelled",
     "PregenerationVoiceError",
     "VoiceDecisionStore",
+    "VoiceCandidate",
     "VoiceGroup",
     "VoicePlan",
     "VoicePlanStore",

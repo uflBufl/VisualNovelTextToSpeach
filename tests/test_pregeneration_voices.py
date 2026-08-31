@@ -179,6 +179,15 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.route, "voice")
             self.assertEqual(rhiannon.resolution, "known-character-voice")
             self.assertEqual(rhiannon.source_character, "Rhiannon")
+            self.assertEqual(len(rhiannon.candidates), 1)
+            self.assertEqual(
+                rhiannon.candidates[0].source_id,
+                "character:rhiannon",
+            )
+            self.assertEqual(
+                rhiannon.candidates[0].reference_sha256s,
+                rhiannon.reference_sha256s,
+            )
             self.assertEqual(rhiannon.portrait, "10")
             self.assertNotIn("line:original", rhiannon.line_ids)
             self.assertTrue(VoicePlanStore(jobs).path_for(job).is_file())
