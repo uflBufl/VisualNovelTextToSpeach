@@ -3,24 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
-## P0 - Finish the sequence-first production cutover
-
-The active Character Story pack and sequence authority are
-`current-character-story-3.7-v4-semantic` and its matching 104-event plan.
-Static pack completeness, generated-audio review and visible-chapter replay
-coverage are complete. The operator explicitly deferred the remaining real-game
-hardware pass; proceed without representing hardware playback, focus, latency
-or auto-advance as verified evidence. Follow
-[`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
-and [`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
-
-- [ ] Expand deterministic replay coverage for slow/paused typewriter, noisy and
-      unknown nameplates, long narration, focus loss/return, choice boundaries
-      and rapid manual skipping. Reuse immutable captures where available and
-      synthetic timing/focus fixtures otherwise; no new listening review is
-      required. Acceptance is zero wrong-line, wrong-speaker, duplicate,
-      stale-route or app-skipped dialogue across the exact replay suite.
-
 ## P1 - Expand pregenerated coverage safely
 
 Follow

@@ -7,6 +7,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -20,6 +21,7 @@ from vntts.live_replay import (
     ReplayFrameSource,
     _load_frame,
     _recognize_replay_frame,
+    _sequence_route_integrity,
     load_live_replay_corpus,
     main,
 )
@@ -467,6 +469,11 @@ class LiveReplayTest(unittest.TestCase):
 
     def test_sequence_audio_auto_prefetches_and_routes_a_typewriter_prefix(self):
         with TemporaryDirectory() as temporary_directory:
+            long_narration = (
+                "The generated narration keeps rendering after playback starts, "
+                "while the hotel lamps flicker and the final words take their time "
+                "to settle into a complete and readable sentence."
+            )
             story_lines = [
                 {
                     "line_id": "story:prefix:1",
@@ -482,7 +489,7 @@ class LiveReplayTest(unittest.TestCase):
                     "chapter": "1",
                     "sequence": 2,
                     "speaker": "Centurion",
-                    "text": "The generated narration keeps rendering after playback starts.",
+                    "text": long_narration,
                     "source_audio_status": "absent",
                 },
                 {
@@ -532,12 +539,11 @@ class LiveReplayTest(unittest.TestCase):
                         ("Rhiannon", "The first source line is already complete.")
                     ],
                     "story:prefix:2": [
-                        ("Centurion", "The generated narration"),
-                        ("Centurion", "The generated narration keeps rendering"),
-                        (
-                            "Centurion",
-                            "The generated narration keeps rendering after playback starts.",
-                        ),
+                        ("???", "The generated narration"),
+                        ("corrupted nameplate", "The generated narration keeps"),
+                        ("corrupted nameplate", "The generated narration keeps"),
+                        ("Centurion", long_narration[:-42]),
+                        ("???", long_narration),
                     ],
                     "story:prefix:3": [
                         ("Rhiannon", "The terminal source line is complete.")
@@ -559,7 +565,37 @@ class LiveReplayTest(unittest.TestCase):
             ).run()
 
         self.assertTrue(report["successful"], report)
+        self.assertEqual(
+            report["route_integrity"],
+            {
+                "successful": True,
+                "wrong_line_routes": 0,
+                "wrong_speaker_routes": 0,
+                "duplicate_event_routes": 0,
+                "stale_routes": 0,
+                "app_skipped_dialogue": 0,
+                "expected_line_ids": [
+                    "story:prefix:1",
+                    "story:prefix:2",
+                    "story:prefix:3",
+                ],
+                "observed_line_ids": [
+                    "story:prefix:1",
+                    "story:prefix:2",
+                    "story:prefix:3",
+                ],
+            },
+        )
         self.assertEqual(report["route_sources"], ["game", "generated", "game"])
+        self.assertEqual(len(report["media_integrity"]["recognized_frames"]), 1)
+        self.assertTrue(
+            any(
+                frame["route_kind"] == "locked-visual-only"
+                for frame in report["media_integrity"]["frame_consumption"][
+                    "dialogues"
+                ][1]["frames"]
+            )
+        )
         generated_route = next(
             route for route in report["routes"] if route["line_id"] == "story:prefix:2"
         )
@@ -689,6 +725,21 @@ class LiveReplayTest(unittest.TestCase):
             ).run()
 
         self.assertTrue(report["successful"], report)
+        self.assertTrue(report["route_integrity"]["successful"])
+        self.assertFalse(
+            any(
+                value
+                for key, value in report["route_integrity"].items()
+                if key
+                in {
+                    "wrong_line_routes",
+                    "wrong_speaker_routes",
+                    "duplicate_event_routes",
+                    "stale_routes",
+                    "app_skipped_dialogue",
+                }
+            )
+        )
         self.assertEqual(report["sequence"]["observed"]["bounded_recoveries"], 2)
         self.assertEqual(
             report["sequence"]["observed"]["event_ids"],
@@ -712,6 +763,10 @@ class LiveReplayTest(unittest.TestCase):
         ]
 
         self.assertTrue(all(report["successful"] for report in reports), reports)
+        self.assertTrue(
+            all(report["route_integrity"]["successful"] for report in reports),
+            reports,
+        )
         safety = reports[-1]
         self.assertEqual(safety["advance_requests"], 3)
         self.assertEqual(
@@ -741,6 +796,54 @@ class LiveReplayTest(unittest.TestCase):
             ],
             [0, 2, 1, 1],
         )
+
+    def test_sequence_route_integrity_reports_every_unsafe_outcome(self):
+        dialogue = (
+            SimpleNamespace(
+                expect_playback=True,
+                line_id="line-1",
+                character="Ada",
+            ),
+            SimpleNamespace(
+                expect_playback=True,
+                line_id="line-2",
+                character="Bea",
+            ),
+            SimpleNamespace(
+                expect_playback=True,
+                line_id="line-3",
+                character="Cora",
+            ),
+        )
+        played = [
+            {
+                "generation": 1,
+                "line_id": "line-2",
+                "character": "Wrong Bea",
+                "text": "second",
+            },
+            {
+                "generation": 2,
+                "line_id": "line-2",
+                "character": "Bea",
+                "text": "second again",
+            },
+            {
+                "generation": 3,
+                "line_id": "stale-line",
+                "character": "Old",
+                "text": "stale",
+            },
+        ]
+
+        integrity = _sequence_route_integrity(dialogue, played)
+
+        self.assertFalse(integrity["successful"])
+        self.assertEqual(integrity["wrong_line_routes"], 2)
+        self.assertEqual(integrity["wrong_speaker_routes"], 1)
+        self.assertEqual(integrity["duplicate_event_routes"], 1)
+        self.assertEqual(integrity["stale_routes"], 1)
+        self.assertEqual(integrity["app_skipped_dialogue"], 2)
 
     def test_sequence_contract_rejects_mode_and_canonical_identity_mismatches(self):
         with TemporaryDirectory() as temporary_directory:

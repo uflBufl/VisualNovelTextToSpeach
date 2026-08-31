@@ -8,6 +8,7 @@ import io
 import json
 import os
 import stat
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -568,6 +569,7 @@ class LiveReplayRunner:
                     "generation": chunk.generation,
                     "character": chunk.character,
                     "text": chunk.text,
+                    "line_id": chunk.line_id,
                 }
             )
             return outcome.successful
@@ -983,6 +985,11 @@ class LiveReplayRunner:
         )
         expected_sequence = binding.expectation.to_dict()
         sequence_successful = observed_sequence == expected_sequence
+        route_integrity = _sequence_route_integrity(
+            self.corpus.dialogue,
+            played,
+            routes,
+        )
         successful = bool(
             completed
             and frame_consumption["complete"]
@@ -990,6 +997,7 @@ class LiveReplayRunner:
             and observed == expected
             and route_sources == expected_sources
             and sequence_successful
+            and route_integrity["successful"]
             and (
                 frame_source.manual_advance_requests == len(self.corpus.dialogue)
                 if mode == "audio-manual"
@@ -1026,6 +1034,7 @@ class LiveReplayRunner:
                 "events": sequence_events,
                 "statuses": [asdict(status) for status in sequence_statuses],
             },
+            "route_integrity": route_integrity,
             "routes": routes,
             "media_integrity": {
                 "frame_sha256s": [
@@ -1685,6 +1694,62 @@ def _group_played_dialogue(played):
         {"character": item["character"], "text": " ".join(item["text"].split())}
         for item in grouped
     ]
+
+
+def _sequence_route_integrity(dialogue, played, routes=()):
+    expected = [item for item in dialogue if item.expect_playback]
+    routed_line_ids = {}
+    for route in routes:
+        if route.get("line_id") is not None:
+            routed_line_ids.setdefault(route.get("generation"), route["line_id"])
+    actual = []
+    for item in played:
+        if actual and actual[-1]["generation"] == item["generation"]:
+            actual[-1]["text"] = f"{actual[-1]['text']} {item['text']}"
+        else:
+            actual_item = dict(item)
+            if actual_item.get("line_id") is None:
+                actual_item["line_id"] = routed_line_ids.get(item["generation"])
+            actual.append(actual_item)
+
+    expected_line_ids = [item.line_id for item in expected]
+    actual_line_ids = [item.get("line_id") for item in actual]
+    expected_counts = Counter(expected_line_ids)
+    actual_counts = Counter(actual_line_ids)
+    expected_speakers = {item.line_id: item.character for item in expected}
+    counters = {
+        "wrong_line_routes": sum(
+            actual_line_id != expected_line_id
+            for actual_line_id, expected_line_id in zip(
+                actual_line_ids, expected_line_ids, strict=False
+            )
+        ),
+        "wrong_speaker_routes": sum(
+            item.get("line_id") in expected_speakers
+            and item.get("character") != expected_speakers[item["line_id"]]
+            for item in actual
+        ),
+        "duplicate_event_routes": sum(
+            max(0, count - expected_counts.get(line_id, 0))
+            for line_id, count in actual_counts.items()
+            if line_id in expected_counts
+        ),
+        "stale_routes": sum(
+            count
+            for line_id, count in actual_counts.items()
+            if line_id not in expected_counts
+        ),
+        "app_skipped_dialogue": sum(
+            max(0, count - actual_counts.get(line_id, 0))
+            for line_id, count in expected_counts.items()
+        ),
+    }
+    return {
+        "successful": not any(counters.values()),
+        **counters,
+        "expected_line_ids": expected_line_ids,
+        "observed_line_ids": actual_line_ids,
+    }
 
 
 def _replay_voice_characters(dialogue, library):

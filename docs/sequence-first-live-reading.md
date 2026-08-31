@@ -596,10 +596,11 @@ generation failure. It schedules another guarded attempt after focus returns.
 This avoids the former race where several consecutive macOS focus probes could
 observe `false` and then `true`, causing a focused dialogue to be permanently
 marked blocked, while still failing closed and never sending a key to an
-unfocused application.
-The mode and saved auto-advance toggle are both opt-in. Production enablement
-remains gated on a real-game focus/choice run even though complete chapter route
-and human acceptance are already 92/92.
+unfocused application. New installations select guarded `audio-auto` and enable
+auto-advance, but the mode stays dormant until a valid story index and matching
+sequence plan are present. Migrated installations retain their prior rollout
+choice. Production qualification remains gated on a real-game focus/choice run
+even though complete chapter route and human acceptance are already 92/92.
 
 Original game audio retains route ownership when the indexed source is declared
 available and semantic completeness is `full` or still unknown. Missing timing
@@ -620,6 +621,15 @@ Required automated cases include long typewriter text, a lost nameplate,
 punctuation-only silent dialogue, source audio, generated audio, missing-WAV
 canonical fallback, consecutive identical lines, a branch/choice, manual single
 and multi-line skips, focus loss, stale preparation and desync recovery.
+Every sequence replay report carries a `route_integrity` verdict with separate
+counts for wrong line order, wrong canonical speaker, duplicate event routes,
+stale routes and application-skipped dialogue. Replay success requires all five
+counts to be zero. The synthetic long-line case deliberately repeats a paused
+typewriter prefix and supplies noisy and `???` nameplates; only the initial
+anchor may invoke OCR, while the locked route must still speak the canonical
+Centurion line exactly once. The tracked safety corpus retains focus loss and
+return, choice boundaries and bounded recovery; the manual corpus retains a
+rapid multi-line skip into the selected branch.
 
 Production acceptance requires:
 
