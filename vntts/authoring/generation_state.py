@@ -1145,8 +1145,7 @@ def _validate_automatic_recovery_live_fallback_evidence(
     if (
         not isinstance(evidence, dict)
         or set(evidence) != fields
-        or evidence.get("schema")
-        != AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema") != AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA
         or evidence.get("schema_version") != 1
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
@@ -1156,8 +1155,7 @@ def _validate_automatic_recovery_live_fallback_evidence(
         or base_result.get("model") != "pocket-tts"
         or base_result.get("generation_profile") != "default"
         or isinstance(base_result.get("live_fallback"), dict)
-        or canonical_document_sha256(base_result)
-        != evidence.get("base_result_sha256")
+        or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
         or evidence.get("recovery_action") not in allowed_actions
         or not isinstance(failure, dict)
         or failure.get("kind") != evidence.get("failure_kind")

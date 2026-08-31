@@ -89,12 +89,14 @@ class OfflinePackPublisher:
             VoiceGenerationQueueError,
             VoiceManifestError,
         ) as error:
-            raise OfflinePackError(f"Unable to inspect prepared audio: {error}") from error
+            raise OfflinePackError(
+                f"Unable to inspect prepared audio: {error}"
+            ) from error
         _require_terminal_generation(state, queue)
         state_sha256 = sha256_file(generation_result.state)
         identity = _identity(generation_input, state_sha256)
-        destination = generation_input.directory.parent / "game-packs" / (
-            f"pack-{identity[:24]}"
+        destination = (
+            generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
         )
         if destination.is_dir():
             return _load_existing(destination, identity)
@@ -196,9 +198,9 @@ class OfflinePackPublisher:
                 raise
             staging = None
             result = _load_existing(destination, identity)
-            if result.approved != len(generated_records) or result.live_fallbacks != len(
-                live_fallbacks
-            ):
+            if result.approved != len(
+                generated_records
+            ) or result.live_fallbacks != len(live_fallbacks):
                 raise OfflinePackError("Published offline pack counts changed")
             return result
         except OfflineGenerationCancelled:
@@ -213,7 +215,9 @@ class OfflinePackPublisher:
             ValueError,
             VoiceManifestError,
         ) as error:
-            raise OfflinePackError(f"Unable to publish offline pack: {error}") from error
+            raise OfflinePackError(
+                f"Unable to publish offline pack: {error}"
+            ) from error
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)

@@ -1115,9 +1115,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation = None
-        self.pregeneration_activator = (
-            pregeneration_activator or OfflinePackActivator()
-        )
+        self.pregeneration_activator = pregeneration_activator or OfflinePackActivator()
         self.pregeneration_activation_runner = LatestTaskRunner(self)
         self.pregeneration_activation_runner.finished.connect(
             self._pregeneration_activation_finished
@@ -2031,7 +2029,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or generation_result is None
             or pack_result is None
         ):
-            self.show_error("Offline preparation finished without a validated game pack")
+            self.show_error(
+                "Offline preparation finished without a validated game pack"
+            )
             return None
         status = (
             f"Offline preparation saved for {job.estimate.selected_lines} lines. "

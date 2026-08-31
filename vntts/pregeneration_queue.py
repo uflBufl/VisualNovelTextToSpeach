@@ -501,9 +501,7 @@ def _project_source_audio_semantics(
         if key not in {"evidence_id", "generated_at", "entries"}
     }
     projected_evidence["entries"] = projected_entries
-    projected_evidence["evidence_id"] = canonical_document_sha256(
-        projected_evidence
-    )
+    projected_evidence["evidence_id"] = canonical_document_sha256(projected_evidence)
     projected_evidence["generated_at"] = evidence["generated_at"]
     projected_records = copy.deepcopy(records)
     for record in projected_records:
@@ -522,8 +520,7 @@ def _project_source_audio_semantics(
             {
                 record.get("chapter")
                 for record in projected_records
-                if isinstance(record.get("chapter"), str)
-                and record.get("chapter")
+                if isinstance(record.get("chapter"), str) and record.get("chapter")
             }
         ),
         "applied_count": sum(

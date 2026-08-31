@@ -247,9 +247,7 @@ class VoicePlanStore:
         character = values[0][1]
         portrait, age, source_bank, source_voice_id = values[0][2]
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
-        assignment_source = find_voice_assignment(
-            settings.voice_assignments, character
-        )
+        assignment_source = find_voice_assignment(settings.voice_assignments, character)
         candidate = _candidate_for(character, settings, registry)
         narrator_candidate = _candidate_for("Narrator", settings, registry)
         candidate_identity = _candidate_identity(candidate)
@@ -323,9 +321,7 @@ class VoicePlanStore:
             source_id=source_id,
             source_character=candidate.character if candidate is not None else None,
             source_speaker=candidate.speaker if candidate is not None else None,
-            reference_sha256s=tuple(
-                (selected_identity or {}).get("references", ())
-            ),
+            reference_sha256s=tuple((selected_identity or {}).get("references", ())),
             decision_context_sha256=decision_context_sha256,
             control_sha256=_digest(
                 {"controls": controls, "selected": selected_identity}

@@ -11,6 +11,16 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
+- [ ] Restore all local CI quality gates after the self-service pipeline changes.
+  - [ ] Complete the runtime lifecycle protocol used by the extracted controller
+        coordinator and keep scoped mypy green.
+  - [ ] Replace the two new cross-module private runtime imports with public
+        boundaries. Reconcile the maintainability ratchet with the already
+        accepted large-module changes, recording only genuine remaining debt;
+        the gate must pass rather than silently dropping checks.
+  - [ ] Stabilize the typewriter-prefix replay assertion if the full suite can
+        reproduce its duplicate recognized frame; retain the stronger invariant
+        that the expected event is routed once.
 - [ ] Continue `Prepare offline audio` from its resumable first-pass generation
       result into ambiguous-voice auditions when evidence actually conflicts,
       automatic repair/fallback and final activation. Preserve cancellation and

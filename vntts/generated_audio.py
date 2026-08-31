@@ -1233,9 +1233,7 @@ def _validate_automatic_recovery_fallback_evidence(
             "provenance_recovery_or_regeneration",
         }
     ):
-        raise ValueError(
-            "Generated-audio automatic recovery evidence is malformed"
-        )
+        raise ValueError("Generated-audio automatic recovery evidence is malformed")
     base_result_sha256 = hashlib.sha256(
         json.dumps(
             base_result,

@@ -167,7 +167,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             self.assertFalse(tray.pregeneration_activation_runner.active)
             self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
-            self.assertEqual(tray.settings.game_pack, str(dialog.pack_result().manifest))
+            self.assertEqual(
+                tray.settings.game_pack, str(dialog.pack_result().manifest)
+            )
             self.assertTrue(saved_settings.is_file())
             self.assertIn("Offline audio is active", tray.dashboard.status.text())
             controller.start.assert_not_called()

@@ -82,9 +82,7 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
 
         snapshot.assert_called_once_with(first.state, ("a", "b"))
         self.assertEqual(commit.call_args.args[3], "approved")
-        self.assertEqual(
-            commit.call_args.kwargs["provenance"]["human_reviewed"], False
-        )
+        self.assertEqual(commit.call_args.kwargs["provenance"]["human_reviewed"], False)
         self.assertEqual(result.approved, 2)
         self.assertIs(result.generation, final)
 

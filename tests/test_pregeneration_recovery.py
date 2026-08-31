@@ -60,9 +60,7 @@ def inputs(root):
 class OfflineRecoveryPlanTest(unittest.TestCase):
     def test_groups_only_safe_actions_and_defers_ambiguous_work(self):
         with TemporaryDirectory() as temporary_directory:
-            generation_input, result, _voice_plan = inputs(
-                Path(temporary_directory)
-            )
+            generation_input, result, _voice_plan = inputs(Path(temporary_directory))
             document = {
                 "state_sha256": "1" * 64,
                 "queue_sha256": "2" * 64,
@@ -115,9 +113,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 "vntts.pregeneration_recovery.generation_failure_repair_plan",
                 return_value=document,
             ):
-                plan = plan_automatic_recovery(
-                    generation_input, voice_plan, result
-                )
+                plan = plan_automatic_recovery(generation_input, voice_plan, result)
 
         self.assertEqual(plan.automatic_batches, ())
         self.assertEqual(plan.deferred_action_counts, (("bounded_seed_retry", 1),))

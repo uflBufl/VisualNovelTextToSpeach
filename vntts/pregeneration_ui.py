@@ -73,9 +73,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_plan_store = voice_plan_store or VoicePlanStore(
             self.job_store,
             decisions=VoiceDecisionStore(
-                get_local_data_directory()
-                / "pregeneration"
-                / "voice-decisions.json"
+                get_local_data_directory() / "pregeneration" / "voice-decisions.json"
             ),
         )
         self.input_store = input_store or PregenerationInputStore(self.job_store)
@@ -583,9 +581,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel final save")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText(
-            "Creating and checking your offline game pack..."
-        )
+        self.resume_status.setText("Creating and checking your offline game pack...")
         self.publication_runner.start(
             self.publisher.publish,
             self._job,

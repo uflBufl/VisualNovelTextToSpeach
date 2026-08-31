@@ -268,7 +268,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIs(dialog.pack_result(), pack_result)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
             self.assertTrue(
-                (store.path_for(dialog.job().job_id).parent / "voice-plan.json").is_file()
+                (
+                    store.path_for(dialog.job().job_id).parent / "voice-plan.json"
+                ).is_file()
             )
             dialog.deleteLater()
 
@@ -327,9 +329,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog.recovering)
-            self.assertEqual(
-                dialog.cancel_button.text(), "Cancel automatic recovery"
-            )
+            self.assertEqual(dialog.cancel_button.text(), "Cancel automatic recovery")
             self.assertIn("2 unfinished lines", dialog.resume_status.text())
             pool.tasks.pop().run()
             self.application.processEvents()

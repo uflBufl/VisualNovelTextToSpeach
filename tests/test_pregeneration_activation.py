@@ -27,8 +27,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller.apply_settings.return_value = True
             controller.start.return_value = True
             activator = OfflinePackActivator(
-                save_settings=lambda settings: saved.append(settings)
-                or Path(temporary_directory) / "settings.json"
+                save_settings=lambda settings: (
+                    saved.append(settings)
+                    or Path(temporary_directory) / "settings.json"
+                )
             )
 
             result = activator.activate(AppSettings(), pack, controller)
