@@ -1348,9 +1348,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.settings = self.settings.updated(keep_running_on_close=False)
             self.dashboard.set_configuration(self.settings)
-        if self.settings.compact_controls and self.settings.onboarding_completed:
+        if self.settings.onboarding_completed and self.settings.compact_controls:
             self.show_compact_controls()
-        else:
+        elif self.settings.onboarding_completed:
             self.show_dashboard()
         if self.settings.launch_at_login:
             try:

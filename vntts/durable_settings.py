@@ -40,6 +40,7 @@ class DurableSettingsMixin:
         if result != QDialog.DialogCode.Accepted:
             self.set_status("Setup required")
             wizard.deleteLater()
+            self.show_dashboard()
             return
 
         candidate = wizard.settings()
@@ -49,6 +50,7 @@ class DurableSettingsMixin:
             self.set_status("Setup required")
             self.show_error(f"Unable to save setup settings: {error}")
             wizard.deleteLater()
+            self.show_dashboard()
             return
         self.settings = candidate
         self.controller.apply_settings(candidate)

@@ -2492,8 +2492,38 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.start()
 
         controller.start.assert_not_called()
+        self.assertFalse(tray_application.dashboard.isVisible())
+        self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertEqual(single_shot.call_args.args[0], 0)
         self.assertEqual(single_shot.call_args.args[1], tray_application.run_onboarding)
+        tray_application.shutdown()
+
+    def test_first_launch_shows_only_setup_until_the_wizard_finishes(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=False),
+            controller_factory=Mock(return_value=Mock()),
+        )
+
+        with (
+            patch.object(tray_application.tray, "show"),
+            patch("vntts.app.QTimer.singleShot") as single_shot,
+        ):
+            tray_application.start()
+            scheduled_onboarding = single_shot.call_args.args[1]
+            scheduled_onboarding()
+
+        wizard = tray_application.onboarding_wizard
+        self.assertIsNotNone(wizard)
+        self.assertTrue(wizard.isVisible())
+        self.assertFalse(tray_application.dashboard.isVisible())
+        self.assertFalse(tray_application.compact_controller.isVisible())
+
+        wizard.reject()
+        self.application.processEvents()
+
+        self.assertTrue(tray_application.dashboard.isVisible())
+        self.assertIsNone(tray_application.onboarding_wizard)
         tray_application.shutdown()
 
     def test_onboarding_wizard_runs_without_nested_modal_event_loop(self):
@@ -2513,6 +2543,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertIsNone(tray_application.onboarding_wizard)
+        self.assertTrue(tray_application.dashboard.isVisible())
         self.assertEqual(tray_application.status_action.text(), "Setup required")
         tray_application.shutdown()
 
