@@ -97,21 +97,17 @@ intentional omission as distinct terminal authorities.
 
 - [ ] Make release packages able to run the backend they recommend by default.
   - Follow [`docs/release-speech-runtime.md`](docs/release-speech-runtime.md).
-    Keep the safe download-on-first-run policy until a release owner explicitly
-    approves redistribution of the exact pinned gated weights and allowlisted
-    voice files; do not claim an offline bundled model before that gate passes.
-  - Run the Pocket lock through `vntts.release_runtime` on macOS and Windows:
-    stage an adjacent managed CPython plus a fresh `uv venv --relocatable`, then
-    require its copied-to-a-new-path provenance probe to pass. Include that exact
-    staging tree in the bundle; never rely on a developer Python, checkout or
-    backend environment override.
-  - Limit frozen Settings/onboarding choices to backends whose runtime contract
-    the package actually supplies; preserve explicit existing user settings but
-    surface a direct remediation instead of recommending an absent backend.
-  - Extend package self-test to initialize the effective clean-install default
-    and render non-empty PCM. Verification must clear development PATH/Python,
-    backend overrides and model caches, and assert interpreter, module and model
-    origins remain inside the extracted package.
+    Add an explicit first-run choice between the public preset-only Pocket model
+    and authenticated gated voice-cloning access. Show the upstream terms before
+    enabling credentials, retain repository/revision/checksum evidence, and keep
+    frozen workers token-free until the user opts in. Do not bundle gated weights
+    or unclear/non-commercial voices without a release-owner approval covering
+    those exact files.
+  - Extend the now-contained package self-test from runtime imports to an actual
+    clean-cache Pocket render with non-empty PCM. Record model and selected voice
+    origins/revisions/checksums as well as interpreter/module origins; the render
+    must use an application-owned cache and must not inherit developer PATH,
+    Python, backend overrides, Hugging Face credentials or model caches.
   - Complete real unsigned and signed macOS builds plus the Windows portable and
     installer builds before removing this item. Acceptance requires startup and
     render without uv, a checkout, backend environment variables or an existing
