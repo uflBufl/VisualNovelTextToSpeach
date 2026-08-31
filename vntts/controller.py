@@ -932,29 +932,6 @@ class AppController:
             text.strip(),
         )
 
-    def _stop_voice_preview_impl(self):
-        if self.is_live_running:
-            raise RuntimeError("Stop live reading before stopping a voice preview")
-        backend = self.speech_backend
-        if isinstance(backend, GeneratedAudioFallbackBackend):
-            backend = backend.live_backend
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
-            return True
-        return False
-
-    def _allow_narrator_fallback_impl(self, character):
-        character = (character or "").strip()
-        key = normalize_character_name(character)
-        if not key or key == "narrator":
-            return False
-        self.pending_unknown_speakers.discard(key)
-        self.narrator_fallback_speakers.add(key)
-        self.narrator_fallback_names[key] = character
-        self.status_handler(f"Using narrator voice for {character}")
-        return True
-
     def _unresolved_live_speakers_impl(self):
         """Return scoped named speakers, or ``None`` until the chapter is known."""
         scope = self.chapter_voice_preloader.live_voice_preflight_rows()
@@ -1005,37 +982,6 @@ class AppController:
             return False
         self.live_speaker_corpus_error = None
         return True
-
-    def _approve_live_narrator_fallbacks_impl(self, characters):
-        """Stage explicit narrator choices for the next live session only."""
-        if self.is_live_running:
-            raise RuntimeError("Stop live reading before approving narrator fallbacks")
-        approved = {}
-        for character in characters:
-            name = str(character or "").strip()
-            key = normalize_character_name(name)
-            if not key or is_narrator(name):
-                continue
-            approved[key] = name
-        self.next_live_narrator_fallback_names = approved
-        return tuple(approved.values())
-
-    def _preview_voice_impl(self, character, text):
-        if not self.is_ready:
-            raise RuntimeError("The speech engine is not ready")
-        if self.is_live_running:
-            raise RuntimeError("Stop live reading before previewing a voice")
-        if not text or not text.strip():
-            raise ValueError("Enter preview text")
-        self.status_handler(f"Previewing {character or 'Narrator'} voice")
-        return self.speech_executor.submit(
-            self._preview_voice,
-            character or "Narrator",
-            text.strip(),
-        )
-
-    def _replay_dialog_impl(self, character, text):
-        return self._preview_voice_impl(character, text)
 
     def _apply_runtime_settings(self, settings, *, commit):
         if self.tts is not None or self.speech_backend is not None:

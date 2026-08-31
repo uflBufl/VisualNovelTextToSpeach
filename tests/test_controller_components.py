@@ -216,6 +216,17 @@ class ControllerComponentsTest(unittest.TestCase):
         for name in migrated:
             self.assertFalse(hasattr(AppController, name), name)
 
+    def test_basic_voice_actions_are_not_retained_on_controller(self):
+        migrated = (
+            "_stop_voice_preview_impl",
+            "_allow_narrator_fallback_impl",
+            "_approve_live_narrator_fallbacks_impl",
+            "_preview_voice_impl",
+            "_replay_dialog_impl",
+        )
+        for name in migrated:
+            self.assertFalse(hasattr(AppController, name), name)
+
 
 if __name__ == "__main__":
     unittest.main()

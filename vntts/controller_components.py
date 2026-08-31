@@ -15,7 +15,7 @@ from vntts.dialog_capture import (
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live_speech import play_typed_text
-from vntts.voices import normalize_character_name
+from vntts.voices import is_narrator, normalize_character_name
 
 
 def create_live_toggle(live_reader: Any) -> Callable[[], None]:
@@ -73,7 +73,12 @@ class _LiveSessionPort(Protocol):
 
 
 class _VoiceAssignmentPort(Protocol):
+    is_ready: bool
     is_live_running: bool
+    narrator_fallback_names: dict[str, str]
+    next_live_narrator_fallback_names: dict[str, str]
+    speech_backend: Any
+    speech_executor: Any
     settings: Any
     voice_router: Any
     reported_unknown_speakers: set[str]
@@ -89,21 +94,13 @@ class _VoiceAssignmentPort(Protocol):
 
     def _preview_voice_choice_impl(self, source_id: str, text: str) -> Any: ...
 
-    def _stop_voice_preview_impl(self) -> Any: ...
-
-    def _allow_narrator_fallback_impl(self, character: str) -> Any: ...
-
     def _unresolved_live_speakers_impl(self) -> Any: ...
-
-    def _approve_live_narrator_fallbacks_impl(self, characters: Any) -> Any: ...
-
-    def _preview_voice_impl(self, character: str, text: str) -> Any: ...
-
-    def _replay_dialog_impl(self, character: str, text: str) -> Any: ...
 
     def _apply_narrator_voice(self, voice: Any) -> Any: ...
 
     def _clear_voice_runtime_cache(self) -> Any: ...
+
+    def _preview_voice(self, character: str, text: str) -> Any: ...
 
 
 class _DiagnosticsPort(Protocol):
@@ -315,7 +312,17 @@ class VoiceAssignmentComponent:
         return self.controller._preview_voice_choice_impl(source_id, text)
 
     def stop_preview(self) -> Any:
-        return self.controller._stop_voice_preview_impl()
+        controller = self.controller
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before stopping a voice preview")
+        backend = controller.speech_backend
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            backend = backend.live_backend
+        stop = getattr(backend, "stop", None)
+        if callable(stop):
+            stop()
+            return True
+        return False
 
     def assign(
         self,
@@ -423,19 +430,51 @@ class VoiceAssignmentComponent:
         return controller.settings
 
     def allow_narrator_fallback(self, character: str) -> Any:
-        return self.controller._allow_narrator_fallback_impl(character)
+        controller = self.controller
+        character = (character or "").strip()
+        key = normalize_character_name(character)
+        if not key or key == "narrator":
+            return False
+        controller.pending_unknown_speakers.discard(key)
+        controller.narrator_fallback_speakers.add(key)
+        controller.narrator_fallback_names[key] = character
+        controller.status_handler(f"Using narrator voice for {character}")
+        return True
 
     def unresolved_live_speakers(self) -> Any:
         return self.controller._unresolved_live_speakers_impl()
 
     def approve_narrator_fallbacks(self, characters: Any) -> Any:
-        return self.controller._approve_live_narrator_fallbacks_impl(characters)
+        controller = self.controller
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before approving narrator fallbacks")
+        approved = {}
+        for character in characters:
+            name = str(character or "").strip()
+            key = normalize_character_name(name)
+            if not key or is_narrator(name):
+                continue
+            approved[key] = name
+        controller.next_live_narrator_fallback_names = approved
+        return tuple(approved.values())
 
     def preview(self, character: str, text: str) -> Any:
-        return self.controller._preview_voice_impl(character, text)
+        controller = self.controller
+        if not controller.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        if controller.is_live_running:
+            raise RuntimeError("Stop live reading before previewing a voice")
+        if not text or not text.strip():
+            raise ValueError("Enter preview text")
+        controller.status_handler(f"Previewing {character or 'Narrator'} voice")
+        return controller.speech_executor.submit(
+            controller._preview_voice,
+            character or "Narrator",
+            text.strip(),
+        )
 
     def replay(self, character: str, text: str) -> Any:
-        return self.controller._replay_dialog_impl(character, text)
+        return self.preview(character, text)
 
 
 @dataclass(frozen=True)

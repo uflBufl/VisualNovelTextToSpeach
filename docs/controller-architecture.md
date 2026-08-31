@@ -28,6 +28,9 @@ voice and reporting collaborators described by its narrow protocol.
 emergency stop and auto-advance setting. The larger story-scope and session
 toggle state machines remain behind explicit private callbacks until their state
 is moved as a coherent unit.
+`VoiceAssignmentComponent` owns assignment mutations, narrator-fallback staging
+and voice preview lifecycle. Voice inventory and scoped preflight discovery are
+still callback-backed until their source state moves with them.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New
