@@ -111,10 +111,13 @@ intentional omission as distinct terminal authorities.
 
 ## P2 - Resolve project-wide UX and runtime follow-ups
 
-- [ ] Move Settings and Assets runtime reconfiguration off the Qt thread. Reuse
-      the background lifecycle runner, show cancellable progress, prevent
-      overlapping configuration actions and prove with an event-loop test that
-      a blocked live reader cannot freeze either dialog.
+- [ ] Add an explicit request-scoped Cancel action while saved Settings or Assets
+      are being applied. Runtime reconfiguration already uses the shared
+      generation-bound background lifecycle, exposes progress, prevents
+      overlapping controller actions and keeps the Qt event loop responsive;
+      cancellation must safely interrupt the live-reader wait, retain the saved
+      configuration for restart and report that distinction without shutting
+      down an unrelated controller generation.
 - [ ] Make isolated backend environments reproducible. Stop appending every host
       `site-packages` directory to worker `sys.path`; package the narrowly shared
       VNTTS support dependencies in each worker runtime and validate origins for

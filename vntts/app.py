@@ -43,6 +43,7 @@ from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.async_ui import LatestTaskRunner
 from vntts.calibration import show_calibration_overlay
+from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController
 from vntts.dashboard_ui import (
     CompactController,
@@ -53,7 +54,6 @@ from vntts.diagnostics import diagnostic_error_guidance, macos_permission_warnin
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
-from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -95,7 +95,6 @@ from vntts.settings import (
     get_settings_path,
     is_live_sequence_audio_mode,
     load_app_settings,
-    restart_required_setting_changes,
 )
 from vntts.speech_backend import default_moss_tts_model
 from vntts.support import (
@@ -1020,7 +1019,7 @@ class SettingsDialog(QDialog):
         }
 
 
-class TrayApplication(DurableSettingsMixin, QObject):
+class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def __init__(
         self,
         application,
@@ -1066,14 +1065,14 @@ class TrayApplication(DurableSettingsMixin, QObject):
         self._live_stop_generation = None
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
+        self._setup_configuration_apply()
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
         self._initial_start_generation = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation = None
-        self._pending_profile_name = None
-        self._profile_restart_generation = None
+        self._pending_profile_name = self._profile_restart_generation = None
         self._lifecycle_generation = 0
         self._controller_ready = False
         self._controller_busy = False
@@ -1903,75 +1902,14 @@ class TrayApplication(DurableSettingsMixin, QObject):
         self.onboarding_cancel_event.set()
         self.set_status("Cancelling setup test in background...")
 
-    def open_settings(self):
-        dialog = SettingsDialog(self.settings)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        updated_settings = dialog.settings()
-        try:
-            selected_new_pack = updated_settings.game_pack != self.settings.game_pack
-            updated_settings = apply_game_pack(
-                updated_settings,
-                updated_settings.game_pack if selected_new_pack else None,
-            )
-        except GamePackError as error:
-            self.show_error(f"Unable to import game pack: {error}")
-            return
-        original_settings = self.settings
-        launch_changed = (
-            updated_settings.launch_at_login != original_settings.launch_at_login
-        )
-        if launch_changed:
-            try:
-                configure_macos_launch_at_login(updated_settings.launch_at_login)
-            except OSError as error:
-                self.show_error(f"Unable to configure launch at login: {error}")
-                return
-        try:
-            path = updated_settings.save()
-        except OSError as error:
-            rollback_error = None
-            if launch_changed:
-                try:
-                    configure_macos_launch_at_login(original_settings.launch_at_login)
-                except OSError as caught_error:
-                    rollback_error = caught_error
-            message = f"Unable to save settings: {error}"
-            if rollback_error is not None:
-                message += f"; launch-at-login rollback also failed: {rollback_error}"
-            self.show_error(message)
-            return
-        restart_changes = restart_required_setting_changes(
-            original_settings, updated_settings
-        )
-        effective_backend = self.controller.settings.speech_backend
-        self.settings = updated_settings
-        self.dashboard.set_configuration(self.settings)
-        self.sequence_resync_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-        )
-        self.sequence_expected_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-        )
-        self.auto_advance_action.blockSignals(True)
-        self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
-        self.auto_advance_action.blockSignals(False)
-        profile_synced = self._sync_active_profile(updated_settings)
-        self.controller.apply_settings(self.settings)
-        self.signals.hotkeys_requested.emit()
-        profile_suffix = ""
-        if not profile_synced:
-            profile_suffix = "; active profile could not be updated"
-        if restart_changes:
-            self.set_status(
-                f"Settings saved to {path}; restart required to load speech "
-                f"engine/model changes. This session still uses {effective_backend}"
-                f"{profile_suffix}."
-            )
-        else:
-            self.set_status(f"Settings saved to {path}{profile_suffix}")
-        if self.readiness_dialog is not None:
-            self.readiness_dialog.update_settings(self.settings)
+    def _create_settings_dialog(self):
+        return SettingsDialog(self.settings)
+
+    def _create_asset_manager_dialog(self):
+        return AssetManagerDialog(self.settings)
+
+    def _configure_macos_launch_at_login(self, enabled):
+        configure_macos_launch_at_login(enabled)
 
     def show_dashboard(self):
         self.compact_controller.hide()
@@ -2153,27 +2091,6 @@ class TrayApplication(DurableSettingsMixin, QObject):
         )
         dialog.exec()
         self.set_status("OCR review closed")
-
-    def open_assets(self):
-        dialog = AssetManagerDialog(self.settings)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        candidate = dialog.settings()
-        try:
-            path = candidate.save()
-        except OSError as error:
-            self.show_error(f"Unable to save model and voice settings: {error}")
-            return
-        self.settings = candidate
-        profile_synced = self._sync_active_profile(candidate)
-        self.controller.apply_settings(self.settings)
-        profile_suffix = ""
-        if not profile_synced:
-            profile_suffix = "; active profile could not be updated"
-        self.set_status(
-            "Assets updated; restart to load voice or model changes. "
-            f"Saved to {path}{profile_suffix}"
-        )
 
     def open_voice_previews(self):
         resume_live = bool(self.controller.is_live_running)
@@ -2627,6 +2544,7 @@ class TrayApplication(DurableSettingsMixin, QObject):
         self.initial_start_runner.cancel()
         profile_shutdown_owned = self.profile_restart_runner.active
         self.profile_restart_runner.cancel()
+        self.configuration_runner.cancel()
         onboarding_shutdown_owned = self._onboarding_test_active
         self.onboarding_cancel_event.set()
         self._apply_controller_action_state()

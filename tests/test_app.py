@@ -1285,6 +1285,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
         ):
             tray_application.open_settings()
+            self.wait_until(lambda: not tray_application.configuration_runner.active)
 
         configure.assert_called_once_with(True)
         controller.apply_settings.assert_called_once_with(updated)
@@ -1312,6 +1313,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
         ):
             tray_application.open_settings()
+            self.wait_until(lambda: not tray_application.configuration_runner.active)
 
         self.assertEqual(configure.call_args_list, [call(True), call(False)])
         self.assertIs(tray_application.settings, original)
@@ -1338,6 +1340,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
         ):
             tray_application.open_settings()
+            self.wait_until(lambda: not tray_application.configuration_runner.active)
 
         controller.apply_settings.assert_called_once_with(updated)
         self.assertEqual(tray_application.settings.speech_backend, "moss-tts")
@@ -2134,6 +2137,54 @@ class TrayApplicationTest(unittest.TestCase):
 
             self.assertTrue(tray_application.profiles_action.isEnabled())
             tray_application.shutdown()
+
+    def test_settings_and_assets_apply_without_blocking_qt_events(self):
+        original = AppSettings()
+        candidate = original.updated(game_window_title="Changed")
+        for dialog_name, method_name in (
+            ("SettingsDialog", "open_settings"),
+            ("AssetManagerDialog", "open_assets"),
+        ):
+            with self.subTest(method=method_name):
+                started = Event()
+                release = Event()
+                controller = Mock(settings=original)
+
+                def blocked_apply(_settings):
+                    started.set()
+                    release.wait(2)
+
+                controller.apply_settings.side_effect = blocked_apply
+                tray_application = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = candidate
+                heartbeat = []
+                with (
+                    patch(f"vntts.app.{dialog_name}", return_value=dialog),
+                    patch(
+                        "vntts.app.AppSettings.save",
+                        return_value=Path("settings.json"),
+                    ),
+                ):
+                    getattr(tray_application, method_name)()
+                    QTimer.singleShot(0, lambda: heartbeat.append(True))
+                    self.wait_until(lambda: started.is_set() and bool(heartbeat))
+                    self.assertTrue(tray_application.configuration_runner.active)
+                    self.assertFalse(tray_application.settings_action.isEnabled())
+                    self.assertFalse(tray_application.assets_action.isEnabled())
+                    release.set()
+                    self.wait_until(
+                        lambda: not tray_application.configuration_runner.active
+                    )
+
+                controller.apply_settings.assert_called_once_with(candidate)
+                self.assertTrue(tray_application.settings_action.isEnabled())
+                tray_application.shutdown()
 
     def test_profile_restart_disables_runtime_and_quit_prevents_restart(self):
         with TemporaryDirectory() as temporary_directory:
