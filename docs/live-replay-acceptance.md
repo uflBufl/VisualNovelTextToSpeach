@@ -220,7 +220,7 @@ deliberately reports no device underrun claim.
 Schema version 2 adds a required `live_sequence` binding while retaining schema
 version 1 compatibility. The binding declares exactly `mode`, `story_index`,
 `plan`, `expected` and `focus_probes`. `shadow`, `audio-manual` and the explicit
-experimental `audio-auto` mode are accepted. The story index and sequence plan
+production `audio-auto` mode are accepted. The story index and sequence plan
 are contained relative files with
 exact SHA-256 values. They are re-read, revalidated and copied into a private
 snapshot immediately before execution, so changed bytes, symlinks, mismatched

@@ -53,6 +53,11 @@ not control the game yet:
   closed. Passive non-dialogue events may be crossed, but a silent dialogue box
   is retained as its own cursor event. Successful canonical live fallback is
   sealed against late OCR suffixes just like generated/source WAV playback.
+- Schema 27 makes `audio-auto` with guarded advancement the new-install
+  default. A missing or invalid plan still leaves the cursor unavailable and
+  sends no key. Settings saved before the cutover retain their previous
+  `off`/disabled values when those fields were absent, while every explicit
+  `off`, `shadow`, `audio-manual` or `audio-auto` choice survives migration.
 - cursor reads and transitions are serialized by one controller-owned re-entrant
   lock across OCR, playback and UI threads. Stable-frame candidates carry both
   their cursor owner and a frame-route epoch; an explicit frame bind invalidates
@@ -489,7 +494,7 @@ cursor frontier before it can route audio or confirm a transition.
 Implement behind a `sequence-first` feature flag and keep current OCR-driven
 mode available during evaluation.
 
-The automated `shadow`, `audio-manual` and explicit experimental `audio-auto`
+The automated `shadow`, `audio-manual` and production `audio-auto`
 phases and their deterministic replay gates are implemented. Shadow records predictions and exercises the production
 dispatch gate through a device-free key adapter. Audio-manual uses full OCR for
 its initial anchor, then the visibility/focus/ownership/render-settled gate can

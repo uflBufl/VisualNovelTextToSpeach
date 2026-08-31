@@ -1169,6 +1169,15 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.auto_advance_delay.isEnabled())
         dialog.deleteLater()
 
+    def test_new_install_settings_recommend_guarded_sequence_auto(self):
+        dialog = SettingsDialog(AppSettings())
+
+        self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-auto")
+        self.assertIn("recommended", dialog.live_sequence_mode.currentText().casefold())
+        self.assertTrue(dialog.auto_advance.isChecked())
+        self.assertFalse(dialog.validation_errors())
+        dialog.deleteLater()
+
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
             AppSettings(

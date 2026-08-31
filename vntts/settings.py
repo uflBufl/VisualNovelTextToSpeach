@@ -10,7 +10,7 @@ from vntts.application_directories import get_config_directory, get_local_data_d
 from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-settings_schema_version = 26
+settings_schema_version = 27
 
 audio_source_policies = {
     "live-tts-only",
@@ -79,7 +79,7 @@ class AppSettings:
     live_stability_frames: int = 2
     live_idle_flush_ms: int = 400
     live_min_chunk_characters: int = 20
-    auto_advance_enabled: bool = False
+    auto_advance_enabled: bool = True
     speaker_announcement_mode: str = "off"
     # Compatibility for callers and settings written before schema 24.
     announce_speaker_changes: bool = False
@@ -122,7 +122,7 @@ class AppSettings:
         default=None,
         metadata={"support_sensitivity": "path"},
     )
-    live_sequence_mode: str = "off"
+    live_sequence_mode: str = "audio-auto"
     live_speaker_corpus: str | None = field(
         default=None,
         metadata={"support_sensitivity": "path"},
@@ -244,6 +244,15 @@ class AppSettings:
             else:
                 warn(f"Invalid {name!r} setting; using its default")
 
+        # Schema 27 promotes guarded sequence control for new installations.
+        # Settings created before that rollout retain their former conservative
+        # behavior when either field was not explicitly persisted.
+        if source_schema < 27:
+            if "live_sequence_mode" not in values:
+                parsed["live_sequence_mode"] = "off"
+            if "auto_advance_enabled" not in values:
+                parsed["auto_advance_enabled"] = False
+
         profile = values.get("tts_profile", defaults.tts_profile)
         if isinstance(profile, str) and profile.strip():
             parsed["tts_profile"] = profile.strip().casefold()
@@ -277,8 +286,8 @@ class AppSettings:
             warn("Invalid 'speaker_announcement_mode' setting; using its default")
             parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
         if parsed["live_sequence_mode"] not in live_sequence_modes:
-            warn("Invalid 'live_sequence_mode' setting; using its default")
-            parsed["live_sequence_mode"] = defaults.live_sequence_mode
+            warn("Invalid 'live_sequence_mode' setting; disabling sequence control")
+            parsed["live_sequence_mode"] = "off"
         if (
             "speaker_announcement_mode" not in values
             and parsed["announce_speaker_changes"]

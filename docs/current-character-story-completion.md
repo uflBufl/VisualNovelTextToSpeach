@@ -1923,3 +1923,9 @@ three silent cues and 12 transitions. Settings were atomically switched to the
 new pack and plan while retaining `audio-auto`; no application process was
 started. The only Character Story completion gate left is the documented
 real-game acceptance run.
+
+On 2026-08-31 the operator explicitly chose to proceed with the sequence-first
+production cutover without spending time on that real-game run. This is an
+accepted-risk deferral, not positive hardware evidence: mixed-rate playback,
+real focus ownership, end-to-end latency and physical auto-advance remain
+unverified until a later release-qualification pass or a reproduced failure.

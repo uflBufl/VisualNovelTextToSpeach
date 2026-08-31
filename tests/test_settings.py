@@ -83,9 +83,28 @@ class SettingsTest(unittest.TestCase):
     def test_live_tts_is_the_default_audio_source_policy(self):
         self.assertEqual(AppSettings().audio_source_policy, "live-tts-only")
 
-    def test_sequence_first_rollout_is_disabled_by_default(self):
-        self.assertEqual(AppSettings().live_sequence_mode, "off")
+    def test_sequence_first_auto_is_the_new_install_default(self):
+        self.assertEqual(AppSettings().live_sequence_mode, "audio-auto")
+        self.assertTrue(AppSettings().auto_advance_enabled)
         self.assertIsNone(AppSettings().live_sequence_plan)
+
+    def test_pre_cutover_settings_retain_conservative_missing_defaults(self):
+        settings = AppSettings.from_mapping({"schema_version": 26})
+
+        self.assertEqual(settings.live_sequence_mode, "off")
+        self.assertFalse(settings.auto_advance_enabled)
+
+    def test_explicit_pre_cutover_sequence_choice_survives_migration(self):
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": 26,
+                "live_sequence_mode": "audio-manual",
+                "auto_advance_enabled": False,
+            }
+        )
+
+        self.assertEqual(settings.live_sequence_mode, "audio-manual")
+        self.assertFalse(settings.auto_advance_enabled)
 
     def test_sequence_shadow_can_be_selected_from_environment(self):
         settings = AppSettings().with_environment_overrides(

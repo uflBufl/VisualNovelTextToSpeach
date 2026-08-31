@@ -296,10 +296,10 @@ class SettingsDialog(QDialog):
             "Shadow diagnostics (does not control speech)", "shadow"
         )
         self.live_sequence_mode.addItem(
-            "Canonical audio routing (manual advancement)", "audio-manual"
+            "Canonical audio + guarded auto advance (recommended)", "audio-auto"
         )
         self.live_sequence_mode.addItem(
-            "Canonical audio + guarded auto advance (experimental)", "audio-auto"
+            "Canonical audio routing (manual recovery)", "audio-manual"
         )
         self.live_sequence_mode.setCurrentIndex(
             max(0, self.live_sequence_mode.findData(settings.live_sequence_mode))
@@ -832,7 +832,13 @@ class SettingsDialog(QDialog):
             ("Generated audio manifest", self.generated_audio_manifest),
         ):
             add(2, field, self._file_validation_error(label, field.text()))
-        if self.live_sequence_mode.currentData() != "off":
+        sequence_mode = self.live_sequence_mode.currentData()
+        sequence_configured = bool(
+            self.live_sequence_plan.text().strip() or self.story_index.text().strip()
+        )
+        if sequence_mode != "off" and (
+            sequence_mode != "audio-auto" or sequence_configured
+        ):
             if not self.live_sequence_plan.text().strip():
                 add(
                     2,
@@ -905,10 +911,10 @@ class SettingsDialog(QDialog):
         self.auto_advance.setEnabled(not manual_sequence)
         self.auto_advance.setToolTip(
             "Sequence-first canonical routing never sends advance keys in the "
-            "manual rollout phase."
+            "manual recovery mode."
             if manual_sequence
             else (
-                "Experimental sequence control sends at most one key for the "
+                "Guarded sequence control sends at most one key for the "
                 "current automatic event, only while the selected game window is "
                 "focused and its dialogue frame remains visible and stable."
                 if sequence_mode == "audio-auto"
@@ -1173,12 +1179,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_action.setEnabled(False)
         self.sequence_resync_action.setEnabled(False)
         self.sequence_expected_action.setEnabled(False)
-        self.sequence_resync_action.setVisible(
+        sequence_controls_visible = bool(
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            and self.settings.live_sequence_plan
+            and self.settings.story_index
         )
-        self.sequence_expected_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-        )
+        self.sequence_resync_action.setVisible(sequence_controls_visible)
+        self.sequence_expected_action.setVisible(sequence_controls_visible)
         self.pause_action.setEnabled(False)
         self.skip_action.setEnabled(False)
         self.repeat_action.setEnabled(False)
@@ -1479,8 +1486,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def set_sequence_status(self, status):
         self.dashboard.set_sequence_status(status)
         self.compact_controller.set_sequence_status(status)
-        manual = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
+        manual = bool(
+            is_live_sequence_audio_mode(getattr(status, "mode", "off"))
+            and getattr(status, "state", "unavailable") != "unavailable"
+        )
         candidate_count = int(getattr(status, "expected_candidate_count", 0))
+        self.sequence_resync_action.setVisible(manual)
         self.sequence_expected_action.setVisible(manual)
         controls_available = (
             self._controller_ready
@@ -2003,12 +2014,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.settings = candidate
         self.dashboard.set_configuration(self.settings)
-        self.sequence_resync_action.setVisible(
+        sequence_controls_visible = bool(
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            and self.settings.live_sequence_plan
+            and self.settings.story_index
         )
-        self.sequence_expected_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-        )
+        self.sequence_resync_action.setVisible(sequence_controls_visible)
+        self.sequence_expected_action.setVisible(sequence_controls_visible)
         profile = self.profile_store.get(self.settings.active_profile_id)
         self._pending_profile_name = profile.name if profile is not None else None
         generation = self._begin_controller_lifecycle()

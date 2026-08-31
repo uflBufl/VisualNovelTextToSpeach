@@ -3,66 +3,36 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
-## P0 - Close the semantic-v4 live acceptance gate
-
-The active Character Story pack and sequence authority are
-`current-character-story-3.7-v4-semantic` and the matching 104-event plan.
-Static pack completeness, generated-audio review and full visible-chapter replay
-coverage are already complete; do not repeat those authoring reviews. Follow
-[`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
-and
-[`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
-
-- [ ] Run one focused real-game regression pass after restarting the application:
-  - Verify mixed-rate generated playback on lines
-    `reverse1999:314601:6` and `reverse1999:314601:8`: pitch and duration must
-    match direct WAV playback, with no distortion, duplicate playback or
-    underflow. If device format still differs, fail the route with a diagnostic
-    and permit one clean stream reopen; do not regenerate a checksum-valid WAV.
-  - Recheck continue-indicator handling on line `:20`, stable-frame recovery on
-    `:28`, `:36` and `:83`, unknown/noisy nameplates on `:52` and `:58`, the
-    short generated line `:57`, and line-less silent event 78. Acceptance
-    requires one route and at most one focus-owned key per event, no key while
-    glyphs are changing, no duplicate Pocket fallback, and no voice-decision
-    prompt during locked sequence playback. `???` must remain `Unknown`;
-    transient nameplate fragments such as `WP` must remain OCR noise, and event
-    78 must schedule no speech. Preserve the exact diagnostic crop if a line
-    stalls again.
-  - Exercise focus loss/return and one real choice or manual boundary.
-    `audio-auto` must pause without sending a key to an unfocused window, resume
-    cleanly after focus returns, and stop at a choice rather than infer a path.
-  - Enable `Narrator fallback roles only` for the pass. Named fallback and
-    `Unknown` announcements must distinguish narrator-voiced characters from
-    true Narrator/Centurion lines without becoming repetitive or changing
-    auto-advance.
-- [ ] Retain the privacy-safe timeline from that pass and evaluate the actual
-      latency boundary. Separate typewriter/recognition, canonical confirmation,
-      source cue, announcement, WAV lookup/decode, queue wait and first device
-      write. Pregenerated speech should normally start during rendering or no
-      later than 250 ms after the last glyph; intentional source cues and speaker
-      announcements are not WAV-loading delay.
-- [ ] Validate Pocket's 250 ms stream prefill and MOSS's selected
-      4-frame/0.25-second stream on real output hardware. Record first PCM,
-      realtime factor and underruns; acceptance is no audible buzzing and zero
-      underruns in the focused pass.
-
 ## P0 - Finish the sequence-first production cutover
 
-This work starts only after the real-game gate above passes.
+The active Character Story pack and sequence authority are
+`current-character-story-3.7-v4-semantic` and its matching 104-event plan.
+Static pack completeness, generated-audio review and visible-chapter replay
+coverage are complete. The operator explicitly deferred the remaining real-game
+hardware pass; proceed without representing hardware playback, focus, latency
+or auto-advance as verified evidence. Follow
+[`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
+and [`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
 
-- [ ] Make `audio-auto` the normal sequence-plan path while retaining
-      `audio-manual` as the explicit recovery mode. Keep focus loss, choices,
-      ambiguity, unsupported events and desynchronization fail-closed.
-- [ ] Remove OCR text and OCR-derived speakers from locked-mode speech routing.
-      Retire the incremental tracker to bootstrap, branch disambiguation and
-      recovery only. Acceptance requires zero wrong-line, wrong-speaker,
-      duplicate or app-skipped dialogue and exactly one confirmed key per
-      eligible cursor event in the reviewed replay corpus and a real-game pass.
-- [ ] Extend the captured replay corpus with real slow/paused typewriter,
-      nameplate noise, long narration, branch, focus-loss and rapid-manual-skip
-      frames. Generated-successor preflight may reserve only one exact generated
-      successor and must never start live TTS from a prefix or leave a stale
-      route after cursor, focus, pack, backend or checksum changes.
+- [ ] Establish a canonical-only locked speech boundary: line text, speaker and
+      route must come from the checksum-bound sequence event and game pack, never
+      from OCR text or an OCR-derived nameplate. Tampered/noisy OCR may confirm a
+      bounded event transition but cannot alter spoken content or voice.
+- [ ] Restrict full OCR and the incremental text tracker to initial anchoring,
+      bounded branch disambiguation and explicit recovery. Ordinary locked
+      playback must stay on lightweight visual transition/canonical confirmation
+      paths, and recovery observations must not leak into a later route.
+- [ ] Make routing and advancement idempotent per cursor event. Exactly one of
+      original audio, generated WAV, live fallback or intentional silence may
+      become terminal; repeated frames, retries, callbacks and focus transitions
+      may schedule at most one acknowledged advance key and must not replay or
+      skip the following event.
+- [ ] Expand deterministic replay coverage for slow/paused typewriter, noisy and
+      unknown nameplates, long narration, focus loss/return, choice boundaries
+      and rapid manual skipping. Reuse immutable captures where available and
+      synthetic timing/focus fixtures otherwise; no new listening review is
+      required. Acceptance is zero wrong-line, wrong-speaker, duplicate,
+      stale-route or app-skipped dialogue across the exact replay suite.
 
 ## P1 - Expand pregenerated coverage safely
 
