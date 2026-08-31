@@ -21,11 +21,9 @@ from vntts.controller_components import (
 )
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
-from vntts.dialog import is_empty
 from vntts.dialog_capture import (
     ScreenCaptureError,
     TTSInitializationError,
-    analyze_dialog_snapshot,
     capture_live_frame,
     dialog_completion_cue_visible,
     dialog_glyphs_visible,
@@ -64,6 +62,7 @@ from vntts.live_sequence import (
     StoryCursorError,
     StoryCursorState,
 )
+from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import play_typed_text
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
@@ -209,39 +208,6 @@ class PreparedLiveChunkRoutes:
     dialogue: object
     speaker_announcement: LiveTTSRoute | None = None
     announced_speaker: str | None = None
-
-
-def read_live_snapshot(
-    screenshot_directory,
-    voice_registry=None,
-    capture_target=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    uncertain_handler=None,
-    uncertain_frame_recorder=None,
-    diagnostic_handler=None,
-    voice_resolver=None,
-    ocr_language="eng",
-    correction_dictionary=None,
-):
-    image, _, result = analyze_dialog_snapshot(
-        screenshot_directory,
-        voice_registry,
-        capture_target=capture_target,
-        minimum_confidence=minimum_confidence,
-        diagnostic_handler=diagnostic_handler,
-        voice_resolver=voice_resolver,
-        ocr_language=ocr_language,
-        correction_dictionary=correction_dictionary,
-    )
-    if result.text and not result.is_confident(minimum_confidence):
-        if uncertain_frame_recorder is not None:
-            uncertain_frame_recorder.record(image, result, minimum_confidence)
-        if uncertain_handler is not None:
-            uncertain_handler(result, minimum_confidence)
-        return None, ""
-    if uncertain_frame_recorder is not None:
-        uncertain_frame_recorder.reset()
-    return result.character, result.text
 
 
 class AppController:
@@ -672,37 +638,6 @@ class AppController:
         if not self.settings.warm_up_voices:
             self.status_handler("Speech model loaded; voice warm-up skipped")
         self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
-        return True
-
-    def _identify_live_scope_impl(self):
-        """Identify the visible story position without speaking or advancing it."""
-        if not self.is_ready or self.is_live_running:
-            return False
-        self.live_scope_identification_failure = None
-        character, text = read_live_snapshot(
-            get_screenshot_directory(self.settings),
-            self.voice_router.registry,
-            self.capture_target,
-            self.settings.ocr_minimum_confidence,
-            self._ocr_uncertain,
-            self.uncertain_frame_recorder,
-            self._publish_diagnostic,
-            self._resolve_voice_label,
-            self.settings.ocr_language,
-            self.correction_dictionary,
-        )
-        if is_empty(text):
-            self.live_scope_identification_failure = "no-dialog-text"
-            return False
-        character = self._canonical_observed_character(character, text)
-        line, _match_result = self._resolve_initial_live_sequence_line(
-            character,
-            text,
-        )
-        if line is None:
-            self.live_scope_identification_failure = "story-line-no-match"
-            return False
-        self.dialog_handler(line.speaker, line.text)
         return True
 
     def _resolve_initial_live_sequence_line(self, character, text):

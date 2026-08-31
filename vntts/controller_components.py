@@ -14,6 +14,7 @@ from vntts.dialog_capture import (
     get_screenshot_directory,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
 from vntts.voices import (
     VoiceChoice,
@@ -63,16 +64,39 @@ class _RuntimeLifecyclePort(Protocol):
 
 
 class _LiveSessionPort(Protocol):
+    capture_target: Any
+    correction_dictionary: Any
+    dialog_handler: Callable[[str, str], Any]
     is_ready: bool
+    is_live_running: bool
     live_reader: Any
+    live_scope_identification_failure: str | None
     schedule_dialog_read: Callable[[], Any]
     settings: Any
     speech_backend: Any
     status_handler: Callable[[str], Any]
-
-    def _identify_live_scope_impl(self) -> Any: ...
+    uncertain_frame_recorder: Any
+    voice_router: Any
 
     def _toggle_live_impl(self) -> Any: ...
+
+    def _canonical_observed_character(
+        self,
+        character: str | None,
+        text: str,
+    ) -> str: ...
+
+    def _ocr_uncertain(self, result: Any, minimum_confidence: float) -> Any: ...
+
+    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
+
+    def _resolve_initial_live_sequence_line(
+        self,
+        character: str,
+        text: str,
+    ) -> tuple[Any, Any]: ...
+
+    def _resolve_voice_label(self, character: str) -> Any: ...
 
     def _live_auto_advance_callback(self) -> Any: ...
 
@@ -232,7 +256,35 @@ class LiveSessionComponent:
         return accepted
 
     def identify_scope(self) -> Any:
-        return self.controller._identify_live_scope_impl()
+        controller = self.controller
+        if not controller.is_ready or controller.is_live_running:
+            return False
+        controller.live_scope_identification_failure = None
+        character, text = read_live_snapshot(
+            get_screenshot_directory(controller.settings),
+            controller.voice_router.registry,
+            controller.capture_target,
+            controller.settings.ocr_minimum_confidence,
+            controller._ocr_uncertain,
+            controller.uncertain_frame_recorder,
+            controller._publish_diagnostic,
+            controller._resolve_voice_label,
+            controller.settings.ocr_language,
+            controller.correction_dictionary,
+        )
+        if is_empty(text):
+            controller.live_scope_identification_failure = "no-dialog-text"
+            return False
+        character = controller._canonical_observed_character(character, text)
+        line, _match_result = controller._resolve_initial_live_sequence_line(
+            character,
+            text,
+        )
+        if line is None:
+            controller.live_scope_identification_failure = "story-line-no-match"
+            return False
+        controller.dialog_handler(line.speaker, line.text)
+        return True
 
     def toggle(self) -> Any:
         return self.controller._toggle_live_impl()

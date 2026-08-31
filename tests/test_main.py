@@ -3125,7 +3125,7 @@ class MainTest(unittest.TestCase):
         controller.voice_router = Mock()
 
         with patch(
-            "vntts.controller.read_live_snapshot",
+            "vntts.controller_components.read_live_snapshot",
             return_value=("Rhiannon", "A line visible in the game."),
         ) as read_snapshot:
             identified = controller.identify_live_scope()
@@ -3173,7 +3173,7 @@ class MainTest(unittest.TestCase):
         observed = canonical.replace("Dŵr", "DWr")
 
         with patch(
-            "vntts.controller.read_live_snapshot",
+            "vntts.controller_components.read_live_snapshot",
             return_value=("Hotelier", observed),
         ):
             identified = controller.identify_live_scope()
@@ -3220,7 +3220,7 @@ class MainTest(unittest.TestCase):
         controller.voice_router = Mock()
 
         with patch(
-            "vntts.controller.read_live_snapshot",
+            "vntts.controller_components.read_live_snapshot",
             return_value=(
                 "Hotelier",
                 "Take the lantern into the hall before midnight.",
@@ -3461,7 +3461,7 @@ class MainTest(unittest.TestCase):
         controller.voice_router = Mock()
 
         with patch(
-            "vntts.controller.read_live_snapshot",
+            "vntts.controller_components.read_live_snapshot",
             return_value=("Someone", "An unrelated line."),
         ):
             identified = controller.identify_live_scope()

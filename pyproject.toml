@@ -119,6 +119,7 @@ files = [
     "vntts/authoring/cli_dispatch.py",
     "vntts/controller_components.py",
     "vntts/game_pack.py",
+    "vntts/live_snapshot.py",
     "vntts/live_speech.py",
     "vntts/playback.py",
     "vntts/speech_worker_messages.py",
