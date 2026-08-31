@@ -128,7 +128,7 @@ class PendingResolutionPlanTest(unittest.TestCase):
         output = StringIO()
         with (
             patch(
-                "vntts.authoring.cli.build_pending_resolution_plan",
+                "vntts.authoring.cli_generation.build_pending_resolution_plan",
                 return_value=expected,
             ),
             redirect_stdout(output),

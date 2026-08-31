@@ -306,15 +306,27 @@ binds the default `stable,natural` comparison profiles and workspace-root
 default; focused tests separately preserve document and argv JSON outputs.
 
 Shared missing-voice and failure-repair flags live in
-`cli_generation_options`, which is reused by the remaining generation parser
-without coupling it back to the workspace family. These family modules depend
-only on their workflow leaves and never on `cli.py` or on each other. Focused
-tests bind their parser defaults, ordering, single-owner dispatch and existing
-JSON behavior; the complete suite remains the final compatibility gate for each
-extraction slice. The audio-event slice additionally binds a normalized SHA-256
-of every option, positional, type, required flag, choice, default and help text,
-and rejects renewed concrete audio-event workflow imports from `cli.py`. The
-render-review, cohort-review, silence-comparison, terminal-conflict and
-voice-quality families apply the same digest and concrete-import boundary gates.
+`cli_generation_options`, which is reused by generation and workspace families
+without coupling them to each other. `cli_generation` now owns generation,
+review, state publication/status and bounded repair planning. `cli_references`
+owns failure-reference, missing-voice, portrait-alias and source-reference
+workflows. `cli_workspace_transitions` owns immutable reviewed/fallback/config
+successors, while `cli_pack` owns final publication. `cli_errors` is the one
+user-facing exception boundary.
+
+The top-level `cli.py` contains only parser composition, immutable
+single-owner family registration, shared error translation and dispatch. It no
+longer imports concrete workflow leaves. `cli_contract` restores the historical
+95-command help order after family composition and hashes the normalized parser
+schema: every option, positional, type, required flag, choice, default and help
+text. The checked-in v1 contract prevents extraction work from silently changing
+the public CLI. Family modules depend only on workflow leaves and never on
+`cli.py` or sibling command families. Focused tests bind their parser defaults,
+ordering, single-owner dispatch and existing JSON behavior; the complete suite
+remains the final compatibility gate for each extraction slice.
+
+The audio-event, render-review, cohort-review, silence-comparison,
+terminal-conflict and voice-quality slices additionally retain focused concrete
+import-boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
 accompany this graph gate whenever either record schema changes.

@@ -4086,7 +4086,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             completed = subprocess.run(command, capture_output=True, text=True)
 
             with (
-                patch("vntts.authoring.cli.create_backend") as create_backend,
+                patch(
+                    "vntts.authoring.cli_generation.create_backend"
+                ) as create_backend,
                 self.assertRaises(SystemExit),
             ):
                 authoring_main(list(command[3:]))
@@ -4153,7 +4155,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 return Backend()
 
             with (
-                patch("vntts.authoring.cli.create_backend", side_effect=swap_output),
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    side_effect=swap_output,
+                ),
                 self.assertRaises(SystemExit),
             ):
                 authoring_main(list(command[3:]))

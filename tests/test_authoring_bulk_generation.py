@@ -2727,7 +2727,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.cli._load_stable_voice_registry",
+                    "vntts.authoring.cli_generation._load_stable_voice_registry",
                     return_value=(
                         registry,
                         sha256_file(voice_manifest),
@@ -2736,7 +2736,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ),
                 ),
                 patch(
-                    "vntts.authoring.cli.create_backend",
+                    "vntts.authoring.cli_generation.create_backend",
                     side_effect=create_renderer,
                 ),
                 redirect_stdout(generated_output),

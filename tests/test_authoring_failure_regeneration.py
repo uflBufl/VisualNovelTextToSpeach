@@ -135,7 +135,7 @@ class FailureRegenerationPlanTest(unittest.TestCase):
         output = StringIO()
         with (
             patch(
-                "vntts.authoring.cli.build_failure_regeneration_plan",
+                "vntts.authoring.cli_generation.build_failure_regeneration_plan",
                 return_value=expected,
             ),
             redirect_stdout(output),

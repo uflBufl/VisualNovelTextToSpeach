@@ -411,7 +411,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 renderers.append(renderer)
                 return renderer
 
-            with patch("vntts.authoring.cli.create_backend", create_backend):
+            with patch("vntts.authoring.cli_generation.create_backend", create_backend):
                 self.assertEqual(authoring_main(command[3:]), 0)
 
             runtime = failure_reference_runtime_binding(created.directory)
@@ -498,7 +498,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 retries=0,
                 seed=0,
             )
-            with patch("vntts.authoring.cli.create_backend", create_backend):
+            with patch("vntts.authoring.cli_generation.create_backend", create_backend):
                 self.assertEqual(authoring_main(command[3:]), 0)
             plan = build_cohort_review_plan(source, queue_ids=(queue_id,))
             decision = build_cohort_review_decision(
@@ -682,7 +682,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 retries=0,
                 seed=0,
             )
-            with patch("vntts.authoring.cli.create_backend", create_backend):
+            with patch("vntts.authoring.cli_generation.create_backend", create_backend):
                 self.assertEqual(authoring_main(repair_command[3:]), 0)
             review_workspace_item(repair.directory, queue_id, "approved")
             reviewed_state = json.loads(

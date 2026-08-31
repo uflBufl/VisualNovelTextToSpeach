@@ -1,13 +1,28 @@
 import argparse
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser
+from vntts.authoring.cli_contract import parser_contract, parser_contract_sha256
 from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
 
 
 class AuthoringCliDispatchTest(unittest.TestCase):
+    def test_parser_matches_captured_semantic_contract(self):
+        fixture = json.loads(
+            (
+                Path(__file__).parent / "fixtures" / "authoring-cli-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        parser = create_parser()
+        contract = parser_contract(parser)
+
+        self.assertEqual(sorted(contract), fixture["commands"])
+        self.assertEqual(len(contract), fixture["command_count"])
+        self.assertEqual(parser_contract_sha256(parser), fixture["sha256"])
+
     def test_migrated_parser_defaults_and_order_remain_stable(self):
         parser = create_parser()
         help_text = parser.format_help()

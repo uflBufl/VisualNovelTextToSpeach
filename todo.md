@@ -95,14 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Improve maintainability without changing behavior
 
-- [ ] Finish splitting `vntts.authoring.cli` by command family:
-  - Move the remaining generation and review/repair families behind isolated
-    parser builders and handlers without sibling-family imports.
-  - Reduce `create_parser()` and `main()` to parser composition, shared error
-    translation and dispatch.
-  - Compare every command, option, default, exit code, JSON shape and headless
-    help result with a captured compatibility manifest, then run formatting and
-    the complete test suite.
 - [ ] Decompose `AppController` into runtime lifecycle, live-session
       coordination, voice assignment and diagnostics components. Keep it as the
       compatibility facade and composition root; preserve cancellation,
