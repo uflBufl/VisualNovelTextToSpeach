@@ -47,7 +47,11 @@ poll the response queue rather than treating one empty 100 ms interval as a
 failure. Worker exit is still detected by the same frame reader. This matters
 for cold voice conditioning, which can legitimately take longer than one poll
 without implying a dead worker; typed streaming renders already used the same
-idle-poll behavior.
+idle-poll behavior. Scalar calls nevertheless have a finite 120-second deadline.
+Timeout or cancellation terminates the exact worker so a live-but-silent child
+cannot retain the request lock forever. Controller shutdown first cancels queued
+voice-prime work and interrupts the backend, then waits for its executors; Quit
+and Ctrl-C therefore do not wait behind a non-responsive prime request.
 
 The parent streams worker PCM through its existing output device and applies
 the configured volume there. Settings that change backend/model/language/voice

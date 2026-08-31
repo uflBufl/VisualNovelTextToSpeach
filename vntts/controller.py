@@ -2837,6 +2837,8 @@ class AppController:
     def _voice_prime_finished(self, future):
         with self.voice_prime_lock:
             self.voice_prime_futures.discard(future)
+        if future.cancelled():
+            return
         try:
             future.result()
         except Exception as error:
@@ -3651,6 +3653,11 @@ class AppController:
 
     def _shutdown_runtime(self):
         self.shutdown_requested.set()
+        with self.voice_prime_lock:
+            voice_prime_futures = tuple(self.voice_prime_futures)
+        for future in voice_prime_futures:
+            future.cancel()
+        self._interrupt_speech()
         self._set_backend_live_mode(False)
         if self.live_reader is not None:
             self.live_reader.stop()

@@ -95,12 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Resolve project-wide code-review findings
 
-- [ ] Make isolated-worker requests bounded and shutdown-safe. Add request
-      cancellation and a finite timeout to the worker protocol; cancel tracked
-      voice-prime futures; stop/terminate an unresponsive worker before waiting
-      for speech executors; and ensure `set_live_mode_active(False)` cannot block
-      shutdown indefinitely. Cover a worker that stays alive but never replies,
-      shutdown during prime, normal completion and Ctrl-C/GUI Quit.
 - [ ] Make typed live playback fail closed and preserve error taxonomy:
   - define a narrow annotated backend protocol whose `play_prepared()` returns
     `PlaybackOutcome`, annotate `play_typed_text()` and include both boundary

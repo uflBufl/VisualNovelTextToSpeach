@@ -4311,6 +4311,35 @@ class MainTest(unittest.TestCase):
             "Fatutu",
         )
 
+    def test_controller_shutdown_cancels_voice_prime_before_waiting_for_executor(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        events = []
+        backend = Mock()
+        backend.stop.side_effect = lambda: events.append("backend-stop")
+        backend.set_live_mode_active.side_effect = lambda _active: events.append(
+            "live-mode-off"
+        )
+        future = Mock()
+        future.cancel.side_effect = lambda: events.append("prime-cancel")
+        executor = Mock()
+        executor.shutdown.side_effect = lambda **_options: events.append(
+            "executor-shutdown"
+        )
+        controller.tts = backend
+        controller.speech_backend = backend
+        controller.voice_router = backend
+        controller.speech_executor = executor
+        controller.voice_prime_futures.add(future)
+
+        controller._shutdown_runtime()
+
+        future.cancel.assert_called_once_with()
+        self.assertLess(events.index("prime-cancel"), events.index("backend-stop"))
+        self.assertLess(events.index("backend-stop"), events.index("live-mode-off"))
+        self.assertLess(
+            events.index("live-mode-off"), events.index("executor-shutdown")
+        )
+
     def test_controller_wraps_live_backend_when_generated_audio_is_configured(self):
         library = Mock()
         library.index.entries = (Mock(), Mock())

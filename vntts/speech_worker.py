@@ -466,6 +466,7 @@ class IsolatedSpeechBackend:
         runtime_directory=None,
         process_factory=subprocess.Popen,
         startup_timeout=1800.0,
+        request_timeout=120.0,
         startup_cancellation=None,
         playback_latency=None,
         generation_profile=None,
@@ -497,6 +498,11 @@ class IsolatedSpeechBackend:
         self.clock = clock
         self.process_factory = process_factory
         self.startup_timeout = float(startup_timeout)
+        self.request_timeout = float(request_timeout)
+        if self.request_timeout <= 0:
+            raise TTSConfigurationError(
+                "Speech worker request timeout must be positive"
+            )
         self.startup_cancellation = startup_cancellation
         self.playback_latency = playback_latency or (
             "high" if backend == "chatterbox-nano" else "low"
@@ -939,6 +945,7 @@ class IsolatedSpeechBackend:
 
     def _request_value(self, command_type, **values):
         with self._request_lock:
+            self._stop_requested.clear()
             process = self._ensure_worker()
             request_id = uuid.uuid4().hex
             self._send(
@@ -955,9 +962,25 @@ class IsolatedSpeechBackend:
                     **values,
                 },
             )
+            deadline = monotonic() + self.request_timeout
             while True:
+                if self._closed or self._stop_requested.is_set():
+                    self._terminate_process(process)
+                    raise TTSSynthesisError(
+                        f"{self.name} isolated worker request was cancelled"
+                    )
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    self._terminate_process(process)
+                    raise TTSSynthesisError(
+                        f"{self.name} isolated worker did not answer {command_type!r} "
+                        f"within {self.request_timeout:g} seconds"
+                    )
                 try:
-                    document, _payload = self._next_frame(process, timeout=0.1)
+                    document, _payload = self._next_frame(
+                        process,
+                        timeout=min(0.1, remaining),
+                    )
                 except queue.Empty:
                     continue
                 if document.get("request_id") != request_id:
@@ -1012,6 +1035,7 @@ class IsolatedSpeechBackend:
 
     def shutdown(self):
         self._closed = True
+        self._stop_requested.set()
         process = self.process
         if process is None:
             return

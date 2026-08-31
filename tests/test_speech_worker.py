@@ -312,6 +312,30 @@ class SpeechWorkerTest(unittest.TestCase):
             uuid4.return_value.hex = "request-1"
             self.assertTrue(backend.prime("Narrator"))
 
+    def test_scalar_worker_request_times_out_and_terminates_worker(self):
+        backend = object.__new__(IsolatedSpeechBackend)
+        with patch.object(IsolatedSpeechBackend, "_start_worker"):
+            with patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ):
+                IsolatedSpeechBackend.__init__(
+                    backend,
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    request_timeout=0.001,
+                )
+        process = FakeProcess(None)
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send"),
+            patch.object(backend, "_next_frame", side_effect=queue.Empty),
+            self.assertRaisesRegex(TTSSynthesisError, "did not answer 'prime'"),
+        ):
+            backend.prime("Narrator")
+
+        self.assertEqual(process.returncode, -15)
+
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
         cancellation = Event()
