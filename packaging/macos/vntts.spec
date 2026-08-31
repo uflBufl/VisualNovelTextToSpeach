@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 project_root = Path(SPEC).resolve().parents[2]
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
+speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
 codesign_identity = os.environ.get("VNTTS_CODESIGN_IDENTITY") or None
 entitlements_file = (
     str(project_root / "packaging" / "macos" / "entitlements.plist")
@@ -26,11 +27,14 @@ for required_path in (
     english_language_data,
     espeak_executable,
     espeak_data_directory,
+    speech_runtimes_directory / "pocket-tts" / "bin" / "python",
+    speech_runtimes_directory / "runtime-manifest.json",
 ):
     if not required_path.exists():
         raise SystemExit(f"Required macOS dependency is missing: {required_path}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
+datas.append((str(speech_runtimes_directory), "speech-runtimes"))
 datas.extend(
     (
         str(source),

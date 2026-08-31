@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 project_root = Path(SPEC).resolve().parents[2]
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
+speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
 tesseract_executable = tesseract_directory / "tesseract.exe"
 english_language_data = tesseract_directory / "tessdata" / "eng.traineddata"
 
@@ -20,8 +21,15 @@ if not espeak_executables:
     raise SystemExit(f"eSpeak-NG executable is missing under: {espeak_directory}")
 if not espeak_data_directories:
     raise SystemExit(f"eSpeak-NG voice data is missing under: {espeak_directory}")
+for required_path in (
+    speech_runtimes_directory / "pocket-tts" / "Scripts" / "python.exe",
+    speech_runtimes_directory / "runtime-manifest.json",
+):
+    if not required_path.is_file():
+        raise SystemExit(f"Required speech runtime file is missing: {required_path}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
+datas.append((str(speech_runtimes_directory), "speech-runtimes"))
 datas.extend(
     (str(source), str(Path("espeak-ng") / source.relative_to(espeak_directory).parent))
     for source in espeak_directory.rglob("*")

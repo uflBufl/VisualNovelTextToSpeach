@@ -75,6 +75,9 @@ export PYINSTALLER_VERIFY_BUNDLE_SIGNATURE=1
 
 work_path="$project_root/build/macos/pyinstaller"
 dist_path="$project_root/dist/macos"
+speech_runtimes_path="$project_root/build/macos/speech-runtimes"
+uv run --frozen python -m vntts.release_runtime "$speech_runtimes_path"
+export VNTTS_SPEECH_RUNTIMES_DIR="$speech_runtimes_path"
 uv run --frozen pyinstaller --noconfirm --clean \
     --workpath "$work_path" \
     --distpath "$dist_path" \

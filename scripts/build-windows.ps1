@@ -65,6 +65,13 @@ try {
     $env:VNTTS_ESPEAK_DIR = $EspeakDirectory
     $WorkPath = Join-Path $ProjectRoot "build\windows\pyinstaller"
     $DistPath = Join-Path $ProjectRoot "dist\windows"
+    $SpeechRuntimesPath = Join-Path $ProjectRoot `
+        "build\windows\speech-runtimes"
+    uv run --frozen python -m vntts.release_runtime $SpeechRuntimesPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Pocket speech runtime staging failed."
+    }
+    $env:VNTTS_SPEECH_RUNTIMES_DIR = $SpeechRuntimesPath
     uv run --frozen pyinstaller --noconfirm --clean `
         --workpath $WorkPath `
         --distpath $DistPath `
