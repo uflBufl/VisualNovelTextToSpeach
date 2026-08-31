@@ -499,7 +499,7 @@ class AppController:
         tracker_options = dict(configuration["tracker_options"])
         tracker_options["complete_dialogue_only"] = bool(
             self.settings.audio_source_policy != "live-tts-only"
-            or is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            or self._live_sequence_audio_active()
         )
         if tracker_options["complete_dialogue_only"] and self.settings.story_index:
             tracker_options["incomplete_dialogue_probe"] = (
@@ -731,7 +731,7 @@ class AppController:
         canonical_routing = False
         with self.story_cursor_lock:
             sequence_observation = self._observe_live_sequence(character, text)
-            if is_live_sequence_audio_mode(self.settings.live_sequence_mode):
+            if self._live_sequence_audio_active():
                 if self.story_cursor is None:
                     return False
                 if sequence_observation is None:
@@ -794,6 +794,13 @@ class AppController:
         if self.settings.live_sequence_mode == "off":
             self._publish_live_sequence_status()
             return False
+        if (
+            self.settings.live_sequence_mode == "audio-auto"
+            and not self.settings.live_sequence_plan
+            and not self.settings.story_index
+        ):
+            self._publish_live_sequence_status()
+            return False
         if not self.settings.live_sequence_plan:
             self.status_handler(
                 "Sequence-first rollout disabled: configure a live sequence plan"
@@ -824,6 +831,12 @@ class AppController:
         )
         self._publish_live_sequence_status()
         return True
+
+    def _live_sequence_audio_active(self):
+        return bool(
+            self.story_cursor is not None
+            and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+        )
 
     def get_live_sequence_status(self):
         with self.story_cursor_lock:
@@ -2036,6 +2049,8 @@ class AppController:
         ):
             return None
         if self.settings.live_sequence_mode == "audio-auto":
+            if not self._live_sequence_audio_active():
+                return None
             return self._sequence_auto_advance_dialog
         return self._auto_advance_dialog
 
@@ -2276,7 +2291,7 @@ class AppController:
     def _play_live_chunk(self, chunk, audio):
         sequence_event_id = self._begin_sequence_playback(chunk)
         if (
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            self._live_sequence_audio_active()
             and chunk.line_id is not None
             and sequence_event_id is None
         ):
@@ -2384,7 +2399,7 @@ class AppController:
                     "Playback was interrupted; retry or wait for a new dialogue",
                 )
             if result and (
-                is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+                self._live_sequence_audio_active()
                 or isinstance(
                     audio,
                     (

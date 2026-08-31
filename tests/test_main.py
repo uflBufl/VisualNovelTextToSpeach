@@ -4181,6 +4181,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(active_generation=8)
         controller._begin_sequence_playback = Mock(return_value=None)
+        controller._live_sequence_audio_active = Mock(return_value=True)
         controller.speech_backend = Mock()
         chunk = SpeechChunk(
             8,

@@ -527,9 +527,7 @@ class RuntimeLifecycleComponent:
             capture_state_changed=controller._capture_state_changed,
             tracker_factory=IncrementalDialogTracker,
             auto_advance=controller._live_auto_advance_callback(),
-            require_visible_auto_advance=(
-                controller.settings.live_sequence_mode == "audio-auto"
-            ),
+            require_visible_auto_advance=controller._live_sequence_audio_active(),
             auto_advance_delay_seconds=(
                 controller.settings.auto_advance_delay_ms / 1000
             ),
@@ -644,7 +642,7 @@ class RuntimeLifecycleComponent:
         controller.live_reader.interval_seconds = live_configuration["interval_seconds"]
         controller.live_reader.tracker_options = live_configuration["tracker_options"]
         controller.live_reader.require_visible_auto_advance = (
-            controller.settings.live_sequence_mode == "audio-auto"
+            controller._live_sequence_audio_active()
         )
         controller.live_reader.set_auto_advance(
             controller._live_auto_advance_callback()
