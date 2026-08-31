@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from hashlib import sha256
 from threading import Event, Lock, RLock
 from time import monotonic
 
@@ -753,20 +754,35 @@ class AppController:
                     }:
                         return False
                 else:
-                    snapshot, line, _match_result = sequence_observation
+                    snapshot, observed_line, _match_result = sequence_observation
                     if snapshot.state == StoryCursorState.DESYNCHRONIZED:
                         return False
                     event = self.live_sequence_plan.events.get(
                         snapshot.current_event_id
                     )
-                    if event is not None and event.kind == "silent" and line is None:
+                    if (
+                        event is not None
+                        and event.kind == "silent"
+                        and observed_line is None
+                    ):
                         return SilentDialogRoute(event.event_id)
+                    line = self._canonical_sequence_line_locked(
+                        None if event is None else event.event_id,
+                        observed_line_id=(
+                            None if observed_line is None else observed_line.line_id
+                        ),
+                    )
                     if (
                         event is None
                         or not event.is_speech
                         or line is None
                         or event.line_id != line.line_id
                     ):
+                        if event is not None and event.is_speech and line is None:
+                            self.story_cursor.desynchronize(
+                                "canonical-line-integrity-failed"
+                            )
+                            self._publish_live_sequence_status()
                         return False
                     character, text = line.speaker, line.text
                     canonical_routing = True
@@ -779,6 +795,31 @@ class AppController:
         if speech_deferred:
             return False
         return (character, text) if canonical_routing else True
+
+    def _canonical_sequence_line_locked(self, event_id, *, observed_line_id=None):
+        """Return the checksum-bound story payload owned by one plan event.
+
+        OCR and visual tracking may identify an event, but they are never speech
+        payload authorities. Every sequence speech route crosses this boundary
+        and receives speaker/text from the story index selected by the plan's
+        line identity.
+        """
+        plan = self.live_sequence_plan
+        if plan is None or event_id is None:
+            return None
+        event = plan.events.get(str(event_id))
+        if event is None or not event.is_speech or not event.line_id:
+            return None
+        if observed_line_id is not None and str(observed_line_id) != event.line_id:
+            return None
+        if plan.event_for_line(event.line_id) != event:
+            return None
+        line = self.chapter_voice_preloader.select_line_id(event.line_id)
+        if line is None or not line.text_sha256:
+            return None
+        if sha256(line.text.encode("utf-8")).hexdigest() != line.text_sha256:
+            return None
+        return line
 
     def _load_live_sequence_plan(self):
         with self.story_cursor_lock:
@@ -1315,11 +1356,7 @@ class AppController:
             return False
         previous_event_id = cursor.current_event_id
         running = bool(self.live_reader is not None and self.live_reader.is_running)
-        line = (
-            None
-            if event.line_id is None
-            else self.chapter_voice_preloader.select_line_id(event.line_id)
-        )
+        line = self._canonical_sequence_line_locked(event.event_id)
         if event.is_speech and line is None:
             self._report_explicit_live_sequence_outcome(
                 pipeline_stage,
@@ -1505,10 +1542,8 @@ class AppController:
                 if not callable(completion_probe) or not completion_probe():
                     return None
                 event = cursor.current_event
-                line = (
-                    None
-                    if event is None or event.line_id is None
-                    else self.chapter_voice_preloader.select_line_id(event.line_id)
+                line = self._canonical_sequence_line_locked(
+                    None if event is None else event.event_id
                 )
                 if line is None:
                     return False
@@ -1535,7 +1570,7 @@ class AppController:
                 and event.is_speech
                 and event.line_id is not None
             ):
-                candidate_line = self.chapter_voice_preloader.line_for_id(event.line_id)
+                candidate_line = self._canonical_sequence_line_locked(event.event_id)
                 if candidate_line is not None and self._reserve_generated_prefix(
                     candidate_line
                 ):
@@ -1591,7 +1626,7 @@ class AppController:
                 )
                 self._publish_live_sequence_status()
                 return SilentDialogRoute(event.event_id)
-            line = self.chapter_voice_preloader.select_line_id(event.line_id)
+            line = self._canonical_sequence_line_locked(event.event_id)
             if line is None:
                 cursor.desynchronize(f"missing-story-line:{event.line_id}")
                 self.status_handler(
@@ -1671,10 +1706,8 @@ class AppController:
             if quiet_ms is None:
                 return False
             event = cursor.current_event
-            line = (
-                None
-                if event is None or event.line_id is None
-                else self.chapter_voice_preloader.line_for_id(event.line_id)
+            line = self._canonical_sequence_line_locked(
+                None if event is None else event.event_id
             )
             bind_frame = getattr(reader, "bind_current_frame_route", None)
             if line is None or not callable(bind_frame) or not bind_frame():
@@ -1700,7 +1733,7 @@ class AppController:
             event = cursor.current_event
             if event is None or not event.is_speech or event.line_id is None:
                 return None
-            line = self.chapter_voice_preloader.line_for_id(event.line_id)
+            line = self._canonical_sequence_line_locked(event.event_id)
             if line is None or (line.speaker, line.text) != (character, text):
                 return None
             return line.line_id
@@ -1721,7 +1754,7 @@ class AppController:
                 or (chunk.line_id is not None and chunk.line_id != event.line_id)
             ):
                 return None
-            line = self.chapter_voice_preloader.line_for_id(event.line_id)
+            line = self._canonical_sequence_line_locked(event.event_id)
             if line is None or (line.speaker, line.text) != (
                 chunk.character,
                 chunk.text,
@@ -1733,7 +1766,7 @@ class AppController:
                 return None
             candidate = cursor.deterministic_upcoming_visible_event()
             if candidate is not None and candidate.is_speech and candidate.line_id:
-                successor = self.chapter_voice_preloader.line_for_id(candidate.line_id)
+                successor = self._canonical_sequence_line_locked(candidate.event_id)
             self._publish_live_sequence_status()
             event_id = event.event_id
         self._schedule_sequence_successor_prefetch(event_id, successor)

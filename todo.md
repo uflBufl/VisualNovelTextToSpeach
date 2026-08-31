@@ -14,10 +14,6 @@ or auto-advance as verified evidence. Follow
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
 and [`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
 
-- [ ] Establish a canonical-only locked speech boundary: line text, speaker and
-      route must come from the checksum-bound sequence event and game pack, never
-      from OCR text or an OCR-derived nameplate. Tampered/noisy OCR may confirm a
-      bounded event transition but cannot alter spoken content or voice.
 - [ ] Restrict full OCR and the incremental text tracker to initial anchoring,
       bounded branch disambiguation and explicit recovery. Ordinary locked
       playback must stay on lightweight visual transition/canonical confirmation

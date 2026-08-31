@@ -58,6 +58,12 @@ not control the game yet:
   sends no key. Settings saved before the cutover retain their previous
   `off`/disabled values when those fields were absent, while every explicit
   `off`, `shadow`, `audio-manual` or `audio-auto` choice survives migration.
+- every sequence speech path now crosses one canonical authority boundary. It
+  resolves the cursor-owned event to its plan-bound line ID, requires the story
+  line's text SHA-256 to match its exact UTF-8 text, and only then exposes that
+  line's speaker and text to audio routing. OCR may identify a bounded event but
+  cannot supply, replace or repair the spoken payload; an integrity mismatch
+  desynchronizes instead of speaking the observation.
 - cursor reads and transitions are serialized by one controller-owned re-entrant
   lock across OCR, playback and UI threads. Stable-frame candidates carry both
   their cursor owner and a frame-route epoch; an explicit frame bind invalidates

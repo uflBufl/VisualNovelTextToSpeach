@@ -1886,6 +1886,58 @@ class MainTest(unittest.TestCase):
             "Known canonical line.",
         )
 
+    def test_sequence_audio_rejects_a_story_line_with_a_stale_text_checksum(self):
+        line = ChapterDialogue(
+            "reverse1999:1:1",
+            "1",
+            1,
+            "Rhiannon",
+            "Canonical words.",
+            "0" * 64,
+        )
+        preloader = ChapterVoicePreloader((line,))
+        event = LiveSequenceEvent(
+            "event-1",
+            "1",
+            1,
+            "speech",
+            "terminal",
+            (),
+            line.line_id,
+        )
+        plan = LiveSequencePlan(
+            Path("plan.json"),
+            "reverse1999",
+            "test",
+            "1",
+            Path("story.jsonl"),
+            "1" * 64,
+            "2" * 64,
+            (LiveSequenceChapter("1", (event.event_id,), (event.event_id,)),),
+            {event.event_id: event},
+            {line.line_id: event.event_id},
+        )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+
+        self.assertFalse(controller._dialog_observed("Rhiannon", "Canonical words."))
+        self.assertEqual(
+            controller.story_cursor.state,
+            StoryCursorState.DESYNCHRONIZED,
+        )
+        self.assertEqual(
+            controller.story_cursor.reason,
+            "canonical-line-integrity-failed",
+        )
+
     def test_sequence_audio_auto_dispatch_is_cursor_and_focus_guarded(self):
         rows = [
             {
