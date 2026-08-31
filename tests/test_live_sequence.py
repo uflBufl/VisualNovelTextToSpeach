@@ -240,6 +240,19 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(snapshot.reason, "playback-completed")
         self.assertTrue(cursor.can_auto_advance)
 
+    def test_event_occurrence_changes_on_resync_and_invalidates_old_ownership(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        first = cursor.anchor_event("event-1")
+
+        repeated = cursor.observe_line("synthetic:chapter-1:1")
+        resynced = cursor.anchor_event("event-1", "explicit-user-resync")
+        failed = cursor.desynchronize("test-recovery")
+
+        self.assertEqual(repeated.occurrence_id, first.occurrence_id)
+        self.assertGreater(resynced.occurrence_id, repeated.occurrence_id)
+        self.assertGreater(failed.occurrence_id, resynced.occurrence_id)
+
     def test_waiting_dispatch_confirms_only_one_deterministic_visual_successor(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)

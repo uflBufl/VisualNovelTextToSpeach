@@ -14,11 +14,6 @@ or auto-advance as verified evidence. Follow
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
 and [`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
 
-- [ ] Make routing and advancement idempotent per cursor event. Exactly one of
-      original audio, generated WAV, live fallback or intentional silence may
-      become terminal; repeated frames, retries, callbacks and focus transitions
-      may schedule at most one acknowledged advance key and must not replay or
-      skip the following event.
 - [ ] Expand deterministic replay coverage for slow/paused typewriter, noisy and
       unknown nameplates, long narration, focus loss/return, choice boundaries
       and rapid manual skipping. Reuse immutable captures where available and

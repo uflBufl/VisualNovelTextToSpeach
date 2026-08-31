@@ -71,6 +71,13 @@ not control the game yet:
   replay can acknowledge those frames without feeding their text into the
   incremental OCR tracker. Completion-cue and owner-bound render-quiet probes
   close early-playback barriers without another recognition pass.
+- every cursor anchor owns a monotonic event occurrence. Playback completion
+  carries an immutable `(event_id, occurrence_id)` lease, so a late callback
+  from before an explicit resync cannot complete the revisited event. A
+  per-occurrence terminal ledger accepts exactly one successful original,
+  generated or live route (or intentional silence), and guarded auto advance
+  requires that terminal record. A second key request for the same lease is
+  rejected even if a callback or focus transition is repeated.
 - cursor reads and transitions are serialized by one controller-owned re-entrant
   lock across OCR, playback and UI threads. Stable-frame candidates carry both
   their cursor owner and a frame-route epoch; an explicit frame bind invalidates

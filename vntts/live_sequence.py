@@ -53,6 +53,7 @@ class StoryCursorSnapshot:
     current_line_id: str | None
     expected_successor_ids: tuple[str, ...]
     reason: str | None
+    occurrence_id: int
 
 
 class StoryCursor:
@@ -66,6 +67,7 @@ class StoryCursor:
         self.current_event_id = None
         self.completed_playback_event_id = None
         self.reason = None
+        self.occurrence_id = 0
 
     @property
     def current_event(self):
@@ -146,9 +148,11 @@ class StoryCursor:
             current_line_id=event.line_id if event is not None else None,
             expected_successor_ids=(event.successors if event is not None else ()),
             reason=self.reason,
+            occurrence_id=self.occurrence_id,
         )
 
     def reset(self, reason=None):
+        self.occurrence_id += 1
         self.state = StoryCursorState.UNSYNCHRONIZED
         self.current_event_id = None
         self.completed_playback_event_id = None
@@ -161,12 +165,14 @@ class StoryCursor:
             StoryCursorState.WAITING_TRANSITION,
         }:
             raise StoryCursorError(f"Cannot anchor while cursor is {self.state.value}")
+        self.occurrence_id += 1
         self.state = StoryCursorState.ANCHORING
         self.reason = _optional_text(reason)
         return self.snapshot()
 
     def anchor_event(self, event_id, reason=None):
         event = self._event(event_id)
+        self.occurrence_id += 1
         self.current_event_id = event.event_id
         self.completed_playback_event_id = None
         self.state = self._resting_state(event)
@@ -362,6 +368,7 @@ class StoryCursor:
         return self.snapshot()
 
     def desynchronize(self, reason):
+        self.occurrence_id += 1
         self.state = StoryCursorState.DESYNCHRONIZED
         self.reason = _required_text(reason, "desynchronization reason")
         return self.snapshot()

@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
-from vntts.controller import PreparedLiveChunkRoutes
+from vntts.controller import PreparedLiveChunkRoutes, SequenceEventLease
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -1938,6 +1938,50 @@ class MainTest(unittest.TestCase):
             "canonical-line-integrity-failed",
         )
 
+    def test_stale_playback_lease_cannot_finish_a_resynced_same_event(self):
+        text = "The same event is explicitly revisited."
+        line = ChapterDialogue(
+            "reverse1999:1:1",
+            "1",
+            1,
+            "Rhiannon",
+            text,
+            text_sha256(text),
+        )
+        preloader = ChapterVoicePreloader((line,))
+        plan = stub_live_sequence_plan(line)
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-manual",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        routed = controller._dialog_observed("Rhiannon", text)
+        chunk = SpeechChunk(1, *routed, line_id=line.line_id)
+        stale_lease = controller._begin_sequence_playback(chunk)
+
+        controller.story_cursor.anchor_event("event-1", "explicit-user-resync")
+        current_lease = controller._begin_sequence_playback(chunk)
+
+        completed = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            1.0,
+            audio_source="game",
+        )
+        self.assertFalse(controller._finish_sequence_playback(stale_lease, completed))
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
+        self.assertTrue(controller._finish_sequence_playback(current_lease, completed))
+        self.assertEqual(controller.story_cursor.reason, "playback-completed")
+        self.assertNotIn(stale_lease, controller.sequence_event_terminal_routes)
+        self.assertEqual(
+            controller.sequence_event_terminal_routes,
+            {current_lease: "game"},
+        )
+
     def test_sequence_audio_auto_dispatch_is_cursor_and_focus_guarded(self):
         rows = [
             {
@@ -2023,6 +2067,9 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
+        ] = "test"
 
         callback = controller._live_auto_advance_callback()
 
@@ -2070,6 +2117,9 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
+        ] = "test"
         controller.capture_target = Mock()
         controller.capture_target.is_focused.return_value = False
         controller._auto_advance_dialog.reset_mock()
@@ -2341,6 +2391,9 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
+        ] = "test"
 
         self.assertTrue(controller._live_auto_advance_callback()())
         self.assertEqual(
@@ -2591,7 +2644,7 @@ class MainTest(unittest.TestCase):
 
         event_id = controller._begin_sequence_playback(chunk)
 
-        self.assertEqual(event_id, "event-1")
+        self.assertEqual(event_id.event_id, "event-1")
         self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
         controller._offer_unknown_speaker_mapping = Mock(return_value=True)
         controller.history = Mock()
@@ -2712,7 +2765,7 @@ class MainTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(event_id, "event-1")
+        self.assertEqual(event_id.event_id, "event-1")
         submitted = controller.speech_executor.submit.call_args.args
         self.assertEqual(submitted[0](*submitted[1:]), "reserved")
         backend.has_generated_line.assert_called_once_with(preloader.dialogue[1])
@@ -2823,6 +2876,9 @@ class MainTest(unittest.TestCase):
         )
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease("event-2", controller.story_cursor.occurrence_id)
+        ] = "test"
         self.assertEqual(
             controller._sequence_auto_advance_dialog().reason,
             "visual-wait",

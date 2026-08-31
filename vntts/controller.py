@@ -200,6 +200,12 @@ class PreparedLiveChunkRoutes:
     announced_speaker: str | None = None
 
 
+@dataclass(frozen=True)
+class SequenceEventLease:
+    event_id: str
+    occurrence_id: int
+
+
 class AppController:
     def __init__(
         self,
@@ -261,6 +267,8 @@ class AppController:
         self.live_sequence_plan_factory = live_sequence_plan_factory
         self.sequence_prefetch_lock = Lock()
         self.sequence_prefetch_keys = set()
+        self.sequence_event_terminal_routes = {}
+        self.sequence_advance_leases = set()
         self.tts_factory = tts_factory
         self.status_handler = status_handler
         self.dialog_handler = dialog_handler or status_handler
@@ -765,6 +773,8 @@ class AppController:
                         and event.kind == "silent"
                         and observed_line is None
                     ):
+                        if not self._mark_sequence_silence_locked(event.event_id):
+                            return False
                         return SilentDialogRoute(event.event_id)
                     line = self._canonical_sequence_line_locked(
                         None if event is None else event.event_id,
@@ -821,6 +831,21 @@ class AppController:
             return None
         return line
 
+    def _mark_sequence_silence_locked(self, event_id):
+        cursor = self.story_cursor
+        if cursor is None or cursor.current_event_id != event_id:
+            return False
+        event = cursor.current_event
+        if event is None or event.kind != "silent":
+            return False
+        lease = SequenceEventLease(event.event_id, cursor.occurrence_id)
+        existing = self.sequence_event_terminal_routes.setdefault(lease, "silence")
+        if existing != "silence":
+            cursor.desynchronize("conflicting-terminal-audio-route")
+            self._publish_live_sequence_status()
+            return False
+        return True
+
     def _load_live_sequence_plan(self):
         with self.story_cursor_lock:
             return self._load_live_sequence_plan_locked()
@@ -832,6 +857,8 @@ class AppController:
         self.sequence_prefix_confirmation_event_id = None
         with self.sequence_prefetch_lock:
             self.sequence_prefetch_keys.clear()
+        self.sequence_event_terminal_routes.clear()
+        self.sequence_advance_leases.clear()
         if self.settings.live_sequence_mode == "off":
             self._publish_live_sequence_status()
             return False
@@ -1386,6 +1413,8 @@ class AppController:
             self.live_reader.clear_queue()
         cursor.anchor_event(event.event_id, reason)
         self.sequence_prefix_confirmation_event_id = None
+        if line is None and not self._mark_sequence_silence_locked(event.event_id):
+            return False
         if running:
             try:
                 enqueued = (
@@ -1607,6 +1636,8 @@ class AppController:
                 else 0
             )
             if event.kind == "silent":
+                if not self._mark_sequence_silence_locked(event.event_id):
+                    return False
                 self.pipeline_event_handler(
                     "sequence-visual-transition",
                     generation,
@@ -1792,6 +1823,9 @@ class AppController:
                 chunk.text,
             ):
                 return None
+            lease = SequenceEventLease(event.event_id, cursor.occurrence_id)
+            if lease in self.sequence_event_terminal_routes:
+                return None
             try:
                 cursor.begin_playback()
             except StoryCursorError:
@@ -1800,9 +1834,8 @@ class AppController:
             if candidate is not None and candidate.is_speech and candidate.line_id:
                 successor = self._canonical_sequence_line_locked(candidate.event_id)
             self._publish_live_sequence_status()
-            event_id = event.event_id
-        self._schedule_sequence_successor_prefetch(event_id, successor)
-        return event_id
+        self._schedule_sequence_successor_prefetch(lease.event_id, successor)
+        return lease
 
     def _schedule_sequence_successor_prefetch(self, owner_event_id, line):
         backend = self.speech_backend
@@ -1897,17 +1930,28 @@ class AppController:
             self.sequence_prefetch_keys.discard(key)
         return outcome
 
-    def _finish_sequence_playback(self, event_id, outcome):
+    def _finish_sequence_playback(self, lease, outcome):
         with self.story_cursor_lock:
             cursor = self.story_cursor
             if (
-                event_id is None
+                not isinstance(lease, SequenceEventLease)
                 or cursor is None
-                or cursor.current_event_id != event_id
+                or cursor.current_event_id != lease.event_id
+                or cursor.occurrence_id != lease.occurrence_id
                 or cursor.state != StoryCursorState.PLAYING
             ):
                 return False
             successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
+            if successful:
+                route = str(outcome.audio_source or "unknown")
+                existing = self.sequence_event_terminal_routes.setdefault(
+                    lease,
+                    route,
+                )
+                if existing != route:
+                    cursor.desynchronize("conflicting-terminal-audio-route")
+                    self._publish_live_sequence_status()
+                    return False
             cursor.finish_playback(successful=successful)
             generation = (
                 self.live_reader.active_generation
@@ -1919,8 +1963,14 @@ class AppController:
                 generation,
                 monotonic(),
                 state=cursor.state.value,
-                event_id=event_id,
+                event_id=lease.event_id,
                 line_id=cursor.snapshot().current_line_id,
+                occurrence_id=lease.occurrence_id,
+                terminal_route=(
+                    self.sequence_event_terminal_routes.get(lease)
+                    if successful
+                    else None
+                ),
                 outcome="completed" if successful else "failed",
             )
             self._publish_live_sequence_status()
@@ -2128,6 +2178,16 @@ class AppController:
                 or not cursor.can_auto_advance
             ):
                 return AutoAdvanceAttempt(False, "cursor-not-auto-advance-eligible")
+            event = cursor.current_event
+            lease = (
+                None
+                if event is None
+                else SequenceEventLease(event.event_id, cursor.occurrence_id)
+            )
+            if lease not in self.sequence_event_terminal_routes:
+                return AutoAdvanceAttempt(False, "event-route-not-terminal")
+            if lease in self.sequence_advance_leases:
+                return AutoAdvanceAttempt(False, "event-advance-already-dispatched")
             if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
                 return AutoAdvanceAttempt(False, "visual-wait")
             if not self._is_game_focused():
@@ -2135,7 +2195,13 @@ class AppController:
             advanced = self._auto_advance_dialog(focus_verified=True)
             if advanced is False:
                 return AutoAdvanceAttempt(False, "dispatch-disabled")
-            snapshot = cursor.dispatch_advance()
+            self.sequence_advance_leases.add(lease)
+            try:
+                snapshot = cursor.dispatch_advance()
+            except StoryCursorError:
+                cursor.desynchronize("advance-dispatched-without-cursor-transition")
+                self._publish_live_sequence_status()
+                return AutoAdvanceAttempt(False, "cursor-dispatch-failed")
             generation = (
                 self.live_reader.active_generation
                 if self.live_reader is not None
@@ -2147,6 +2213,7 @@ class AppController:
                 monotonic(),
                 event_id=snapshot.current_event_id,
                 line_id=snapshot.current_line_id,
+                occurrence_id=lease.occurrence_id,
                 next_event_count=len(snapshot.expected_successor_ids),
             )
             self._publish_live_sequence_status()
@@ -2354,11 +2421,11 @@ class AppController:
             )
 
     def _play_live_chunk(self, chunk, audio):
-        sequence_event_id = self._begin_sequence_playback(chunk)
+        sequence_lease = self._begin_sequence_playback(chunk)
         if (
             self._live_sequence_audio_active()
             and chunk.line_id is not None
-            and sequence_event_id is None
+            and sequence_lease is None
         ):
             generation = (
                 self.live_reader.active_generation
@@ -2549,7 +2616,7 @@ class AppController:
                 )
             return result
         finally:
-            self._finish_sequence_playback(sequence_event_id, outcome)
+            self._finish_sequence_playback(sequence_lease, outcome)
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _prepare_speaker_announcement(self, chunk, dialogue_route):
