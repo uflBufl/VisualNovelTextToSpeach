@@ -15,6 +15,7 @@ from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
 )
+from vntts.pregeneration_generation import OfflineGenerationCancelled  # noqa: E402
 from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -194,10 +195,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             pool = ManualThreadPool()
+            generation_result = Mock(generated=2, failed=0)
+            generator = Mock()
+            generator.generate.return_value = generation_result
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=store,
+                generator=generator,
                 thread_pool=pool,
             )
             dialog.show()
@@ -227,11 +232,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
+            self.assertFalse(dialog.preparing_inputs)
+            self.assertTrue(dialog.generating)
+            self.assertEqual(dialog.cancel_button.text(), "Cancel generation")
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
             self.assertIsNotNone(dialog.job())
             self.assertIsNotNone(dialog.voice_plan())
             self.assertIsNotNone(dialog.generation_input())
+            self.assertIs(dialog.generation_result(), generation_result)
             self.assertFalse(dialog.planning_voices)
             self.assertFalse(dialog.preparing_inputs)
+            self.assertFalse(dialog.generating)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
             self.assertTrue(
                 (store.path_for(dialog.job().job_id).parent / "voice-plan.json").is_file()
@@ -406,6 +419,52 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.preparing_inputs)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            dialog.deleteLater()
+
+    def test_generation_cancel_terminates_before_dialog_closes(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            voice_plan = Mock()
+            voice_plan_store = Mock()
+            voice_plan_store.create.return_value = voice_plan
+            generation_input = Mock(ready_items=2)
+            input_store = Mock()
+            input_store.materialize.return_value = generation_input
+            generator = Mock()
+
+            def generate(selected_input, selected_plan, cancellation):
+                self.assertIs(selected_input, generation_input)
+                self.assertIs(selected_plan, voice_plan)
+                self.assertTrue(cancellation.is_set())
+                raise OfflineGenerationCancelled("cancelled")
+
+            generator.generate.side_effect = generate
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_plan_store=voice_plan_store,
+                input_store=input_store,
+                generator=generator,
+                thread_pool=pool,
+            )
+
+            dialog.continue_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertTrue(dialog.generating)
+
+            dialog.cancel_button.click()
+            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.generating)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.deleteLater()
 

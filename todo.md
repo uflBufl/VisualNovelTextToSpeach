@@ -11,11 +11,11 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Continue `Prepare offline audio` from its identity-addressed generation
-      inputs into ambiguous-voice auditions, background generation progress and
-      final activation. Preserve cancellation/restart resume throughout and keep
-      workspaces, manifests, queue IDs, model IDs, seeds, retries and publication
-      commands out of the player UI.
+- [ ] Continue `Prepare offline audio` from its resumable first-pass generation
+      result into ambiguous-voice auditions when evidence actually conflicts,
+      automatic repair/fallback and final activation. Preserve cancellation and
+      restart resume throughout, and keep workspaces, manifests, queue IDs, model
+      IDs, seeds, retries and publication commands out of the player UI.
 - [ ] Build the remaining minimal voice-confirmation UI. For each genuinely
       ambiguous voice group, synthesize at most one short audition and offer
       `Use this voice`, `Try another`, and `Use narrator`; do not expose raw
@@ -24,12 +24,12 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       unchanged. Exact source audio, known aliases, configured choices and
       missing-role narrator fallbacks are already resolved automatically and
       must not become confirmation prompts again.
-- [ ] Add an automatic generation and quality pipeline. Select a supported local
-      backend/profile from hardware capabilities, generate in the background,
-      classify truncation, repetition, artifacts, clipping, abnormal silence and
-      pacing, apply only bounded typed repairs, then use the configured offline
-      fallback. A residual bad/failed line must receive an explicit live fallback
-      and must not stop the overall pack.
+- [ ] Complete automatic quality recovery after the resumable first pass. Select
+      a supported local backend/profile from hardware capabilities instead of
+      blindly trusting stale settings; classify truncation, repetition,
+      artifacts, clipping, abnormal silence and pacing; apply only bounded typed
+      repairs; then use the configured offline fallback. A residual bad/failed
+      line must receive an explicit live fallback and must not stop the pack.
 - [ ] Replace per-line approval with automatic cohort acceptance. Run technical
       checks on every WAV and synthesize a small fixed preview corpus per voice;
       show optional exception samples only when confidence is insufficient.

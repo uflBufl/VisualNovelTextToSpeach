@@ -87,7 +87,9 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             generation_input, plan = generation_inputs(
                 root, backend="moss-tts", model="model-id"
             )
-            output = generation_input.directory / "generated-audio"
+            output = generation_input.directory.parent / (
+                f"generation-output-{generation_input.identity[:16]}"
+            )
             output.mkdir()
             (output / "generation-state.json").write_text("{}", encoding="utf-8")
             (output / "manifest.json").write_text("{}", encoding="utf-8")

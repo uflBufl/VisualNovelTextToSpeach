@@ -57,7 +57,9 @@ class OfflineGenerationWorker:
             raise OfflineGenerationError("Offline generation input identity changed")
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Offline speech generation was cancelled")
-        output = generation_input.directory / "generated-audio"
+        output = generation_input.directory.parent / (
+            f"generation-output-{generation_input.identity[:16]}"
+        )
         arguments = [
             *self.command(),
             "generate",

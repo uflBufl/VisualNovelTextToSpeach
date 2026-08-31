@@ -1991,14 +1991,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         job = dialog.job()
         voice_plan = dialog.voice_plan()
         generation_input = dialog.generation_input()
+        generation_result = dialog.generation_result()
         self.pregeneration_dialog = None
-        if job is None or voice_plan is None or generation_input is None:
+        if (
+            job is None
+            or voice_plan is None
+            or generation_input is None
+            or generation_result is None
+        ):
             return None
         self.set_status(
             f"Offline preparation saved for {job.estimate.selected_lines} lines. "
             f"Matched {len(voice_plan.groups)} voice groups; "
             f"{voice_plan.narrator_fallback_count} will use narrator. "
-            f"{generation_input.ready_items} lines are ready to generate."
+            f"Generated {generation_result.generated}; "
+            f"{generation_result.failed} need automatic recovery."
         )
         return job
 
