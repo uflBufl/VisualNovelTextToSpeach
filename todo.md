@@ -119,10 +119,6 @@ intentional omission as distinct terminal authorities.
       exact selected path and digest, disable Save only while validation is
       pending, surface progress for checksum creation/hashing, and discard stale
       results when the selection changes.
-- [ ] Add Stop/Skip to dialogue-history replay and make modal close request
-      cancellation instead of waiting indefinitely for the playback future.
-      Keep the dialog responsive through slow and unresponsive backend tests and
-      close it once cancellation is confirmed.
 - [ ] Make isolated backend environments reproducible. Stop appending every host
       `site-packages` directory to worker `sys.path`; package the narrowly shared
       VNTTS support dependencies in each worker runtime and validate origins for

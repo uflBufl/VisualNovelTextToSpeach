@@ -1437,7 +1437,11 @@ class TrayApplicationTest(unittest.TestCase):
         with patch("vntts.app.DialogueHistoryDialog", return_value=dialog) as factory:
             tray_application.open_history()
 
-        factory.assert_called_once_with(controller.history, controller.replay_dialog)
+        factory.assert_called_once_with(
+            controller.history,
+            controller.replay_dialog,
+            stop_handler=controller.stop_voice_preview,
+        )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 

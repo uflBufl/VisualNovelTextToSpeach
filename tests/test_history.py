@@ -135,7 +135,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
             started.set()
             release.wait(3)
 
-        dialog = DialogueHistoryDialog(history, replay)
+        stop = Mock(return_value=True)
+        dialog = DialogueHistoryDialog(history, replay, stop_handler=stop)
         heartbeat = []
         QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
@@ -147,16 +148,42 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertLess(elapsed, 0.1)
         self.assertTrue(dialog.replay_runner.active)
         self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertTrue(dialog.stop_button.isEnabled())
         self.assertIn("Preparing replay", dialog.status.text())
         close_event = QCloseEvent()
         dialog.closeEvent(close_event)
         self.assertFalse(close_event.isAccepted())
-        self.assertIn("Close is deferred", dialog.status.text())
+        self.assertIn("Stopping", dialog.status.text())
 
-        release.set()
         self.wait_for(lambda: not dialog.replay_runner.active)
+        stop.assert_called_once_with()
         self.assertTrue(dialog.replay_button.isEnabled())
-        self.assertEqual(dialog.status.text(), "Replay finished.")
+        self.assertEqual(dialog.status.text(), "Replay stopped.")
+        release.set()
+
+    def test_stop_confirmation_closes_even_if_replay_future_is_unresponsive(self):
+        history = DialogueHistory()
+        history.add("Marcus", "The suitcase is ready.")
+        history.finish_current()
+        started = Event()
+        release = Event()
+
+        def replay(_character, _text):
+            started.set()
+            release.wait(3)
+
+        stop = Mock(return_value=True)
+        dialog = DialogueHistoryDialog(history, replay, stop_handler=stop)
+        dialog.show()
+        dialog.replay_selected()
+        self.wait_for(started.is_set)
+
+        dialog.close()
+        self.wait_for(lambda: not dialog.isVisible())
+
+        stop.assert_called_once_with()
+        self.assertFalse(dialog.replay_runner.active)
+        release.set()
 
     def test_replay_failure_is_retryable_in_dialog(self):
         history = DialogueHistory()

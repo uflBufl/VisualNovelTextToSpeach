@@ -25,13 +25,17 @@ class DialogueHistoryDialog(QDialog):
         replay_handler,
         parent=None,
         *,
+        stop_handler=None,
         thread_pool=None,
     ):
         super().__init__(parent)
         self.history = history
         self.replay_handler = replay_handler
+        self.stop_handler = stop_handler
         self.replay_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.replay_runner.finished.connect(self._replay_finished)
+        self.stop_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.stop_runner.finished.connect(self._stop_finished)
         self._close_pending = False
         self.visible_entries = []
         self.setWindowTitle("Dialogue history")
@@ -52,14 +56,19 @@ class DialogueHistoryDialog(QDialog):
         self.details_label = QLabel("Selected dialogue &details")
         self.details_label.setBuddy(self.details)
         self.replay_button = QPushButton("Replay selected")
+        self.stop_button = QPushButton("Stop / skip replay")
+        self.stop_button.setAccessibleName("Stop or skip dialogue replay")
+        self.stop_button.setEnabled(False)
         self.export_button = QPushButton("Export...")
         self.status = QLabel("Select a dialogue to replay or export this session.")
         self.status.setAccessibleName("Dialogue replay status")
         self.status.setWordWrap(True)
         self.replay_button.clicked.connect(self.replay_selected)
+        self.stop_button.clicked.connect(self.stop_replay)
         self.export_button.clicked.connect(self.export_history)
         actions = QHBoxLayout()
         actions.addWidget(self.replay_button)
+        actions.addWidget(self.stop_button)
         actions.addWidget(self.export_button)
         actions.addStretch()
 
@@ -138,7 +147,9 @@ class DialogueHistoryDialog(QDialog):
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
         self.replay_button.setEnabled(
-            entry is not None and not self.replay_runner.active
+            entry is not None
+            and not self.replay_runner.active
+            and not self.stop_runner.active
         )
         if entry is None:
             self.details.clear()
@@ -152,6 +163,7 @@ class DialogueHistoryDialog(QDialog):
         if entry is None or self.replay_runner.active:
             return
         self.replay_button.setEnabled(False)
+        self.stop_button.setEnabled(self.stop_handler is not None)
         self.status.setText(f"Preparing replay for {entry.character}...")
         self.replay_runner.start(
             self._run_replay,
@@ -168,7 +180,10 @@ class DialogueHistoryDialog(QDialog):
         return result
 
     def _replay_finished(self, _result, error):
-        self.replay_button.setEnabled(self.current_entry() is not None)
+        self.stop_button.setEnabled(False)
+        self.replay_button.setEnabled(
+            self.current_entry() is not None and not self.stop_runner.active
+        )
         if error is not None:
             self.status.setText(f"Replay failed: {error}. Select Replay to retry.")
         else:
@@ -177,12 +192,41 @@ class DialogueHistoryDialog(QDialog):
             self._close_pending = False
             self.close()
 
+    def stop_replay(self, *, close_after=False):
+        if close_after:
+            self._close_pending = True
+        if not self.replay_runner.active:
+            if self._close_pending:
+                self._close_pending = False
+                self.close()
+            return
+        if self.stop_handler is None:
+            self.status.setText("This replay backend does not expose cancellation.")
+            return
+        if self.stop_runner.active:
+            return
+        self.replay_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.status.setText("Stopping the current replay...")
+        self.stop_runner.start(self.stop_handler)
+
+    def _stop_finished(self, _result, error):
+        if error is not None:
+            self._close_pending = False
+            self.stop_button.setEnabled(self.replay_runner.active)
+            self.status.setText(f"Unable to stop replay: {error}")
+            return
+        self.replay_runner.cancel()
+        self.stop_button.setEnabled(False)
+        self.replay_button.setEnabled(self.current_entry() is not None)
+        self.status.setText("Replay stopped.")
+        if self._close_pending:
+            self._close_pending = False
+            self.close()
+
     def closeEvent(self, event):
         if self.replay_runner.active:
-            self._close_pending = True
-            self.status.setText(
-                "Replay is still running. Close is deferred until speech finishes."
-            )
+            self.stop_replay(close_after=True)
             event.ignore()
             return
         super().closeEvent(event)

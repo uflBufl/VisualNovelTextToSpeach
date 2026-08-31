@@ -2395,9 +2395,8 @@ class TrayApplication(DurableSettingsMixin, QObject):
             )
 
     def open_history(self):
-        # Region capture has no game-window focus probe. Leaving it running
-        # while this modal window covers the calibrated region makes OCR read
-        # the history list, append that text to the history, and repeat. Stop
+        # Region capture has no focus probe. A modal over the calibrated region
+        # makes OCR append the history list repeatedly. Stop
         # capture for the modal session, then restore the previous live state.
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
@@ -2414,6 +2413,7 @@ class TrayApplication(DurableSettingsMixin, QObject):
         dialog = DialogueHistoryDialog(
             self.controller.history,
             self.controller.replay_dialog,
+            stop_handler=self.controller.stop_voice_preview,
         )
         try:
             dialog.exec()
