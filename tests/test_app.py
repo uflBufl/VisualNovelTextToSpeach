@@ -24,6 +24,7 @@ from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
@@ -187,11 +188,26 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.voice_plan.return_value = voice_plan
         dialog.generation_input.return_value = generation_input
         dialog.generation_result.return_value = generation_result
+        pack_result = OfflinePackResult(
+            identity="a" * 64,
+            directory=Path("/tmp/offline-pack"),
+            manifest=Path("/tmp/offline-pack/game-pack.json"),
+            imported=Mock(),
+            approved=38,
+            live_fallbacks=1,
+        )
+        dialog.pack_result.return_value = pack_result
 
-        with patch(
-            "vntts.app.OfflineAudioPreparationDialog",
-            return_value=dialog,
-        ) as create_dialog:
+        with (
+            patch(
+                "vntts.app.OfflineAudioPreparationDialog",
+                return_value=dialog,
+            ) as create_dialog,
+            patch.object(
+                tray_application,
+                "_start_pregeneration_activation",
+            ) as start_activation,
+        ):
             result = tray_application.open_pregeneration()
 
         self.assertIs(result, job)
@@ -199,11 +215,14 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.settings,
             parent=tray_application.dashboard,
         )
-        self.assertIn("42 lines", tray_application.dashboard.status.text())
-        self.assertIn("Matched 3 voice groups", tray_application.dashboard.status.text())
-        self.assertIn("1 will use narrator", tray_application.dashboard.status.text())
-        self.assertIn("Generated 38", tray_application.dashboard.status.text())
-        self.assertIn("1 need automatic recovery", tray_application.dashboard.status.text())
+        start_activation.assert_called_once()
+        self.assertIs(start_activation.call_args.args[0], pack_result)
+        status = start_activation.call_args.args[1]
+        self.assertIn("42 lines", status)
+        self.assertIn("Matched 3 voice groups", status)
+        self.assertIn("1 will use narrator", status)
+        self.assertIn("Generated 38", status)
+        self.assertIn("1 need automatic recovery", status)
         tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):

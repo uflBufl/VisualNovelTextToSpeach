@@ -30,8 +30,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       artifacts, clipping, abnormal silence and pacing; apply only bounded typed
       repairs; then use the configured offline fallback. A residual bad/failed
       line must receive an explicit live fallback and must not stop the pack.
-  - [ ] Wire recovery into the setup wizard and report player-level progress;
-        technical action names and queue IDs remain available only in logs.
 - [ ] Add one fixed preview corpus per resolved voice and retain only
       low-confidence voice or quality exceptions as optional auditions. Normal
       completion already accepts technically valid generated WAVs atomically and
@@ -42,9 +40,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       omission as distinct terminal routes; reuse unchanged work across chapters;
       report coverage in player language; and allow play with a partially prepared
       pack while remaining chapters continue later.
-  - [ ] Save the validated pack into settings with `prefer-generated`, apply it
-        to the running controller in the background and keep the prior pack
-        active if publication, settings persistence or runtime apply fails.
 - [ ] Add a synthetic end-to-end acceptance journey: fresh settings -> discover
       game -> choose chapter -> audition only ambiguous voices -> interrupt/resume
       generation -> automatic repairs/fallback -> atomically activate the pack.

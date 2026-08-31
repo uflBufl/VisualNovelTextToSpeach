@@ -218,6 +218,15 @@ rename; repeating an identical terminal state reuses the same validated pack,
 while a changed state produces a new identity and cannot mutate the earlier
 pack.
 
+Activation is a failure-atomic runtime transaction. VNTTS preflights the
+published manifest again, stops an already-loaded speech runtime, applies the
+pack with `prefer-generated`, and proves that the runtime starts before writing
+the new settings. If runtime startup or settings persistence fails, it restores
+the previous settings and restarts the previous runtime. An application shutdown
+cancels the transaction without restarting speech during shutdown. Only after
+the transaction succeeds does the dashboard publish the new settings and report
+that offline audio is active.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

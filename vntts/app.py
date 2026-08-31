@@ -73,6 +73,11 @@ from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
 from vntts.pregeneration_acceptance import OfflineAcceptanceResult
+from vntts.pregeneration_activation import (
+    OfflinePackActivationResult,
+    OfflinePackActivator,
+)
+from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_recovery import OfflineRecoveryResult
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.profiles import GameProfileStore
@@ -1065,6 +1070,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         controller_factory=AppController,
         profile_store=None,
         correction_store=None,
+        pregeneration_activator=None,
     ):
         super().__init__()
         self.application = application
@@ -1109,6 +1115,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation = None
+        self.pregeneration_activator = (
+            pregeneration_activator or OfflinePackActivator()
+        )
+        self.pregeneration_activation_runner = LatestTaskRunner(self)
+        self.pregeneration_activation_runner.finished.connect(
+            self._pregeneration_activation_finished
+        )
+        self._pregeneration_activation_generation = None
+        self._pregeneration_activation_cancellation = None
+        self._pregeneration_activation_restore_runtime = Event()
+        self._pregeneration_activation_status = None
         self._pending_profile_name = self._profile_restart_generation = None
         self._lifecycle_generation = 0
         self._controller_ready = False
@@ -1985,6 +2002,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def open_pregeneration(self):
+        if self._controller_busy or self._shutting_down:
+            self.set_status("Controller reconfiguration is already in progress")
+            return None
         dialog = OfflineAudioPreparationDialog(self.settings, parent=self.dashboard)
         self.pregeneration_dialog = dialog
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -2000,15 +2020,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         acceptance_result = dialog.acceptance_result()
         if not isinstance(acceptance_result, OfflineAcceptanceResult):
             acceptance_result = None
+        pack_result = dialog.pack_result()
+        if not isinstance(pack_result, OfflinePackResult):
+            pack_result = None
         self.pregeneration_dialog = None
         if (
             job is None
             or voice_plan is None
             or generation_input is None
             or generation_result is None
+            or pack_result is None
         ):
+            self.show_error("Offline preparation finished without a validated game pack")
             return None
-        self.set_status(
+        status = (
             f"Offline preparation saved for {job.estimate.selected_lines} lines. "
             f"Matched {len(voice_plan.groups)} voice groups; "
             f"{voice_plan.narrator_fallback_count} will use narrator. "
@@ -2026,7 +2051,71 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else f"{generation_result.failed} need automatic recovery."
             )
         )
+        self._start_pregeneration_activation(pack_result, status)
         return job
+
+    def _start_pregeneration_activation(self, pack_result, success_status):
+        generation = self._begin_controller_lifecycle()
+        cancellation = Event()
+        self._pregeneration_activation_generation = generation
+        self._pregeneration_activation_cancellation = cancellation
+        self._pregeneration_activation_restore_runtime.set()
+        self._pregeneration_activation_status = success_status
+        self.set_status("Activating prepared offline audio in the background...")
+        self.pregeneration_activation_runner.start(
+            self.pregeneration_activator.activate,
+            self.settings,
+            pack_result,
+            self.controller,
+            cancellation,
+            self._pregeneration_activation_restore_runtime,
+        )
+
+    def _pregeneration_activation_finished(self, result, error):
+        generation = self._pregeneration_activation_generation
+        self._pregeneration_activation_generation = None
+        self._pregeneration_activation_cancellation = None
+        if not self._lifecycle_is_current(generation):
+            return
+        self._finish_controller_lifecycle()
+        if error is not None:
+            if getattr(error, "rollback_failed", False):
+                message = (
+                    "Unable to activate prepared offline audio or restore the running "
+                    "configuration; restart VNTTS to load the saved previous pack. "
+                )
+            else:
+                message = (
+                    "Unable to activate prepared offline audio; the previous pack "
+                    "remains active. "
+                )
+            self.show_error(f"{message}{error}")
+            return
+        if not isinstance(result, OfflinePackActivationResult):
+            self.show_error(
+                "Unable to activate prepared offline audio: activation result is invalid"
+            )
+            return
+        self.settings = result.settings
+        self.dashboard.set_configuration(self.settings)
+        sequence_controls_visible = bool(
+            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            and self.settings.live_sequence_plan
+            and self.settings.story_index
+        )
+        self.sequence_resync_action.setVisible(sequence_controls_visible)
+        self.sequence_expected_action.setVisible(sequence_controls_visible)
+        self._controller_ready = bool(self.controller.is_ready)
+        self._apply_controller_action_state()
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.update_settings(self.settings)
+        status = self._pregeneration_activation_status
+        self._pregeneration_activation_status = None
+        self.set_status(
+            f"{status} Offline audio is active."
+            if status
+            else "Prepared offline audio is active."
+        )
 
     def open_readiness(self):
         if self.readiness_dialog is None:
@@ -2638,6 +2727,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_shutdown_owned = self.profile_restart_runner.active
         self.profile_restart_runner.cancel()
         self.configuration_runner.cancel()
+        activation_shutdown_owned = self.pregeneration_activation_runner.active
+        self._pregeneration_activation_restore_runtime.clear()
+        if self._pregeneration_activation_cancellation is not None:
+            self._pregeneration_activation_cancellation.set()
+        self.pregeneration_activation_runner.cancel()
         onboarding_shutdown_owned = self._onboarding_test_active
         self.onboarding_cancel_event.set()
         self._apply_controller_action_state()
@@ -2671,6 +2765,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             not initial_shutdown_owned
             and not profile_shutdown_owned
             and not onboarding_shutdown_owned
+            and not activation_shutdown_owned
         ):
             self.controller.shutdown()
 
