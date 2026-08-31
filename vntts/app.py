@@ -1065,7 +1065,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_generation = None
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
-        self._setup_configuration_apply()
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
         self._initial_start_generation = None
@@ -1187,6 +1186,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addAction(self.support_action)
         self.menu.addAction(self.macos_permissions_action)
         self.menu.addAction(self.settings_folder_action)
+        self._setup_configuration_apply()
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.tray.setContextMenu(self.menu)

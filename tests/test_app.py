@@ -1288,7 +1288,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: not tray_application.configuration_runner.active)
 
         configure.assert_called_once_with(True)
-        controller.apply_settings.assert_called_once_with(updated)
+        controller.apply_settings.assert_called_once_with(updated, cancellation=ANY)
         self.assertEqual(tray_application.settings, updated)
         tray_application.shutdown()
 
@@ -1342,7 +1342,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.open_settings()
             self.wait_until(lambda: not tray_application.configuration_runner.active)
 
-        controller.apply_settings.assert_called_once_with(updated)
+        controller.apply_settings.assert_called_once_with(updated, cancellation=ANY)
         self.assertEqual(tray_application.settings.speech_backend, "moss-tts")
         self.assertIn("restart required", tray_application.status_action.text())
         self.assertIn("still uses pocket-tts", tray_application.status_action.text())
@@ -2150,7 +2150,7 @@ class TrayApplicationTest(unittest.TestCase):
                 release = Event()
                 controller = Mock(settings=original)
 
-                def blocked_apply(_settings):
+                def blocked_apply(_settings, **_options):
                     started.set()
                     release.wait(2)
 
@@ -2182,9 +2182,55 @@ class TrayApplicationTest(unittest.TestCase):
                         lambda: not tray_application.configuration_runner.active
                     )
 
-                controller.apply_settings.assert_called_once_with(candidate)
+                controller.apply_settings.assert_called_once_with(
+                    candidate,
+                    cancellation=ANY,
+                )
                 self.assertTrue(tray_application.settings_action.isEnabled())
                 tray_application.shutdown()
+
+    def test_saved_settings_runtime_apply_can_be_cancelled(self):
+        original = AppSettings()
+        candidate = original.updated(game_window_title="Changed")
+        started = Event()
+        controller = Mock(settings=original)
+
+        def blocked_apply(_settings, *, cancellation):
+            started.set()
+            cancellation.wait(2)
+            return False
+
+        def cancel(cancellation):
+            cancellation.set()
+            return True
+
+        controller.apply_settings.side_effect = blocked_apply
+        controller.cancel_settings_apply.side_effect = cancel
+        tray_application = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.settings.return_value = candidate
+        with (
+            patch("vntts.app.SettingsDialog", return_value=dialog),
+            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+        ):
+            tray_application.open_settings()
+            self.wait_until(started.is_set)
+            self.assertTrue(tray_application.cancel_configuration_action.isVisible())
+            self.assertTrue(tray_application.cancel_configuration_action.isEnabled())
+            tray_application.cancel_configuration_action.trigger()
+            self.wait_until(lambda: not tray_application.configuration_runner.active)
+
+        cancellation = controller.apply_settings.call_args.kwargs["cancellation"]
+        controller.cancel_settings_apply.assert_called_once_with(cancellation)
+        self.assertIs(tray_application.settings, candidate)
+        self.assertIn("saved settings", tray_application.status_action.text().lower())
+        self.assertFalse(tray_application.cancel_configuration_action.isVisible())
+        tray_application.shutdown()
 
     def test_profile_restart_disables_runtime_and_quit_prevents_restart(self):
         with TemporaryDirectory() as temporary_directory:

@@ -1,5 +1,8 @@
 """Background application of already-persisted desktop configuration."""
 
+from threading import Event
+
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QDialog
 
 from vntts.async_ui import LatestTaskRunner
@@ -12,11 +15,35 @@ from vntts.settings import (
 
 class ConfigurationApplyMixin:
     def _setup_configuration_apply(self):
+        self.cancel_configuration_action = QAction("Cancel settings apply")
+        self.cancel_configuration_action.setVisible(False)
+        self.cancel_configuration_action.setEnabled(False)
+        self.cancel_configuration_action.setStatusTip(
+            "Cancel only the current runtime apply; saved settings are retained"
+        )
+        self.cancel_configuration_action.triggered.connect(
+            self.cancel_configuration_apply
+        )
+        self.menu.insertAction(
+            self.voice_preview_action,
+            self.cancel_configuration_action,
+        )
         self.configuration_runner = LatestTaskRunner(self)
         self.configuration_runner.finished.connect(self._configuration_apply_finished)
+        self.configuration_runner.activeChanged.connect(
+            self._configuration_runner_active_changed
+        )
         self._configuration_generation = None
+        self._configuration_cancellation = None
         self._configuration_success_status = None
         self._configuration_refresh_hotkeys = False
+
+    def _configuration_runner_active_changed(self, active):
+        action = getattr(self, "cancel_configuration_action", None)
+        if action is None:
+            return
+        action.setVisible(bool(active))
+        action.setEnabled(bool(active) and not self._shutting_down)
 
     def _start_configuration_apply(
         self,
@@ -28,6 +55,7 @@ class ConfigurationApplyMixin:
     ):
         generation = self._begin_controller_lifecycle()
         self._configuration_generation = generation
+        self._configuration_cancellation = Event()
         self._configuration_success_status = success_status
         self._configuration_refresh_hotkeys = bool(refresh_hotkeys)
         self.set_status(progress_status)
@@ -35,15 +63,34 @@ class ConfigurationApplyMixin:
             self._apply_configuration,
             settings,
             generation,
+            self._configuration_cancellation,
         )
 
-    def _apply_configuration(self, settings, generation):
-        self.controller.apply_settings(settings)
-        return self._lifecycle_is_current(generation)
+    def _apply_configuration(self, settings, generation, cancellation):
+        applied = self.controller.apply_settings(
+            settings,
+            cancellation=cancellation,
+        )
+        return self._lifecycle_is_current(generation), applied is not False
 
-    def _configuration_apply_finished(self, current, error):
+    def cancel_configuration_apply(self):
+        cancellation = self._configuration_cancellation
+        if cancellation is None or not self.configuration_runner.active:
+            self.set_status("No runtime configuration apply is in progress")
+            return
+        if self.controller.cancel_settings_apply(cancellation):
+            self.cancel_configuration_action.setEnabled(False)
+            self.set_status(
+                "Cancelling runtime apply; saved settings remain for restart..."
+            )
+            return
+        self.cancel_configuration_action.setEnabled(False)
+        self.set_status("Runtime configuration apply is already completing")
+
+    def _configuration_apply_finished(self, result, error):
         generation = self._configuration_generation
         self._configuration_generation = None
+        self._configuration_cancellation = None
         if not self._lifecycle_is_current(generation):
             return
         self._finish_controller_lifecycle()
@@ -53,7 +100,13 @@ class ConfigurationApplyMixin:
                 f"{error}. Restart the application to apply them."
             )
             return
+        current, applied = result
         if not current:
+            return
+        if not applied:
+            self.set_status(
+                "Runtime apply cancelled; saved settings will take effect after restart"
+            )
             return
         if self._configuration_refresh_hotkeys:
             self.signals.hotkeys_requested.emit()

@@ -5,7 +5,9 @@ root. UI adapters, replay and tests may continue calling its established public
 methods, but those methods delegate to one of four explicit coordination
 components:
 
-- `RuntimeLifecycleComponent` owns startup, settings replacement and shutdown;
+- `RuntimeLifecycleComponent` owns startup, settings replacement and shutdown.
+  Its request-scoped settings guard serializes runtime apply, defines the atomic
+  commit point and releases only the matching live-reader wait on cancellation;
 - `LiveSessionComponent` owns live-reading controls and auto-advance state;
 - `VoiceAssignmentComponent` owns assignment, preview and narrator-fallback
   operations;

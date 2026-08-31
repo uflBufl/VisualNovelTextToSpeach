@@ -16,6 +16,10 @@ from vntts.controller_components import (
     RuntimeLifecycleComponent,
     VoiceAssignmentComponent,
 )
+from vntts.controller_components import (
+    create_live_toggle as create_live_toggle,
+)
+from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
@@ -245,24 +249,6 @@ def read_live_snapshot(
     return result.character, result.text
 
 
-def speak_live_chunk(voice_router, chunk, playback_guard=None):
-    print(f"{chunk.character} is speaking now (live)")
-    print(chunk.text)
-    if is_empty(chunk.text):
-        return None
-    return play_typed_text(voice_router, chunk.character, chunk.text, playback_guard)
-
-
-def create_live_toggle(live_reader):
-    def toggle_live_reading():
-        if live_reader.toggle():
-            print("Live reading started")
-        else:
-            print("Live reading stopping")
-
-    return toggle_live_reading
-
-
 class AppController:
     def __init__(
         self,
@@ -379,8 +365,11 @@ class AppController:
     def start(self):
         return self.runtime_lifecycle.start()
 
-    def apply_settings(self, settings):
-        return self.runtime_lifecycle.apply_settings(settings)
+    def apply_settings(self, settings, *, cancellation=None):
+        return self.runtime_lifecycle.apply_settings(settings, cancellation=cancellation)
+
+    def cancel_settings_apply(self, cancellation):
+        return self.runtime_lifecycle.cancel_settings_apply(cancellation)
 
     def shutdown(self):
         return self.runtime_lifecycle.shutdown()
@@ -1189,7 +1178,7 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return character, text
 
-    def _apply_runtime_settings(self, settings):
+    def _apply_runtime_settings(self, settings, *, commit):
         if self.tts is not None or self.speech_backend is not None:
             settings = preserve_loaded_runtime_settings(self.settings, settings)
         was_live = self.is_live_running
@@ -1197,6 +1186,11 @@ class AppController:
             self._set_backend_live_mode(False)
             self.live_reader.stop()
             self.live_reader.wait()
+
+        if not commit():
+            if was_live:
+                self.toggle_live()
+            return False
 
         self.settings = settings
         with self.speaker_announcement_lock:
@@ -1270,6 +1264,7 @@ class AppController:
         )
         if was_live:
             self.toggle_live()
+        return True
 
     def _get_live_configuration(self):
         configuration = get_live_configuration(self.settings)

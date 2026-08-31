@@ -34,14 +34,21 @@ class ControllerComponentsTest(unittest.TestCase):
         controller.diagnostics = Mock()
 
         controller.start()
-        controller.apply_settings("settings")
+        controller.apply_settings("settings", cancellation="token")
+        controller.cancel_settings_apply("token")
         controller.shutdown()
         controller.toggle_live()
         controller.assign_voice("A", "voice")
         controller.inspect_current_dialog(notify=False)
 
         controller.runtime_lifecycle.start.assert_called_once_with()
-        controller.runtime_lifecycle.apply_settings.assert_called_once_with("settings")
+        controller.runtime_lifecycle.apply_settings.assert_called_once_with(
+            "settings",
+            cancellation="token",
+        )
+        controller.runtime_lifecycle.cancel_settings_apply.assert_called_once_with(
+            "token"
+        )
         controller.runtime_lifecycle.shutdown.assert_called_once_with()
         controller.live_session.toggle.assert_called_once_with()
         controller.voice_assignments.assign.assert_called_once_with(
@@ -67,6 +74,7 @@ class ControllerComponentsTest(unittest.TestCase):
         expected_components = {
             "start": "runtime_lifecycle",
             "apply_settings": "runtime_lifecycle",
+            "cancel_settings_apply": "runtime_lifecycle",
             "shutdown": "runtime_lifecycle",
             "read_once": "live_session",
             "identify_live_scope": "live_session",

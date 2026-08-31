@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
@@ -1359,6 +1360,42 @@ class MainTest(unittest.TestCase):
 
         capture_target_factory.assert_called_once_with("Reverse: 1999")
         self.assertIs(controller.capture_target, capture_target)
+
+    def test_runtime_settings_cancel_releases_only_its_live_wait(self):
+        original = AppSettings(game_window_title="Original")
+        updated = original.updated(game_window_title="Changed")
+        controller = AppController(original, tts_factory=Mock())
+        cancellation = Event()
+        waiting = Event()
+        released = Event()
+        live_reader = Mock(is_running=True)
+
+        def wait():
+            waiting.set()
+            released.wait(2)
+
+        live_reader.wait.side_effect = wait
+        live_reader.release_waiters.side_effect = released.set
+        live_reader.toggle.return_value = True
+        controller.live_reader = live_reader
+        result = []
+        worker = Thread(
+            target=lambda: result.append(
+                controller.apply_settings(updated, cancellation=cancellation)
+            )
+        )
+
+        worker.start()
+        self.assertTrue(waiting.wait(1))
+        self.assertFalse(controller.cancel_settings_apply(Event()))
+        self.assertTrue(controller.cancel_settings_apply(cancellation))
+        worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertIs(controller.settings, original)
+        live_reader.release_waiters.assert_called_once_with()
+        live_reader.toggle.assert_called_once_with()
 
     def test_controller_end_to_end_test_recognizes_and_speaks_dialog(self):
         controller = AppController(AppSettings(), tts_factory=Mock())

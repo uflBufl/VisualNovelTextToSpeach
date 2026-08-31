@@ -2,17 +2,38 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
 from typing import Protocol
 
+from vntts.dialog import is_empty
+from vntts.live_speech import play_typed_text
 from vntts.voices import normalize_character_name
+
+
+def create_live_toggle(live_reader):
+    def toggle_live_reading():
+        if live_reader.toggle():
+            print("Live reading started")
+        else:
+            print("Live reading stopping")
+
+    return toggle_live_reading
+
+
+def speak_live_chunk(voice_router, chunk, playback_guard=None):
+    print(f"{chunk.character} is speaking now (live)")
+    print(chunk.text)
+    if is_empty(chunk.text):
+        return None
+    return play_typed_text(voice_router, chunk.character, chunk.text, playback_guard)
 
 
 class _ControllerImplementation(Protocol):
     """Private implementation surface consumed by controller components."""
 
     def _start_runtime(self): ...
-    def _apply_runtime_settings(self, settings): ...
+    def _apply_runtime_settings(self, settings, *, commit): ...
     def _shutdown_runtime(self): ...
     def _read_once_live(self): ...
     def _identify_live_scope_impl(self): ...
@@ -40,15 +61,75 @@ class _ControllerImplementation(Protocol):
     def _test_current_dialog_impl(self): ...
 
 
+class _RuntimeSettingsApplyGuard:
+    def __init__(self):
+        self.lock = Lock()
+        self.cancellation = None
+        self.committed = False
+
+    def begin(self, cancellation):
+        if cancellation is None:
+            return
+        with self.lock:
+            if self.cancellation is not None:
+                raise RuntimeError("Runtime settings are already being applied")
+            self.cancellation = cancellation
+            self.committed = False
+
+    def finish(self, cancellation):
+        if cancellation is None:
+            return
+        with self.lock:
+            if self.cancellation is cancellation:
+                self.cancellation = None
+                self.committed = False
+
+    def commit(self, cancellation):
+        if cancellation is None:
+            return True
+        with self.lock:
+            if self.cancellation is not cancellation or cancellation.is_set():
+                return False
+            self.committed = True
+            return True
+
+    def cancel(self, cancellation, release_waiters):
+        with self.lock:
+            if self.cancellation is not cancellation or self.committed:
+                return False
+            cancellation.set()
+        release_waiters()
+        return True
+
+
 @dataclass(frozen=True)
 class RuntimeLifecycleComponent:
     controller: _ControllerImplementation
+    settings_apply_guard: _RuntimeSettingsApplyGuard = field(
+        default_factory=_RuntimeSettingsApplyGuard,
+        compare=False,
+        repr=False,
+    )
 
     def start(self):
         return self.controller._start_runtime()
 
-    def apply_settings(self, settings):
-        return self.controller._apply_runtime_settings(settings)
+    def apply_settings(self, settings, *, cancellation=None):
+        self.settings_apply_guard.begin(cancellation)
+        try:
+            return self.controller._apply_runtime_settings(
+                settings,
+                commit=lambda: self.settings_apply_guard.commit(cancellation),
+            )
+        finally:
+            self.settings_apply_guard.finish(cancellation)
+
+    def cancel_settings_apply(self, cancellation):
+        reader = self.controller.live_reader
+        release_waiters = (
+            reader.release_waiters if reader is not None else lambda: None
+        )
+        return self.settings_apply_guard.cancel(cancellation, release_waiters)
 
     def shutdown(self):
         return self.controller._shutdown_runtime()

@@ -109,15 +109,6 @@ intentional omission as distinct terminal authorities.
       initialize and render through the effective default backend on a clean
       machine without uv, a checkout or backend environment variables.
 
-## P2 - Resolve project-wide UX and runtime follow-ups
-
-- [ ] Add an explicit request-scoped Cancel action while saved Settings or Assets
-      are being applied. Runtime reconfiguration already uses the shared
-      generation-bound background lifecycle, exposes progress, prevents
-      overlapping controller actions and keeps the Qt event loop responsive;
-      cancellation must safely interrupt the live-reader wait, retain the saved
-      configuration for restart and report that distinction without shutting
-      down an unrelated controller generation.
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.
