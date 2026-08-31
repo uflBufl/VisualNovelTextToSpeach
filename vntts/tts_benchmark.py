@@ -83,10 +83,16 @@ def create_backend(
     startup_cancellation=None,
     terms_accepted=False,
     require_cuda=False,
+    persistent_audio_cache_max_entries=None,
 ):
     cache_root = Path(cache_root)
     common = {
         "persistent_audio_cache_directory": cache_root / "audio",
+        **(
+            {"persistent_audio_cache_max_entries": (persistent_audio_cache_max_entries)}
+            if persistent_audio_cache_max_entries is not None
+            else {}
+        ),
         **(
             {"startup_cancellation": startup_cancellation}
             if startup_cancellation is not None

@@ -181,6 +181,17 @@ the published state/manifest and reduces terminal outcomes to generated, failed
 and other terminal counts. Frozen packages relaunch the app through a hidden
 generation-worker argument that dispatches before Qt is created.
 
+Different selection-job identities share one application-owned synthesis cache.
+Normal pregeneration reads and writes it, while an explicit regeneration refreshes
+the matching entry and legacy expert generation without a configured cache remains
+isolated. Cache identity includes backend, model, normalized text, voice, reference
+content, profile, seed and backend controls; copied references with identical bytes
+therefore remain reusable across newly selected chapters, while changed bytes cannot
+alias an older waveform. The disk cache is sized from the current selection without
+inflating the much smaller in-memory playback cache. Generation state, quality
+validation and game-pack publication remain independent and immutable for every job;
+a cache hit supplies PCM, not a prior line decision or manifest entry.
+
 After the first pass, the player workflow derives a fresh failure-repair plan
 from the checksum-bound queue and generation state. It batches only deterministic
 safe actions: resume an interrupted item once, split at validated complete

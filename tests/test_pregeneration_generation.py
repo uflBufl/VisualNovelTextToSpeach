@@ -117,11 +117,39 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertIn(str(generation_input.queue), arguments)
         self.assertIn("model-id", arguments)
         self.assertIn("2", arguments)
+        cache_option = arguments.index("--cache-directory")
+        self.assertEqual(
+            arguments[cache_option + 1],
+            str(root / "synthesis-cache"),
+        )
         self.assertEqual(arguments.count("--narrator-fallback-role"), 2)
         self.assertEqual(result.generated, 1)
         self.assertEqual(result.failed, 1)
         self.assertEqual(result.other_terminal, 1)
         self.assertEqual(result.total, 3)
+
+    def test_selection_jobs_share_one_content_addressed_synthesis_cache(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "jobs"
+            first_input, first_plan = generation_inputs(root / ("a" * 24))
+            second_input, second_plan = generation_inputs(root / ("b" * 24))
+            worker = OfflineGenerationWorker(command=("worker",))
+
+            first = worker._base_arguments(
+                first_input,
+                first_plan,
+                first_input.directory.parent / "output",
+            )
+            second = worker._base_arguments(
+                second_input,
+                second_plan,
+                second_input.directory.parent / "output",
+            )
+
+        first_cache = first[first.index("--cache-directory") + 1]
+        second_cache = second[second.index("--cache-directory") + 1]
+        self.assertEqual(first_cache, str(root / "synthesis-cache"))
+        self.assertEqual(second_cache, first_cache)
 
     def test_pocket_generation_uses_one_unseeded_attempt(self):
         with TemporaryDirectory() as temporary_directory:
@@ -161,9 +189,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 0,
             )
             popen = Mock(return_value=FinishedProcess())
-            worker = OfflineGenerationWorker(
-                command=("worker",), popen_factory=popen
-            )
+            worker = OfflineGenerationWorker(command=("worker",), popen_factory=popen)
             state = {"items": {"one": {"status": "generated"}}}
 
             with patch(

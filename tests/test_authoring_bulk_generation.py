@@ -20,6 +20,7 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+from vntts.audio_cache import PersistentAudioCache
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
@@ -43,6 +44,7 @@ from vntts.authoring.silence_evidence import (
     load_silence_failure_evidence,
 )
 from vntts.synthesis import (
+    SynthesisCachePolicy,
     SynthesisChunk,
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -140,6 +142,62 @@ class SyntheticRenderer:
         self.stop_calls += 1
 
 
+class CacheAwareSyntheticRenderer:
+    name = "pocket-tts"
+    model_name = "pocket-tts"
+
+    def __init__(self, cache_root):
+        self.cache = PersistentAudioCache(Path(cache_root) / "audio")
+        self.fresh_renders = 0
+        self.stop_calls = 0
+
+    def render(self, request):
+        key = self.cache.key(
+            backend=self.name,
+            model=self.model_name,
+            voice=request.voice,
+            text=request.text,
+            settings={
+                "generation_profile": request.generation_profile,
+                "seed": request.seed,
+            },
+        )
+        pcm = (
+            self.cache.get(key)
+            if request.cache_policy is SynthesisCachePolicy.USE
+            else None
+        )
+        cache_source = "persistent-cache" if pcm is not None else "fresh-generation"
+        if pcm is None:
+            self.fresh_renders += 1
+            pcm = audio_samples()
+            if request.cache_policy is not SynthesisCachePolicy.BYPASS:
+                self.cache.put(key, pcm)
+
+        def produce():
+            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=16_000,
+                completion=SynthesisCompletion.COMPLETE,
+                limits=SynthesisLimits(256, 180.0),
+                timing=SynthesisTiming(0.0, 0.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source=cache_source,
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=len(pcm),
+                ),
+            )
+
+        return SynthesisChunkStream(produce())
+
+    def stop(self):
+        self.stop_calls += 1
+
+
 class AuthoringBulkGenerationTest(unittest.TestCase):
     def run_generation(self, queue, output, renderer, **options):
         return run_bulk_generation(
@@ -190,6 +248,38 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
 
+    def test_explicit_synthesis_cache_policy_reaches_backend(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer()
+
+            self.run_generation(
+                queue,
+                root / "output",
+                renderer,
+                synthesis_cache_policy=SynthesisCachePolicy.USE,
+            )
+
+        self.assertEqual(renderer.requests[0].cache_policy, SynthesisCachePolicy.USE)
+
+    def test_unknown_synthesis_cache_policy_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+
+            with self.assertRaisesRegex(
+                BulkGenerationError,
+                "Unknown synthesis cache policy",
+            ):
+                self.run_generation(
+                    queue,
+                    root / "output",
+                    SyntheticRenderer(),
+                    synthesis_cache_policy="invented",
+                )
+
     def test_self_service_pocket_failure_becomes_evidenced_live_fallback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -220,9 +310,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             stored = state["items"][item["queue_id"]]
 
         self.assertEqual(decision["schema_version"], 8)
-        self.assertEqual(
-            decision["evidence"]["recovery_action"], "bounded_seed_retry"
-        )
+        self.assertEqual(decision["evidence"]["recovery_action"], "bounded_seed_retry")
         self.assertEqual(stored["status"], "live_fallback")
         self.assertEqual(stored["review_status"], "live_fallback")
         self.assertEqual(
@@ -2888,6 +2976,74 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             status = json.loads(status_output.getvalue())
             self.assertEqual(status["approved"], 1)
             self.assertEqual(status["schema"], STATE_SCHEMA)
+
+    def test_cli_persistent_cache_reuses_audio_across_independent_outputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            cache = root / "shared-cache"
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text("{}\n", encoding="utf-8")
+            reference = root / "hero.wav"
+            reference.write_bytes(b"synthetic reference")
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Hero", "hero", references=(reference,))]
+            )
+            renderers = []
+
+            def create_renderer(_name, _registry, cache_root, **_options):
+                renderer = CacheAwareSyntheticRenderer(cache_root)
+                renderers.append(renderer)
+                return renderer
+
+            with (
+                patch(
+                    "vntts.authoring.cli_generation._load_stable_voice_registry",
+                    return_value=(registry, sha256_file(voice_manifest), {}, ()),
+                ),
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    side_effect=create_renderer,
+                ),
+            ):
+                for output_name in ("first-output", "second-output"):
+                    with redirect_stdout(StringIO()):
+                        self.assertEqual(
+                            authoring_main(
+                                [
+                                    "generate",
+                                    "--queue",
+                                    str(queue),
+                                    "--output",
+                                    str(root / output_name),
+                                    "--cache-directory",
+                                    str(cache),
+                                    "--voice-manifest",
+                                    str(voice_manifest),
+                                    "--backend",
+                                    "pocket-tts",
+                                    "--narrator-character",
+                                    "Hero",
+                                    "--retries",
+                                    "0",
+                                ]
+                            ),
+                            0,
+                        )
+
+            first_state = load_generation_state(
+                root / "first-output" / "generation-state.json",
+                queue,
+            )
+            second_state = load_generation_state(
+                root / "second-output" / "generation-state.json",
+                queue,
+            )
+
+        self.assertEqual([renderer.fresh_renders for renderer in renderers], [1, 0])
+        self.assertEqual(len(first_state["items"]), 1)
+        self.assertEqual(len(second_state["items"]), 1)
+        self.assertIsNot(first_state, second_state)
 
     def test_cli_missing_manifest_is_actionable_without_traceback(self):
         errors = StringIO()

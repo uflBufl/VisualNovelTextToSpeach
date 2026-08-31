@@ -378,6 +378,7 @@ class ChatterboxNanoVoiceRouterBackend:
         runtime_directory=None,
         conditioning_cache_directory=None,
         persistent_audio_cache_directory=None,
+        persistent_audio_cache_max_entries=None,
     ):
         if model_factory is None:
             runtime_site_packages = activate_chatterbox_runtime(runtime_directory)
@@ -443,7 +444,11 @@ class ChatterboxNanoVoiceRouterBackend:
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
-            max_entries=max(64, self.audio_cache.max_entries * 8),
+            max_entries=(
+                max(64, self.audio_cache.max_entries * 8)
+                if persistent_audio_cache_max_entries is None
+                else persistent_audio_cache_max_entries
+            ),
         )
         self.persistent_cache_keys = SpeechCacheKeyFactory(
             self.persistent_audio_cache,
@@ -954,6 +959,7 @@ class PocketTTSVoiceRouterBackend:
         runtime_directory=None,
         voice_state_cache_directory=None,
         persistent_audio_cache_directory=None,
+        persistent_audio_cache_max_entries=None,
         cached_stream_chunk_seconds=0.2,
         stream_prefill_seconds=0.25,
     ):
@@ -1003,7 +1009,11 @@ class PocketTTSVoiceRouterBackend:
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
-            max_entries=max(64, self.audio_cache.max_entries * 8),
+            max_entries=(
+                max(64, self.audio_cache.max_entries * 8)
+                if persistent_audio_cache_max_entries is None
+                else persistent_audio_cache_max_entries
+            ),
         )
         self.persistent_cache_keys = SpeechCacheKeyFactory(
             self.persistent_audio_cache,
@@ -1606,6 +1616,7 @@ class MossTTSVoiceRouterBackend:
         runtime_directory=None,
         prompt_cache_directory=None,
         persistent_audio_cache_directory=None,
+        persistent_audio_cache_max_entries=None,
         prompt_code_loader=None,
         prompt_code_saver=None,
         array_evaluator=None,
@@ -1688,7 +1699,11 @@ class MossTTSVoiceRouterBackend:
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
-            max_entries=max(64, self.audio_cache.max_entries * 8),
+            max_entries=(
+                max(64, self.audio_cache.max_entries * 8)
+                if persistent_audio_cache_max_entries is None
+                else persistent_audio_cache_max_entries
+            ),
         )
         self.persistent_cache_keys = SpeechCacheKeyFactory(
             self.persistent_audio_cache,

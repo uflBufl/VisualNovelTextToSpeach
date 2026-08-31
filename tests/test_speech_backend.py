@@ -770,9 +770,7 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertIsNotNone(backend.last_first_audio_ms)
 
     def test_reference_free_allowlisted_character_uses_embedded_pocket_voice(self):
-        registry = CharacterVoiceRegistry(
-            [CharacterVoice("Hotelier", "anna")]
-        )
+        registry = CharacterVoiceRegistry([CharacterVoice("Hotelier", "anna")])
         backend, model, _audio_output = self.create_backend(registry)
 
         result = backend.render(
@@ -953,6 +951,33 @@ class PocketTTSBackendTest(unittest.TestCase):
 
         self.assertEqual(len(first_model.stream_calls), 1)
         self.assertEqual(second_model.prompt_calls, [])
+        self.assertEqual(second_model.stream_calls, [])
+
+    def test_complete_audio_cache_survives_reference_copy_path_change(self):
+        root = Path(self.temporary_directory.name)
+        first_reference = root / "first-job" / "voice.wav"
+        second_reference = root / "second-job" / "voice.wav"
+        first_reference.parent.mkdir()
+        second_reference.parent.mkdir()
+        first_reference.write_bytes(b"identical reference audio")
+        second_reference.write_bytes(first_reference.read_bytes())
+        first_registry = CharacterVoiceRegistry(
+            [CharacterVoice("Hero", "hero", first_reference)]
+        )
+        second_registry = CharacterVoiceRegistry(
+            [CharacterVoice("Hero", "hero", second_reference)]
+        )
+        first_backend, first_model, _output = self.create_backend(first_registry)
+        self.assertTrue(first_backend.speak("Hero", "Shared generated line."))
+        second_model = FakePocketModel()
+        second_backend, _model, _output = self.create_backend(
+            second_registry,
+            model=second_model,
+        )
+
+        self.assertTrue(second_backend.speak("Hero", "Shared generated line."))
+
+        self.assertEqual(len(first_model.stream_calls), 1)
         self.assertEqual(second_model.stream_calls, [])
 
     def test_voice_state_is_exported_and_reloaded_after_restart(self):

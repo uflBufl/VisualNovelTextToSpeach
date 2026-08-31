@@ -8,6 +8,7 @@ from vntts.speech_backend_runtime import (
     validate_speed,
     validate_volume,
     voice_artifact_cache_path,
+    voice_source_identity,
 )
 
 
@@ -55,6 +56,24 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
 
         self.assertNotEqual(first, second)
         self.assertTrue(first.name.startswith("alice-voice-"))
+
+    def test_copied_reference_keeps_content_addressed_voice_identity(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = root / "first" / "voice.wav"
+            second = root / "second" / "voice.wav"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.write_bytes(b"same reference bytes")
+            second.write_bytes(first.read_bytes())
+
+            first_identity = voice_source_identity("voice", first)
+            second_identity = voice_source_identity("voice", second)
+            second.write_bytes(b"changed reference!!")
+            changed_identity = voice_source_identity("voice", second)
+
+        self.assertEqual(first_identity, second_identity)
+        self.assertNotEqual(first_identity, changed_identity)
 
 
 if __name__ == "__main__":

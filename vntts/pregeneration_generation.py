@@ -100,9 +100,7 @@ class OfflineGenerationWorker:
             raise OfflineGenerationError("Offline generation input is invalid")
         if not isinstance(voice_plan, VoicePlan):
             raise OfflineGenerationError("Offline voice plan is invalid")
-        if not generation_input.directory.name.endswith(
-            generation_input.identity[:16]
-        ):
+        if not generation_input.directory.name.endswith(generation_input.identity[:16]):
             raise OfflineGenerationError("Offline generation input identity changed")
         if retries is None:
             retries = 0 if voice_plan.synthesis_backend == "pocket-tts" else 2
@@ -118,6 +116,8 @@ class OfflineGenerationWorker:
             str(generation_input.queue),
             "--output",
             str(output),
+            "--cache-directory",
+            str(_synthesis_cache_directory(generation_input)),
             "--voice-manifest",
             str(generation_input.voice_manifest),
             "--backend",
@@ -182,6 +182,16 @@ def _generation_output(generation_input):
     return generation_input.directory.parent / (
         f"generation-output-{generation_input.identity[:16]}"
     )
+
+
+def _synthesis_cache_directory(generation_input):
+    job_directory = generation_input.directory.parent
+    name = job_directory.name
+    is_job_identity = len(name) == 24 and all(
+        character in "0123456789abcdef" for character in name
+    )
+    root = job_directory.parent if is_job_identity else job_directory
+    return root / "synthesis-cache"
 
 
 def _load_result(output, generation_input):

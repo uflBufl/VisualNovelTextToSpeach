@@ -312,7 +312,9 @@ def generation_review_authority(state_path, queue_id):
 def generation_review_authorities(state_path, queue_ids):
     """Snapshot several generated WAV authorities from one immutable state read."""
     state_path = Path(state_path).expanduser().resolve()
-    queue_ids = tuple(sorted({_required_text(value, "Queue ID") for value in queue_ids}))
+    queue_ids = tuple(
+        sorted({_required_text(value, "Queue ID") for value in queue_ids})
+    )
     if not queue_ids:
         return {}
     state = load_generation_state(state_path)
@@ -1420,6 +1422,7 @@ def run_bulk_generation(
     failure_repair_policy=None,
     silence_failure_evidence=None,
     audio_event_spoken_projection_queue_ids=None,
+    synthesis_cache_policy=SynthesisCachePolicy.BYPASS,
 ):
     """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
@@ -1428,6 +1431,12 @@ def run_bulk_generation(
     provider = _required_text(provider, "Provider")
     model = _required_text(model, "Model")
     generation_profile = _required_text(generation_profile, "Generation profile")
+    try:
+        synthesis_cache_policy = SynthesisCachePolicy(synthesis_cache_policy)
+    except ValueError as error:
+        raise BulkGenerationError(
+            f"Unknown synthesis cache policy {synthesis_cache_policy!r}"
+        ) from error
     policy, character_overrides = _generation_voice_overrides(
         missing_voice_policy,
         synthesis_character_overrides,
@@ -1889,7 +1898,7 @@ def run_bulk_generation(
                     seed=request_seed,
                     generation_profile=generation_profile,
                     cancellation=cancellation,
-                    cache_policy=SynthesisCachePolicy.BYPASS,
+                    cache_policy=synthesis_cache_policy,
                 )
                 try:
                     if repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
@@ -2581,10 +2590,14 @@ def authorize_live_fallback(
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = state["items"].get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
-        if reason in {
-            LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
-            LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
-        } and state.get("active") is not None:
+        if (
+            reason
+            in {
+                LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+                LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+            }
+            and state.get("active") is not None
+        ):
             raise BulkGenerationError(
                 "Recovery fallback requires an inactive generation state"
             )
@@ -2771,8 +2784,7 @@ def _validate_live_fallback_source(existing, queue_item, reason):
             or existing["failure"].get("kind") in {"cancelled", "interrupted"}
         ):
             raise BulkGenerationError(
-                "Automatic-recovery fallback requires an exact terminal Pocket "
-                "failure"
+                "Automatic-recovery fallback requires an exact terminal Pocket failure"
             )
         return
     if reason == "reference_unavailable_after_audit":

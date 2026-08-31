@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -102,6 +103,14 @@ def configure_parsers(subparsers) -> None:
         choices=("pocket-tts", "chatterbox-nano", "moss-tts"),
     )
     generate.add_argument("--model")
+    generate.add_argument(
+        "--cache-directory",
+        type=Path,
+        help=(
+            "Persistent content-addressed synthesis cache; omitted for an "
+            "isolated temporary authoring cache"
+        ),
+    )
     generate.add_argument(
         "--narrator-character",
         default="Narrator",
@@ -454,13 +463,23 @@ def _generate(arguments: argparse.Namespace) -> int:
             )
         )
 
-    with TemporaryDirectory() as cache_directory:
+    cache_context = (
+        nullcontext(arguments.cache_directory.expanduser().resolve())
+        if arguments.cache_directory is not None
+        else TemporaryDirectory()
+    )
+    with cache_context as cache_directory:
+        Path(cache_directory).mkdir(parents=True, exist_ok=True)
         backend = create_backend(
             arguments.backend,
             registry,
             cache_directory,
             model_name=arguments.model,
             narrator_reference=narrator_reference,
+            persistent_audio_cache_max_entries=max(
+                512,
+                len(policy_queue.items) * 2,
+            ),
         )
         try:
             profile = arguments.generation_profile or getattr(
@@ -511,6 +530,14 @@ def _generate(arguments: argparse.Namespace) -> int:
                 failure_repair_policy=repair_policy.to_document(),
                 silence_failure_evidence=arguments.capture_silence_failure,
                 audio_event_spoken_projection_queue_ids=projection_ids,
+                synthesis_cache_policy=(
+                    "refresh"
+                    if arguments.cache_directory is not None
+                    and arguments.regenerate_existing
+                    else "use"
+                    if arguments.cache_directory is not None
+                    else "bypass"
+                ),
             )
         finally:
             stop = getattr(backend, "stop", None)

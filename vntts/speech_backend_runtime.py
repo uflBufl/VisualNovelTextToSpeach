@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from functools import lru_cache
 from hashlib import blake2b
 from pathlib import Path
+
+from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -51,9 +54,22 @@ def validate_speed(speed):
     return float(speed)
 
 
+@lru_cache(maxsize=1024)
+def _file_content_identity(path, size, _modified_ns):
+    return f"sha256:{sha256_file(path)}:{size}"
+
+
 def _source_identity(source):
     source_path = Path(str(source)).expanduser()
     try:
+        if source_path.is_file():
+            resolved = source_path.resolve()
+            stat = resolved.stat()
+            return _file_content_identity(
+                str(resolved),
+                stat.st_size,
+                stat.st_mtime_ns,
+            )
         stat = source_path.stat()
         return f"{source_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
     except OSError:
