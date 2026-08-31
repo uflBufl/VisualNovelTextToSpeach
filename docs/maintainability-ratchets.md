@@ -34,3 +34,11 @@ repository. Baseline updates require review: add an exception only for an
 intentional compatibility constraint, never merely to turn CI green. When debt
 is reduced or removed, its baseline ceiling must be lowered or deleted in the
 same change; the checker enforces this freshness rule.
+
+The 2026-08-31 self-service pregeneration and sequence-first integration kept
+the established application, controller, generation-state and backend facades
+compatible while moving the new pipeline implementations into focused modules.
+Its reviewed integration growth is recorded as exact per-symbol ceilings in the
+baseline; the global thresholds and private-import inventory were not relaxed.
+These ceilings describe remaining debt, not preferred sizes, and any further
+growth still fails CI.
