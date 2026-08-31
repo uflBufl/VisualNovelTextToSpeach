@@ -127,6 +127,19 @@ thread while the selection dialog remains visibly busy. Cancelling requests a
 cooperative stop and keeps the dialog open until that exact worker reaches a
 terminal result; a cancelled or failed plan never closes as if it succeeded.
 
+Generation consumes an identity-addressed private input directory rather than
+the mutable source files directly. VNTTS copies only the selected story records,
+reopens every planned reference through the manifest ownership guard, verifies
+its planned hash and decodes it to a PCM16 mono WAV. It writes an effective
+manifest whose character names reflect the resolved plan: an assigned character
+voice is bound under that requested character, while all explicit fallback roles
+share one `Narrator` entry. The shared queue builder then creates the exact
+selected-story queue with unresolved source-audio status kept as `resolve_audio`,
+not guessed. `input.json` binds every resulting artifact hash. Repeating the same
+job and controls reuses that immutable directory without rewriting it; changed
+references, conflicting variants, cancellation and a missing narrator reference
+fail before publication.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic
