@@ -380,6 +380,8 @@ class MainTest(unittest.TestCase):
 
     def test_live_chunk_routes_text_by_detected_character(self):
         voice_router = Mock()
+        prepared = PreparedPlayback(object(), None, None, None, "test")
+        voice_router.prepare_playback.return_value = prepared
         voice_router.play_prepared.return_value = PlaybackOutcome(
             PlaybackStatus.COMPLETED,
             1.0,
@@ -395,12 +397,15 @@ class MainTest(unittest.TestCase):
             "Regulus", "Rock and roll!"
         )
         voice_router.play_prepared.assert_called_once_with(
-            voice_router.prepare_playback.return_value
+            prepared,
+            playback_guard=None,
         )
         voice_router.speak.assert_not_called()
 
     def test_live_chunk_passes_stale_playback_guard(self):
         voice_router = Mock()
+        prepared = PreparedPlayback(object(), None, None, None, "test")
+        voice_router.prepare_playback.return_value = prepared
         playback_guard = Mock(return_value=True)
         voice_router.play_prepared.return_value = PlaybackOutcome(
             PlaybackStatus.COMPLETED,
@@ -1359,6 +1364,12 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()
         controller.voice_router = Mock()
+        prepared = PreparedPlayback(object(), None, None, None, "test")
+        controller.voice_router.prepare_playback.return_value = prepared
+        controller.voice_router.play_prepared.return_value = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            1.0,
+        )
         controller.capture_target = Mock()
         image = object()
 
@@ -1384,7 +1395,8 @@ class MainTest(unittest.TestCase):
             "This is a complete test.",
         )
         controller.voice_router.play_prepared.assert_called_once_with(
-            controller.voice_router.prepare_playback.return_value
+            prepared,
+            playback_guard=None,
         )
         controller.voice_router.speak.assert_not_called()
 
@@ -1392,6 +1404,8 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.voice_router = Mock()
         controller.speech_backend = Mock()
+        prepared = PreparedPlayback(object(), None, None, None, "test")
+        controller.speech_backend.prepare_playback.return_value = prepared
         controller.speech_backend.play_prepared.return_value = PlaybackOutcome(
             PlaybackStatus.COMPLETED,
             1.0,
@@ -1404,7 +1418,8 @@ class MainTest(unittest.TestCase):
             "Preview this.",
         )
         controller.speech_backend.play_prepared.assert_called_once_with(
-            controller.speech_backend.prepare_playback.return_value
+            prepared,
+            playback_guard=None,
         )
         controller.speech_backend.speak.assert_not_called()
         controller.voice_router.prepare_playback.assert_not_called()

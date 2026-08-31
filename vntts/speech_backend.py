@@ -14,6 +14,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_cache import PersistentAudioCache
 from vntts.playback import (
+    PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
     outcome_for_prepared,
@@ -61,7 +62,12 @@ class SpeechBackend(Protocol):
 
     def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
 
-    def play_prepared(self, prepared: PreparedPlayback, *, playback_guard=None): ...
+    def play_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        playback_guard=None,
+    ) -> PlaybackOutcome: ...
 
     def stop(self) -> bool: ...
 

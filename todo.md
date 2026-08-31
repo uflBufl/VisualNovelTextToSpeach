@@ -95,17 +95,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Resolve project-wide code-review findings
 
-- [ ] Make typed live playback fail closed and preserve error taxonomy:
-  - define a narrow annotated backend protocol whose `play_prepared()` returns
-    `PlaybackOutcome`, annotate `play_typed_text()` and include both boundary
-    modules in the scoped mypy gate;
-  - reject `None`, strings, legacy booleans and arbitrary objects instead of
-    treating `bool(outcome)` as playback success;
-  - preserve approved `TTSConfigurationError`, `TTSSynthesisError` and
-    `AudioPlaybackError` categories from `PlaybackOutcome.error_type`, so UI
-    diagnostics do not report model/configuration failures as device failures;
-  - cover completed, interrupted, invalid-result, synthesis, configuration and
-    device-failure outcomes through focused helper and onboarding/preview tests.
 - [ ] Replace the proxy-only `AppController` decomposition with real ownership
       boundaries. Move lifecycle, live-session, voice-assignment and diagnostic
       implementation/state into their components behind narrow injected ports;

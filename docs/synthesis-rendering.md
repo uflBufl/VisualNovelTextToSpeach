@@ -185,6 +185,11 @@ one call even when the next line is prepared concurrently. XTTS and Chatterbox
 use per-call stop tokens around their owned output-device call. Pocket and MOSS
 bind stop to their owned stream; a MOSS consumer that does not exit after a
 bounded abort remains explicitly owned and blocks another playback attempt.
+Runtime speech entry points accept only these two typed values; legacy booleans,
+strings, `None` and arbitrary truthy objects fail closed. A failed outcome keeps
+an approved configuration, synthesis or playback exception category, allowing
+the UI to identify the failing stage instead of relabeling every failure as an
+audio-device problem.
 
 The single-backend benchmark uses only typed `render()` results. Its cold stage
 uses `REFRESH`, then verifies an exact `USE` memory hit, clears memory, and
