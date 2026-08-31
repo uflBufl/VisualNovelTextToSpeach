@@ -26,6 +26,24 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertIn('"runtime-manifest.json"', spec)
                 self.assertIn('"speech-runtimes"', spec)
 
+    def test_bundle_verifiers_clear_developer_runtime_overrides(self):
+        for relative_path in (
+            "scripts/verify-macos-bundle.sh",
+            "scripts/verify-windows-bundle.ps1",
+        ):
+            with self.subTest(path=relative_path):
+                script = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+                for name in (
+                    "PYTHONHOME",
+                    "PYTHONPATH",
+                    "VIRTUAL_ENV",
+                    "VNTTS_POCKET_TTS_RUNTIME",
+                    "VNTTS_CHATTERBOX_RUNTIME",
+                    "VNTTS_MOSS_RUNTIME",
+                    "VNTTS_MOSS_DELAY_RUNTIME",
+                ):
+                    self.assertIn(name, script)
+
 
 if __name__ == "__main__":
     unittest.main()

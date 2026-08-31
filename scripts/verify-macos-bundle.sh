@@ -48,7 +48,17 @@ if [[ ! -x $executable ]]; then
     echo "Application executable is missing: $executable" >&2
     exit 1
 fi
-"$executable" \
+env \
+    -u PYTHONHOME \
+    -u PYTHONPATH \
+    -u VIRTUAL_ENV \
+    -u UV_PROJECT_ENVIRONMENT \
+    -u VNTTS_POCKET_TTS_RUNTIME \
+    -u VNTTS_CHATTERBOX_RUNTIME \
+    -u VNTTS_MOSS_RUNTIME \
+    -u VNTTS_MOSS_DELAY_RUNTIME \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    "$executable" \
     --package-self-test \
     --package-self-test-report "$report_path"
 codesign --verify --all-architectures --deep --strict "$app_path"

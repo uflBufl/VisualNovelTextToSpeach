@@ -8,7 +8,10 @@ from unittest.mock import Mock, patch
 
 import pytesseract
 
-from vntts.package_self_test import run_package_self_test
+from vntts.package_self_test import (
+    probe_bundled_pocket_runtime,
+    run_package_self_test,
+)
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
     find_bundled_espeak,
@@ -18,6 +21,10 @@ from vntts.runtime_paths import (
 
 
 class RuntimePathsTest(unittest.TestCase):
+    @staticmethod
+    def _speech_runtime_report():
+        return {"executable": "python", "modules": {}}
+
     def test_finds_allowlisted_speech_runtime_in_bundle(self):
         with TemporaryDirectory() as temporary_directory:
             bundle_root = Path(temporary_directory)
@@ -136,6 +143,9 @@ class RuntimePathsTest(unittest.TestCase):
                     report_path,
                     import_module=Mock(),
                     tesseract_probe=Mock(return_value="5.5.0"),
+                    speech_runtime_probe=Mock(
+                        return_value=self._speech_runtime_report()
+                    ),
                 )
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -193,10 +203,53 @@ class RuntimePathsTest(unittest.TestCase):
                     import_module=Mock(),
                     tesseract_probe=Mock(return_value="5.5.0"),
                     espeak_probe=espeak_probe,
+                    speech_runtime_probe=Mock(
+                        return_value=self._speech_runtime_report()
+                    ),
                 )
 
             self.assertTrue(successful)
             espeak_probe.assert_called_once_with(espeak.resolve())
+
+    def test_pocket_runtime_probe_rejects_module_outside_bundle(self):
+        with TemporaryDirectory() as temporary_directory:
+            bundle_root = Path(temporary_directory).resolve()
+            runtime = bundle_root / "speech-runtimes/pocket-tts"
+            interpreter = runtime / "bin/python"
+            site = runtime / "lib/python3.11/site-packages"
+            site.mkdir(parents=True)
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            report = {
+                "executable": str(interpreter),
+                "prefix": str(runtime),
+                "base_prefix": str(bundle_root / "speech-runtimes/_python"),
+                "modules": {
+                    name: str(site / name / "__init__.py")
+                    for name in (
+                        "durable_file",
+                        "numpy",
+                        "platformdirs",
+                        "pocket_tts",
+                        "safetensors",
+                        "scipy",
+                        "torch",
+                        "vntts",
+                        "vntts_artifacts",
+                    )
+                },
+            }
+            report["modules"]["torch"] = "/developer/.venv/torch/__init__.py"
+            runner = Mock(return_value=Mock(stdout=json.dumps(report)))
+
+            with (
+                patch(
+                    "vntts.package_self_test._runtime_paths",
+                    return_value=(runtime, interpreter, site),
+                ),
+                self.assertRaisesRegex(RuntimeError, "module:torch"),
+            ):
+                probe_bundled_pocket_runtime(bundle_root, runner)
 
     def test_package_self_test_writes_machine_readable_report(self):
         with TemporaryDirectory() as temporary_directory:

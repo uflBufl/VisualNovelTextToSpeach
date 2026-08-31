@@ -42,6 +42,10 @@ $EnvironmentNames = @(
     "UV_PROJECT_ENVIRONMENT",
     "TESSDATA_PREFIX",
     "ESPEAK_DATA_PATH"
+    "VNTTS_POCKET_TTS_RUNTIME"
+    "VNTTS_CHATTERBOX_RUNTIME"
+    "VNTTS_MOSS_RUNTIME"
+    "VNTTS_MOSS_DELAY_RUNTIME"
 )
 $OriginalEnvironment = @{}
 foreach ($Name in $EnvironmentNames) {
@@ -58,6 +62,10 @@ try {
     $env:UV_PROJECT_ENVIRONMENT = $null
     $env:TESSDATA_PREFIX = $null
     $env:ESPEAK_DATA_PATH = $null
+    $env:VNTTS_POCKET_TTS_RUNTIME = $null
+    $env:VNTTS_CHATTERBOX_RUNTIME = $null
+    $env:VNTTS_MOSS_RUNTIME = $null
+    $env:VNTTS_MOSS_DELAY_RUNTIME = $null
     Remove-Item $ReportPath -Force -ErrorAction SilentlyContinue
     $SelfTest = Start-Process -FilePath $Executable `
         -ArgumentList @(
@@ -117,6 +125,7 @@ $RequiredChecks = @(
     "Tesseract OCR",
     "Bundled Tesseract",
     "Bundled eSpeak-NG"
+    "Bundled Pocket TTS runtime"
 )
 foreach ($Name in $RequiredChecks) {
     $Check = @($Report.checks | Where-Object { $_.name -eq $Name })
