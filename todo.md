@@ -95,19 +95,26 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Resolve project-wide code-review findings
 
-- [ ] Replace the proxy-only `AppController` decomposition with real ownership
-      boundaries. Move lifecycle, live-session, voice-assignment and diagnostic
-      implementation/state into their components behind narrow injected ports;
-      keep `AppController` as a one-way compatibility facade and composition
-      root. Split and fully annotate the component protocols, add them to mypy,
-      remove component-to-facade re-entry and require focused plus complete
-      runtime regression tests before deleting the current private callbacks.
 - [ ] Make release packages able to run the backend they recommend by default.
-      Bundle a relocatable Pocket TTS runtime on macOS and Windows or select and
-      expose only a backend actually present in the frozen bundle. Resolve the
-      packaged path without source-tree assumptions, and make package self-test
-      initialize and render through the effective default backend on a clean
-      machine without uv, a checkout or backend environment variables.
+  - Follow [`docs/release-speech-runtime.md`](docs/release-speech-runtime.md).
+    Keep the safe download-on-first-run policy until a release owner explicitly
+    approves redistribution of the exact pinned gated weights and allowlisted
+    voice files; do not claim an offline bundled model before that gate passes.
+  - Build Pocket from its locked backend project into a fresh `uv venv
+    --relocatable` staging directory on macOS and Windows. Keep model cache under
+    that staging root, include the exact runtime in the bundle and resolve it
+    from the frozen bundle root without checkout or environment assumptions.
+  - Limit frozen Settings/onboarding choices to backends whose runtime contract
+    the package actually supplies; preserve explicit existing user settings but
+    surface a direct remediation instead of recommending an absent backend.
+  - Extend package self-test to initialize the effective clean-install default
+    and render non-empty PCM. Verification must clear development PATH/Python,
+    backend overrides and model caches, and assert interpreter, module and model
+    origins remain inside the extracted package.
+  - Complete real unsigned and signed macOS builds plus the Windows portable and
+    installer builds before removing this item. Acceptance requires startup and
+    render without uv, a checkout, backend environment variables or an existing
+    user model cache; retain checksum-bound self-test reports for both platforms.
 
 ## P2 - Deferred audio experiments
 
