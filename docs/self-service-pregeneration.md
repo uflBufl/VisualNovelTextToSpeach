@@ -149,6 +149,14 @@ path. With the default Pocket backend, a user who has no character voice pack ca
 therefore prepare a selected story entirely with embedded `alba` narrator speech.
 MOSS and every cloning route still require real checksum-bound reference audio.
 
+The selection dialog runs voice planning and private-input publication as two
+consecutive background phases before reporting success. Content and selection
+controls remain disabled during either phase, while one visible Cancel action
+cooperatively stops the active phase and closes only after its worker terminates.
+The dashboard completion message reports matched voice groups, narrator
+fallbacks and the exact number of runnable generation lines; it no longer claims
+that voice matching is an unspecified future manual step.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

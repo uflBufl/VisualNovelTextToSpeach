@@ -47,6 +47,10 @@ class PregenerationQueueError(RuntimeError):
     """Resolved voices cannot yet produce safe private generation inputs."""
 
 
+class PregenerationQueueCancelled(PregenerationQueueError):
+    """The player cancelled private input materialization."""
+
+
 @dataclass(frozen=True)
 class PregenerationInput:
     identity: str
@@ -402,7 +406,7 @@ def _nonnegative_int(value, label):
 
 def _raise_if_cancelled(cancellation):
     if cancellation is not None and cancellation.is_set():
-        raise PregenerationQueueError("Offline preparation was cancelled")
+        raise PregenerationQueueCancelled("Offline preparation was cancelled")
 
 
 def _digest(value):
@@ -416,5 +420,6 @@ def _digest(value):
 __all__ = [
     "PregenerationInput",
     "PregenerationInputStore",
+    "PregenerationQueueCancelled",
     "PregenerationQueueError",
 ]

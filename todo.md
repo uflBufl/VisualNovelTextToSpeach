@@ -11,11 +11,11 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Continue `Prepare offline audio` from its durable, checksum-bound story and
-      automatic voice plan into ambiguous-voice auditions, generation progress
-      and final activation. Preserve cancellation/restart resume throughout and
-      keep workspaces, manifests, queue IDs, model IDs, seeds, retries and
-      publication commands out of the player UI.
+- [ ] Continue `Prepare offline audio` from its identity-addressed generation
+      inputs into ambiguous-voice auditions, background generation progress and
+      final activation. Preserve cancellation/restart resume throughout and keep
+      workspaces, manifests, queue IDs, model IDs, seeds, retries and publication
+      commands out of the player UI.
 - [ ] Build the remaining minimal voice-confirmation UI. For each genuinely
       ambiguous voice group, synthesize at most one short audition and offer
       `Use this voice`, `Try another`, and `Use narrator`; do not expose raw

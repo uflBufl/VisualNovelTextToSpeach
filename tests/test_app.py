@@ -156,10 +156,13 @@ class TrayApplicationTest(unittest.TestCase):
         voice_plan = Mock()
         voice_plan.groups = (Mock(), Mock(), Mock())
         voice_plan.narrator_fallback_count = 1
+        generation_input = Mock()
+        generation_input.ready_items = 39
         dialog = Mock()
         dialog.exec.return_value = QDialog.DialogCode.Accepted
         dialog.job.return_value = job
         dialog.voice_plan.return_value = voice_plan
+        dialog.generation_input.return_value = generation_input
 
         with patch(
             "vntts.app.OfflineAudioPreparationDialog",
@@ -175,6 +178,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("42 lines", tray_application.dashboard.status.text())
         self.assertIn("Matched 3 voice groups", tray_application.dashboard.status.text())
         self.assertIn("1 will use narrator", tray_application.dashboard.status.text())
+        self.assertIn("39 lines are ready", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):

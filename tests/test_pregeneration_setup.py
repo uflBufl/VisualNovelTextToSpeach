@@ -15,6 +15,7 @@ from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
 )
+from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -220,9 +221,17 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
+            self.assertFalse(dialog.planning_voices)
+            self.assertTrue(dialog.preparing_inputs)
+            self.assertEqual(dialog.cancel_button.text(), "Cancel preparation")
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
             self.assertIsNotNone(dialog.job())
             self.assertIsNotNone(dialog.voice_plan())
+            self.assertIsNotNone(dialog.generation_input())
             self.assertFalse(dialog.planning_voices)
+            self.assertFalse(dialog.preparing_inputs)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
             self.assertTrue(
                 (store.path_for(dialog.job().job_id).parent / "voice-plan.json").is_file()
@@ -359,6 +368,44 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.planning_voices)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            dialog.deleteLater()
+
+    def test_generation_input_cancel_waits_for_its_worker(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            voice_plan = Mock()
+            voice_plan_store = Mock()
+            voice_plan_store.create.return_value = voice_plan
+            input_store = Mock()
+
+            def materialize(_job, selected_plan, *, cancellation):
+                self.assertIs(selected_plan, voice_plan)
+                self.assertTrue(cancellation.is_set())
+                raise PregenerationQueueCancelled("cancelled")
+
+            input_store.materialize.side_effect = materialize
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_plan_store=voice_plan_store,
+                input_store=input_store,
+                thread_pool=pool,
+            )
+
+            dialog.continue_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertTrue(dialog.preparing_inputs)
+
+            dialog.cancel_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.preparing_inputs)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.deleteLater()
 
