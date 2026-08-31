@@ -21,10 +21,8 @@ from vntts.controller_components import (
 )
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
-from vntts.dialog import is_empty, speak_dialog
+from vntts.dialog import is_empty
 from vntts.dialog_capture import (
-    OCRError,
-    OCRUncertainError,
     ScreenCaptureError,
     TTSInitializationError,
     analyze_dialog_snapshot,
@@ -1105,64 +1103,6 @@ class AppController:
 
     def _replay_dialog_impl(self, character, text):
         return self._preview_voice_impl(character, text)
-
-    def _inspect_current_dialog_impl(self, *, notify=True):
-        registry = self.voice_router.registry if self.voice_router is not None else None
-        snapshots = []
-        analyze_dialog_snapshot(
-            get_screenshot_directory(self.settings),
-            registry,
-            capture_target=self.capture_target,
-            minimum_confidence=self.settings.ocr_minimum_confidence,
-            diagnostic_handler=snapshots.append,
-            voice_resolver=self._resolve_voice_label,
-            ocr_language=self.settings.ocr_language,
-            correction_dictionary=self.correction_dictionary,
-        )
-        snapshot = self._publish_diagnostic(snapshots[-1], notify=notify)
-        return snapshot
-
-    def _test_current_dialog_impl(self):
-        if not self.is_ready:
-            raise RuntimeError("The speech engine is not ready")
-        image, _output, result = analyze_dialog_snapshot(
-            get_screenshot_directory(self.settings),
-            self.voice_router.registry,
-            capture_target=self.capture_target,
-            minimum_confidence=self.settings.ocr_minimum_confidence,
-            diagnostic_handler=self._publish_diagnostic,
-            voice_resolver=self._resolve_voice_label,
-            ocr_language=self.settings.ocr_language,
-            correction_dictionary=self.correction_dictionary,
-        )
-        if result.text and not result.is_confident(
-            self.settings.ocr_minimum_confidence
-        ):
-            error = OCRUncertainError(
-                result,
-                self.settings.ocr_minimum_confidence,
-            )
-            if self.uncertain_frame_recorder is not None:
-                self.uncertain_frame_recorder.record(
-                    image,
-                    error.result,
-                    self.settings.ocr_minimum_confidence,
-                )
-            raise error
-        character, text = result.character, result.text
-        if self.uncertain_frame_recorder is not None:
-            self.uncertain_frame_recorder.reset()
-        if is_empty(text):
-            raise OCRError("No dialogue text was detected in the calibrated region")
-        self.status_handler(f"Testing OCR and speech with {character}")
-        try:
-            speak_dialog(
-                text,
-                lambda value: self._speak_with_live_backend(character, value),
-            )
-        finally:
-            self._refresh_diagnostic_metrics()
-        return character, text
 
     def _apply_runtime_settings(self, settings, *, commit):
         if self.tts is not None or self.speech_backend is not None:

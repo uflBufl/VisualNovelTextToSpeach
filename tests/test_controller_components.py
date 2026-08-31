@@ -199,6 +199,10 @@ class ControllerComponentsTest(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
+    def test_diagnostics_implementation_is_not_retained_on_controller(self):
+        self.assertFalse(hasattr(AppController, "_inspect_current_dialog_impl"))
+        self.assertFalse(hasattr(AppController, "_test_current_dialog_impl"))
+
 
 if __name__ == "__main__":
     unittest.main()

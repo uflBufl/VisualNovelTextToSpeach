@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Callable, Protocol
 
-from vntts.dialog import is_empty
+from vntts.dialog import is_empty, speak_dialog
+from vntts.dialog_capture import (
+    OCRError,
+    OCRUncertainError,
+    analyze_dialog_snapshot,
+    get_screenshot_directory,
+)
 from vntts.live_speech import play_typed_text
 from vntts.voices import normalize_character_name
 
@@ -104,13 +110,27 @@ class _VoiceAssignmentPort(Protocol):
 
 class _DiagnosticsPort(Protocol):
     capture_target: Any
+    correction_dictionary: Any
     diagnostic_lock: Any
+    is_ready: bool
     last_diagnostic: Any
     live_reader: Any
+    settings: Any
+    status_handler: Callable[[str], Any]
+    uncertain_frame_recorder: Any
+    voice_router: Any
 
-    def _inspect_current_dialog_impl(self, *, notify: bool = True) -> Any: ...
+    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
 
-    def _test_current_dialog_impl(self) -> Any: ...
+    def _refresh_diagnostic_metrics(
+        self,
+        route_metrics: Any = None,
+        audio_source: Any = None,
+    ) -> Any: ...
+
+    def _resolve_voice_label(self, character: str) -> Any: ...
+
+    def _speak_with_live_backend(self, character: str, text: str) -> Any: ...
 
 
 class _RuntimeSettingsApplyGuard:
@@ -380,7 +400,64 @@ class DiagnosticsComponent:
         return None if reader is None else reader.get_pipeline_metrics()
 
     def inspect_current_dialog(self, *, notify: bool = True) -> Any:
-        return self.controller._inspect_current_dialog_impl(notify=notify)
+        controller = self.controller
+        registry = (
+            controller.voice_router.registry
+            if controller.voice_router is not None
+            else None
+        )
+        snapshots: list[Any] = []
+        analyze_dialog_snapshot(
+            get_screenshot_directory(controller.settings),
+            registry,
+            capture_target=controller.capture_target,
+            minimum_confidence=controller.settings.ocr_minimum_confidence,
+            diagnostic_handler=snapshots.append,
+            voice_resolver=controller._resolve_voice_label,
+            ocr_language=controller.settings.ocr_language,
+            correction_dictionary=controller.correction_dictionary,
+        )
+        return controller._publish_diagnostic(snapshots[-1], notify=notify)
 
     def test_current_dialog(self) -> Any:
-        return self.controller._test_current_dialog_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            raise RuntimeError("The speech engine is not ready")
+        image, _output, result = analyze_dialog_snapshot(
+            get_screenshot_directory(controller.settings),
+            controller.voice_router.registry,
+            capture_target=controller.capture_target,
+            minimum_confidence=controller.settings.ocr_minimum_confidence,
+            diagnostic_handler=controller._publish_diagnostic,
+            voice_resolver=controller._resolve_voice_label,
+            ocr_language=controller.settings.ocr_language,
+            correction_dictionary=controller.correction_dictionary,
+        )
+        if result.text and not result.is_confident(
+            controller.settings.ocr_minimum_confidence
+        ):
+            error = OCRUncertainError(
+                result,
+                controller.settings.ocr_minimum_confidence,
+            )
+            if controller.uncertain_frame_recorder is not None:
+                controller.uncertain_frame_recorder.record(
+                    image,
+                    error.result,
+                    controller.settings.ocr_minimum_confidence,
+                )
+            raise error
+        character, text = result.character, result.text
+        if controller.uncertain_frame_recorder is not None:
+            controller.uncertain_frame_recorder.reset()
+        if is_empty(text):
+            raise OCRError("No dialogue text was detected in the calibrated region")
+        controller.status_handler(f"Testing OCR and speech with {character}")
+        try:
+            speak_dialog(
+                text,
+                lambda value: controller._speak_with_live_backend(character, value),
+            )
+        finally:
+            controller._refresh_diagnostic_metrics()
+        return character, text
