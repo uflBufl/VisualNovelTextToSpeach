@@ -189,6 +189,15 @@ non-Pocket controls or an attempt to bypass a still-supported safe repair. The
 wizard can therefore finish without line-by-line review while diagnostics and a
 future game pack still distinguish prepared audio from runtime synthesis.
 
+Every generated WAV has already passed the bulk generator's file-integrity and
+speech-quality gates. The default wizard snapshots all still-pending WAVs from
+one immutable state revision, revalidates their checksums, and accepts them in
+one atomic cohort transaction tagged as an automatic, non-human technical-gate
+decision. Authority collection reads the generation state once even for a large
+chapter, and the work remains off the Qt thread. This removes mandatory per-line
+approval without weakening the fail-closed manifest publication boundary;
+expert cohort review remains available outside the player workflow.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

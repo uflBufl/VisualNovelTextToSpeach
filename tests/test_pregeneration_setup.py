@@ -198,11 +198,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation_result = Mock(generated=2, failed=0)
             generator = Mock()
             generator.generate.return_value = generation_result
+            acceptance_result = Mock(generation=generation_result, approved=2)
+            acceptance = Mock()
+            acceptance.accept.return_value = acceptance_result
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=store,
                 generator=generator,
+                acceptance=acceptance,
                 thread_pool=pool,
             )
             dialog.show()
@@ -238,6 +242,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
+            self.assertTrue(dialog.accepting_audio)
+            self.assertEqual(dialog.cancel_button.text(), "Cancel final checks")
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
             self.assertIsNotNone(dialog.job())
             self.assertIsNotNone(dialog.voice_plan())
             self.assertIsNotNone(dialog.generation_input())
@@ -245,6 +254,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.planning_voices)
             self.assertFalse(dialog.preparing_inputs)
             self.assertFalse(dialog.generating)
+            self.assertFalse(dialog.accepting_audio)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
             self.assertTrue(
                 (store.path_for(dialog.job().job_id).parent / "voice-plan.json").is_file()
@@ -280,12 +290,16 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator.generate.return_value = first
             recovery = Mock()
             recovery.recover.return_value = recovery_result
+            acceptance_result = Mock(generation=final, approved=2)
+            acceptance = Mock()
+            acceptance.accept.return_value = acceptance_result
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
                 generator=generator,
                 recovery=recovery,
+                acceptance=acceptance,
                 thread_pool=pool,
             )
 
@@ -306,6 +320,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.recovering)
+            self.assertTrue(dialog.accepting_audio)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.accepting_audio)
             self.assertIs(dialog.generation_result(), final)
             self.assertIs(dialog.recovery_result(), recovery_result)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)

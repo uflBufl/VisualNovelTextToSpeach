@@ -32,12 +32,11 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       line must receive an explicit live fallback and must not stop the pack.
   - [ ] Wire recovery into the setup wizard and report player-level progress;
         technical action names and queue IDs remain available only in logs.
-- [ ] Replace per-line approval with automatic cohort acceptance. Run technical
-      checks on every WAV and synthesize a small fixed preview corpus per voice;
-      show optional exception samples only when confidence is insufficient.
-      Normal completion must require no generated-line review after the initial
-      voice auditions. Preserve the expert review tools for diagnostics, not the
-      default path.
+- [ ] Add one fixed preview corpus per resolved voice and retain only
+      low-confidence voice or quality exceptions as optional auditions. Normal
+      completion already accepts technically valid generated WAVs atomically and
+      must continue to require no per-line review. Preserve the expert review
+      tools for diagnostics, not the default path.
 - [ ] Publish and activate a local incremental game pack automatically. Keep
       exact source audio, approved generated audio, live fallback and intentional
       omission as distinct terminal routes; reuse unchanged work across chapters;

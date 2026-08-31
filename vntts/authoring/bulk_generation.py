@@ -309,6 +309,40 @@ def generation_review_authority(state_path, queue_id):
     )
 
 
+def generation_review_authorities(state_path, queue_ids):
+    """Snapshot several generated WAV authorities from one immutable state read."""
+    state_path = Path(state_path).expanduser().resolve()
+    queue_ids = tuple(sorted({_required_text(value, "Queue ID") for value in queue_ids}))
+    if not queue_ids:
+        return {}
+    state = load_generation_state(state_path)
+    state_sha256 = sha256_file(state_path)
+    authorities = {}
+    for queue_id in queue_ids:
+        item = state.get("items", {}).get(queue_id)
+        if not isinstance(item, dict) or item.get("status") not in {
+            "generated",
+            "approved",
+        }:
+            raise BulkGenerationError(
+                f"Generated queue item does not exist: {queue_id}"
+            )
+        relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+        audio = _within(state_path.parent, relative, "Generated WAV")
+        _validate_success_file(queue_id, item, audio)
+        authorities[queue_id] = ReviewAuthority(
+            queue_sha256=state["queue_sha256"],
+            state_sha256=state_sha256,
+            item_sha256=_canonical_sha256(item),
+            audio_sha256=sha256_file(audio),
+        )
+    if sha256_file(state_path) != state_sha256:
+        raise BulkGenerationSourceChangedError(
+            "Generation state changed while review authorities were captured"
+        )
+    return authorities
+
+
 def _assert_review_authority(
     state_path,
     queue_id,

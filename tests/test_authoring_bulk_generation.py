@@ -28,6 +28,7 @@ from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
+    generation_review_authorities,
     generation_review_authority,
     load_generation_state,
     publish_generated_manifest,
@@ -227,6 +228,28 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(
             stored["live_fallback"]["previous_result_sha256"],
             stored["live_fallback"]["evidence"]["base_result_sha256"],
+        )
+
+    def test_batch_review_authorities_share_one_state_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            items = [queue_item("one"), queue_item("two")]
+            queue = write_queue(root / "queue.jsonl", items)
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(),
+            )
+
+            authorities = generation_review_authorities(
+                result.state,
+                (items[1]["queue_id"], items[0]["queue_id"]),
+            )
+
+        self.assertEqual(set(authorities), {item["queue_id"] for item in items})
+        self.assertEqual(
+            len({authority.state_sha256 for authority in authorities.values()}),
+            1,
         )
 
     def test_explicit_regeneration_replaces_only_pending_review_audio(self):
