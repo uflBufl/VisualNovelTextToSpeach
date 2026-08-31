@@ -3,18 +3,67 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
-## P1 - Expand pregenerated coverage safely
+## P0 - Make pregeneration self-service
+
+Follow
+[`docs/self-service-pregeneration.md`](docs/self-service-pregeneration.md).
+Pregeneration is an ordinary-user workflow: a player selects installed story
+content, confirms only a small number of ambiguous character voices, and lets
+VNTTS build and activate a local game pack without exposing authoring concepts.
+
+- [ ] Add `Prepare offline audio` to the main application and implement a guided,
+      resumable wizard. It must discover supported game content, let the user
+      select stories/chapters, estimate line count/time/disk, and resume the same
+      job after cancellation or restart. Do not expose workspaces, manifests,
+      queue IDs, model IDs, seeds, retries or publication commands.
+- [ ] Introduce a stable game-content importer boundary. For Reverse: 1999 it
+      must invoke or embed the supported extractor through a versioned artifact
+      contract, auto-discover the installed game when possible, and otherwise
+      ask for one game/install folder rather than individual JSON/WEM files.
+      Extraction and parsing failures need plain-language remediation.
+- [ ] Build the minimal voice-confirmation stage. Reuse source audio, known
+      character aliases and prior checksum-bound decisions automatically; group
+      remaining references by speaker/portrait/age evidence; and ask for at most
+      one short synthesized audition per genuinely ambiguous voice group. Offer
+      `Use this voice`, `Try another`, and `Use narrator` without requiring raw
+      source-audio or per-line review. Persist decisions for later stories while
+      their reference/model controls remain unchanged.
+- [ ] Add an automatic generation and quality pipeline. Select a supported local
+      backend/profile from hardware capabilities, generate in the background,
+      classify truncation, repetition, artifacts, clipping, abnormal silence and
+      pacing, apply only bounded typed repairs, then use the configured offline
+      fallback. A residual bad/failed line must receive an explicit live fallback
+      and must not stop the overall pack.
+- [ ] Replace per-line approval with automatic cohort acceptance. Run technical
+      checks on every WAV and synthesize a small fixed preview corpus per voice;
+      show optional exception samples only when confidence is insufficient.
+      Normal completion must require no generated-line review after the initial
+      voice auditions. Preserve the expert review tools for diagnostics, not the
+      default path.
+- [ ] Publish and activate a local incremental game pack automatically. Keep
+      exact source audio, approved generated audio, live fallback and intentional
+      omission as distinct terminal routes; reuse unchanged work across chapters;
+      report coverage in player language; and allow play with a partially prepared
+      pack while remaining chapters continue later.
+- [ ] Add a synthetic end-to-end acceptance journey: fresh settings -> discover
+      game -> choose chapter -> audition only ambiguous voices -> interrupt/resume
+      generation -> automatic repairs/fallback -> atomically activate the pack.
+      Acceptance requires every selected dialogue line to have a terminal route,
+      zero authoring vocabulary in the default UI and no mandatory per-line review.
+
+## P1 - Improve the self-service generation engine
 
 Follow
 [`docs/pregeneration-coverage-plan.md`](docs/pregeneration-coverage-plan.md)
 and keep original audio, approved generated audio, explicit live fallback and
 intentional omission as distinct terminal authorities.
 
-- [ ] Prepare references, then generate and review the 1,220 patch-3.7
-      `no_audio` lines with the approved primary and fallback policy. Preserve
-      source-audio candidates, invalidate review when WAV hashes change, review
-      every technical flag plus a stratified clean sample, and expand a cohort
-      only when that sample exposes a substantive defect.
+- [ ] Use the 1,220 patch-3.7 `no_audio` lines as the first full-scale validation
+      corpus for the self-service workflow. Preserve source-audio candidates and
+      invalidate decisions when controlling hashes change, but do not make the
+      ordinary user review every technical flag or a stratified line sample.
+      Route low-confidence exceptions to bounded automatic repair/fallback and
+      retain expert review only as an opt-in diagnostic export.
 - [ ] Turn the existing defect-reason labels into a calibrated MOSS quality
       router. Collect enough independently reviewed examples for pacing,
       repetition, truncation, pronunciation, artifacts and speaker identity to

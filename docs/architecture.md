@@ -23,6 +23,9 @@ truth for current APIs.
 
 ### Authoring
 
+- [`self-service-pregeneration.md`](self-service-pregeneration.md) - ordinary
+  player workflow for local extraction, minimal voice audition, automatic
+  generation/quality routing and local pack activation.
 - [`authoring-generation-queues.md`](authoring-generation-queues.md) - stable
   queue identity and collection-driven queue construction.
 - [`authoring-workspaces.md`](authoring-workspaces.md) - resumable workspace
