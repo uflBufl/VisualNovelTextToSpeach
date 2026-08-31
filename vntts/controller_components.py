@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from vntts.dialog import is_empty
 from vntts.live_speech import play_typed_text
 from vntts.voices import normalize_character_name
 
 
-def create_live_toggle(live_reader):
-    def toggle_live_reading():
+def create_live_toggle(live_reader: Any) -> Callable[[], None]:
+    def toggle_live_reading() -> None:
         if live_reader.toggle():
             print("Live reading started")
         else:
@@ -21,7 +21,11 @@ def create_live_toggle(live_reader):
     return toggle_live_reading
 
 
-def speak_live_chunk(voice_router, chunk, playback_guard=None):
+def speak_live_chunk(
+    voice_router: Any,
+    chunk: Any,
+    playback_guard: Any = None,
+) -> Any:
     print(f"{chunk.character} is speaking now (live)")
     print(chunk.text)
     if is_empty(chunk.text):
@@ -29,45 +33,94 @@ def speak_live_chunk(voice_router, chunk, playback_guard=None):
     return play_typed_text(voice_router, chunk.character, chunk.text, playback_guard)
 
 
-class _ControllerImplementation(Protocol):
-    """Private implementation surface consumed by controller components."""
+class _RuntimeLifecyclePort(Protocol):
+    live_reader: Any
 
-    def _start_runtime(self): ...
-    def _apply_runtime_settings(self, settings, *, commit): ...
-    def _shutdown_runtime(self): ...
-    def _read_once_live(self): ...
-    def _identify_live_scope_impl(self): ...
-    def _toggle_live_impl(self): ...
-    def _toggle_speech_pause_impl(self): ...
-    def _skip_current_speech_impl(self): ...
-    def _repeat_last_speech_impl(self): ...
-    def _clear_speech_queue_impl(self): ...
-    def _emergency_stop_impl(self): ...
-    def _set_auto_advance_enabled_impl(self, enabled): ...
-    def _available_voice_characters_impl(self): ...
-    def _available_voice_choices_impl(self): ...
-    def _voice_assignment_for_impl(self, character): ...
-    def _preview_voice_choice_impl(self, source_id, text): ...
-    def _stop_voice_preview_impl(self): ...
-    def _allow_narrator_fallback_impl(self, character): ...
-    def _unresolved_live_speakers_impl(self): ...
-    def _approve_live_narrator_fallbacks_impl(self, characters): ...
-    def _preview_voice_impl(self, character, text): ...
-    def _replay_dialog_impl(self, character, text): ...
-    def _get_capture_geometry_impl(self): ...
-    def _get_latest_diagnostic_impl(self): ...
-    def _get_live_pipeline_metrics_impl(self): ...
-    def _inspect_current_dialog_impl(self, *, notify=True): ...
-    def _test_current_dialog_impl(self): ...
+    def _start_runtime(self) -> Any: ...
+
+    def _apply_runtime_settings(
+        self,
+        settings: Any,
+        *,
+        commit: Callable[[], bool],
+    ) -> Any: ...
+
+    def _shutdown_runtime(self) -> Any: ...
+
+
+class _LiveSessionPort(Protocol):
+    def _read_once_live(self) -> Any: ...
+
+    def _identify_live_scope_impl(self) -> Any: ...
+
+    def _toggle_live_impl(self) -> Any: ...
+
+    def _toggle_speech_pause_impl(self) -> Any: ...
+
+    def _skip_current_speech_impl(self) -> Any: ...
+
+    def _repeat_last_speech_impl(self) -> Any: ...
+
+    def _clear_speech_queue_impl(self) -> Any: ...
+
+    def _emergency_stop_impl(self) -> Any: ...
+
+    def _set_auto_advance_enabled_impl(self, enabled: bool) -> Any: ...
+
+
+class _VoiceAssignmentPort(Protocol):
+    is_live_running: bool
+    settings: Any
+    voice_router: Any
+    reported_unknown_speakers: set[str]
+    pending_unknown_speakers: set[str]
+    narrator_fallback_speakers: set[str]
+    status_handler: Callable[[str], Any]
+
+    def _available_voice_characters_impl(self) -> Any: ...
+
+    def _available_voice_choices_impl(self) -> Any: ...
+
+    def _voice_assignment_for_impl(self, character: str) -> Any: ...
+
+    def _preview_voice_choice_impl(self, source_id: str, text: str) -> Any: ...
+
+    def _stop_voice_preview_impl(self) -> Any: ...
+
+    def _allow_narrator_fallback_impl(self, character: str) -> Any: ...
+
+    def _unresolved_live_speakers_impl(self) -> Any: ...
+
+    def _approve_live_narrator_fallbacks_impl(self, characters: Any) -> Any: ...
+
+    def _preview_voice_impl(self, character: str, text: str) -> Any: ...
+
+    def _replay_dialog_impl(self, character: str, text: str) -> Any: ...
+
+    def _apply_narrator_voice(self, voice: Any) -> Any: ...
+
+    def _clear_voice_runtime_cache(self) -> Any: ...
+
+
+class _DiagnosticsPort(Protocol):
+    def _get_capture_geometry_impl(self) -> Any: ...
+
+    def _get_latest_diagnostic_impl(self) -> Any: ...
+
+    def _get_live_pipeline_metrics_impl(self) -> Any: ...
+
+    def _inspect_current_dialog_impl(self, *, notify: bool = True) -> Any: ...
+
+    def _test_current_dialog_impl(self) -> Any: ...
 
 
 class _RuntimeSettingsApplyGuard:
-    def __init__(self):
+    def __init__(self) -> None:
         self.lock = Lock()
-        self.cancellation = None
+        self.cancellation: Any = None
         self.committed = False
 
-    def begin(self, cancellation):
+    def begin(self, cancellation: Any) -> None:
         if cancellation is None:
             return
         with self.lock:
@@ -76,7 +129,7 @@ class _RuntimeSettingsApplyGuard:
             self.cancellation = cancellation
             self.committed = False
 
-    def finish(self, cancellation):
+    def finish(self, cancellation: Any) -> None:
         if cancellation is None:
             return
         with self.lock:
@@ -84,7 +137,7 @@ class _RuntimeSettingsApplyGuard:
                 self.cancellation = None
                 self.committed = False
 
-    def commit(self, cancellation):
+    def commit(self, cancellation: Any) -> bool:
         if cancellation is None:
             return True
         with self.lock:
@@ -93,7 +146,11 @@ class _RuntimeSettingsApplyGuard:
             self.committed = True
             return True
 
-    def cancel(self, cancellation, release_waiters):
+    def cancel(
+        self,
+        cancellation: Any,
+        release_waiters: Callable[[], Any],
+    ) -> bool:
         with self.lock:
             if self.cancellation is not cancellation or self.committed:
                 return False
@@ -104,17 +161,17 @@ class _RuntimeSettingsApplyGuard:
 
 @dataclass(frozen=True)
 class RuntimeLifecycleComponent:
-    controller: _ControllerImplementation
+    controller: _RuntimeLifecyclePort
     settings_apply_guard: _RuntimeSettingsApplyGuard = field(
         default_factory=_RuntimeSettingsApplyGuard,
         compare=False,
         repr=False,
     )
 
-    def start(self):
+    def start(self) -> Any:
         return self.controller._start_runtime()
 
-    def apply_settings(self, settings, *, cancellation=None):
+    def apply_settings(self, settings: Any, *, cancellation: Any = None) -> Any:
         self.settings_apply_guard.begin(cancellation)
         try:
             return self.controller._apply_runtime_settings(
@@ -124,69 +181,75 @@ class RuntimeLifecycleComponent:
         finally:
             self.settings_apply_guard.finish(cancellation)
 
-    def cancel_settings_apply(self, cancellation):
+    def cancel_settings_apply(self, cancellation: Any) -> bool:
         reader = self.controller.live_reader
         release_waiters = (
             reader.release_waiters if reader is not None else lambda: None
         )
         return self.settings_apply_guard.cancel(cancellation, release_waiters)
 
-    def shutdown(self):
+    def shutdown(self) -> Any:
         return self.controller._shutdown_runtime()
 
 
 @dataclass(frozen=True)
 class LiveSessionComponent:
-    controller: _ControllerImplementation
+    controller: _LiveSessionPort
 
-    def read_once(self):
+    def read_once(self) -> Any:
         return self.controller._read_once_live()
 
-    def identify_scope(self):
+    def identify_scope(self) -> Any:
         return self.controller._identify_live_scope_impl()
 
-    def toggle(self):
+    def toggle(self) -> Any:
         return self.controller._toggle_live_impl()
 
-    def toggle_speech_pause(self):
+    def toggle_speech_pause(self) -> Any:
         return self.controller._toggle_speech_pause_impl()
 
-    def skip_current_speech(self):
+    def skip_current_speech(self) -> Any:
         return self.controller._skip_current_speech_impl()
 
-    def repeat_last_speech(self):
+    def repeat_last_speech(self) -> Any:
         return self.controller._repeat_last_speech_impl()
 
-    def clear_speech_queue(self):
+    def clear_speech_queue(self) -> Any:
         return self.controller._clear_speech_queue_impl()
 
-    def emergency_stop(self):
+    def emergency_stop(self) -> Any:
         return self.controller._emergency_stop_impl()
 
-    def set_auto_advance_enabled(self, enabled):
+    def set_auto_advance_enabled(self, enabled: bool) -> Any:
         return self.controller._set_auto_advance_enabled_impl(enabled)
 
 
 @dataclass(frozen=True)
 class VoiceAssignmentComponent:
-    controller: _ControllerImplementation
+    controller: _VoiceAssignmentPort
 
-    def available_characters(self):
+    def available_characters(self) -> Any:
         return self.controller._available_voice_characters_impl()
 
-    def available_choices(self):
+    def available_choices(self) -> Any:
         return self.controller._available_voice_choices_impl()
 
-    def assignment_for(self, character):
+    def assignment_for(self, character: str) -> Any:
         return self.controller._voice_assignment_for_impl(character)
 
-    def preview_choice(self, source_id, text):
+    def preview_choice(self, source_id: str, text: str) -> Any:
         return self.controller._preview_voice_choice_impl(source_id, text)
 
-    def stop_preview(self):
+    def stop_preview(self) -> Any:
         return self.controller._stop_voice_preview_impl()
 
-    def assign(self, character, source_id, *, commit_settings=None):
+    def assign(
+        self,
+        character: str,
+        source_id: str,
+        *,
+        commit_settings: Callable[[Any], Any] | None = None,
+    ) -> Any:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -224,7 +287,12 @@ class VoiceAssignmentComponent:
         controller.status_handler(f"{choice.label} assigned to {character}")
         return controller.settings
 
-    def clear(self, character, *, commit_settings=None):
+    def clear(
+        self,
+        character: str,
+        *,
+        commit_settings: Callable[[Any], Any] | None = None,
+    ) -> Any:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -239,7 +307,7 @@ class VoiceAssignmentComponent:
             ).items()
             if normalize_character_name(configured_character) != character_key
         }
-        update = {"voice_assignments": assignments}
+        update: dict[str, Any] = {"voice_assignments": assignments}
         if character_key == "narrator":
             update["force_live_narrator"] = False
         updated_settings = controller.settings.updated(**update)
@@ -257,7 +325,12 @@ class VoiceAssignmentComponent:
         )
         return controller.settings
 
-    def set_force_live_narrator(self, enabled, *, commit_settings=None):
+    def set_force_live_narrator(
+        self,
+        enabled: bool,
+        *,
+        commit_settings: Callable[[Any], Any] | None = None,
+    ) -> Any:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before changing Narrator routing")
@@ -275,37 +348,37 @@ class VoiceAssignmentComponent:
         )
         return controller.settings
 
-    def allow_narrator_fallback(self, character):
+    def allow_narrator_fallback(self, character: str) -> Any:
         return self.controller._allow_narrator_fallback_impl(character)
 
-    def unresolved_live_speakers(self):
+    def unresolved_live_speakers(self) -> Any:
         return self.controller._unresolved_live_speakers_impl()
 
-    def approve_narrator_fallbacks(self, characters):
+    def approve_narrator_fallbacks(self, characters: Any) -> Any:
         return self.controller._approve_live_narrator_fallbacks_impl(characters)
 
-    def preview(self, character, text):
+    def preview(self, character: str, text: str) -> Any:
         return self.controller._preview_voice_impl(character, text)
 
-    def replay(self, character, text):
+    def replay(self, character: str, text: str) -> Any:
         return self.controller._replay_dialog_impl(character, text)
 
 
 @dataclass(frozen=True)
 class DiagnosticsComponent:
-    controller: _ControllerImplementation
+    controller: _DiagnosticsPort
 
-    def capture_geometry(self):
+    def capture_geometry(self) -> Any:
         return self.controller._get_capture_geometry_impl()
 
-    def latest(self):
+    def latest(self) -> Any:
         return self.controller._get_latest_diagnostic_impl()
 
-    def pipeline_metrics(self):
+    def pipeline_metrics(self) -> Any:
         return self.controller._get_live_pipeline_metrics_impl()
 
-    def inspect_current_dialog(self, *, notify=True):
+    def inspect_current_dialog(self, *, notify: bool = True) -> Any:
         return self.controller._inspect_current_dialog_impl(notify=notify)
 
-    def test_current_dialog(self):
+    def test_current_dialog(self) -> Any:
         return self.controller._test_current_dialog_impl()

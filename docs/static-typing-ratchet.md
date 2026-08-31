@@ -16,6 +16,8 @@ The initial scope covers one runtime boundary from each high-value category:
 - `speech_worker_messages.py`: immutable data crossing the isolated worker
   boundary;
 - `authoring/cli_dispatch.py`: command-family orchestration input and result.
+- `controller_components.py`: narrow lifecycle, live-session, voice-assignment
+  and diagnostics ports plus their request-scoped coordination state.
 
 `disallow_untyped_defs` prevents new unannotated functions in these modules.
 Imports are skipped for this first ratchet so legacy transitive modules are not

@@ -13,11 +13,14 @@ components:
   operations;
 - `DiagnosticsComponent` owns capture inspection and pipeline diagnostics.
 
-The components are created once by `AppController.__init__` and retain a typed
-private implementation protocol back to the controller state. This keeps the
-existing cancellation, routing, callback and thread-safety behavior intact
-while separating the application entry points by responsibility. Stateful
-implementation methods are private and are not a supported caller surface.
+The components are created once by `AppController.__init__`. Each retains its
+own typed private port: lifecycle cannot see voice or diagnostics operations,
+live-session cannot reach lifecycle state, and diagnostics cannot mutate voice
+assignment. `controller_components.py` is part of the non-shrinkable mypy scope.
+This keeps the existing cancellation, routing, callback and thread-safety
+behavior intact while separating the application entry points by responsibility.
+Stateful implementation methods are private and are not a supported caller
+surface.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New
