@@ -102,12 +102,6 @@ intentional omission as distinct terminal authorities.
       root. Split and fully annotate the component protocols, add them to mypy,
       remove component-to-facade re-entry and require focused plus complete
       runtime regression tests before deleting the current private callbacks.
-- [ ] Commit a speaker announcement only after its playback completes. Keep a
-      chunk-scoped pending reservation while it is prepared, release it when a
-      stale route is discarded or playback is interrupted/failed, and update
-      the last-heard speaker only for `COMPLETED`. Test route replacement and a
-      transient announcement failure followed by the same narrator-fallback
-      role, which must be announced on the next playable line.
 - [ ] Make settings, profile and voice-assignment changes failure-atomic. Persist
       a candidate state before publishing it to the controller, dashboard or
       in-memory profile store; catch and explain write failures; roll back

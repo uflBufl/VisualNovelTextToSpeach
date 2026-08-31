@@ -3364,7 +3364,6 @@ class AppController:
             prepared = prepare(backend, "Narrator", f"{announcement_speaker}.")
             if not isinstance(prepared, PreparedPlayback):
                 raise TypeError("Live backend returned an untyped speaker announcement")
-            self.last_visible_speaker_key = speaker_key
         payload = prepared.payload
         trace = AudioRouteTrace(
             chunk.generation,
@@ -3402,6 +3401,14 @@ class AppController:
         )
 
     def _play_speaker_announcement(self, chunk, route, announced_speaker):
+        speaker_key = normalize_character_name(announced_speaker) or "unknown"
+        with self.speaker_announcement_lock:
+            if speaker_key == self.last_visible_speaker_key:
+                return PlaybackOutcome(
+                    PlaybackStatus.PASSTHROUGH_UNOBSERVED,
+                    0.0,
+                    audio_source="live-accessibility-announcement",
+                )
         backend = getattr(self.speech_backend, "live_backend", self.speech_backend)
         play = getattr(type(backend), "play_prepared", None)
         if not callable(play):
@@ -3439,7 +3446,10 @@ class AppController:
         except Exception as error:
             self.error_handler(error)
         self._observe_live_playback_backpressure(outcome.underflowed)
-        if outcome.status is PlaybackStatus.FAILED:
+        if outcome.status is PlaybackStatus.COMPLETED:
+            with self.speaker_announcement_lock:
+                self.last_visible_speaker_key = speaker_key
+        elif outcome.status is PlaybackStatus.FAILED:
             self.error_handler(
                 AudioPlaybackError(
                     outcome.error or "Speaker announcement playback failed"

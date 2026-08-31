@@ -4885,6 +4885,13 @@ class MainTest(unittest.TestCase):
             SpeechChunk(2, "Poacher I", "Stop there.", ordinal=1),
             generated("Poacher I"),
         )
+        controller.live_reader = Mock(max_speech_jobs=2)
+        controller.live_reader.wait_until_playable.return_value = True
+        controller._play_speaker_announcement(
+            SpeechChunk(2, "Poacher I", "Stop there.", ordinal=1),
+            poacher,
+            poacher_label,
+        )
         same_poacher, _ = controller._prepare_speaker_announcement(
             SpeechChunk(3, "Poacher I", "Again.", ordinal=1),
             generated("Poacher I"),
@@ -4997,6 +5004,8 @@ class MainTest(unittest.TestCase):
                     error="announcement device failed",
                 ),
                 PlaybackOutcome(PlaybackStatus.COMPLETED, 4.0),
+                PlaybackOutcome(PlaybackStatus.COMPLETED, 2.0),
+                PlaybackOutcome(PlaybackStatus.COMPLETED, 4.0),
             ]
         )
         controller = AppController(
@@ -5013,11 +5022,47 @@ class MainTest(unittest.TestCase):
 
         prepared = controller._prepare_live_chunk(chunk)
         result = controller._play_live_chunk(chunk, prepared)
+        retry_chunk = SpeechChunk(2, "Rhiannon", "Next line.", ordinal=1)
+        retry_prepared = controller._prepare_live_chunk(retry_chunk)
+        retry_result = controller._play_live_chunk(retry_chunk, retry_prepared)
 
         self.assertTrue(result)
-        self.assertEqual(len(backend.play_calls), 2)
+        self.assertTrue(retry_result)
+        self.assertEqual(len(backend.play_calls), 4)
+        self.assertEqual(
+            backend.play_calls,
+            [
+                ("Narrator", "Rhiannon."),
+                ("Rhiannon", "Line."),
+                ("Narrator", "Rhiannon."),
+                ("Rhiannon", "Next line."),
+            ],
+        )
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], AudioPlaybackError)
+
+    def test_discarded_speaker_announcement_is_prepared_again(self):
+        backend = RecordingAnnouncementBackend()
+        controller = AppController(
+            AppSettings(announce_speaker_changes=True),
+            tts_factory=Mock(),
+        )
+        controller.voice_router = Mock(
+            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+        )
+        controller.speech_backend = backend
+        dialogue = backend.prepare_playback("Rhiannon", "Line.")
+
+        first, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(1, "Rhiannon", "Line.", ordinal=1), dialogue
+        )
+        replacement, _ = controller._prepare_speaker_announcement(
+            SpeechChunk(2, "Rhiannon", "Replacement.", ordinal=1), dialogue
+        )
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(replacement)
+        self.assertIsNone(controller.last_visible_speaker_key)
 
     def test_speaker_announcement_exception_does_not_skip_dialogue(self):
         errors = []

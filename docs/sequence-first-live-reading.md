@@ -466,6 +466,11 @@ explicit current/successor line IDs are searched and exactly one sufficiently
 strong canonical candidate must remain. The visible `???` label is announced
 as Unknown while its story binding may still route the line through the
 configured Narrator voice.
+An announcement is considered heard only after its typed playback outcome is
+`completed`. Preparation reserves no durable speaker state: a stale/discarded,
+interrupted or failed cue is eligible again on the next playable line. If two
+same-speaker lines were prepared concurrently, playback rechecks the committed
+speaker key so only the first successfully heard cue is emitted.
 
 OCR profile selection must also distinguish confidence from structural
 completeness. A high-confidence profile that contains only a decorated
