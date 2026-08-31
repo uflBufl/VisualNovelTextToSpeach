@@ -104,6 +104,9 @@ intentional omission as distinct terminal authorities.
     installer builds before removing this item. Acceptance requires startup and
     render without uv, a checkout, backend environment variables or an existing
     user model cache; retain checksum-bound self-test reports for both platforms.
+    The current arm64 macOS build must first eliminate PyInstaller's BUNDLE
+    collision on managed-CPython development metadata (`lib/pkgconfig`) without
+    removing files required by the relocated interpreter.
 
 ## P2 - Deferred audio experiments
 

@@ -88,3 +88,10 @@ staging tree unless a copied-to-a-new-path probe imports every required module
 from that copied tree. The same relocation probe is mandatory on Windows; a uv
 or CPython change that breaks the portable launcher must fail the build rather
 than ship a package that silently uses a machine-local Python.
+
+Staging removes managed-CPython alias symlinks and its `include`, `share` and
+`lib/pkgconfig` development trees. They are not needed to execute the locked
+worker, and keeping the pkg-config aliases makes PyInstaller's macOS BUNDLE step
+try to materialize the same path as both a Frameworks symlink and a directory.
+The relocation/import probe runs after pruning, so a future CPython layout that
+needs one of those files fails during staging rather than producing a broken app.

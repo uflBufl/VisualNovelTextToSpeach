@@ -75,6 +75,27 @@ def _replace_posix_interpreter_link(
     interpreter.symlink_to(relative_target)
 
 
+def _prune_managed_runtime(managed_root: Path, managed_interpreter: Path) -> None:
+    """Remove CPython development aliases that confuse frozen bundle layouts."""
+    managed_root = managed_root.resolve()
+    distribution_root = (
+        managed_interpreter.parent
+        if managed_interpreter.name.casefold() == "python.exe"
+        else managed_interpreter.parents[1]
+    )
+    if not distribution_root.resolve().is_relative_to(managed_root):
+        raise RuntimeError("Managed Python distribution escaped its staging root")
+    for alias in managed_root.iterdir():
+        if alias.is_symlink():
+            alias.unlink()
+    for relative in ("include", "share", "lib/pkgconfig"):
+        candidate = distribution_root / relative
+        if candidate.is_dir():
+            shutil.rmtree(candidate)
+        elif candidate.exists() or candidate.is_symlink():
+            candidate.unlink()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -183,6 +204,7 @@ def stage_pocket_runtime(
     managed_interpreter = _find_managed_interpreter(
         managed_root, platform_name, python_version
     )
+    _prune_managed_runtime(managed_root, managed_interpreter)
 
     _run_checked(
         run,

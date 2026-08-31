@@ -9,6 +9,7 @@ from unittest.mock import Mock
 from vntts.release_runtime import (
     _find_managed_interpreter,
     _probe_relocated_runtime,
+    _prune_managed_runtime,
     _replace_posix_interpreter_link,
     _runtime_interpreter,
     _runtime_site,
@@ -136,6 +137,36 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertTrue(interpreter.is_symlink())
             self.assertFalse(os.readlink(interpreter).startswith("/"))
             self.assertEqual(interpreter.resolve(), managed.resolve())
+
+    def test_prunes_only_managed_python_development_metadata(self):
+        with TemporaryDirectory() as directory:
+            managed_root = Path(directory) / "_python"
+            distribution = managed_root / "cpython-3.11-test"
+            interpreter = distribution / "bin/python3.11"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            standard_library = distribution / "lib/python3.11/os.py"
+            standard_library.parent.mkdir(parents=True)
+            standard_library.write_text("runtime", encoding="utf-8")
+            for relative in (
+                "include/Python.h",
+                "share/man/python.1",
+                "lib/pkgconfig/python.pc",
+            ):
+                path = distribution / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("development", encoding="utf-8")
+            alias = managed_root / "cpython-3.11-alias"
+            alias.symlink_to(distribution)
+
+            _prune_managed_runtime(managed_root, interpreter)
+
+            self.assertTrue(interpreter.is_file())
+            self.assertTrue(standard_library.is_file())
+            self.assertFalse(alias.exists())
+            self.assertFalse((distribution / "include").exists())
+            self.assertFalse((distribution / "share").exists())
+            self.assertFalse((distribution / "lib/pkgconfig").exists())
 
     def test_runtime_site_rejects_ambiguous_posix_layout(self):
         with TemporaryDirectory() as directory:
