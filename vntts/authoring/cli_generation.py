@@ -62,6 +62,7 @@ from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    pocket_tts_preset_voices,
     synthesis_character_for_line,
 )
 
@@ -414,9 +415,17 @@ def _generate(arguments: argparse.Namespace) -> int:
     narrator_reference = (
         narrator_voice.references[0]
         if narrator_voice is not None and narrator_voice.references
-        else None
+        else (
+            narrator_voice.speaker
+            if arguments.backend == "pocket-tts"
+            and narrator_voice is not None
+            and narrator_voice.speaker in pocket_tts_preset_voices
+            else "alba"
+            if arguments.backend == "pocket-tts" and narrator_voice is None
+            else None
+        )
     )
-    if narrator_reference is not None:
+    if narrator_voice is not None and narrator_voice.references:
         control_files[f"narrator_selection:{arguments.narrator_character}"] = (
             narrator_reference,
             sha256_control_path(narrator_reference),
@@ -437,7 +446,13 @@ def _generate(arguments: argparse.Namespace) -> int:
         if character == "Narrator":
             return narrator_reference is not None
         voice = registry.resolve(character)
-        return voice is not None and bool(voice.references)
+        return voice is not None and (
+            bool(voice.references)
+            or (
+                arguments.backend == "pocket-tts"
+                and voice.speaker in pocket_tts_preset_voices
+            )
+        )
 
     with TemporaryDirectory() as cache_directory:
         backend = create_backend(

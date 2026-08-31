@@ -140,6 +140,15 @@ job and controls reuses that immutable directory without rewriting it; changed
 references, conflicting variants, cancellation and a missing narrator reference
 fail before publication.
 
+Pocket TTS is the one reference-free exception. Its allowlisted embedded voices
+are immutable model inputs rather than guessed files, so the effective manifest
+may bind a character or `Narrator` to an allowlisted Pocket speaker with an empty
+reference list. The offline CLI treats that speaker as runnable and records it
+through the manifest control instead of attempting to hash the preset name as a
+path. With the default Pocket backend, a user who has no character voice pack can
+therefore prepare a selected story entirely with embedded `alba` narrator speech.
+MOSS and every cloning route still require real checksum-bound reference audio.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

@@ -769,6 +769,23 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertEqual(audio_output.streams[0].options["samplerate"], 24_000)
         self.assertIsNotNone(backend.last_first_audio_ms)
 
+    def test_reference_free_allowlisted_character_uses_embedded_pocket_voice(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Hotelier", "anna")]
+        )
+        backend, model, _audio_output = self.create_backend(registry)
+
+        result = backend.render(
+            SynthesisRequest(
+                voice="Hotelier",
+                text="Embedded voice.",
+                generation_profile="default",
+            )
+        ).collect()
+
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertEqual(model.stream_calls, [("state:anna", "Embedded voice.")])
+
     def test_render_returns_typed_pcm_without_opening_output_stream(self):
         backend, model, audio_output = self.create_backend()
 

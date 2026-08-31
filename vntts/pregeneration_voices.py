@@ -68,6 +68,10 @@ class VoicePlan:
     story_index_sha256: str
     voice_manifest: str | None
     voice_manifest_sha256: str | None
+    synthesis_backend: str
+    synthesis_model: str | None
+    synthesis_language: str | None
+    synthesis_profile: str
     synthesis_controls_sha256: str
     groups: tuple[VoiceGroup, ...]
 
@@ -92,6 +96,10 @@ class VoicePlan:
             "story_index_sha256": self.story_index_sha256,
             "voice_manifest": self.voice_manifest,
             "voice_manifest_sha256": self.voice_manifest_sha256,
+            "synthesis_backend": self.synthesis_backend,
+            "synthesis_model": self.synthesis_model,
+            "synthesis_language": self.synthesis_language,
+            "synthesis_profile": self.synthesis_profile,
             "synthesis_controls_sha256": self.synthesis_controls_sha256,
             "groups": [group.to_document() for group in self.groups],
         }
@@ -219,6 +227,10 @@ class VoicePlanStore:
             story_index_sha256=job.story_index_sha256,
             voice_manifest=str(manifest_path) if manifest_path else None,
             voice_manifest_sha256=manifest_sha256,
+            synthesis_backend=settings.speech_backend,
+            synthesis_model=settings.tts_model,
+            synthesis_language=settings.tts_language,
+            synthesis_profile=settings.tts_profile,
             synthesis_controls_sha256=controls_sha256,
             groups=groups,
         )

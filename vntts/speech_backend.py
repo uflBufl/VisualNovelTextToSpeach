@@ -45,7 +45,11 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-from vntts.voices import is_narrator, normalize_character_name
+from vntts.voices import (
+    is_narrator,
+    normalize_character_name,
+    pocket_tts_preset_voices,
+)
 
 __all__ = ["SpeechBackend", "SpeechBackendCapabilities"]
 
@@ -1512,6 +1516,8 @@ class PocketTTSVoiceRouterBackend:
         if is_narrator(character) or voice is None:
             return "narrator", self.narrator_reference
         if not voice.references:
+            if voice.speaker in pocket_tts_preset_voices:
+                return voice.speaker, voice.speaker
             raise TTSConfigurationError(
                 f"Voice {voice.character!r} has no reference recording"
             )

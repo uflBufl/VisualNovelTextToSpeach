@@ -2847,6 +2847,64 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertIn("Unable to read voice manifest", errors.getvalue())
         self.assertNotIn("Traceback", errors.getvalue())
 
+    def test_cli_pocket_generation_accepts_allowlisted_embedded_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Hero",
+                                "speaker": "anna",
+                                "aliases": [],
+                                "references": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            renderer = SyntheticRenderer()
+            options = []
+
+            def create_renderer(name, _registry, _cache, **values):
+                options.append(values)
+                renderer.name = name
+                renderer.model_name = name
+                return renderer
+
+            output = StringIO()
+            with (
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    side_effect=create_renderer,
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = authoring_main(
+                    [
+                        "generate",
+                        "--queue",
+                        str(queue),
+                        "--output",
+                        str(root / "output"),
+                        "--voice-manifest",
+                        str(voice_manifest),
+                        "--backend",
+                        "pocket-tts",
+                        "--retries",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(output.getvalue())["generated"], 1)
+            self.assertEqual(options[0]["narrator_reference"], "alba")
+
 
 if __name__ == "__main__":
     unittest.main()

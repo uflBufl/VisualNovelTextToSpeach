@@ -19,6 +19,7 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
     write_story_index_document,
 )
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
 from vntts.authoring.publication import (
@@ -32,7 +33,12 @@ from vntts.authoring.queue_builder import (
 )
 from vntts.pregeneration_voices import VoicePlan
 from vntts.versioned_json import read_versioned_json, write_versioned_json
-from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    pocket_tts_preset_voices,
+    read_voice_reference_bytes,
+    synthesis_character_for_line,
+)
 
 generation_input_schema_version = 1
 
@@ -116,6 +122,8 @@ class PregenerationInputStore:
                 generated_at=job.created_at,
             )
             publish_generation_queue(queue_plan, queue_path)
+            queue = VoiceGenerationQueue.load(queue_path)
+            ready_items = _runnable_generation_items(queue, effective)
             _raise_if_cancelled(cancellation)
             fields = {
                 "identity": identity,
@@ -126,7 +134,7 @@ class PregenerationInputStore:
                 "voice_manifest_sha256": sha256_file(voice_path),
                 "queue_sha256": sha256_file(queue_path),
                 "queue_items": queue_plan.summary.queue_items,
-                "ready_items": queue_plan.summary.ready,
+                "ready_items": ready_items,
                 "narrator_fallback_roles": list(effective["narrator_roles"]),
             }
             write_versioned_json(
@@ -178,6 +186,8 @@ def _load_story(job):
 
 def _load_source_registry(plan):
     if not plan.voice_manifest:
+        if plan.synthesis_backend == "pocket-tts":
+            return CharacterVoiceRegistry()
         raise PregenerationQueueError(
             "Choose a narrator voice before generating offline audio"
         )
@@ -221,31 +231,41 @@ def _effective_voice_routes(plan, registry):
         if group.route == "narrator" and group.character != "Narrator":
             narrator_roles.add(group.character)
         if not group.source_character:
-            if group.route == "narrator":
+            if group.route == "narrator" and plan.synthesis_backend == "pocket-tts":
+                voice = None
+                observed = ()
+                embedded = "alba"
+            elif group.route == "narrator":
                 raise PregenerationQueueError(
                     "Choose a narrator voice before generating offline audio"
                 )
-            raise PregenerationQueueError(
-                f"Choose a voice for {group.character} before generating offline audio"
-            )
-        voice = registry.resolve(group.source_character)
-        if voice is None or not voice.references:
-            raise PregenerationQueueError(
-                f"The selected voice for {group.character} has no usable reference"
-            )
-        observed = tuple(
-            hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
-            for path in voice.references
-        )
-        if observed != group.reference_sha256s:
-            raise PregenerationQueueError(
-                f"The selected voice reference changed for {group.character}"
-            )
+            else:
+                raise PregenerationQueueError(
+                    f"Choose a voice for {group.character} before generating offline audio"
+                )
+        else:
+            voice = registry.resolve(group.source_character)
+            embedded = None
+            if voice is None or not voice.references:
+                embedded = _pocket_embedded_voice(group, plan)
+                if embedded is None:
+                    raise PregenerationQueueError(
+                        f"The selected voice for {group.character} has no usable reference"
+                    )
+                observed = ()
+            else:
+                observed = tuple(
+                    hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
+                    for path in voice.references
+                )
+                if observed != group.reference_sha256s:
+                    raise PregenerationQueueError(
+                        f"The selected voice reference changed for {group.character}"
+                    )
+        speaker = embedded or voice.speaker
         previous = routes.get(target)
-        choice = (voice, observed)
-        if previous is not None and (
-            previous[0].speaker != voice.speaker or previous[1] != observed
-        ):
+        choice = (voice, observed, speaker)
+        if previous is not None and (previous[2] != speaker or previous[1] != observed):
             raise PregenerationQueueError(
                 f"Choose one voice for all {target} variants before generation"
             )
@@ -261,11 +281,11 @@ def _write_effective_voices(staging, effective):
     references.mkdir()
     copied = {}
     entries = []
-    for character, (voice, expected_hashes) in sorted(
+    for character, (voice, expected_hashes, speaker) in sorted(
         effective["routes"].items(), key=lambda item: item[0].casefold()
     ):
         relative_references = []
-        for source, expected in zip(voice.references, expected_hashes):
+        for source, expected in zip(voice.references if voice else (), expected_hashes):
             payload = read_voice_reference_bytes(voice, source)
             if hashlib.sha256(payload).hexdigest() != expected:
                 raise PregenerationQueueError(
@@ -280,12 +300,41 @@ def _write_effective_voices(staging, effective):
         entries.append(
             {
                 "character": character,
-                "speaker": voice.speaker,
+                "speaker": speaker,
                 "aliases": [],
                 "references": relative_references,
             }
         )
     return entries
+
+
+def _pocket_embedded_voice(group, plan):
+    if plan.synthesis_backend != "pocket-tts":
+        return None
+    candidates = [
+        group.source_speaker,
+        group.source_id.removeprefix("preset:")
+        if group.source_id.startswith("preset:")
+        else None,
+    ]
+    return next(
+        (value for value in candidates if value in pocket_tts_preset_voices), None
+    )
+
+
+def _runnable_generation_items(queue, effective):
+    routes = effective["routes"]
+    fallback_roles = set(effective["narrator_roles"])
+    return sum(
+        1
+        for item in queue.items
+        if item.action == "generate"
+        and (
+            synthesis_character_for_line(item.speaker, item.voice_character) in routes
+            or synthesis_character_for_line(item.speaker, item.voice_character)
+            in fallback_roles
+        )
+    )
 
 
 def _write_reference_wav(path, payload, character):

@@ -143,13 +143,14 @@ def write_manifest(root):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
-    def fixture(self, root, *, narrator=True):
+    def fixture(self, root, *, narrator=True, backend="pocket-tts"):
         content = inspect_story_index(write_content(root / "content"))
         jobs = PregenerationJobStore(root / "jobs")
         job = jobs.create_or_resume(content, ("selected",))
         manifest = write_manifest(root / "voices")
         settings = AppSettings(
-            voice_assignments=({"Narrator": "character:centurion"} if narrator else {})
+            speech_backend=backend,
+            voice_assignments=({"Narrator": "character:centurion"} if narrator else {}),
         )
         voice_plan = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
         return job, jobs, voice_plan, manifest
@@ -162,7 +163,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             result = PregenerationInputStore(jobs).materialize(job, voice_plan)
 
             self.assertEqual(result.queue_items, 3)
-            self.assertEqual(result.ready_items, 2)
+            self.assertEqual(result.ready_items, 3)
             self.assertEqual(result.narrator_fallback_roles, ("Hotelier",))
             queue = VoiceGenerationQueue.load(result.queue)
             self.assertEqual(
@@ -195,7 +196,9 @@ class PregenerationInputStoreTest(unittest.TestCase):
     def test_missing_narrator_voice_is_one_actionable_blocker(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            job, jobs, voice_plan, _manifest = self.fixture(root, narrator=False)
+            job, jobs, voice_plan, _manifest = self.fixture(
+                root, narrator=False, backend="moss-tts"
+            )
 
             with self.assertRaisesRegex(
                 PregenerationQueueError, "Choose a narrator voice"
@@ -204,6 +207,34 @@ class PregenerationInputStoreTest(unittest.TestCase):
 
             self.assertFalse(
                 any((root / "jobs" / job.job_id).glob("generation-input-*"))
+            )
+
+    def test_default_pocket_narrator_needs_no_manifest_or_human_decision(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected",))
+            voice_plan = VoicePlanStore(jobs).create(job, AppSettings())
+
+            result = PregenerationInputStore(jobs).materialize(job, voice_plan)
+
+            manifest = json.loads(result.voice_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["voices"],
+                [
+                    {
+                        "aliases": [],
+                        "character": "Narrator",
+                        "references": [],
+                        "speaker": "alba",
+                    }
+                ],
+            )
+            self.assertEqual(result.ready_items, 3)
+            self.assertEqual(
+                result.narrator_fallback_roles,
+                ("Hotelier", "Rhiannon"),
             )
 
     def test_changed_reference_is_rejected_before_publication(self):
