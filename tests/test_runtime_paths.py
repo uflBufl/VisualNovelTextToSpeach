@@ -12,11 +12,26 @@ from vntts.package_self_test import run_package_self_test
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
     find_bundled_espeak,
+    find_bundled_speech_runtime,
     get_bundle_root,
 )
 
 
 class RuntimePathsTest(unittest.TestCase):
+    def test_finds_allowlisted_speech_runtime_in_bundle(self):
+        with TemporaryDirectory() as temporary_directory:
+            bundle_root = Path(temporary_directory)
+            runtime = bundle_root / "speech-runtimes" / "pocket-tts"
+            runtime.mkdir(parents=True)
+
+            self.assertEqual(
+                find_bundled_speech_runtime("pocket-tts", bundle_root),
+                runtime.resolve(),
+            )
+            self.assertIsNone(
+                find_bundled_speech_runtime("unknown-backend", bundle_root)
+            )
+
     def test_configures_tesseract_from_frozen_bundle(self):
         with TemporaryDirectory() as temporary_directory:
             bundle_root = Path(temporary_directory)

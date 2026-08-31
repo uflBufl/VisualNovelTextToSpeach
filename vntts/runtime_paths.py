@@ -2,12 +2,26 @@ import os
 import sys
 from pathlib import Path
 
+_BUNDLED_SPEECH_RUNTIMES = frozenset(
+    {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay"}
+)
+
 
 def get_bundle_root():
     if not getattr(sys, "frozen", False):
         return None
     bundle_root = getattr(sys, "_MEIPASS", None)
     return Path(bundle_root).resolve() if bundle_root else None
+
+
+def find_bundled_speech_runtime(backend, bundle_root=None):
+    if backend not in _BUNDLED_SPEECH_RUNTIMES:
+        return None
+    bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
+    if bundle_root is None:
+        return None
+    runtime_root = (bundle_root / "speech-runtimes" / backend).resolve()
+    return runtime_root if runtime_root.is_dir() else None
 
 
 def find_bundled_espeak(bundle_root=None):

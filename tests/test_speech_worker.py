@@ -1,3 +1,4 @@
+import os
 import queue
 import sys
 import unittest
@@ -229,6 +230,56 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertEqual(resolved_root, root.resolve())
             self.assertEqual(resolved_python, interpreter)
             self.assertEqual(resolved_site, site_packages.resolve())
+
+    def test_runtime_path_prefers_frozen_bundle_over_source_checkout(self):
+        with TemporaryDirectory() as directory:
+            bundle_root = Path(directory).resolve()
+            root = bundle_root / "speech-runtimes" / "pocket-tts"
+            interpreter = root / (
+                "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+            )
+            interpreter.parent.mkdir(parents=True)
+            interpreter.touch()
+            site_packages = (
+                root / "Lib/site-packages"
+                if sys.platform == "win32"
+                else root / "lib/python9.9/site-packages"
+            )
+            site_packages.mkdir(parents=True)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    return_value=root,
+                ),
+                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+            ):
+                resolved_root, resolved_python, resolved_site = _runtime_paths(
+                    "pocket-tts"
+                )
+
+            self.assertEqual(resolved_root, root)
+            self.assertEqual(resolved_python, interpreter)
+            self.assertEqual(resolved_site, site_packages)
+
+    def test_missing_frozen_runtime_does_not_recommend_developer_uv_command(self):
+        with TemporaryDirectory() as directory:
+            bundle_root = Path(directory).resolve()
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    return_value=None,
+                ),
+                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                self.assertRaisesRegex(
+                    TTSConfigurationError, "complete release package"
+                ) as raised,
+            ):
+                _runtime_paths("pocket-tts")
+
+            self.assertNotIn("uv sync", str(raised.exception))
 
     def test_parent_launches_isolated_interpreter_without_host_support_paths(self):
         registry = CharacterVoiceRegistry()

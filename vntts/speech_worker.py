@@ -23,6 +23,7 @@ import numpy as np
 
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
+from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -65,8 +66,7 @@ _COMMON_REQUIRED_MODULES = (
     "durable_file",
 )
 _REQUIRED_MODULES = {
-    "pocket-tts": _COMMON_REQUIRED_MODULES
-    + ("pocket_tts", "torch", "safetensors"),
+    "pocket-tts": _COMMON_REQUIRED_MODULES + ("pocket_tts", "torch", "safetensors"),
     "chatterbox-nano": _COMMON_REQUIRED_MODULES
     + (
         "chatterbox",
@@ -161,15 +161,15 @@ def _runtime_paths(backend, runtime_directory=None):
         "moss-tts": "moss-tts",
         "moss-tts-delay": "moss-tts-delay",
     }[backend]
-    root = (
-        Path(
-            runtime_directory
-            or os.environ.get(configured, "")
-            or Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
-        )
-        .expanduser()
-        .resolve()
+    configured_root = runtime_directory or os.environ.get(configured, "")
+    bundle_root = get_bundle_root() if not configured_root else None
+    bundled_root = find_bundled_speech_runtime(backend) if not configured_root else None
+    default_root = (
+        bundle_root / "speech-runtimes" / folder
+        if bundle_root is not None
+        else Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
     )
+    root = Path(configured_root or bundled_root or default_root).expanduser().resolve()
     interpreter = root / (
         "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
     )
@@ -188,9 +188,14 @@ def _runtime_paths(backend, runtime_directory=None):
         or site_packages is None
         or sum(candidate.is_dir() for candidate in site_packages_candidates) != 1
     ):
+        if bundle_root is not None:
+            remediation = "Reinstall the application from a complete release package."
+        else:
+            remediation = (
+                f"Run `uv sync --project backends/{folder}`, then restart the app."
+            )
         raise TTSConfigurationError(
-            f"{backend} isolated runtime is unavailable at {root}. Run `uv sync "
-            f"--project backends/{folder}`, then restart the app."
+            f"{backend} isolated runtime is unavailable at {root}. {remediation}"
         )
     return root, interpreter, site_packages.resolve()
 
