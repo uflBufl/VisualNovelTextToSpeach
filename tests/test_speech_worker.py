@@ -317,6 +317,7 @@ class SpeechWorkerTest(unittest.TestCase):
             command = captured["command"]
             self.assertEqual(command[0], str(interpreter))
             self.assertIn("-I", command)
+            self.assertIn("-B", command)
             self.assertEqual(command[-1], str(Path(__file__).resolve().parents[1]))
             self.assertNotIn("site-packages", command)
             backend.shutdown()

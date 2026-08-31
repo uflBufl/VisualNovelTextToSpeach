@@ -563,6 +563,7 @@ class IsolatedSpeechBackend:
         command = [
             str(self.interpreter),
             "-I",
+            "-B",
             "-u",
             "-c",
             _BOOTSTRAP,

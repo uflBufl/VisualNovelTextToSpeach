@@ -10,6 +10,7 @@ from vntts.release_runtime import (
     _find_managed_interpreter,
     _probe_relocated_runtime,
     _prune_managed_runtime,
+    _prune_runtime_entrypoints,
     _replace_posix_interpreter_link,
     _runtime_interpreter,
     _runtime_site,
@@ -168,6 +169,79 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertFalse((distribution / "share").exists())
             self.assertFalse((distribution / "lib/pkgconfig").exists())
 
+    def test_prunes_unused_entrypoints_and_executable_data_bits(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            managed_root = root / "_python"
+            managed_interpreter = managed_root / "cpython/bin/python3.11"
+            managed_interpreter.parent.mkdir(parents=True)
+            managed_interpreter.write_bytes(b"python")
+            managed_interpreter.chmod(0o755)
+            managed_lock = managed_root / ".lock"
+            managed_lock.write_bytes(b"")
+            managed_temp = managed_root / ".temp"
+            managed_temp.mkdir()
+            managed_script = managed_interpreter.parent / "pydoc3"
+            managed_script.write_text("script", encoding="utf-8")
+            managed_script.chmod(0o755)
+            runtime = root / "pocket-tts"
+            runtime_lock = runtime / ".lock"
+            runtime_lock.parent.mkdir(parents=True)
+            runtime_lock.write_bytes(b"")
+            interpreter = runtime / "bin/python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.symlink_to(managed_interpreter)
+            entrypoint = runtime / "bin/vntts"
+            entrypoint.write_text("script", encoding="utf-8")
+            entrypoint.chmod(0o755)
+            executable_data = runtime / "lib/python3.11/example.py"
+            executable_data.parent.mkdir(parents=True)
+            executable_data.write_text("data", encoding="utf-8")
+            executable_data.chmod(0o755)
+
+            _prune_runtime_entrypoints(
+                managed_root,
+                managed_interpreter,
+                runtime,
+                "darwin",
+            )
+
+            self.assertTrue(interpreter.is_symlink())
+            self.assertFalse(entrypoint.exists())
+            self.assertFalse(managed_script.exists())
+            self.assertFalse(managed_lock.exists())
+            self.assertFalse(managed_temp.exists())
+            self.assertFalse(runtime_lock.exists())
+            self.assertTrue(managed_interpreter.stat().st_mode & 0o111)
+            self.assertFalse(executable_data.stat().st_mode & 0o111)
+
+    def test_windows_entrypoint_pruning_preserves_distribution_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            managed_root = root / "_python"
+            managed_interpreter = managed_root / "cpython/python.exe"
+            managed_interpreter.parent.mkdir(parents=True)
+            managed_interpreter.write_bytes(b"python")
+            runtime_library = managed_interpreter.parent / "python311.dll"
+            runtime_library.write_bytes(b"library")
+            runtime = root / "pocket-tts"
+            interpreter = runtime / "Scripts/python.exe"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"launcher")
+            entrypoint = runtime / "Scripts/vntts.exe"
+            entrypoint.write_bytes(b"entrypoint")
+
+            _prune_runtime_entrypoints(
+                managed_root,
+                managed_interpreter,
+                runtime,
+                "win32",
+            )
+
+            self.assertTrue(interpreter.exists())
+            self.assertFalse(entrypoint.exists())
+            self.assertTrue(runtime_library.exists())
+
     def test_runtime_site_rejects_ambiguous_posix_layout(self):
         with TemporaryDirectory() as directory:
             runtime = Path(directory)
@@ -199,6 +273,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                     platform_name="darwin",
                     run=runner,
                 )
+            self.assertIn("-B", runner.call_args.args[0])
 
     def test_sha256_is_stable(self):
         with TemporaryDirectory() as directory:

@@ -15,7 +15,7 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertIn("vntts.release_runtime", script)
                 self.assertIn("VNTTS_SPEECH_RUNTIMES_DIR", script)
 
-    def test_platform_specs_require_and_collect_staged_runtime(self):
+    def test_platform_specs_require_staged_runtime(self):
         for relative_path in (
             "packaging/macos/vntts.spec",
             "packaging/windows/vntts.spec",
@@ -24,7 +24,29 @@ class ReleasePackagingTest(unittest.TestCase):
                 spec = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertIn('os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]', spec)
                 self.assertIn('"runtime-manifest.json"', spec)
-                self.assertIn('"speech-runtimes"', spec)
+
+    def test_windows_spec_collects_staged_runtime(self):
+        spec = (PROJECT_ROOT / "packaging/windows/vntts.spec").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"speech-runtimes"', spec)
+
+    def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):
+        spec = (PROJECT_ROOT / "packaging/macos/vntts.spec").read_text(encoding="utf-8")
+        script = (PROJECT_ROOT / "scripts/build-macos.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            'datas.append((str(speech_runtimes_directory), "speech-runtimes"))',
+            spec,
+        )
+        self.assertIn("Contents/Resources/speech-runtimes", script)
+        self.assertIn("Contents/Frameworks/speech-runtimes", script)
+        self.assertIn(
+            'ln -s ../Resources/speech-runtimes "$runtime_bundle_link"', script
+        )
+        self.assertIn('find "$runtime_bundle_path" -type f -print0', script)
+        self.assertIn('codesign "${app_codesign_arguments[@]}" "$app_path"', script)
 
     def test_bundle_verifiers_clear_developer_runtime_overrides(self):
         for relative_path in (

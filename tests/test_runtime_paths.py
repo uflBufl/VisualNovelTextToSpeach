@@ -259,6 +259,7 @@ class RuntimePathsTest(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "module:torch"),
             ):
                 probe_bundled_pocket_runtime(bundle_root, runner)
+            self.assertIn("-B", runner.call_args.args[0])
 
     def test_pocket_render_probe_records_only_pinned_public_assets(self):
         with TemporaryDirectory() as temporary_directory:

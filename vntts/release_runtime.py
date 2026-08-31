@@ -96,6 +96,42 @@ def _prune_managed_runtime(managed_root: Path, managed_interpreter: Path) -> Non
             candidate.unlink()
 
 
+def _prune_runtime_entrypoints(
+    managed_root: Path,
+    managed_interpreter: Path,
+    runtime_root: Path,
+    platform_name: str,
+) -> None:
+    for root in (managed_root, runtime_root):
+        for candidate in root.iterdir():
+            if candidate.name.startswith("."):
+                if candidate.is_dir() and not candidate.is_symlink():
+                    shutil.rmtree(candidate)
+                else:
+                    candidate.unlink()
+    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
+    scripts = runtime_interpreter.parent
+    for candidate in scripts.iterdir():
+        if candidate != runtime_interpreter:
+            if candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+    if platform_name == "win32":
+        return
+    for candidate in managed_interpreter.parent.iterdir():
+        if candidate != managed_interpreter:
+            if candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+    for root in (managed_root, runtime_root):
+        for candidate in root.rglob("*"):
+            if candidate.is_file() and not candidate.is_symlink():
+                candidate.chmod(candidate.stat().st_mode & ~0o111)
+    managed_interpreter.chmod(managed_interpreter.stat().st_mode | 0o755)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -139,7 +175,7 @@ def _probe_relocated_runtime(
         interpreter = _runtime_interpreter(runtime_root, platform_name)
         completed = _run_checked(
             run,
-            (interpreter, "-I", "-c", _probe_script()),
+            (interpreter, "-I", "-B", "-c", _probe_script()),
             capture_output=True,
         )
         report = json.loads(completed.stdout)
@@ -251,6 +287,12 @@ def stage_pocket_runtime(
             "--compile-bytecode",
             project_root,
         ),
+    )
+    _prune_runtime_entrypoints(
+        managed_root,
+        managed_interpreter,
+        runtime_root,
+        platform_name,
     )
     probe = _probe_relocated_runtime(
         destination,

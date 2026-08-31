@@ -84,6 +84,33 @@ uv run --frozen pyinstaller --noconfirm --clean \
     packaging/macos/vntts.spec
 
 app_path="$dist_path/Visual Novel Text to Speech.app"
+runtime_bundle_path="$app_path/Contents/Resources/speech-runtimes"
+runtime_bundle_link="$app_path/Contents/Frameworks/speech-runtimes"
+if [[ -e $runtime_bundle_path || -e $runtime_bundle_link || -L $runtime_bundle_link ]]; then
+    echo "PyInstaller unexpectedly collected the speech runtime" >&2
+    exit 1
+fi
+ditto "$speech_runtimes_path" "$runtime_bundle_path"
+ln -s ../Resources/speech-runtimes "$runtime_bundle_link"
+
+runtime_signing_identity=${signing_identity:--}
+runtime_codesign_arguments=(--force --sign "$runtime_signing_identity")
+app_codesign_arguments=(--force --sign "$runtime_signing_identity")
+if [[ -n $signing_identity ]]; then
+    runtime_codesign_arguments+=(--timestamp --options runtime)
+    app_codesign_arguments+=(
+        --timestamp
+        --options runtime
+        --entitlements "$project_root/packaging/macos/entitlements.plist"
+    )
+fi
+while IFS= read -r -d '' candidate; do
+    if file "$candidate" | grep -q 'Mach-O'; then
+        codesign "${runtime_codesign_arguments[@]}" "$candidate"
+    fi
+done < <(find "$runtime_bundle_path" -type f -print0)
+codesign "${app_codesign_arguments[@]}" "$app_path"
+
 report_path="$project_root/dist/VisualNovelTextToSpeech-macos-$target_arch-self-test.json"
 scripts/verify-macos-bundle.sh \
     "$app_path" \

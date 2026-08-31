@@ -82,7 +82,7 @@ def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
             f"Pocket runtime is outside the frozen bundle: {runtime_root}"
         )
     completed = runner(
-        [str(interpreter), "-I", "-c", _probe_script()],
+        [str(interpreter), "-I", "-B", "-c", _probe_script()],
         capture_output=True,
         check=True,
         text=True,

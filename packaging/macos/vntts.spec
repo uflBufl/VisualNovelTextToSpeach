@@ -34,7 +34,6 @@ for required_path in (
         raise SystemExit(f"Required macOS dependency is missing: {required_path}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
-datas.append((str(speech_runtimes_directory), "speech-runtimes"))
 datas.extend(
     (
         str(source),
