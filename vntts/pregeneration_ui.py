@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_content_importer import (
     GameContentImportCancelled,
@@ -30,6 +31,11 @@ from vntts.pregeneration_setup import (
     estimate_preparation,
     inspect_story_index,
 )
+from vntts.pregeneration_voices import (
+    PregenerationVoiceCancelled,
+    VoiceDecisionStore,
+    VoicePlanStore,
+)
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -39,6 +45,7 @@ class OfflineAudioPreparationDialog(QDialog):
         *,
         discovery=None,
         job_store=None,
+        voice_plan_store=None,
         importer=None,
         thread_pool=None,
         parent=None,
@@ -47,13 +54,27 @@ class OfflineAudioPreparationDialog(QDialog):
         self.settings = settings
         self.discovery = discovery or (lambda: discover_game_content(settings))
         self.job_store = job_store or PregenerationJobStore()
+        self.voice_plan_store = voice_plan_store or VoicePlanStore(
+            self.job_store,
+            decisions=VoiceDecisionStore(
+                get_local_data_directory()
+                / "pregeneration"
+                / "voice-decisions.json"
+            ),
+        )
         self.importer = importer or Reverse1999GameImporter()
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
+        self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.voice_runner.finished.connect(self._voice_plan_finished)
         self.import_cancel_event = Event()
+        self.voice_cancel_event = Event()
         self.importing = False
+        self.planning_voices = False
+        self._close_after_voice_cancel = False
         self._content = ()
         self._job = None
+        self._voice_plan = None
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(700, 500)
 
@@ -256,6 +277,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def job(self):
         return self._job
 
+    def voice_plan(self):
+        return self._voice_plan
+
     def _source_changed(self, _index):
         self._populate_stories(self.current_content())
 
@@ -331,6 +355,37 @@ class OfflineAudioPreparationDialog(QDialog):
         except (OSError, PregenerationSetupError) as error:
             self.resume_status.setText(f"Unable to save preparation: {error}")
             return
+        self.planning_voices = True
+        self._close_after_voice_cancel = False
+        self.voice_cancel_event.clear()
+        self._set_import_controls(False)
+        self.cancel_button.setText("Cancel voice matching")
+        self.cancel_button.setEnabled(True)
+        self.resume_status.setText(
+            "Matching known character voices and narrator fallbacks..."
+        )
+        self.voice_runner.start(
+            self.voice_plan_store.create,
+            self._job,
+            self.settings,
+            cancellation=self.voice_cancel_event,
+        )
+
+    def _voice_plan_finished(self, plan, error):
+        self.planning_voices = False
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        if error is not None:
+            if isinstance(error, PregenerationVoiceCancelled):
+                if self._close_after_voice_cancel:
+                    self.reject()
+                else:
+                    self.resume_status.setText("Voice matching cancelled.")
+                return
+            self.resume_status.setText(f"Unable to match character voices: {error}")
+            return
+        self._voice_plan = plan
         self.accept()
 
     def _import_finished(self, content, error):
@@ -379,6 +434,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
 
     def _cancel_or_reject(self):
+        if self.planning_voices:
+            self._close_after_voice_cancel = True
+            self.voice_cancel_event.set()
+            self.cancel_button.setEnabled(False)
+            self.resume_status.setText("Cancelling voice matching...")
+            return
         if not self.importing:
             self.reject()
             return
@@ -387,11 +448,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.setText("Cancelling game import...")
 
     def closeEvent(self, event: QCloseEvent):
+        if self.planning_voices:
+            self._cancel_or_reject()
+            event.ignore()
+            return
         if self.importing:
             self._cancel_or_reject()
             event.ignore()
             return
         self.import_runner.cancel()
+        self.voice_runner.cancel()
         super().closeEvent(event)
 
 

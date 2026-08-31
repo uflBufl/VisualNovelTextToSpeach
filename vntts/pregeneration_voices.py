@@ -30,6 +30,10 @@ class PregenerationVoiceError(RuntimeError):
     """Offline preparation cannot establish trustworthy voice routes."""
 
 
+class PregenerationVoiceCancelled(PregenerationVoiceError):
+    """The player cancelled voice planning before publication."""
+
+
 @dataclass(frozen=True)
 class VoiceGroup:
     group_id: str
@@ -168,8 +172,10 @@ class VoicePlanStore:
         self.decisions = decisions
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def create(self, job, settings, *, manifest_path=None):
+    def create(self, job, settings, *, manifest_path=None, cancellation=None):
+        _raise_if_cancelled(cancellation)
         document = _load_bound_story(job)
+        _raise_if_cancelled(cancellation)
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256 = _load_registry(manifest_path)
         controls = _synthesis_controls(settings)
@@ -206,6 +212,7 @@ class VoicePlanStore:
             )
             for group_id, values in grouped.items()
         )
+        _raise_if_cancelled(cancellation)
         plan = VoicePlan(
             job_id=job.job_id,
             created_at=self.clock().astimezone(timezone.utc).isoformat(),
@@ -304,10 +311,8 @@ class VoicePlanStore:
             source_id=source_id,
             source_character=candidate.character if candidate is not None else None,
             source_speaker=candidate.speaker if candidate is not None else None,
-            reference_sha256s=(
-                tuple(sha256_file(path) for path in candidate.references)
-                if candidate is not None
-                else ()
+            reference_sha256s=tuple(
+                (selected_identity or {}).get("references", ())
             ),
             decision_context_sha256=decision_context_sha256,
             control_sha256=_digest(
@@ -476,7 +481,13 @@ def _required_text(value, label):
     return value.strip()
 
 
+def _raise_if_cancelled(cancellation):
+    if cancellation is not None and cancellation.is_set():
+        raise PregenerationVoiceCancelled("Offline voice matching was cancelled")
+
+
 __all__ = [
+    "PregenerationVoiceCancelled",
     "PregenerationVoiceError",
     "VoiceDecisionStore",
     "VoiceGroup",

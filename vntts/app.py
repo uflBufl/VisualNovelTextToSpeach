@@ -1989,12 +1989,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog = None
             return None
         job = dialog.job()
+        voice_plan = dialog.voice_plan()
         self.pregeneration_dialog = None
-        if job is None:
+        if job is None or voice_plan is None:
             return None
         self.set_status(
             f"Offline preparation saved for {job.estimate.selected_lines} lines. "
-            "Voice matching is the next step."
+            f"Matched {len(voice_plan.groups)} voice groups; "
+            f"{voice_plan.narrator_fallback_count} will use narrator. "
+            "Audio generation is the next step."
         )
         return job
 

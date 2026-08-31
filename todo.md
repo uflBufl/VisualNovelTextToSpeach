@@ -11,18 +11,19 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Continue the existing `Prepare offline audio` flow from its durable story
-      selection into voice matching, generation progress and final activation.
-      Preserve cancellation/restart resume throughout and keep workspaces,
-      manifests, queue IDs, model IDs, seeds, retries and publication commands
-      out of the player UI.
-- [ ] Build the minimal voice-confirmation stage. Reuse source audio, known
-      character aliases and prior checksum-bound decisions automatically; group
-      remaining references by speaker/portrait/age evidence; and ask for at most
-      one short synthesized audition per genuinely ambiguous voice group. Offer
-      `Use this voice`, `Try another`, and `Use narrator` without requiring raw
-      source-audio or per-line review. Persist decisions for later stories while
-      their reference/model controls remain unchanged.
+- [ ] Continue `Prepare offline audio` from its durable, checksum-bound story and
+      automatic voice plan into ambiguous-voice auditions, generation progress
+      and final activation. Preserve cancellation/restart resume throughout and
+      keep workspaces, manifests, queue IDs, model IDs, seeds, retries and
+      publication commands out of the player UI.
+- [ ] Build the remaining minimal voice-confirmation UI. For each genuinely
+      ambiguous voice group, synthesize at most one short audition and offer
+      `Use this voice`, `Try another`, and `Use narrator`; do not expose raw
+      source-audio or per-line review. Persist explicit decisions for later
+      stories while their group evidence, references and model controls remain
+      unchanged. Exact source audio, known aliases, configured choices and
+      missing-role narrator fallbacks are already resolved automatically and
+      must not become confirmation prompts again.
 - [ ] Add an automatic generation and quality pipeline. Select a supported local
       backend/profile from hardware capabilities, generate in the background,
       classify truncation, repetition, artifacts, clipping, abnormal silence and

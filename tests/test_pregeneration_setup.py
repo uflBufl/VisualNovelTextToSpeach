@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
 
 from vntts.game_content_importer import (  # noqa: E402
@@ -24,6 +24,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
     inspect_story_index,
 )
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
+from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 
@@ -94,6 +95,14 @@ def write_story_index(root):
         ],
     )
     return path
+
+
+class ManualThreadPool:
+    def __init__(self):
+        self.tasks = []
+
+    def start(self, task):
+        self.tasks.append(task)
 
 
 class PregenerationSetupTest(unittest.TestCase):
@@ -183,10 +192,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
+            pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=store,
+                thread_pool=pool,
             )
             dialog.show()
             self.application.processEvents()
@@ -203,9 +214,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertNotIn("queue", dialog.summary.text().casefold())
 
             dialog.continue_button.click()
+            self.assertTrue(dialog.planning_voices)
+            self.assertFalse(dialog.stories.isEnabled())
+            self.assertEqual(dialog.cancel_button.text(), "Cancel voice matching")
+            pool.tasks.pop().run()
+            self.application.processEvents()
 
             self.assertIsNotNone(dialog.job())
+            self.assertIsNotNone(dialog.voice_plan())
+            self.assertFalse(dialog.planning_voices)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
+            self.assertTrue(
+                (store.path_for(dialog.job().job_id).parent / "voice-plan.json").is_file()
+            )
             dialog.deleteLater()
 
     def test_reopening_restores_the_last_story_selection(self):
@@ -239,13 +260,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         dialog.deleteLater()
 
     def test_installed_game_import_runs_off_ui_thread_and_adds_content(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
-
         with TemporaryDirectory() as temporary_directory:
             content = inspect_story_index(
                 write_story_index(Path(temporary_directory) / "content")
@@ -286,13 +300,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_import_cancel_waits_for_worker_terminal_result(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
-
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
 
@@ -322,6 +329,38 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self.assertFalse(dialog.importing)
         self.assertEqual(dialog.source_status.text(), "Game import cancelled.")
         dialog.deleteLater()
+
+    def test_voice_matching_cancel_waits_for_worker_and_closes_cleanly(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            voice_plan_store = Mock()
+
+            def create(_job, _settings, *, cancellation):
+                self.assertTrue(cancellation.is_set())
+                raise PregenerationVoiceCancelled("cancelled")
+
+            voice_plan_store.create.side_effect = create
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_plan_store=voice_plan_store,
+                thread_pool=pool,
+            )
+
+            dialog.continue_button.click()
+            dialog.cancel_button.click()
+
+            self.assertTrue(dialog.planning_voices)
+            self.assertIn("Cancelling voice", dialog.resume_status.text())
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertFalse(dialog.planning_voices)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            dialog.deleteLater()
 
 
 if __name__ == "__main__":

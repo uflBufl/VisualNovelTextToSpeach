@@ -122,6 +122,11 @@ reference does not invalidate compatible work. Future player decisions use a
 separate group/evidence/control digest and are never inferred from filenames or
 mutable paths.
 
+The potentially large story-index read and reference hashing run outside the Qt
+thread while the selection dialog remains visibly busy. Cancelling requests a
+cooperative stop and keeps the dialog open until that exact worker reaches a
+terminal result; a cancelled or failed plan never closes as if it succeeded.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic
