@@ -28,6 +28,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationWorker,
 )
+from vntts.pregeneration_pack import OfflinePackPublisher
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueCancelled,
@@ -60,6 +61,7 @@ class OfflineAudioPreparationDialog(QDialog):
         generator=None,
         recovery=None,
         acceptance=None,
+        publisher=None,
         importer=None,
         thread_pool=None,
         parent=None,
@@ -80,6 +82,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
+        self.publisher = publisher or OfflinePackPublisher()
         self.importer = importer or Reverse1999GameImporter()
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
@@ -93,6 +96,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovery_runner.finished.connect(self._recovery_finished)
         self.acceptance_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.acceptance_runner.finished.connect(self._acceptance_finished)
+        self.publication_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.publication_runner.finished.connect(self._publication_finished)
         self.import_cancel_event = Event()
         self.voice_cancel_event = Event()
         self.importing = False
@@ -101,6 +106,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generating = False
         self.recovering = False
         self.accepting_audio = False
+        self.publishing_pack = False
         self._close_after_voice_cancel = False
         self._content = ()
         self._job = None
@@ -109,6 +115,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._generation_result = None
         self._recovery_result = None
         self._acceptance_result = None
+        self._pack_result = None
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(700, 500)
 
@@ -325,6 +332,9 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def acceptance_result(self):
         return self._acceptance_result
+
+    def pack_result(self):
+        return self._pack_result
 
     def _source_changed(self, _index):
         self._populate_stories(self.current_content())
@@ -566,6 +576,41 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._acceptance_result = result
         self._generation_result = result.generation
+        self._start_publication(result.generation)
+
+    def _start_publication(self, generation_result):
+        self.publishing_pack = True
+        self._set_import_controls(False)
+        self.cancel_button.setText("Cancel final save")
+        self.cancel_button.setEnabled(True)
+        self.resume_status.setText(
+            "Creating and checking your offline game pack..."
+        )
+        self.publication_runner.start(
+            self.publisher.publish,
+            self._job,
+            self._generation_input,
+            generation_result,
+            self.voice_cancel_event,
+        )
+
+    def _publication_finished(self, result, error):
+        self.publishing_pack = False
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        if self._close_after_voice_cancel:
+            self.reject()
+            return
+        if error is not None:
+            if isinstance(error, OfflineGenerationCancelled):
+                self.resume_status.setText(
+                    "Final save cancelled. Continue later to reuse prepared lines."
+                )
+                return
+            self.resume_status.setText(f"Unable to create offline game pack: {error}")
+            return
+        self._pack_result = result
         self.accept()
 
     def _import_finished(self, content, error):
@@ -620,6 +665,7 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.generating
             or self.recovering
             or self.accepting_audio
+            or self.publishing_pack
         ):
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
@@ -627,6 +673,8 @@ class OfflineAudioPreparationDialog(QDialog):
             stage = (
                 "automatic recovery"
                 if self.recovering
+                else "final save"
+                if self.publishing_pack
                 else "final checks"
                 if self.accepting_audio
                 else "generation"
@@ -651,6 +699,7 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.generating
             or self.recovering
             or self.accepting_audio
+            or self.publishing_pack
         ):
             self._cancel_or_reject()
             event.ignore()
@@ -665,6 +714,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generation_runner.cancel()
         self.recovery_runner.cancel()
         self.acceptance_runner.cancel()
+        self.publication_runner.cancel()
         super().closeEvent(event)
 
 
