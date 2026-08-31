@@ -5,7 +5,7 @@ reads it aloud with Pocket TTS or another configured speech engine.
 
 ## Requirements
 
-- Python 3.11 (tested; newer versions are not yet verified)
+- Python 3.11, 3.12, or 3.13 (covered by the authoring CLI compatibility matrix)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with English language data
 - [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)

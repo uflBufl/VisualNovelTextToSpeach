@@ -19,7 +19,7 @@ class AuthoringCliDispatchTest(unittest.TestCase):
         parser = create_parser()
         contract = parser_contract(parser)
 
-        self.assertEqual(sorted(contract), fixture["commands"])
+        self.assertEqual(list(contract), fixture["commands"])
         self.assertEqual(len(contract), fixture["command_count"])
         self.assertEqual(parser_contract_sha256(parser), fixture["sha256"])
 
@@ -42,11 +42,13 @@ class AuthoringCliDispatchTest(unittest.TestCase):
         self.assertEqual(delivery.kind, "dialogue")
 
     def test_every_migrated_command_has_one_family_owner(self):
+        parser_commands = set(parser_contract(create_parser()))
         commands = [
             command for family in COMMAND_FAMILIES for command in family.commands
         ]
 
         self.assertEqual(len(commands), len(set(commands)))
+        self.assertEqual(parser_commands, set(commands))
 
     def test_dispatch_routes_once_and_returns_none_for_unmigrated_command(self):
         handler = Mock(return_value=7)

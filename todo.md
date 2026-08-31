@@ -108,12 +108,6 @@ intentional omission as distinct terminal authorities.
       packaged path without source-tree assumptions, and make package self-test
       initialize and render through the effective default backend on a clean
       machine without uv, a checkout or backend environment variables.
-- [ ] Strengthen the authoring CLI compatibility contract. Include all command
-      names in their public help order in the hashed fixture, and assert exact
-      equality between parser commands and the union of `COMMAND_FAMILIES` as
-      well as single ownership. Add a supported-Python CI matrix or stop
-      mutating private `argparse` fields before claiming unrestricted
-      Python-3.11-and-newer compatibility.
 
 ## P2 - Resolve project-wide UX and runtime follow-ups
 

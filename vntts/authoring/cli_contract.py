@@ -146,7 +146,7 @@ def parser_contract(parser: argparse.ArgumentParser) -> dict:
     )
     helps = {action.dest: action.help for action in subparsers._choices_actions}
     commands = {}
-    for name, command_parser in sorted(subparsers.choices.items()):
+    for name, command_parser in subparsers.choices.items():
         commands[name] = {
             "help": helps.get(name),
             "description": command_parser.description,
@@ -172,8 +172,9 @@ def parser_contract(parser: argparse.ArgumentParser) -> dict:
 
 
 def parser_contract_sha256(parser: argparse.ArgumentParser) -> str:
+    contract = parser_contract(parser)
     payload = json.dumps(
-        parser_contract(parser),
+        {"command_order": list(contract), "commands": contract},
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
