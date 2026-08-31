@@ -42,9 +42,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       omission as distinct terminal routes; reuse unchanged work across chapters;
       report coverage in player language; and allow play with a partially prepared
       pack while remaining chapters continue later.
-  - [ ] Stage a portable identity-addressed pack from the selected story,
-        effective voices, approved WAVs and explicit live-fallback ledger;
-        preflight it through the public runtime importer and publish atomically.
   - [ ] Save the validated pack into settings with `prefer-generated`, apply it
         to the running controller in the background and keep the prior pack
         active if publication, settings persistence or runtime apply fails.

@@ -29,6 +29,7 @@ LIVE_FALLBACK_REASONS = frozenset(
         "reference_unavailable_after_audit",
         "generated_audio_rejected",
         "generation_hypotheses_exhausted",
+        "automatic_recovery_exhausted",
     }
 )
 SOURCE_AUDIO_COMPLETION_MARGIN_SECONDS = 0.35
@@ -1046,7 +1047,7 @@ def _live_fallback_index(metadata):
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
         fields = common_fields | (
-            {"evidence"} if version in {2, 3, 4, 5, 6, 7} else set()
+            {"evidence"} if version in {2, 3, 4, 5, 6, 7, 8} else set()
         )
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
@@ -1069,6 +1070,7 @@ def _live_fallback_index(metadata):
             5,
             6,
             7,
+            8,
         }:
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
@@ -1142,6 +1144,16 @@ def _live_fallback_index(metadata):
                 raw["requested_voice_character"],
                 raw["previous_result_sha256"],
             )
+        elif version == 8:
+            if raw["reason"] != "automatic_recovery_exhausted":
+                raise ValueError(
+                    "Generated-audio automatic recovery reason is unsupported"
+                )
+            _validate_automatic_recovery_fallback_evidence(
+                raw["evidence"],
+                raw["queue_id"],
+                raw["previous_result_sha256"],
+            )
         elif version in {2, 3}:
             if raw["reason"] != "generation_hypotheses_exhausted":
                 raise ValueError(
@@ -1173,6 +1185,67 @@ def _live_fallback_index(metadata):
             raise ValueError("Generated-audio live fallback identity is duplicated")
         indexed[identity] = decision
     return indexed
+
+
+def _validate_automatic_recovery_fallback_evidence(
+    evidence,
+    queue_id,
+    previous_result_sha256,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "queue_sha256",
+        "queue_id",
+        "base_result_sha256",
+        "base_result",
+        "recovery_action",
+        "failure_kind",
+    }
+    base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
+    failure = base_result.get("failure") if isinstance(base_result, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema")
+        != "vntts.self-service-automatic-recovery-live-fallback-evidence"
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or not _lowercase_sha256(evidence.get("queue_sha256"))
+        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+        or not isinstance(base_result, dict)
+        or base_result.get("status") != "failed"
+        or base_result.get("provider") != "pocket-tts"
+        or base_result.get("model") != "pocket-tts"
+        or base_result.get("generation_profile") != "default"
+        or not isinstance(failure, dict)
+        or failure.get("kind") != evidence.get("failure_kind")
+        or failure.get("kind") in {"cancelled", "interrupted"}
+        or evidence.get("recovery_action")
+        not in {
+            "bounded_seed_retry",
+            "offline_fallback_backend",
+            "inline_pause_marker_comparison",
+            "reference_comparison",
+            "reference_discovery",
+            "backend_diagnosis",
+            "provenance_recovery_or_regeneration",
+        }
+    ):
+        raise ValueError(
+            "Generated-audio automatic recovery evidence is malformed"
+        )
+    base_result_sha256 = hashlib.sha256(
+        json.dumps(
+            base_result,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    if base_result_sha256 != evidence["base_result_sha256"]:
+        raise ValueError("Generated-audio automatic recovery evidence changed")
 
 
 def _audio_event_omission_index(metadata):

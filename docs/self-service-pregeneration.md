@@ -206,6 +206,18 @@ chapter, and the work remains off the Qt thread. This removes mandatory per-line
 approval without weakening the fail-closed manifest publication boundary;
 expert cohort review remains available outside the player workflow.
 
+Final publication is also a background, identity-addressed operation. It
+requires every selected generation item to be either automatically approved or
+an explicit live-Pocket fallback, then copies only the selected story, effective
+voice references, approved WAVs and optional projected ASR evidence into a new
+portable game-pack directory. The generated-audio manifest keeps generated WAVs
+and live fallbacks as separate routes. Before the directory can become visible,
+the public game-pack importer, semantic-evidence validator and runtime generated
+audio loader all reopen the staged bytes. Publication uses a no-overwrite atomic
+rename; repeating an identical terminal state reuses the same validated pack,
+while a changed state produces a new identity and cannot mutate the earlier
+pack.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic
