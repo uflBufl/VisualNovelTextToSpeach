@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -5,7 +6,10 @@ from tempfile import TemporaryDirectory
 from threading import Event
 
 from vntts_artifacts import write_story_index_document
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.story_index import load_story_index_document
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.pregeneration_queue import (
@@ -15,6 +19,12 @@ from vntts.pregeneration_queue import (
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import VoicePlanStore
 from vntts.settings import AppSettings
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    canonical_document_sha256,
+    load_source_audio_semantic_evidence,
+    semantic_text_sha256,
+)
 
 
 def write_content(root):
@@ -142,6 +152,72 @@ def write_manifest(root):
     return path
 
 
+def add_semantic_evidence(story_path):
+    story = load_story_index_document(story_path)
+    records = [record.to_record() for record in story.records]
+    entries = []
+    for index, line_id in enumerate(("original", "not-selected"), start=1):
+        record = next(value for value in records if value["line_id"] == line_id)
+        media_sha256 = hashlib.sha256(f"media-{index}".encode()).hexdigest()
+        text_sha256 = hashlib.sha256(record["text"].encode()).hexdigest()
+        record["text_sha256"] = text_sha256
+        entry = {
+            "locale": "en",
+            "media_id": index,
+            "media_sha256": media_sha256,
+            "displayed_text_sha256": text_sha256,
+            "normalized_displayed_text_sha256": semantic_text_sha256(record["text"]),
+            "observed_transcript": record["text"],
+            "normalized_observed_text_sha256": semantic_text_sha256(record["text"]),
+            "verdict": "full",
+            "reason": "exact-normalized-asr-transcript",
+            "method": SEMANTIC_EVIDENCE_METHOD,
+            "model_sha256": "2" * 64,
+            "source_line_ids": [line_id],
+        }
+        entry["entry_id"] = canonical_document_sha256(
+            {key: value for key, value in entry.items() if key != "source_line_ids"}
+        )
+        record.update(
+            source_audio_duration_media_sha256=media_sha256,
+            source_audio_completeness="full",
+            source_audio_completeness_reason="exact-normalized-asr-transcript",
+            source_audio_semantic_evidence_entry_id=entry["entry_id"],
+        )
+        entries.append(entry)
+    evidence = {
+        "schema": "r1999.source-audio-semantic-evidence",
+        "schema_version": 1,
+        "locale": "en",
+        "source_story_index_sha256": "3" * 64,
+        "model": {
+            "kind": "whisper",
+            "snapshot": "synthetic",
+            "sha256": "2" * 64,
+            "device": "cpu",
+            "decoding": "deterministic_greedy_default",
+        },
+        "entries": entries,
+    }
+    evidence["evidence_id"] = canonical_document_sha256(evidence)
+    evidence["generated_at"] = "2026-08-31T00:00:00+00:00"
+    for record in records:
+        if record.get("source_audio_semantic_evidence_entry_id") is not None:
+            record["source_audio_semantic_evidence_id"] = evidence["evidence_id"]
+    evidence_path = story_path.parent / "source-audio-semantic-evidence.json"
+    atomic_write_json(evidence_path, evidence, sort_keys=True)
+    metadata = dict(story.metadata)
+    metadata["source_audio_semantics"] = {
+        "evidence_id": evidence["evidence_id"],
+        "evidence_sha256": sha256_file(evidence_path),
+        "method": SEMANTIC_EVIDENCE_METHOD,
+        "selected_chapters": ["1", "2"],
+        "applied_count": 2,
+    }
+    write_story_index_document(story_path, metadata, records)
+    return story_path
+
+
 class PregenerationInputStoreTest(unittest.TestCase):
     def fixture(self, root, *, narrator=True, backend="pocket-tts"):
         content = inspect_story_index(write_content(root / "content"))
@@ -179,6 +255,39 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 for relative in voice["references"]:
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
+
+    def test_projects_semantic_evidence_to_selected_lines(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(
+                add_semantic_evidence(write_content(root / "content"))
+            )
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected",))
+            manifest = write_manifest(root / "voices")
+            settings = AppSettings(
+                speech_backend="pocket-tts",
+                voice_assignments={"Narrator": "character:centurion"},
+            )
+            plan = VoicePlanStore(jobs).create(
+                job,
+                settings,
+                manifest_path=manifest,
+            )
+
+            result = PregenerationInputStore(jobs).materialize(job, plan)
+            evidence = load_source_audio_semantic_evidence(
+                result.source_audio_semantic_evidence,
+                result.story_index,
+            )
+            selected_story = load_story_index_document(result.story_index)
+
+        self.assertEqual(len(evidence["entries"]), 1)
+        self.assertEqual(evidence["entries"][0]["source_line_ids"], ["original"])
+        self.assertEqual(
+            selected_story.metadata["source_audio_semantics"]["applied_count"],
+            1,
+        )
 
     def test_same_identity_resumes_without_rewriting(self):
         with TemporaryDirectory() as temporary_directory:

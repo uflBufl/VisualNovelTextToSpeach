@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
@@ -32,6 +34,12 @@ from vntts.authoring.queue_builder import (
     publish_generation_queue,
 )
 from vntts.pregeneration_voices import VoicePlan
+from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidenceError,
+    canonical_document_sha256,
+    load_source_audio_semantic_evidence,
+    validate_story_semantic_evidence,
+)
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -40,7 +48,7 @@ from vntts.voices import (
     synthesis_character_for_line,
 )
 
-generation_input_schema_version = 1
+generation_input_schema_version = 2
 
 
 class PregenerationQueueError(RuntimeError):
@@ -62,6 +70,7 @@ class PregenerationInput:
     queue_items: int
     ready_items: int
     narrator_fallback_roles: tuple[str, ...]
+    source_audio_semantic_evidence: Path | None = None
 
 
 class PregenerationInputStore:
@@ -82,6 +91,7 @@ class PregenerationInputStore:
         effective = _effective_voice_routes(plan, registry)
         identity = _digest(
             {
+                "generation_input_schema_version": generation_input_schema_version,
                 "job_id": job.job_id,
                 "story_index_sha256": job.story_index_sha256,
                 "selected_line_ids": list(job.selected_line_ids),
@@ -108,11 +118,24 @@ class PregenerationInputStore:
             story_path = staging / "story-index.jsonl"
             voice_path = staging / "voice-manifest.json"
             queue_path = staging / "queue.jsonl"
-            write_story_index_document(
-                story_path,
-                story.metadata,
-                [record.to_record() for record in selected],
+            story_metadata, selected_records, semantic_evidence = (
+                _project_source_audio_semantics(
+                    Path(job.story_index).expanduser().resolve(),
+                    story.metadata,
+                    [record.to_record() for record in selected],
+                    staging,
+                )
             )
+            write_story_index_document(story_path, story_metadata, selected_records)
+            if semantic_evidence is not None:
+                validate_story_semantic_evidence(
+                    story_path,
+                    semantic_evidence,
+                    load_source_audio_semantic_evidence(
+                        semantic_evidence,
+                        story_path,
+                    ),
+                )
             _raise_if_cancelled(cancellation)
             voices = _write_effective_voices(staging, effective)
             write_voice_manifest(
@@ -140,6 +163,11 @@ class PregenerationInputStore:
                 "queue_items": queue_plan.summary.queue_items,
                 "ready_items": ready_items,
                 "narrator_fallback_roles": list(effective["narrator_roles"]),
+                "source_audio_semantic_evidence_sha256": (
+                    None
+                    if semantic_evidence is None
+                    else sha256_file(semantic_evidence)
+                ),
             }
             write_versioned_json(
                 staging / "input.json", generation_input_schema_version, fields
@@ -381,6 +409,12 @@ def _load_existing(directory, identity):
             isinstance(value, str) and value.strip() for value in roles
         ):
             raise ValueError("narrator fallback roles are invalid")
+        semantic_sha256 = document.get("source_audio_semantic_evidence_sha256")
+        semantic_path = None
+        if semantic_sha256 is not None:
+            semantic_path = directory / "source-audio-semantic-evidence.json"
+            if sha256_file(semantic_path) != semantic_sha256:
+                raise ValueError("source audio semantic evidence changed")
         return PregenerationInput(
             identity=identity,
             directory=directory,
@@ -391,6 +425,7 @@ def _load_existing(directory, identity):
             queue_items=_nonnegative_int(document.get("queue_items"), "queue items"),
             ready_items=_nonnegative_int(document.get("ready_items"), "ready items"),
             narrator_fallback_roles=tuple(roles),
+            source_audio_semantic_evidence=semantic_path,
         )
     except (OSError, TypeError, ValueError) as error:
         raise PregenerationQueueError(
@@ -415,6 +450,88 @@ def _digest(value):
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _project_source_audio_semantics(
+    source_story_path,
+    metadata,
+    records,
+    staging,
+):
+    binding = metadata.get("source_audio_semantics")
+    if not isinstance(binding, dict):
+        return metadata, records, None
+    source = source_story_path.parent / "source-audio-semantic-evidence.json"
+    try:
+        evidence = load_source_audio_semantic_evidence(source, source_story_path)
+    except (OSError, SourceAudioSemanticEvidenceError, ValueError) as error:
+        raise PregenerationQueueError(
+            f"Selected dialogue source-audio evidence is invalid: {error}"
+        ) from error
+    selected_line_ids = {record.get("line_id") for record in records}
+    selected_entry_ids = {
+        record.get("source_audio_semantic_evidence_entry_id")
+        for record in records
+        if record.get("source_audio_semantic_evidence_entry_id") is not None
+    }
+    if not selected_entry_ids:
+        projected_metadata = copy.deepcopy(metadata)
+        projected_metadata.pop("source_audio_semantics", None)
+        return projected_metadata, records, None
+    projected_entries = []
+    for entry in evidence["entries"]:
+        if entry.get("entry_id") not in selected_entry_ids:
+            continue
+        projected = copy.deepcopy(entry)
+        projected["source_line_ids"] = sorted(
+            set(projected.get("source_line_ids", ())) & selected_line_ids
+        )
+        if not projected["source_line_ids"]:
+            raise PregenerationQueueError(
+                "Selected source-audio evidence lost its dialogue binding"
+            )
+        projected_entries.append(projected)
+    if {entry["entry_id"] for entry in projected_entries} != selected_entry_ids:
+        raise PregenerationQueueError(
+            "Selected dialogue source-audio evidence is incomplete"
+        )
+    projected_evidence = {
+        key: copy.deepcopy(value)
+        for key, value in evidence.items()
+        if key not in {"evidence_id", "generated_at", "entries"}
+    }
+    projected_evidence["entries"] = projected_entries
+    projected_evidence["evidence_id"] = canonical_document_sha256(
+        projected_evidence
+    )
+    projected_evidence["generated_at"] = evidence["generated_at"]
+    projected_records = copy.deepcopy(records)
+    for record in projected_records:
+        if record.get("source_audio_semantic_evidence_entry_id") is not None:
+            record["source_audio_semantic_evidence_id"] = projected_evidence[
+                "evidence_id"
+            ]
+    destination = staging / "source-audio-semantic-evidence.json"
+    atomic_write_json(destination, projected_evidence, sort_keys=True)
+    projected_metadata = copy.deepcopy(metadata)
+    projected_metadata["source_audio_semantics"] = {
+        "evidence_id": projected_evidence["evidence_id"],
+        "evidence_sha256": sha256_file(destination),
+        "method": binding["method"],
+        "selected_chapters": sorted(
+            {
+                record.get("chapter")
+                for record in projected_records
+                if isinstance(record.get("chapter"), str)
+                and record.get("chapter")
+            }
+        ),
+        "applied_count": sum(
+            record.get("source_audio_semantic_evidence_entry_id") is not None
+            for record in projected_records
+        ),
+    }
+    return projected_metadata, projected_records, destination
 
 
 __all__ = [

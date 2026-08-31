@@ -140,6 +140,14 @@ job and controls reuses that immutable directory without rewriting it; changed
 references, conflicting variants, cancellation and a missing narrator reference
 fail before publication.
 
+If the imported story carries source-audio semantic evidence, private input
+materialization does not retain the full-import ledger unchanged. It selects
+only evidence entries and source-line bindings used by the chosen stories,
+recomputes the evidence identity and checksum, rewrites selected line bindings,
+and validates the projected story/evidence pair. The optional evidence path and
+hash then become part of the immutable input contract, allowing a partial local
+pack to be verified independently of unselected chapters.
+
 Pocket TTS is the one reference-free exception. Its allowlisted embedded voices
 are immutable model inputs rather than guessed files, so the effective manifest
 may bind a character or `Narrator` to an allowlisted Pocket speaker with an empty
