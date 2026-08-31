@@ -13,6 +13,7 @@ from vntts.dialog_capture import (
     analyze_dialog_snapshot,
     get_screenshot_directory,
 )
+from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live_speech import play_typed_text
 from vntts.voices import normalize_character_name
 
@@ -55,23 +56,20 @@ class _RuntimeLifecyclePort(Protocol):
 
 
 class _LiveSessionPort(Protocol):
-    def _read_once_live(self) -> Any: ...
+    is_ready: bool
+    live_reader: Any
+    schedule_dialog_read: Callable[[], Any]
+    settings: Any
+    speech_backend: Any
+    status_handler: Callable[[str], Any]
 
     def _identify_live_scope_impl(self) -> Any: ...
 
     def _toggle_live_impl(self) -> Any: ...
 
-    def _toggle_speech_pause_impl(self) -> Any: ...
+    def _live_auto_advance_callback(self) -> Any: ...
 
-    def _skip_current_speech_impl(self) -> Any: ...
-
-    def _repeat_last_speech_impl(self) -> Any: ...
-
-    def _clear_speech_queue_impl(self) -> Any: ...
-
-    def _emergency_stop_impl(self) -> Any: ...
-
-    def _set_auto_advance_enabled_impl(self, enabled: bool) -> Any: ...
+    def _set_backend_live_mode(self, active: bool) -> Any: ...
 
 
 class _VoiceAssignmentPort(Protocol):
@@ -216,7 +214,14 @@ class LiveSessionComponent:
     controller: _LiveSessionPort
 
     def read_once(self) -> Any:
-        return self.controller._read_once_live()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        controller.live_reader.resume_after_emergency()
+        accepted = controller.schedule_dialog_read()
+        if accepted:
+            controller.status_handler("Reading current dialog")
+        return accepted
 
     def identify_scope(self) -> Any:
         return self.controller._identify_live_scope_impl()
@@ -225,22 +230,72 @@ class LiveSessionComponent:
         return self.controller._toggle_live_impl()
 
     def toggle_speech_pause(self) -> Any:
-        return self.controller._toggle_speech_pause_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        paused = controller.live_reader.toggle_pause()
+        controller.status_handler("Speech paused" if paused else "Speech resumed")
+        return paused
 
     def skip_current_speech(self) -> Any:
-        return self.controller._skip_current_speech_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        skipped = controller.live_reader.skip_current()
+        controller.status_handler(
+            "Skipped current speech" if skipped else "Nothing is currently speaking"
+        )
+        return skipped
 
     def repeat_last_speech(self) -> Any:
-        return self.controller._repeat_last_speech_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        repeated = controller.live_reader.repeat_last()
+        controller.status_handler(
+            "Repeating last speech" if repeated else "No previous speech to repeat"
+        )
+        return repeated
 
     def clear_speech_queue(self) -> Any:
-        return self.controller._clear_speech_queue_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        cleared = controller.live_reader.clear_queue()
+        controller.status_handler("Speech queue cleared")
+        return cleared
 
     def emergency_stop(self) -> Any:
-        return self.controller._emergency_stop_impl()
+        controller = self.controller
+        if not controller.is_ready:
+            return False
+        stopped = controller.live_reader.emergency_stop()
+        controller._set_backend_live_mode(False)
+        controller.status_handler("Emergency stop: live reading and speech stopped")
+        return stopped
 
     def set_auto_advance_enabled(self, enabled: bool) -> Any:
-        return self.controller._set_auto_advance_enabled_impl(enabled)
+        controller = self.controller
+        controller.settings = controller.settings.updated(
+            auto_advance_enabled=bool(enabled)
+        )
+        if isinstance(controller.speech_backend, GeneratedAudioFallbackBackend):
+            # Never replace audio already spoken by the game with live TTS just
+            # to obtain a completion duration. Unknown timing pauses automatic
+            # advance; it must not create audible duplicate dialogue.
+            controller.speech_backend.require_source_audio_completion = False
+        if controller.live_reader is not None:
+            controller.live_reader.set_auto_advance(
+                controller._live_auto_advance_callback()
+            )
+        controller.status_handler(
+            "Auto advance saved but suppressed by sequence-first manual mode"
+            if enabled and controller.settings.live_sequence_mode == "audio-manual"
+            else "Auto advance enabled"
+            if enabled
+            else "Auto advance disabled"
+        )
+        return bool(enabled)
 
 
 @dataclass(frozen=True)

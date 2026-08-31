@@ -203,6 +203,19 @@ class ControllerComponentsTest(unittest.TestCase):
         self.assertFalse(hasattr(AppController, "_inspect_current_dialog_impl"))
         self.assertFalse(hasattr(AppController, "_test_current_dialog_impl"))
 
+    def test_basic_live_controls_are_not_retained_on_controller(self):
+        migrated = (
+            "_read_once_live",
+            "_toggle_speech_pause_impl",
+            "_skip_current_speech_impl",
+            "_repeat_last_speech_impl",
+            "_clear_speech_queue_impl",
+            "_emergency_stop_impl",
+            "_set_auto_advance_enabled_impl",
+        )
+        for name in migrated:
+            self.assertFalse(hasattr(AppController, name), name)
+
 
 if __name__ == "__main__":
     unittest.main()

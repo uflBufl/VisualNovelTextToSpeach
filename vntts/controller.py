@@ -677,15 +677,6 @@ class AppController:
         self.status_handler(f"Screenshots will be stored in {screenshot_directory}")
         return True
 
-    def _read_once_live(self):
-        if not self.is_ready:
-            return False
-        self.live_reader.resume_after_emergency()
-        accepted = self.schedule_dialog_read()
-        if accepted:
-            self.status_handler("Reading current dialog")
-        return accepted
-
     def _identify_live_scope_impl(self):
         """Identify the visible story position without speaking or advancing it."""
         if not self.is_ready or self.is_live_running:
@@ -855,64 +846,6 @@ class AppController:
             f"Narrator for {', '.join(unresolved)}"
         )
         return False
-
-    def _toggle_speech_pause_impl(self):
-        if not self.is_ready:
-            return False
-        paused = self.live_reader.toggle_pause()
-        self.status_handler("Speech paused" if paused else "Speech resumed")
-        return paused
-
-    def _skip_current_speech_impl(self):
-        if not self.is_ready:
-            return False
-        skipped = self.live_reader.skip_current()
-        self.status_handler(
-            "Skipped current speech" if skipped else "Nothing is currently speaking"
-        )
-        return skipped
-
-    def _repeat_last_speech_impl(self):
-        if not self.is_ready:
-            return False
-        repeated = self.live_reader.repeat_last()
-        self.status_handler(
-            "Repeating last speech" if repeated else "No previous speech to repeat"
-        )
-        return repeated
-
-    def _clear_speech_queue_impl(self):
-        if not self.is_ready:
-            return False
-        cleared = self.live_reader.clear_queue()
-        self.status_handler("Speech queue cleared")
-        return cleared
-
-    def _emergency_stop_impl(self):
-        if not self.is_ready:
-            return False
-        stopped = self.live_reader.emergency_stop()
-        self._set_backend_live_mode(False)
-        self.status_handler("Emergency stop: live reading and speech stopped")
-        return stopped
-
-    def _set_auto_advance_enabled_impl(self, enabled):
-        self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
-        if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
-            # Never replace audio already spoken by the game with live TTS just
-            # to obtain a completion duration. Unknown timing pauses automatic
-            # advance; it must not create audible duplicate dialogue.
-            self.speech_backend.require_source_audio_completion = False
-        if self.live_reader is not None:
-            self.live_reader.set_auto_advance(self._live_auto_advance_callback())
-        self.status_handler(
-            "Auto advance saved but suppressed by sequence-first manual mode"
-            if enabled and self.settings.live_sequence_mode == "audio-manual"
-            else "Auto advance enabled"
-            if enabled
-            else "Auto advance disabled"
-        )
-        return bool(enabled)
 
     def _available_voice_characters_impl(self):
         if self.voice_router is None:

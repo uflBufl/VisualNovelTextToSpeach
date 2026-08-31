@@ -24,6 +24,10 @@ surface. `DiagnosticsComponent` owns capture geometry, the latest snapshot,
 pipeline metrics and the explicit inspect/test flows directly; these are no
 longer proxy callbacks on `AppController`. It receives only the capture, OCR,
 voice and reporting collaborators described by its narrow protocol.
+`LiveSessionComponent` also owns the one-shot read, playback queue controls,
+emergency stop and auto-advance setting. The larger story-scope and session
+toggle state machines remain behind explicit private callbacks until their state
+is moved as a coherent unit.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New
