@@ -1540,7 +1540,7 @@ class AppController:
                     None,
                 )
                 if not callable(completion_probe) or not completion_probe():
-                    return None
+                    return False
                 event = cursor.current_event
                 line = self._canonical_sequence_line_locked(
                     None if event is None else event.event_id
@@ -1673,6 +1673,38 @@ class AppController:
             ):
                 return None
             return cursor.current_event_id
+
+    def _live_ocr_purpose(self):
+        """Authorize full OCR only where the cursor cannot route safely."""
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if not self._live_sequence_audio_active():
+                return "legacy"
+            if cursor.state in {
+                StoryCursorState.UNSYNCHRONIZED,
+                StoryCursorState.ANCHORING,
+            }:
+                return "initial-anchor"
+            if cursor.state in {
+                StoryCursorState.MANUAL,
+                StoryCursorState.DESYNCHRONIZED,
+            }:
+                return "explicit-recovery"
+            if cursor.state == StoryCursorState.PLAYING:
+                return None
+            if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
+                return None
+            if not cursor.can_confirm_visual_transition:
+                return None
+            candidates = cursor.bounded_visible_successors()
+            deterministic = cursor.deterministic_visual_successor()
+            if candidates and (
+                deterministic is None
+                or len(candidates) != 1
+                or candidates[0].event_id != deterministic.event_id
+            ):
+                return "bounded-branch-disambiguation"
+            return None
 
     def _sequence_prefix_recheck_required(self):
         with self.story_cursor_lock:

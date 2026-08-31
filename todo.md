@@ -14,10 +14,6 @@ or auto-advance as verified evidence. Follow
 [`docs/current-character-story-completion.md`](docs/current-character-story-completion.md)
 and [`docs/sequence-first-live-reading.md`](docs/sequence-first-live-reading.md).
 
-- [ ] Restrict full OCR and the incremental text tracker to initial anchoring,
-      bounded branch disambiguation and explicit recovery. Ordinary locked
-      playback must stay on lightweight visual transition/canonical confirmation
-      paths, and recovery observations must not leak into a later route.
 - [ ] Make routing and advancement idempotent per cursor event. Exactly one of
       original audio, generated WAV, live fallback or intentional silence may
       become terminal; repeated frames, retries, callbacks and focus transitions

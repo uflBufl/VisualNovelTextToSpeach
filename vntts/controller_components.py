@@ -124,6 +124,8 @@ class _RuntimeLifecyclePort(Protocol):
 
     def _live_sequence_line_id(self, *args: Any, **kwargs: Any) -> Any: ...
 
+    def _live_ocr_purpose(self) -> Any: ...
+
     def _live_auto_advance_callback(self) -> Any: ...
 
     def _load_live_sequence_plan(self) -> Any: ...
@@ -513,6 +515,7 @@ class RuntimeLifecycleComponent:
             frame_presence=dialog_glyphs_visible,
             frame_completion=dialog_completion_cue_visible,
             frame_recheck_required=controller._sequence_prefix_recheck_required,
+            ocr_purpose=controller._live_ocr_purpose,
             render_completion=controller._confirm_sequence_render_completion,
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,

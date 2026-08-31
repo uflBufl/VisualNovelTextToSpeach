@@ -147,6 +147,8 @@ class AutoAdvanceFakeFrameHarness:
         dialog_observed=None,
         frame_recheck_required=None,
         frame_recheck_interval_seconds=0.6,
+        ocr_purpose=None,
+        frame_observed=None,
     ):
         self.clock = FakeClock()
         self.completed_observations = Queue()
@@ -172,6 +174,8 @@ class AutoAdvanceFakeFrameHarness:
             recognize_frame=self._recognize,
             frame_presence=lambda frame: frame.get("visible", True),
             frame_recheck_required=frame_recheck_required,
+            ocr_purpose=ocr_purpose,
+            frame_observed=frame_observed,
             frame_recheck_interval_seconds=frame_recheck_interval_seconds,
             stable_frame_route=stable_frame_route,
             stable_frame_owner=lambda: self.frame_owner,
@@ -271,6 +275,29 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_locked_visual_frame_is_acknowledged_without_running_ocr(self):
+        observed = []
+        harness = AutoAdvanceFakeFrameHarness(
+            stable_frame_route=lambda *_args: None,
+            ocr_purpose=lambda: None,
+            frame_observed=lambda _frame, fingerprint, kind: observed.append(
+                (fingerprint, kind)
+            ),
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+
+        harness.push(
+            "corrupted nameplate",
+            "untrusted OCR payload",
+            background="locked",
+            fingerprint="locked-frame",
+            expected=(None, ""),
+        )
+
+        self.assertEqual(harness.recognized_frames, [])
+        self.assertEqual(observed, [("locked-frame", "locked-visual-only")])
+
     def test_stable_frame_route_replaces_second_line_without_another_ocr_call(self):
         route_calls = []
 
@@ -425,7 +452,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         rechecks = [
             details
             for stage, _generation, _occurred_at, details in harness.pipeline_events
-            if stage == "canonical-prefix-recheck"
+            if stage == "canonical-prefix-visual-recheck"
         ]
         self.assertEqual(len(rechecks), 2)
         self.assertEqual(rechecks[-1]["recheck_interval_ms"], 600)

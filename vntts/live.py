@@ -540,12 +540,14 @@ class LiveDialogReader:
         frame_presence=None,
         frame_completion=None,
         frame_recheck_required=None,
+        ocr_purpose=None,
         frame_recheck_interval_seconds=0.6,
         render_completion=None,
         render_quiet_minimum_seconds=0.8,
         stable_frame_route=None,
         stable_frame_owner=None,
         frame_routed=None,
+        frame_observed=None,
         line_id_resolver=None,
         stable_frame_minimum_seconds=0.12,
         stable_frame_clock=monotonic,
@@ -587,6 +589,7 @@ class LiveDialogReader:
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.frame_completion = frame_completion or (lambda _frame: False)
         self.frame_recheck_required = frame_recheck_required or (lambda: False)
+        self.ocr_purpose = ocr_purpose or (lambda: "legacy")
         if frame_recheck_interval_seconds <= 0:
             raise ValueError("frame_recheck_interval_seconds must be positive")
         self.frame_recheck_interval_seconds = float(frame_recheck_interval_seconds)
@@ -598,6 +601,9 @@ class LiveDialogReader:
         self.stable_frame_owner = stable_frame_owner or (lambda: None)
         self.frame_routed = frame_routed or (
             lambda _frame, _fingerprint, _route_kind, _character, _text: None
+        )
+        self.frame_observed = frame_observed or (
+            lambda _frame, _fingerprint, _observation_kind: None
         )
         self.line_id_resolver = line_id_resolver or (lambda _character, _text: None)
         if stable_frame_minimum_seconds < 0:
@@ -1160,7 +1166,7 @@ class LiveDialogReader:
                     if recheck_now:
                         last_frame_recheck_at = now
                         self._report_pipeline_event(
-                            "canonical-prefix-recheck",
+                            "canonical-prefix-visual-recheck",
                             self.active_generation,
                             fingerprint=self._privacy_safe_fingerprint(fingerprint),
                             visible=True,
@@ -1198,6 +1204,12 @@ class LiveDialogReader:
                         complete,
                     )
                 if frame_route is False:
+                    if self.ocr_purpose() is None:
+                        self.frame_observed(
+                            frame,
+                            fingerprint,
+                            "locked-visual-only",
+                        )
                     character, text = cached_observation
                     interval = policy.observe(character, text, focused=True)
                     with self.state_lock:
@@ -1226,6 +1238,17 @@ class LiveDialogReader:
                     or awaiting_post_advance_dialog
                     or recheck_now
                 ):
+                    if self.ocr_purpose() is None:
+                        self.frame_observed(
+                            frame,
+                            fingerprint,
+                            "locked-visual-only",
+                        )
+                        character, text = cached_observation
+                        interval = policy.observe(character, text, focused=True)
+                        with self.state_lock:
+                            self.next_capture_interval = interval
+                        continue
                     character, text = self.recognize_frame(frame)
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint

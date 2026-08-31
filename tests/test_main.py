@@ -3440,7 +3440,7 @@ class MainTest(unittest.TestCase):
             1,
         )
 
-        self.assertIsNone(routed)
+        self.assertFalse(routed)
         self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
         controller.live_reader.record_canonical_full_text.assert_not_called()
 

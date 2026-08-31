@@ -544,7 +544,7 @@ class LiveReplayTest(unittest.TestCase):
                     ],
                 },
                 expected_counts={
-                    "ocr_calls": 3,
+                    "ocr_calls": 1,
                     "bounded_recoveries": 0,
                     "key_dispatch_attempts": 2,
                     "confirmed_key_dispatches": 2,

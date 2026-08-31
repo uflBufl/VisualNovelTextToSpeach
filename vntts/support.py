@@ -54,7 +54,7 @@ generation_timeline_stages = (
 # telemetry must never be able to abort dialog processing.
 sequence_timeline_stages = (
     "stable-frame-gate",
-    "canonical-prefix-recheck",
+    "canonical-prefix-visual-recheck",
     "late-chunk-suppressed",
     "sequence-candidate-miss",
     "sequence-shadow",

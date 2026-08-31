@@ -64,6 +64,13 @@ not control the game yet:
   line's speaker and text to audio routing. OCR may identify a bounded event but
   cannot supply, replace or repair the spoken payload; an integrity mismatch
   desynchronizes instead of speaking the observation.
+- production sequence audio authorizes full OCR by cursor purpose rather than
+  merely by frame change. It runs for initial anchoring, a bounded ambiguous
+  branch/manual window or explicit desynchronization recovery. Locked linear
+  frames, playback, focus transitions and prefix completion stay visual-only;
+  replay can acknowledge those frames without feeding their text into the
+  incremental OCR tracker. Completion-cue and owner-bound render-quiet probes
+  close early-playback barriers without another recognition pass.
 - cursor reads and transitions are serialized by one controller-owned re-entrant
   lock across OCR, playback and UI threads. Stable-frame candidates carry both
   their cursor owner and a frame-route epoch; an explicit frame bind invalidates
@@ -165,7 +172,7 @@ or serialized array position is being turned into an inferred key press.
 
 ## Problem and evidence
 
-The current live pipeline treats OCR observations as the authority for speaker,
+The legacy live pipeline treated OCR observations as the authority for speaker,
 text, dialogue boundaries and line identity. The story index and generated
 manifest are consulted only after OCR has produced a stable-enough string. This
 puts the least reliable component on the critical path even when the game pack
@@ -363,12 +370,11 @@ dialogue band do not count as completion cues.
 Some completed dialogue screens do not show that indicator, and a short
 typewriter prefix can collide with the full line's downsampled glyph
 fingerprint. While and only while the current owner-bound event has canonical
-prefix confirmation pending, the OCR worker therefore bypasses the unchanged-
-frame cache at a bounded 600 ms interval. An exact or otherwise accepted full
-canonical observation clears the pending state immediately; ordinary stable
-frames remain cached. Rechecks require a visible focused capture, carry no text
-in telemetry, and cannot select a successor or schedule a second canonical
-utterance.
+prefix confirmation pending, capture keeps a bounded fast visual cadence. A
+completion cue or owner-bound render quiet closes the barrier without running
+OCR; ordinary stable frames remain cached. Rechecks require a visible focused
+capture, carry no text in telemetry, and cannot select a successor or schedule
+a second canonical utterance.
 
 When there are multiple successors, repeated identical lines, an early manual
 advance, or an unexpected fingerprint, use a small expected-candidate recognizer
@@ -461,11 +467,11 @@ Production timeline recording accepts the reader's stable-frame/suppression
 events and the controller's declared sequence and speaker-announcement stages
 as well as generation stages. The accepted fields remain allow-listed; an
 observational event must never abort dialogue routing.
-`canonical-prefix-recheck` is one of those declared observational stages. It
-records only the shortened fingerprint, visibility/focus booleans, cursor
-owner and recheck interval. Keeping it in the production allow-list is a
-runtime invariant: a same-frame OCR retry must not raise from diagnostics and
-therefore prevent the retry from confirming a fully rendered line.
+`canonical-prefix-visual-recheck` is one of those declared observational
+stages. It records only the shortened fingerprint, visibility/focus booleans,
+cursor owner and recheck interval. Keeping it in the production allow-list is a
+runtime invariant: a same-frame visual retry must not raise from diagnostics
+and therefore prevent completion-cue or render-quiet confirmation.
 `auto-advance-withheld` records a reason enum for focus, owned-frame visibility
 and callback/cursor refusal without retaining dialogue text.
 

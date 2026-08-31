@@ -323,6 +323,13 @@ class ReplayFrameSource:
             self.focus_probe_calls += 1
             return self.focus_probes.pop(0) if self.focus_probes else True
 
+    def is_final_declared_frame(self, frame):
+        identity = frame.image.info.get("vntts_replay_declared_identity")
+        if identity is None:
+            return False
+        dialogue_index, frame_index = identity
+        return frame_index + 1 == len(self.dialogue[dialogue_index].frames)
+
     def stop(self):
         with self.condition:
             self.stopped = True
@@ -818,6 +825,12 @@ class LiveReplayRunner:
                 if terminal_silent:
                     frame_source.complete_terminal()
 
+        def frame_observed(frame, _fingerprint, observation_kind):
+            frame_source.acknowledge_observation(
+                frame,
+                route_kind=observation_kind,
+            )
+
         def record_route(trace):
             routes.append(trace.support_fields())
 
@@ -904,11 +917,14 @@ class LiveReplayRunner:
             recognize_frame=recognize,
             frame_fingerprint=_fingerprint_replay_frame,
             frame_presence=dialog_glyphs_visible,
+            frame_completion=frame_source.is_final_declared_frame,
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             frame_recheck_required=controller._sequence_prefix_recheck_required,
+            ocr_purpose=controller._live_ocr_purpose,
             render_completion=controller._confirm_sequence_render_completion,
             frame_routed=frame_routed,
+            frame_observed=frame_observed,
             line_id_resolver=controller._live_sequence_line_id,
             speak_chunk=lambda _chunk: None,
             prepare_chunk=controller._prepare_live_chunk,
