@@ -8,6 +8,7 @@ import os
 import secrets
 import socket
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,20 +27,66 @@ class BulkGenerationError(RuntimeError):
     """A queue cannot be generated or resumed safely."""
 
 
-def process_is_alive(pid):
+def inspect_process_status(pid):
+    """Return ``live``, ``dead`` or ``unknown`` without changing the process."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
-        return False
+        return "unknown"
     if pid <= 0:
-        return False
+        return "unknown"
+    if sys.platform == "win32":
+        return _inspect_windows_process(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        return "dead"
+    except (PermissionError, OSError):
+        return "unknown"
+    return "live"
+
+
+def process_is_alive(pid):
+    """Fail closed for ownership checks when liveness cannot be inspected."""
+    return inspect_process_status(pid) != "dead"
+
+
+def _inspect_windows_process(pid):
+    # Windows implements os.kill(pid, 0) with TerminateProcess. A read-only
+    # process handle is required for a genuinely non-destructive liveness probe.
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_access_denied = 5
+    error_invalid_parameter = 87
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == error_invalid_parameter:
+            return "dead"
+        if error == error_access_denied:
+            return "unknown"
+        return "unknown"
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return "unknown"
+        return "live" if exit_code.value == still_active else "dead"
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def process_started_at(pid):
@@ -230,6 +277,7 @@ __all__ = [
     "BulkGenerationError",
     "GenerationLease",
     "archive_interrupted_artifact",
+    "inspect_process_status",
     "process_is_alive",
     "process_started_at",
 ]

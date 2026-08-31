@@ -427,8 +427,8 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
 
             with patch(
-                "vntts.authoring.legacy_import.os.kill",
-                side_effect=ProcessLookupError,
+                "vntts.authoring.legacy_import.inspect_process_status",
+                return_value="dead",
             ):
                 candidate = next(
                     item
@@ -448,11 +448,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         self.assertTrue(result.manifest["source"]["diagnostics"])
 
     def test_running_job_with_unknown_pid_fails_closed(self):
-        for pid, kill_error in (
-            (None, None),
-            ("bad", None),
-            (2_147_483_647, PermissionError()),
-        ):
+        for pid in (None, "bad", 2_147_483_647):
             with self.subTest(pid=pid), TemporaryDirectory() as directory:
                 root = Path(directory)
                 fixture = write_legacy_fixture(root)
@@ -461,13 +457,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 job["status"] = "running"
                 job["pid"] = pid
                 job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
-                context = (
-                    patch(
-                        "vntts.authoring.legacy_import.os.kill",
-                        side_effect=kill_error,
-                    )
-                    if kill_error is not None
-                    else patch("vntts.authoring.legacy_import.os.kill")
+                context = patch(
+                    "vntts.authoring.legacy_import.inspect_process_status",
+                    return_value="unknown",
                 )
 
                 with (

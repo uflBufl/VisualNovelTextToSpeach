@@ -25,6 +25,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
 )
 
+from vntts.authoring.generation_lease import inspect_process_status
 from vntts.authoring.import_paths import default_import_root
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
@@ -1188,15 +1189,9 @@ def _legacy_runtime_status(job):
 
 
 def _pid_status(value):
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool):
         return "unknown"
-    try:
-        os.kill(value, 0)
-    except ProcessLookupError:
-        return "dead"
-    except (PermissionError, OSError):
-        return "unknown"
-    return "live"
+    return inspect_process_status(value)
 
 
 def _add_artifact(

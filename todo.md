@@ -93,6 +93,107 @@ intentional omission as distinct terminal authorities.
       line. Judge speaker similarity, pronunciation, prosody, artifacts,
       repetition and trailing silence before changing sampling controls.
 
+## P1 - Resolve project-wide code-review findings
+
+- [ ] Make isolated-worker requests bounded and shutdown-safe. Add request
+      cancellation and a finite timeout to the worker protocol; cancel tracked
+      voice-prime futures; stop/terminate an unresponsive worker before waiting
+      for speech executors; and ensure `set_live_mode_active(False)` cannot block
+      shutdown indefinitely. Cover a worker that stays alive but never replies,
+      shutdown during prime, normal completion and Ctrl-C/GUI Quit.
+- [ ] Make typed live playback fail closed and preserve error taxonomy:
+  - define a narrow annotated backend protocol whose `play_prepared()` returns
+    `PlaybackOutcome`, annotate `play_typed_text()` and include both boundary
+    modules in the scoped mypy gate;
+  - reject `None`, strings, legacy booleans and arbitrary objects instead of
+    treating `bool(outcome)` as playback success;
+  - preserve approved `TTSConfigurationError`, `TTSSynthesisError` and
+    `AudioPlaybackError` categories from `PlaybackOutcome.error_type`, so UI
+    diagnostics do not report model/configuration failures as device failures;
+  - cover completed, interrupted, invalid-result, synthesis, configuration and
+    device-failure outcomes through focused helper and onboarding/preview tests.
+- [ ] Replace the proxy-only `AppController` decomposition with real ownership
+      boundaries. Move lifecycle, live-session, voice-assignment and diagnostic
+      implementation/state into their components behind narrow injected ports;
+      keep `AppController` as a one-way compatibility facade and composition
+      root. Split and fully annotate the component protocols, add them to mypy,
+      remove component-to-facade re-entry and require focused plus complete
+      runtime regression tests before deleting the current private callbacks.
+- [ ] Commit a speaker announcement only after its playback completes. Keep a
+      chunk-scoped pending reservation while it is prepared, release it when a
+      stale route is discarded or playback is interrupted/failed, and update
+      the last-heard speaker only for `COMPLETED`. Test route replacement and a
+      transient announcement failure followed by the same narrator-fallback
+      role, which must be announced on the next playable line.
+- [ ] Make settings, profile and voice-assignment changes failure-atomic. Persist
+      a candidate state before publishing it to the controller, dashboard or
+      in-memory profile store; catch and explain write failures; roll back
+      launch-at-login when the paired settings write fails; and add read-only
+      directory/full-disk writer tests for every mutation entry point.
+- [ ] Close the voice-control snapshot containment hole in model benchmarks.
+      Load comparison manifests through the normal owned-reference validator,
+      reject symlinks and references outside the manifest root, and copy only
+      bytes from the validated descriptors. Add malicious symlink and path
+      escape tests proving that no outside file can enter published
+      `voice-controls`.
+- [ ] Make support-bundle sanitization match its privacy declaration. Redact all
+      path-bearing settings, including model, game-pack, story index, sequence
+      plan, speaker corpus and generated-audio manifest paths, with recursive or
+      explicitly typed sensitivity handling. Test every current setting with a
+      home-directory sentinel and fail when a new path field is unsanitized.
+- [ ] Make release packages able to run the backend they recommend by default.
+      Bundle a relocatable Pocket TTS runtime on macOS and Windows or select and
+      expose only a backend actually present in the frozen bundle. Resolve the
+      packaged path without source-tree assumptions, and make package self-test
+      initialize and render through the effective default backend on a clean
+      machine without uv, a checkout or backend environment variables.
+- [ ] Restore the byte-level JSON compatibility of
+      `rebase-workspace-config`: retain its historical ASCII escaping or publish
+      an explicitly versioned output change. Add a Unicode-path stdout test that
+      compares exact bytes rather than reparsing JSON.
+- [ ] Make the static-typing ratchet non-shrinkable. Store a versioned minimum
+      checked-module inventory outside the mutable mypy configuration and fail
+      CI when `tool.mypy.files` stops being a superset; retire an entry only via
+      an explicit reviewed schema/version change.
+- [ ] Close maintainability-ratchet false negatives and stale ceilings:
+  - treat `TryStar`/`except*` branches like `Try` in complexity accounting;
+  - detect module-alias private access such as
+    `import vntts.owner as owner; owner._private()` in addition to
+    `ImportFrom` dependencies;
+  - add focused negative tests for both cases and lower every over-threshold
+    baseline ceiling when current debt shrinks, beginning with
+    `vntts.controller` from 3706 to 3700 lines;
+  - add a baseline-freshness check so removed debt cannot silently regrow under
+    an older higher ceiling.
+- [ ] Strengthen the authoring CLI compatibility contract. Include all command
+      names in their public help order in the hashed fixture, and assert exact
+      equality between parser commands and the union of `COMMAND_FAMILIES` as
+      well as single ownership. Add a supported-Python CI matrix or stop
+      mutating private `argparse` fields before claiming unrestricted
+      Python-3.11-and-newer compatibility.
+
+## P2 - Resolve project-wide UX and runtime follow-ups
+
+- [ ] Move Settings and Assets runtime reconfiguration off the Qt thread. Reuse
+      the background lifecycle runner, show cancellable progress, prevent
+      overlapping configuration actions and prove with an event-loop test that
+      a blocked live reader cannot freeze either dialog.
+- [ ] Validate voice manifests outside the Qt thread. Bind each result to the
+      exact selected path and digest, disable Save only while validation is
+      pending, surface progress for checksum creation/hashing, and discard stale
+      results when the selection changes.
+- [ ] Add Stop/Skip to dialogue-history replay and make modal close request
+      cancellation instead of waiting indefinitely for the playback future.
+      Keep the dialog responsive through slow and unresponsive backend tests and
+      close it once cancellation is confirmed.
+- [ ] Bound persistent runtime diagnostics on disk. Rotate by size/count or
+      atomically retain the same bounded snapshot as memory; preserve valid
+      JSONL across rotation and add a long-session size invariant.
+- [ ] Make isolated backend environments reproducible. Stop appending every host
+      `site-packages` directory to worker `sys.path`; package the narrowly shared
+      VNTTS support dependencies in each worker runtime and validate origins for
+      model dependencies, including transitives that can load binary packages.
+
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.
@@ -138,12 +239,13 @@ These tasks are useful but do not block the current Character Story release.
       underruns, no stale speech/advance, cached CPU speech within 2 seconds,
       supported CUDA speech within 750 ms, and an already-visible second sentence
       within 300 ms of the first ending.
-- [ ] Produce a standalone portable Windows build on Windows. Bundle Python, Qt,
-      Tesseract English data and eSpeak-NG, then verify operation on a clean
-      machine without Python, uv, Tesseract or development tools installed.
 - [ ] Create and sign a Windows installer with Start Menu shortcuts, optional
       startup, upgrades and clean uninstall. Preserve downloaded models and user
       settings across upgrades.
 - [ ] Record Windows release evidence across Windows 11, common GPU vendors,
       multiple displays, DPI scaling, windowed/borderless modes, normal/elevated
-      game processes, installation and OCR-to-speech smoke tests.
+      game processes, installation and OCR-to-speech smoke tests. The elevated
+      profile must send and acknowledge an auto-advance key through the
+      production controller, not merely capture/OCR the fixture and invoke the
+      legacy TTS engine; otherwise explicitly mark cross-integrity input as
+      unsupported rather than recording a false-green result.

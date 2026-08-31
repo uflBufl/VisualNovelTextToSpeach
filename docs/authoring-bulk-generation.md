@@ -64,6 +64,10 @@ run. A dead lease is preserved under `interrupted/` and the run may resume. If a
 process stops after WAV publication but before state publication, the orphan is
 preserved and a later attempt uses the next seed. If it stops after state but
 before manifest publication, the manifest is simply rebuilt from state.
+Process inspection is non-destructive on every supported platform: Unix uses a
+signal-zero permission probe, while Windows opens a query-only process handle
+and reads its exit state. An inaccessible process remains conservatively live;
+lease inspection never sends a Windows termination signal.
 
 `manifest.json` is always a derived `vntts.generated-audio` version 1 projection
 of only `approved` + `approved` records, sorted by `(line_id, text_sha256)`.
