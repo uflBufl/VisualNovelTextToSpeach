@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Callable, Protocol
 
+from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
     OCRError,
@@ -17,6 +18,7 @@ from vntts.dialog_capture import (
 from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
+from vntts.settings import preserve_loaded_runtime_settings
 from vntts.voices import (
     VoiceChoice,
     default_voice_choice_id,
@@ -51,30 +53,60 @@ def speak_live_chunk(
 
 class _RuntimeLifecyclePort(Protocol):
     capture_executor: Any
+    capture_target: Any
+    chapter_voice_preloader: Any
+    correction_dictionary: Any
+    dialog_read_scheduler_factory: Callable[..., Any]
     error_handler: Callable[[Exception], Any]
+    is_live_running: bool
+    last_visible_speaker_key: Any
+    live_session: Any
     live_reader: Any
     ocr_executor: Any
     playback_executor: Any
     schedule_dialog_read: Any
+    settings: Any
     shutdown_requested: Any
+    speaker_announcement_lock: Any
+    speech_backend: Any
     speech_executor: Any
+    tts: Any
+    uncertain_frame_recorder: Any
+    voice_router: Any
     voice_prime_futures: Any
     voice_prime_lock: Any
 
     def _start_runtime(self) -> Any: ...
 
-    def _apply_runtime_settings(
-        self,
-        settings: Any,
-        *,
-        commit: Callable[[], bool],
-    ) -> Any: ...
+    def _configure_generated_audio_backend(self) -> Any: ...
+
+    def _create_capture_target(self) -> Any: ...
+
+    def _create_uncertain_frame_recorder(self) -> Any: ...
+
+    def _enqueue_dialog(self, character: str, text: str) -> Any: ...
+
+    def _get_live_configuration(self) -> Any: ...
 
     def _interrupt_speech(self) -> Any: ...
+
+    def _live_auto_advance_callback(self) -> Any: ...
+
+    def _load_live_sequence_plan(self) -> Any: ...
+
+    def _load_live_speaker_corpus(self) -> Any: ...
+
+    def _ocr_uncertain(self, result: Any, minimum_confidence: float) -> Any: ...
+
+    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
+
+    def _resolve_voice_label(self, character: str) -> Any: ...
 
     def _set_backend_live_mode(self, active: bool) -> Any: ...
 
     def _stop_tts(self) -> Any: ...
+
+    def refresh_corrections(self) -> Any: ...
 
 
 class _LiveSessionPort(Protocol):
@@ -254,12 +286,112 @@ class RuntimeLifecycleComponent:
     def apply_settings(self, settings: Any, *, cancellation: Any = None) -> Any:
         self.settings_apply_guard.begin(cancellation)
         try:
-            return self.controller._apply_runtime_settings(
+            return self._apply_settings(
                 settings,
                 commit=lambda: self.settings_apply_guard.commit(cancellation),
             )
         finally:
             self.settings_apply_guard.finish(cancellation)
+
+    def _apply_settings(
+        self,
+        settings: Any,
+        *,
+        commit: Callable[[], bool],
+    ) -> Any:
+        controller = self.controller
+        if controller.tts is not None or controller.speech_backend is not None:
+            settings = preserve_loaded_runtime_settings(controller.settings, settings)
+        was_live = controller.is_live_running
+        if was_live:
+            controller._set_backend_live_mode(False)
+            controller.live_reader.stop()
+            controller.live_reader.wait()
+
+        if not commit():
+            if was_live:
+                controller.live_session.toggle()
+            return False
+
+        controller.settings = settings
+        with controller.speaker_announcement_lock:
+            controller.last_visible_speaker_key = None
+        controller.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
+            controller.settings.story_index
+        )
+        controller._load_live_sequence_plan()
+        controller._load_live_speaker_corpus()
+        controller._configure_generated_audio_backend()
+        controller.refresh_corrections()
+        controller.capture_target = controller._create_capture_target()
+        controller.uncertain_frame_recorder = (
+            controller._create_uncertain_frame_recorder()
+        )
+        if controller.tts is not None:
+            controller.tts.set_volume(controller.settings.output_volume_percent / 100)
+            controller.tts.set_speed(controller.settings.speech_rate_percent / 100)
+        if controller.speech_backend is not None:
+            set_volume = getattr(controller.speech_backend, "set_volume", None)
+            set_speed = getattr(controller.speech_backend, "set_speed", None)
+            set_generation_profile = getattr(
+                controller.speech_backend,
+                "set_generation_profile",
+                None,
+            )
+            if callable(set_volume):
+                set_volume(controller.settings.output_volume_percent / 100)
+            if callable(set_speed):
+                set_speed(controller.settings.speech_rate_percent / 100)
+            if callable(set_generation_profile):
+                set_generation_profile(controller.settings.tts_profile)
+        if controller.live_reader is None:
+            return None
+
+        screenshot_directory = get_screenshot_directory(controller.settings)
+        controller.live_reader.read_snapshot = lambda: read_live_snapshot(
+            screenshot_directory,
+            controller.voice_router.registry,
+            controller.capture_target,
+            controller.settings.ocr_minimum_confidence,
+            controller._ocr_uncertain,
+            controller.uncertain_frame_recorder,
+            controller._publish_diagnostic,
+            controller._resolve_voice_label,
+            controller.settings.ocr_language,
+            controller.correction_dictionary,
+        )
+        live_configuration = controller._get_live_configuration()
+        controller.live_reader.interval_seconds = live_configuration[
+            "interval_seconds"
+        ]
+        controller.live_reader.tracker_options = live_configuration["tracker_options"]
+        controller.live_reader.require_visible_auto_advance = (
+            controller.settings.live_sequence_mode == "audio-auto"
+        )
+        controller.live_reader.set_auto_advance(
+            controller._live_auto_advance_callback()
+        )
+        controller.live_reader.auto_advance_delay_seconds = (
+            controller.settings.auto_advance_delay_ms / 1000
+        )
+        controller.schedule_dialog_read = controller.dialog_read_scheduler_factory(
+            controller.capture_executor,
+            controller.voice_router,
+            screenshot_directory,
+            live_reader=controller.live_reader,
+            error_handler=controller.error_handler,
+            capture_target=controller.capture_target,
+            speech_handler=controller._enqueue_dialog,
+            minimum_confidence=controller.settings.ocr_minimum_confidence,
+            uncertain_frame_recorder=controller.uncertain_frame_recorder,
+            diagnostic_handler=controller._publish_diagnostic,
+            voice_resolver=controller._resolve_voice_label,
+            ocr_language=controller.settings.ocr_language,
+            correction_dictionary=controller.correction_dictionary,
+        )
+        if was_live:
+            controller.live_session.toggle()
+        return True
 
     def cancel_settings_apply(self, cancellation: Any) -> bool:
         reader = self.controller.live_reader

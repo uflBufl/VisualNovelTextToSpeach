@@ -77,7 +77,6 @@ from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
-    preserve_loaded_runtime_settings,
 )
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -243,6 +242,7 @@ class AppController:
         self.moss_backend_factory = moss_backend_factory
         self.pocket_backend_factory = pocket_backend_factory
         self.speech_backpressure_factory = speech_backpressure_factory
+        self.dialog_read_scheduler_factory = create_dialog_read_scheduler
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -709,94 +709,6 @@ class AppController:
             self.live_speaker_corpus_error = str(error)
             return False
         self.live_speaker_corpus_error = None
-        return True
-
-    def _apply_runtime_settings(self, settings, *, commit):
-        if self.tts is not None or self.speech_backend is not None:
-            settings = preserve_loaded_runtime_settings(self.settings, settings)
-        was_live = self.is_live_running
-        if was_live:
-            self._set_backend_live_mode(False)
-            self.live_reader.stop()
-            self.live_reader.wait()
-
-        if not commit():
-            if was_live:
-                self.live_session.toggle()
-            return False
-
-        self.settings = settings
-        with self.speaker_announcement_lock:
-            self.last_visible_speaker_key = None
-        self.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
-            self.settings.story_index
-        )
-        self._load_live_sequence_plan()
-        self._load_live_speaker_corpus()
-        self._configure_generated_audio_backend()
-        self.refresh_corrections()
-        self.capture_target = self._create_capture_target()
-        self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
-        if self.tts is not None:
-            self.tts.set_volume(self.settings.output_volume_percent / 100)
-            self.tts.set_speed(self.settings.speech_rate_percent / 100)
-        if self.speech_backend is not None:
-            set_volume = getattr(self.speech_backend, "set_volume", None)
-            set_speed = getattr(self.speech_backend, "set_speed", None)
-            set_generation_profile = getattr(
-                self.speech_backend,
-                "set_generation_profile",
-                None,
-            )
-            if callable(set_volume):
-                set_volume(self.settings.output_volume_percent / 100)
-            if callable(set_speed):
-                set_speed(self.settings.speech_rate_percent / 100)
-            if callable(set_generation_profile):
-                set_generation_profile(self.settings.tts_profile)
-        if self.live_reader is None:
-            return
-
-        screenshot_directory = get_screenshot_directory(self.settings)
-        self.live_reader.read_snapshot = lambda: read_live_snapshot(
-            screenshot_directory,
-            self.voice_router.registry,
-            self.capture_target,
-            self.settings.ocr_minimum_confidence,
-            self._ocr_uncertain,
-            self.uncertain_frame_recorder,
-            self._publish_diagnostic,
-            self._resolve_voice_label,
-            self.settings.ocr_language,
-            self.correction_dictionary,
-        )
-        live_configuration = self._get_live_configuration()
-        self.live_reader.interval_seconds = live_configuration["interval_seconds"]
-        self.live_reader.tracker_options = live_configuration["tracker_options"]
-        self.live_reader.require_visible_auto_advance = (
-            self.settings.live_sequence_mode == "audio-auto"
-        )
-        self.live_reader.set_auto_advance(self._live_auto_advance_callback())
-        self.live_reader.auto_advance_delay_seconds = (
-            self.settings.auto_advance_delay_ms / 1000
-        )
-        self.schedule_dialog_read = create_dialog_read_scheduler(
-            self.capture_executor,
-            self.voice_router,
-            screenshot_directory,
-            live_reader=self.live_reader,
-            error_handler=self.error_handler,
-            capture_target=self.capture_target,
-            speech_handler=self._enqueue_dialog,
-            minimum_confidence=self.settings.ocr_minimum_confidence,
-            uncertain_frame_recorder=self.uncertain_frame_recorder,
-            diagnostic_handler=self._publish_diagnostic,
-            voice_resolver=self._resolve_voice_label,
-            ocr_language=self.settings.ocr_language,
-            correction_dictionary=self.correction_dictionary,
-        )
-        if was_live:
-            self.live_session.toggle()
         return True
 
     def _get_live_configuration(self):

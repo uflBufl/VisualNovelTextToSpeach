@@ -34,9 +34,9 @@ switching and speaker-corpus revalidation remain injected collaborators.
 narrator-fallback staging, scoped chapter/corpus preflight discovery and voice
 preview lifecycle. Backend preview, narrator application and cache invalidation
 remain injected low-level collaborators rather than parallel public operations.
-`RuntimeLifecycleComponent` owns ordered shutdown and executor cleanup; startup
-and runtime settings reconfiguration remain callback-backed until their shared
-construction state is extracted together.
+`RuntimeLifecycleComponent` owns runtime settings reconfiguration, its exact
+cancellation/commit boundary, ordered shutdown and executor cleanup. Startup
+remains callback-backed until its construction factories are injected.
 
 `tests/test_controller_components.py` is the architectural gate. It verifies
 the composition, public delegation and the one-expression facade rule. New
