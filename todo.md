@@ -123,9 +123,6 @@ intentional omission as distinct terminal authorities.
       cancellation instead of waiting indefinitely for the playback future.
       Keep the dialog responsive through slow and unresponsive backend tests and
       close it once cancellation is confirmed.
-- [ ] Bound persistent runtime diagnostics on disk. Rotate by size/count or
-      atomically retain the same bounded snapshot as memory; preserve valid
-      JSONL across rotation and add a long-session size invariant.
 - [ ] Make isolated backend environments reproducible. Stop appending every host
       `site-packages` directory to worker `sys.path`; package the narrowly shared
       VNTTS support dependencies in each worker runtime and validate origins for

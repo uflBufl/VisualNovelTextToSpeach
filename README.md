@@ -86,6 +86,8 @@ download or verify the speech model and import local character voice references.
 The Character voices tab also lets you Browse to an existing active manifest
 and checksum-validate it inline before Save; an invalid path remains selected
 for correction instead of being reported in a separate modal dialog.
+The privacy-safe `runtime.log` is an atomically replaced JSONL snapshot bounded
+to 200 events and 512 KiB, so a long live session cannot grow it indefinitely.
 After the speech engine is ready, use **Choose voices** to compare candidates
 with the same sample text and assign the preferred voice to the narrator or any
 character. The character field is editable, so an OCR name that is missing from

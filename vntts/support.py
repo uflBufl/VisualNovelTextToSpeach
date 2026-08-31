@@ -283,8 +283,16 @@ def _percentile(values, quantile):
 
 
 class RuntimeSupportLog:
-    def __init__(self, maximum_entries=200, *, clock=None, path=None):
+    def __init__(
+        self,
+        maximum_entries=200,
+        *,
+        maximum_bytes=512 * 1024,
+        clock=None,
+        path=None,
+    ):
         self.entries = deque(maxlen=maximum_entries)
+        self.maximum_bytes = max(256, int(maximum_bytes))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = RLock()
         self.path = Path(path).expanduser() if path is not None else None
@@ -294,7 +302,7 @@ class RuntimeSupportLog:
             entry = {
                 "recorded_at": self.clock().isoformat(),
                 "level": str(level),
-                "message": str(message),
+                "message": self._bounded_message(message),
             }
             entry.update(
                 (key, details[key]) for key in audio_route_fields if key in details
@@ -302,13 +310,41 @@ class RuntimeSupportLog:
             self.entries.append(entry)
             if self.path is not None:
                 try:
-                    self.path.parent.mkdir(parents=True, exist_ok=True)
-                    with self.path.open("a", encoding="utf-8") as output:
-                        output.write(
-                            json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n"
-                        )
+                    self._persist_locked()
                 except OSError:
                     pass
+
+    def _bounded_message(self, message):
+        value = str(message)
+        maximum_characters = max(64, min(16_384, self.maximum_bytes // 2))
+        if len(value) <= maximum_characters:
+            return value
+        return f"{value[: maximum_characters - 15]}... <truncated>"
+
+    def _persist_locked(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._json_lines()
+        while len(payload) > self.maximum_bytes and len(self.entries) > 1:
+            self.entries.popleft()
+            payload = self._json_lines()
+        if len(payload) > self.maximum_bytes:
+            entry = self.entries[-1]
+            self.entries[-1] = {
+                "recorded_at": entry["recorded_at"],
+                "level": entry["level"],
+                "message": "<runtime event exceeded persistent log limit>",
+            }
+            payload = self._json_lines()
+        with atomic_output_path(self.path) as temporary_path:
+            temporary_path.write_bytes(payload)
+
+    def _json_lines(self):
+        return b"".join(
+            (json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n").encode(
+                "utf-8"
+            )
+            for entry in self.entries
+        )
 
     def snapshot(self):
         with self.lock:

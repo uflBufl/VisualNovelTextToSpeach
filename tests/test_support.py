@@ -321,6 +321,44 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertIn("<home>", entry["message"])
         self.assertNotIn(str(Path.home()), entry["message"])
 
+    def test_persistent_log_remains_valid_jsonl_and_bounded_in_long_session(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "runtime.log"
+            log = RuntimeSupportLog(
+                maximum_entries=100,
+                maximum_bytes=700,
+                clock=lambda: datetime(2026, 8, 10, tzinfo=timezone.utc),
+                path=path,
+            )
+
+            for index in range(100):
+                log.add("status", f"event-{index}-" + "x" * 80)
+
+            payload = path.read_bytes()
+            persisted = [json.loads(line) for line in payload.splitlines()]
+
+        self.assertLessEqual(len(payload), 700)
+        self.assertEqual(persisted, log.snapshot())
+        self.assertGreater(len(persisted), 1)
+        self.assertTrue(persisted[-1]["message"].startswith("event-99-"))
+
+    def test_single_oversized_runtime_event_is_replaced_by_bounded_marker(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "runtime.log"
+            log = RuntimeSupportLog(maximum_bytes=256, path=path)
+
+            log.add("error", "x" * 10_000, fallback_reason="y" * 10_000)
+
+            payload = path.read_bytes()
+            persisted = json.loads(payload)
+
+        self.assertLessEqual(len(payload), 256)
+        self.assertEqual(
+            persisted["message"],
+            "<runtime event exceeded persistent log limit>",
+        )
+        self.assertEqual(log.snapshot(), [persisted])
+
     def test_audio_route_fields_are_kept_in_one_sanitized_record(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "runtime.log"
