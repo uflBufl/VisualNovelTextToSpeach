@@ -235,6 +235,9 @@ class ControllerComponentsTest(unittest.TestCase):
         for name in migrated:
             self.assertFalse(hasattr(AppController, name), name)
 
+    def test_shutdown_implementation_is_not_retained_on_controller(self):
+        self.assertFalse(hasattr(AppController, "_shutdown_runtime"))
+
 
 if __name__ == "__main__":
     unittest.main()

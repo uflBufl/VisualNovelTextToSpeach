@@ -631,7 +631,7 @@ class AppController:
             )
         except Exception as error:
             self.error_handler(error)
-            self._shutdown_runtime()
+            self.runtime_lifecycle.shutdown()
             return False
 
         if not self.settings.warm_up_voices:
@@ -3119,39 +3119,6 @@ class AppController:
             snapshot = self.last_diagnostic
         if snapshot is not None:
             self._publish_diagnostic(snapshot, route_metrics, audio_source)
-
-    def _shutdown_runtime(self):
-        self.shutdown_requested.set()
-        with self.voice_prime_lock:
-            voice_prime_futures = tuple(self.voice_prime_futures)
-        for future in voice_prime_futures:
-            future.cancel()
-        self._interrupt_speech()
-        self._set_backend_live_mode(False)
-        if self.live_reader is not None:
-            self.live_reader.stop()
-            self.live_reader.clear_queue()
-            self.live_reader.release_waiters()
-            try:
-                self.live_reader.wait()
-            except Exception as error:
-                self.error_handler(error)
-            self.live_reader = None
-
-        if self.capture_executor is not None:
-            self.capture_executor.shutdown(wait=True)
-            self.capture_executor = None
-        if self.ocr_executor is not None:
-            self.ocr_executor.shutdown(wait=True)
-            self.ocr_executor = None
-        if self.speech_executor is not None:
-            self.speech_executor.shutdown(wait=True)
-            self.speech_executor = None
-        if self.playback_executor is not None:
-            self.playback_executor.shutdown(wait=True)
-            self.playback_executor = None
-        self.schedule_dialog_read = None
-        self._stop_tts()
 
     def _stop_tts(self):
         active_tts = self.tts

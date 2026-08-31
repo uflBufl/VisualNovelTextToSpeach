@@ -4427,7 +4427,7 @@ class MainTest(unittest.TestCase):
         controller.speech_executor = executor
         controller.voice_prime_futures.add(future)
 
-        controller._shutdown_runtime()
+        controller.shutdown()
 
         future.cancel.assert_called_once_with()
         self.assertLess(events.index("prime-cancel"), events.index("backend-stop"))

@@ -50,7 +50,16 @@ def speak_live_chunk(
 
 
 class _RuntimeLifecyclePort(Protocol):
+    capture_executor: Any
+    error_handler: Callable[[Exception], Any]
     live_reader: Any
+    ocr_executor: Any
+    playback_executor: Any
+    schedule_dialog_read: Any
+    shutdown_requested: Any
+    speech_executor: Any
+    voice_prime_futures: Any
+    voice_prime_lock: Any
 
     def _start_runtime(self) -> Any: ...
 
@@ -61,7 +70,11 @@ class _RuntimeLifecyclePort(Protocol):
         commit: Callable[[], bool],
     ) -> Any: ...
 
-    def _shutdown_runtime(self) -> Any: ...
+    def _interrupt_speech(self) -> Any: ...
+
+    def _set_backend_live_mode(self, active: bool) -> Any: ...
+
+    def _stop_tts(self) -> Any: ...
 
 
 class _LiveSessionPort(Protocol):
@@ -256,7 +269,36 @@ class RuntimeLifecycleComponent:
         return self.settings_apply_guard.cancel(cancellation, release_waiters)
 
     def shutdown(self) -> Any:
-        return self.controller._shutdown_runtime()
+        controller = self.controller
+        controller.shutdown_requested.set()
+        with controller.voice_prime_lock:
+            voice_prime_futures = tuple(controller.voice_prime_futures)
+        for future in voice_prime_futures:
+            future.cancel()
+        controller._interrupt_speech()
+        controller._set_backend_live_mode(False)
+        if controller.live_reader is not None:
+            controller.live_reader.stop()
+            controller.live_reader.clear_queue()
+            controller.live_reader.release_waiters()
+            try:
+                controller.live_reader.wait()
+            except Exception as error:
+                controller.error_handler(error)
+            controller.live_reader = None
+
+        for attribute in (
+            "capture_executor",
+            "ocr_executor",
+            "speech_executor",
+            "playback_executor",
+        ):
+            executor = getattr(controller, attribute)
+            if executor is not None:
+                executor.shutdown(wait=True)
+                setattr(controller, attribute, None)
+        controller.schedule_dialog_read = None
+        controller._stop_tts()
 
 
 @dataclass(frozen=True)
