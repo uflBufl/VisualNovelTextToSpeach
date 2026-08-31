@@ -383,6 +383,7 @@ class RuntimeLifecycleComponent:
             if controller.settings.speech_backend in {
                 "chatterbox-nano",
                 "moss-tts",
+                "pocket-tts",
             }:
                 controller.model_assets.configure_huggingface_environment()
             registry = controller.voice_registry_initializer(

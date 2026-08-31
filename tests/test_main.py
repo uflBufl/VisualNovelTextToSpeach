@@ -1168,7 +1168,7 @@ class MainTest(unittest.TestCase):
         self.assertIn("Loading Pocket TTS...", statuses)
         tts_factory.assert_not_called()
         chatterbox_factory.assert_not_called()
-        model_assets.configure_huggingface_environment.assert_not_called()
+        model_assets.configure_huggingface_environment.assert_called_once_with()
         pocket_factory.assert_called_once_with(
             registry,
             narrator_reference=None,
