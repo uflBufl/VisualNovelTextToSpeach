@@ -16,14 +16,13 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       automatic repair/fallback and final activation. Preserve cancellation and
       restart resume throughout, and keep workspaces, manifests, queue IDs, model
       IDs, seeds, retries and publication commands out of the player UI.
-- [ ] Build the remaining minimal voice-confirmation UI. For each genuinely
-      ambiguous voice group, synthesize at most one short audition and offer
-      `Use this voice`, `Try another`, and `Use narrator`; do not expose raw
-      source-audio or per-line review. Persist explicit decisions for later
-      stories while their group evidence, references and model controls remain
-      unchanged. Exact source audio, known aliases, configured choices and
-      missing-role narrator fallbacks are already resolved automatically and
-      must not become confirmation prompts again.
+- [ ] Detect genuinely conflicting voice candidates and feed only those groups
+      into the existing minimal audition card. Preserve distinct portrait, age,
+      bank and speaker evidence instead of collapsing it prematurely, rank
+      candidates deterministically, and include the complete ordered candidate
+      inventory in the decision-context hash. Exact source audio, known aliases,
+      configured or persisted choices and missing-role narrator fallbacks must
+      remain automatic and must not become confirmation prompts again.
 - [ ] Complete automatic quality recovery after the resumable first pass. Select
       a supported local backend/profile from hardware capabilities instead of
       blindly trusting stale settings; classify truncation, repetition,

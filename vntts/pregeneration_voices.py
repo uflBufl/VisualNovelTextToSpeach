@@ -142,6 +142,14 @@ class VoiceDecisionStore:
                 "Only an unresolved voice audition can create a player decision"
             )
         source_id = _required_text(source_id, "voice source")
+        allowed_sources = {
+            default_voice_choice_id,
+            *(candidate.source_id for candidate in group.candidates),
+        }
+        if source_id not in allowed_sources:
+            raise PregenerationVoiceError(
+                "The selected voice is not a candidate for this audition"
+            )
         decisions = self._load()
         decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
             "group_id": group.group_id,

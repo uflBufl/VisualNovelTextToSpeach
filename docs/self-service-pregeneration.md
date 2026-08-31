@@ -123,7 +123,7 @@ separate group/evidence/control digest and are never inferred from filenames or
 mutable paths.
 
 Every usable selected voice is also represented as a checksum-bound candidate
-inside its group. This candidate inventory is the boundary used by the future
+inside its group. This candidate inventory is the boundary used by the
 ambiguity detector and player card; a preview request cannot introduce an
 arbitrary manifest voice. The audition renderer accepts only a candidate from an
 unresolved `needs-audition` group, reopens the exact manifest and reference
@@ -134,6 +134,18 @@ startup and rendering are cooperative-cancellation boundaries; cancellation,
 limited output, stale references and mismatched diagnostics publish no preview.
 Embedded Pocket voices follow the same contract without pretending that a
 reference file or seed exists.
+
+An unresolved plan pauses the selection wizard on one embedded voice card. The
+card automatically generates and plays the current candidate, keeps `Use this
+voice` disabled until that exact preview is ready, replays the cached WAV without
+another synthesis call, and cycles candidates through `Try another`. `Use
+narrator` remains an explicit fallback rather than an inferred rejection. A
+choice is written atomically off the UI thread and is accepted only when it is a
+candidate bound to that group or the narrator sentinel. After all cards are
+decided, the wizard rebuilds the same voice plan and proceeds only if no
+ambiguity remains; a stale or inapplicable saved choice therefore cannot leak
+into generation. Cancelling during preview waits for the exact worker to reach a
+terminal state before the dialog closes.
 
 The potentially large story-index read and reference hashing run outside the Qt
 thread while the selection dialog remains visibly busy. Cancelling requests a

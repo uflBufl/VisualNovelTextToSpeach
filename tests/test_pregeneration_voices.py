@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -196,10 +197,11 @@ class VoicePlanStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
             plan = VoicePlanStore(jobs).create(
                 job,
                 AppSettings(),
-                manifest_path=write_manifest(root / "voices"),
+                manifest_path=manifest,
             )
 
             hotelier = next(
@@ -306,6 +308,48 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             with self.assertRaisesRegex(PregenerationVoiceError, "unresolved"):
                 decisions.remember(plan.groups[0], "default")
+
+    def test_decision_store_accepts_only_bound_candidate_or_narrator(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(),
+                manifest_path=manifest,
+            )
+            selected = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            group = replace(selected, route="needs-audition")
+            decisions = VoiceDecisionStore(root / "decisions.json")
+
+            with self.assertRaisesRegex(PregenerationVoiceError, "not a candidate"):
+                decisions.remember(group, "character:unrelated")
+
+            decisions.remember(group, group.candidates[0].source_id)
+            reloaded = VoiceDecisionStore(root / "decisions.json")
+            self.assertEqual(
+                reloaded.choice_for(group.group_id, group.decision_context_sha256),
+                group.candidates[0].source_id,
+            )
+            reused = VoicePlanStore(jobs, decisions=reloaded).create(
+                job,
+                AppSettings(),
+                manifest_path=manifest,
+            )
+            reused_group = next(
+                value for value in reused.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(reused_group.resolution, "saved-player-decision")
+            self.assertEqual(reused_group.source_id, group.candidates[0].source_id)
+
+            decisions.remember(group, "default")
+            self.assertEqual(
+                reloaded.choice_for(group.group_id, group.decision_context_sha256),
+                "default",
+            )
 
 
 if __name__ == "__main__":

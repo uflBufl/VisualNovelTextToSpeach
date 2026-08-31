@@ -24,6 +24,7 @@ from vntts.game_content_importer import (
     Reverse1999GameImporter,
 )
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
+from vntts.pregeneration_audition_ui import VoiceAuditionPanel, VoiceAuditionUIError
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationWorker,
@@ -57,6 +58,9 @@ class OfflineAudioPreparationDialog(QDialog):
         discovery=None,
         job_store=None,
         voice_plan_store=None,
+        voice_decisions=None,
+        audition_service=None,
+        preview_player=None,
         input_store=None,
         generator=None,
         recovery=None,
@@ -70,11 +74,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.settings = settings
         self.discovery = discovery or (lambda: discover_game_content(settings))
         self.job_store = job_store or PregenerationJobStore()
+        self.voice_decisions = voice_decisions or VoiceDecisionStore(
+            get_local_data_directory() / "pregeneration" / "voice-decisions.json"
+        )
         self.voice_plan_store = voice_plan_store or VoicePlanStore(
             self.job_store,
-            decisions=VoiceDecisionStore(
-                get_local_data_directory() / "pregeneration" / "voice-decisions.json"
-            ),
+            decisions=self.voice_decisions,
         )
         self.input_store = input_store or PregenerationInputStore(self.job_store)
         self.generator = generator or OfflineGenerationWorker()
@@ -86,6 +91,15 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_runner.finished.connect(self._import_finished)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.voice_runner.finished.connect(self._voice_plan_finished)
+        self.voice_panel = VoiceAuditionPanel(
+            self.voice_decisions,
+            preview_service=audition_service,
+            thread_pool=thread_pool,
+            player=preview_player,
+            parent=self,
+        )
+        self.voice_panel.completed.connect(self._voice_auditions_completed)
+        self.voice_panel.cancelled.connect(self._voice_auditions_cancelled)
         self.input_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.input_runner.finished.connect(self._generation_input_finished)
         self.generation_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -100,6 +114,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_cancel_event = Event()
         self.importing = False
         self.planning_voices = False
+        self.auditioning_voices = False
+        self.replanning_voice_decisions = False
         self.preparing_inputs = False
         self.generating = False
         self.recovering = False
@@ -194,6 +210,7 @@ class OfflineAudioPreparationDialog(QDialog):
         layout.addWidget(self.stories, 1)
         layout.addLayout(selection_actions)
         layout.addWidget(self.summary)
+        layout.addWidget(self.voice_panel)
         layout.addWidget(self.resume_status)
         layout.addWidget(self.buttons)
         availability = self.importer.availability()
@@ -410,6 +427,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to save preparation: {error}")
             return
         self.planning_voices = True
+        self.replanning_voice_decisions = False
         self._close_after_voice_cancel = False
         self.voice_cancel_event.clear()
         self._set_import_controls(False)
@@ -443,6 +461,63 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to match character voices: {error}")
             return
         self._voice_plan = plan
+        audition_count = getattr(plan, "audition_count", 0)
+        if isinstance(audition_count, int) and audition_count > 0:
+            if self.replanning_voice_decisions:
+                self.replanning_voice_decisions = False
+                self.cancel_button.setText("Cancel")
+                self.cancel_button.setEnabled(True)
+                self._set_import_controls(True)
+                self.resume_status.setText(
+                    "Saved voice choices could not be applied. Nothing was generated."
+                )
+                return
+            try:
+                self.voice_panel.start(plan)
+            except VoiceAuditionUIError as error:
+                self.cancel_button.setText("Cancel")
+                self.cancel_button.setEnabled(True)
+                self._set_import_controls(True)
+                self.resume_status.setText(
+                    f"Unable to choose character voices: {error}"
+                )
+                return
+            self.auditioning_voices = True
+            self.cancel_button.setText("Cancel voice selection")
+            self.cancel_button.setEnabled(True)
+            self.resume_status.setText(
+                f"Listen to {audition_count} ambiguous character voice"
+                f"{'s' if audition_count != 1 else ''}."
+            )
+            return
+        self.replanning_voice_decisions = False
+        self._start_generation_input(plan)
+
+    def _voice_auditions_completed(self):
+        self.auditioning_voices = False
+        self.replanning_voice_decisions = True
+        self.planning_voices = True
+        self.cancel_button.setText("Cancel voice matching")
+        self.cancel_button.setEnabled(True)
+        self.resume_status.setText("Applying your saved voice choices...")
+        self.voice_runner.start(
+            self.voice_plan_store.create,
+            self._job,
+            self.settings,
+            cancellation=self.voice_cancel_event,
+        )
+
+    def _voice_auditions_cancelled(self):
+        self.auditioning_voices = False
+        if self._close_after_voice_cancel:
+            self.reject()
+            return
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        self.resume_status.setText("Voice selection cancelled.")
+
+    def _start_generation_input(self, plan):
         self.preparing_inputs = True
         self.cancel_button.setText("Cancel preparation")
         self.resume_status.setText("Preparing the selected stories for generation...")
@@ -657,6 +732,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _cancel_or_reject(self):
         if (
             self.planning_voices
+            or self.auditioning_voices
             or self.preparing_inputs
             or self.generating
             or self.recovering
@@ -665,6 +741,8 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
+            if self.auditioning_voices:
+                self.voice_panel.cancel()
             self.cancel_button.setEnabled(False)
             stage = (
                 "automatic recovery"
@@ -677,6 +755,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self.generating
                 else "offline preparation"
                 if self.preparing_inputs
+                else "voice selection"
+                if self.auditioning_voices
                 else "voice matching"
             )
             self.resume_status.setText(f"Cancelling {stage}...")
@@ -691,6 +771,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def closeEvent(self, event: QCloseEvent):
         if (
             self.planning_voices
+            or self.auditioning_voices
             or self.preparing_inputs
             or self.generating
             or self.recovering
@@ -711,7 +792,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovery_runner.cancel()
         self.acceptance_runner.cancel()
         self.publication_runner.cancel()
+        self.voice_panel.shutdown()
         super().closeEvent(event)
+
+    def done(self, result):
+        if not self.voice_panel.active:
+            self.voice_panel.shutdown()
+        super().done(result)
 
 
 __all__ = ["OfflineAudioPreparationDialog"]
