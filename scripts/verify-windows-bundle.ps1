@@ -46,6 +46,12 @@ $EnvironmentNames = @(
     "VNTTS_CHATTERBOX_RUNTIME"
     "VNTTS_MOSS_RUNTIME"
     "VNTTS_MOSS_DELAY_RUNTIME"
+    "HF_HOME"
+    "HF_HUB_CACHE"
+    "HUGGINGFACE_HUB_CACHE"
+    "TRANSFORMERS_CACHE"
+    "HF_TOKEN"
+    "HUGGING_FACE_HUB_TOKEN"
 )
 $OriginalEnvironment = @{}
 foreach ($Name in $EnvironmentNames) {
@@ -66,6 +72,12 @@ try {
     $env:VNTTS_CHATTERBOX_RUNTIME = $null
     $env:VNTTS_MOSS_RUNTIME = $null
     $env:VNTTS_MOSS_DELAY_RUNTIME = $null
+    $env:HF_HOME = $null
+    $env:HF_HUB_CACHE = $null
+    $env:HUGGINGFACE_HUB_CACHE = $null
+    $env:TRANSFORMERS_CACHE = $null
+    $env:HF_TOKEN = $null
+    $env:HUGGING_FACE_HUB_TOKEN = $null
     Remove-Item $ReportPath -Force -ErrorAction SilentlyContinue
     $SelfTest = Start-Process -FilePath $Executable `
         -ArgumentList @(
@@ -126,6 +138,7 @@ $RequiredChecks = @(
     "Bundled Tesseract",
     "Bundled eSpeak-NG"
     "Bundled Pocket TTS runtime"
+    "Bundled Pocket TTS clean-cache render"
 )
 foreach ($Name in $RequiredChecks) {
     $Check = @($Report.checks | Where-Object { $_.name -eq $Name })

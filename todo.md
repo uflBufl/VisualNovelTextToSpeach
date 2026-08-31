@@ -100,11 +100,6 @@ intentional omission as distinct terminal authorities.
     Retain repository/revision/checksum evidence for every downloaded model and
     voice. Do not bundle gated weights or unclear/non-commercial voices without
     a release-owner approval covering those exact files.
-  - Extend the now-contained package self-test from runtime imports to an actual
-    clean-cache Pocket render with non-empty PCM. Record model and selected voice
-    origins/revisions/checksums as well as interpreter/module origins; the render
-    must use an application-owned cache and must not inherit developer PATH,
-    Python, backend overrides, Hugging Face credentials or model caches.
   - Complete real unsigned and signed macOS builds plus the Windows portable and
     installer builds before removing this item. Acceptance requires startup and
     render without uv, a checkout, backend environment variables or an existing

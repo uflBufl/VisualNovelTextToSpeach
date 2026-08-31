@@ -57,6 +57,12 @@ env \
     -u VNTTS_CHATTERBOX_RUNTIME \
     -u VNTTS_MOSS_RUNTIME \
     -u VNTTS_MOSS_DELAY_RUNTIME \
+    -u HF_HOME \
+    -u HF_HUB_CACHE \
+    -u HUGGINGFACE_HUB_CACHE \
+    -u TRANSFORMERS_CACHE \
+    -u HF_TOKEN \
+    -u HUGGING_FACE_HUB_TOKEN \
     PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     "$executable" \
     --package-self-test \

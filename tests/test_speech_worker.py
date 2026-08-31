@@ -356,6 +356,7 @@ class SpeechWorkerTest(unittest.TestCase):
                     {
                         "HF_TOKEN": "developer-token",
                         "HUGGING_FACE_HUB_TOKEN": "legacy-token",
+                        "HF_HUB_CACHE": "/developer/huggingface-cache",
                     },
                 ),
             ):
@@ -371,6 +372,7 @@ class SpeechWorkerTest(unittest.TestCase):
             )
             self.assertNotIn("HF_TOKEN", captured["options"]["env"])
             self.assertNotIn("HUGGING_FACE_HUB_TOKEN", captured["options"]["env"])
+            self.assertNotIn("HF_HUB_CACHE", captured["options"]["env"])
             backend.shutdown()
 
     def test_frozen_pocket_worker_uses_credentials_only_after_explicit_opt_in(self):
@@ -402,7 +404,13 @@ class SpeechWorkerTest(unittest.TestCase):
                     return_value=(runtime_root, interpreter, runtime_site),
                 ),
                 patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
-                patch.dict(os.environ, {"HF_TOKEN": "explicit-token"}),
+                patch.dict(
+                    os.environ,
+                    {
+                        "HF_TOKEN": "explicit-token",
+                        "HF_HUB_CACHE": "/developer/huggingface-cache",
+                    },
+                ),
             ):
                 backend = IsolatedSpeechBackend(
                     "pocket-tts",
@@ -412,6 +420,7 @@ class SpeechWorkerTest(unittest.TestCase):
                 )
 
             self.assertEqual(captured["options"]["env"]["HF_TOKEN"], "explicit-token")
+            self.assertNotIn("HF_HUB_CACHE", captured["options"]["env"])
             self.assertNotIn(
                 "HF_HUB_DISABLE_IMPLICIT_TOKEN", captured["options"]["env"]
             )

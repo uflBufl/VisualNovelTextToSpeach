@@ -72,6 +72,14 @@ weights. A release is complete only when a clean macOS and Windows package can:
 The package self-test must record interpreter, module, model and voice origins so
 a developer machine cannot make a broken bundle appear healthy.
 
+The frozen self-test performs a real Pocket render through the bundled isolated
+worker. It creates a temporary Hugging Face cache below the application's data
+directory, removes inherited token and cache overrides, requests the public
+`alba` preset, and requires complete non-empty PCM. Its report inventories and
+hashes the pinned public model, tokenizer and voice snapshot files. Any missing,
+additional or revision-changed snapshot file fails the release gate. The
+temporary model, voice-state and audio caches are removed after the probe.
+
 `uv venv --relocatable` alone is not a self-contained runtime: the environment's
 Python launcher can still refer to the developer's base Python installation.
 Release staging therefore includes an adjacent uv-managed CPython distribution,

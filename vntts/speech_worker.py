@@ -570,14 +570,17 @@ class IsolatedSpeechBackend:
         ]
         environment = dict(os.environ)
         environment["PYTHONNOUSERSITE"] = "1"
-        if (
-            self.name == "pocket-tts"
-            and self.bundle_root is not None
-            and not self.allow_gated_model_access
-        ):
-            environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-            environment.pop("HF_TOKEN", None)
-            environment.pop("HUGGING_FACE_HUB_TOKEN", None)
+        if self.name == "pocket-tts" and self.bundle_root is not None:
+            for name in (
+                "HF_HUB_CACHE",
+                "HUGGINGFACE_HUB_CACHE",
+                "TRANSFORMERS_CACHE",
+            ):
+                environment.pop(name, None)
+            if not self.allow_gated_model_access:
+                environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+                environment.pop("HF_TOKEN", None)
+                environment.pop("HUGGING_FACE_HUB_TOKEN", None)
         process = self.process_factory(
             command,
             stdin=subprocess.PIPE,
@@ -670,6 +673,8 @@ class IsolatedSpeechBackend:
             values[key] = str(value) if isinstance(value, Path) else value
         if self.name in {"moss-tts", "moss-tts-delay"}:
             values["generation_profile"] = self.generation_profile
+        if self.name != "moss-tts-delay":
+            values["runtime_directory"] = str(self.runtime_root)
         values["narrator_reference"] = (
             str(self.narrator_reference)
             if isinstance(self.narrator_reference, Path)

@@ -4,11 +4,13 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytesseract
 
 from vntts.package_self_test import (
+    probe_bundled_pocket_render,
     probe_bundled_pocket_runtime,
     run_package_self_test,
 )
@@ -18,12 +20,17 @@ from vntts.runtime_paths import (
     find_bundled_speech_runtime,
     get_bundle_root,
 )
+from vntts.synthesis import SynthesisCompletion
 
 
 class RuntimePathsTest(unittest.TestCase):
     @staticmethod
     def _speech_runtime_report():
         return {"executable": "python", "modules": {}}
+
+    @staticmethod
+    def _speech_render_report():
+        return {"samples": 42, "sample_rate": 24_000, "artifacts": []}
 
     def test_finds_allowlisted_speech_runtime_in_bundle(self):
         with TemporaryDirectory() as temporary_directory:
@@ -146,6 +153,7 @@ class RuntimePathsTest(unittest.TestCase):
                     speech_runtime_probe=Mock(
                         return_value=self._speech_runtime_report()
                     ),
+                    speech_render_probe=Mock(return_value=self._speech_render_report()),
                 )
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -206,6 +214,7 @@ class RuntimePathsTest(unittest.TestCase):
                     speech_runtime_probe=Mock(
                         return_value=self._speech_runtime_report()
                     ),
+                    speech_render_probe=Mock(return_value=self._speech_render_report()),
                 )
 
             self.assertTrue(successful)
@@ -250,6 +259,68 @@ class RuntimePathsTest(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "module:torch"),
             ):
                 probe_bundled_pocket_runtime(bundle_root, runner)
+
+    def test_pocket_render_probe_records_only_pinned_public_assets(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            class FakeBackend:
+                def __init__(self, *_args, **_options):
+                    self.health = {"backend": "pocket-tts"}
+                    cache = Path(os.environ["HF_HOME"]) / "hub"
+                    files = (
+                        (
+                            "d29db7978e464fb90cb3359ee0c69a273b9142cc",
+                            "languages/english/model.safetensors",
+                            b"model",
+                        ),
+                        (
+                            "d29db7978e464fb90cb3359ee0c69a273b9142cc",
+                            "languages/english/tokenizer.model",
+                            b"tokenizer",
+                        ),
+                        (
+                            "e041936c75475d350b405bc870bcf7c22da4e9e6",
+                            "languages/english/embeddings/alba.safetensors",
+                            b"voice",
+                        ),
+                    )
+                    for revision, relative, content in files:
+                        path = (
+                            cache
+                            / "models--kyutai--pocket-tts-without-voice-cloning"
+                            / "snapshots"
+                            / revision
+                            / relative
+                        )
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(content)
+
+                def render(self, _request):
+                    result = SimpleNamespace(
+                        pcm=SimpleNamespace(size=42),
+                        sample_rate=24_000,
+                        completion=SynthesisCompletion.COMPLETE,
+                    )
+                    return SimpleNamespace(collect=lambda: result)
+
+                def shutdown(self):
+                    return None
+
+            report = probe_bundled_pocket_render(
+                root / "bundle",
+                backend_factory=FakeBackend,
+                temporary_directory_factory=lambda **_options: TemporaryDirectory(
+                    dir=root
+                ),
+            )
+
+        self.assertEqual(report["samples"], 42)
+        self.assertEqual(
+            {item["role"] for item in report["artifacts"]},
+            {"model", "tokenizer", "voice"},
+        )
+        self.assertTrue(all(item["sha256"] for item in report["artifacts"]))
 
     def test_package_self_test_writes_machine_readable_report(self):
         with TemporaryDirectory() as temporary_directory:
