@@ -4,6 +4,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+import numpy as np
+import soundfile as sf
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtTest import QTest  # noqa: E402
@@ -14,6 +17,10 @@ from tests.test_pregeneration_setup import (  # noqa: E402
     ManualThreadPool,
     write_story_index,
 )
+from tests.test_pregeneration_voices import (  # noqa: E402
+    write_conflicting_manifest,
+    write_content,
+)
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.authoring.bulk_generation import run_bulk_generation  # noqa: E402
 from vntts.authoring.missing_voice_policy import (  # noqa: E402
@@ -22,6 +29,7 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
 )
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
+from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
 from vntts.pregeneration_generation import OfflineGenerationWorker  # noqa: E402
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryWorker  # noqa: E402
@@ -175,6 +183,89 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             controller.start.assert_not_called()
             tray.shutdown()
             dialog.deleteLater()
+
+    def test_ambiguous_voice_choice_resumes_then_completes_without_line_review(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_conflicting_manifest(root / "voices")
+            for reference in (manifest.parent / "references").glob("*.wav"):
+                sf.write(
+                    reference,
+                    np.zeros(1_600, dtype=np.float32),
+                    16_000,
+                    subtype="PCM_16",
+                )
+            settings = AppSettings(voice_manifest=str(manifest))
+            jobs = PregenerationJobStore(root / "jobs")
+            decisions = VoiceDecisionStore(root / "voice-decisions.json")
+            voices = VoicePlanStore(jobs, decisions=decisions)
+            pool = ManualThreadPool()
+            cancelled_preview = Mock()
+            cancelled_preview.generate.side_effect = VoiceAuditionCancelled("cancelled")
+            first = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=voices,
+                voice_decisions=decisions,
+                audition_service=cancelled_preview,
+                preview_player=Mock(),
+                thread_pool=pool,
+            )
+
+            first.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertTrue(first.auditioning_voices)
+            interrupted_job_id = first.job().job_id
+            first.cancel_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(first.result(), QDialog.DialogCode.Rejected)
+
+            preview = Mock()
+            preview.generate.side_effect = lambda _plan, _group, source_id: Mock(
+                path=root / f"{source_id.removeprefix('character:')}.wav"
+            )
+            generator = InProcessPocketGenerator()
+            second = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=voices,
+                voice_decisions=decisions,
+                audition_service=preview,
+                preview_player=Mock(),
+                input_store=PregenerationInputStore(jobs),
+                generator=generator,
+                recovery=OfflineRecoveryWorker(generator),
+                acceptance=OfflineAcceptanceWorker(generator),
+                thread_pool=pool,
+            )
+
+            second.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(second.job().job_id, interrupted_job_id)
+            self.assertTrue(second.auditioning_voices)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertTrue(second.voice_panel.a_use.isEnabled())
+            second.voice_panel.a_use.click()
+            for _step in range(8):
+                if second.result() == QDialog.DialogCode.Accepted:
+                    break
+                self.assertTrue(pool.tasks)
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+
+            self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(second.voice_plan().audition_count, 0)
+            self.assertTrue(generator.rendered)
+            self.assertTrue(decisions.path.is_file())
+            first.deleteLater()
+            second.deleteLater()
 
 
 if __name__ == "__main__":

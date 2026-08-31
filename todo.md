@@ -11,18 +11,21 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Continue `Prepare offline audio` from its resumable first-pass generation
-      result into ambiguous-voice auditions when evidence actually conflicts,
-      automatic repair/fallback and final activation. Preserve cancellation and
-      restart resume throughout, and keep workspaces, manifests, queue IDs, model
-      IDs, seeds, retries and publication commands out of the player UI.
-- [ ] Detect genuinely conflicting voice candidates and feed only those groups
-      into the existing minimal audition card. Preserve distinct portrait, age,
-      bank and speaker evidence instead of collapsing it prematurely, rank
-      candidates deterministically, and include the complete ordered candidate
-      inventory in the decision-context hash. Exact source audio, known aliases,
-      configured or persisted choices and missing-role narrator fallbacks must
-      remain automatic and must not become confirmation prompts again.
+- [ ] Make the ordinary game importer publish the immutable evidence consumed by
+      voice matching: reviewed source-reference candidates, exact voice IDs and
+      banks, source-line provenance, and exact portrait assets under
+      `portraits/<portrait>.png`. The current resolver can rank and compare this
+      evidence, but a fresh import must not depend on an authoring-produced
+      manifest to expose real alternatives or an original-voice anchor.
+- [ ] Refine ambiguous-voice comparison without expanding mandatory review.
+  - [ ] Add objective source-reference and generated-preview preflight for
+        clipping, unusable silence and obvious artifacts before candidates enter
+        the A/B card. Calibrate evidence margins against held-out decisions rather
+        than weakening the existing automatic fallback rules ad hoc.
+  - [ ] Cluster acoustically duplicate references for one evidenced speaker while
+        preserving genuinely distinct age and identity variants.
+  - [ ] Add an optional second matched phrase and opportunistically pre-render the
+        next unresolved comparison after the current A/B card becomes usable.
 - [ ] Complete automatic quality recovery after the resumable first pass. Select
       a supported local backend/profile from hardware capabilities instead of
       blindly trusting stale settings; classify truncation, repetition,
@@ -34,18 +37,13 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       completion already accepts technically valid generated WAVs atomically and
       must continue to require no per-line review. Preserve the expert review
       tools for diagnostics, not the default path.
-- [ ] Publish and activate a local incremental game pack automatically. Keep
-      exact source audio, approved generated audio, live fallback and intentional
-      omission as distinct terminal routes; reuse unchanged work across chapters;
-      report coverage in player language; and allow play with a partially prepared
-      pack while remaining chapters continue later.
-- [ ] Add a synthetic end-to-end acceptance journey: fresh settings -> discover
-      game -> choose chapter -> audition only ambiguous voices -> interrupt/resume
-      generation -> automatic repairs/fallback -> atomically activate the pack.
-      Acceptance requires every selected dialogue line to have a terminal route,
-      zero authoring vocabulary in the default UI and no mandatory per-line review.
-  - [ ] Extend the same journey with one persisted ambiguous-voice audition and
-        an interrupt/resume boundary after the minimal audition UI exists.
+- [ ] Extend automatic pack publication from the completed single-selection path
+      to incremental chapter preparation: reuse unchanged work, keep the last good
+      pack playable while another chapter is prepared, merge terminal routes
+      atomically, and report coverage only in player language.
+- [ ] Extend the synthetic end-to-end journey with cancellation during active
+      generation, process restart and exact-line resume before the already tested
+      repair, fallback, publication and activation stages.
 
 ## P1 - Improve the self-service generation engine
 

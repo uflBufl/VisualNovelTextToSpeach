@@ -186,6 +186,24 @@ class VoiceAuditionPreviewService:
     def cancel(self):
         self._cancel.set()
 
+    def reference_audio(self, plan, group, candidate_source_id):
+        """Return one checksum-verified, playable original reference when present."""
+        candidate = _validate_request(plan, group, candidate_source_id)
+        registry = _load_candidate_registry(plan, candidate)
+        try:
+            voice = registry.resolve_source(candidate.source_id)
+            if voice is None or not voice.references:
+                return None
+            reference = voice.references[0]
+            if sha256_file(reference) != candidate.reference_sha256s[0]:
+                raise VoiceAuditionError("Original voice anchor changed after planning")
+            probe_pcm16_mono_wav(reference)
+            return reference
+        except (OSError, ValueError, VoiceManifestError) as error:
+            raise VoiceAuditionError(
+                f"Original voice anchor is not playable: {error}"
+            ) from error
+
     def close(self):
         self.cancel()
         with self._lock:
@@ -227,6 +245,12 @@ def _validate_request(plan, group, candidate_source_id):
         for candidate in group.candidates
         if candidate.source_id == candidate_source_id
     )
+    if (
+        not candidates
+        and group.narrator_candidate is not None
+        and group.narrator_candidate.source_id == candidate_source_id
+    ):
+        candidates = (*candidates, group.narrator_candidate)
     if len(candidates) != 1:
         raise VoiceAuditionError("Voice audition candidate is not uniquely available")
     if not group.sample_text.strip():
@@ -273,7 +297,12 @@ def _load_candidate_registry(plan, candidate):
         raise VoiceAuditionError(
             f"Unable to read the voice candidate: {error}"
         ) from error
-    if identity != candidate:
+    if (
+        identity.source_id != candidate.source_id
+        or identity.source_character != candidate.source_character
+        or identity.source_speaker != candidate.source_speaker
+        or identity.reference_sha256s != candidate.reference_sha256s
+    ):
         raise VoiceAuditionError("Voice candidate changed after planning")
     if manifest is not None and sha256_file(manifest) != plan.voice_manifest_sha256:
         raise VoiceAuditionError("Character voices changed while they were read")

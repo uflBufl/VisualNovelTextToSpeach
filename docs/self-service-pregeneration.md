@@ -31,11 +31,11 @@ genuinely ambiguous group asks the user to listen.
 
 One voice card answers a player-level question: "Which voice should this
 character use?" It presents the character and visual context when available,
-then a fixed synthesized phrase for the best candidate. The actions are:
-
-- `Use this voice`;
-- `Try another`; and
-- `Use narrator`.
+then compares the two strongest viable candidates using the same synthesized
+phrase. Each candidate has independent play/replay and choose controls. The
+player can also choose `Neither sounds right`, `Choose for me`, or `Choose all
+automatically`. Failed previews and cases with only one viable candidate are
+resolved automatically instead of being presented as fake decisions.
 
 A checksum-bound decision is reused in later stories while its character
 variant, ordered reference audio, backend/model and generation profile remain
@@ -112,15 +112,27 @@ Voice routing is planned in a separate atomic `voice-plan.json` beside the
 selection job. The planner reopens the checksum-bound story index, excludes
 original and non-speakable lines, and groups remaining lines by canonical voice
 character plus exact portrait, age, source-bank and source-voice evidence. It
-resolves explicit saved assignments and exact manifest names/aliases before any
-audition; narrator dialogue and named roles without a usable candidate receive
-an explicit narrator route without asking the player to confirm an already-known
-absence. Each group records ordered line IDs, one representative phrase, the
-chosen source and reference hashes. Its control digest depends only on that
-group's selected voice and synthesis settings, so changing an unrelated voice
-reference does not invalidate compatible work. Future player decisions use a
-separate group/evidence/control digest and are never inferred from filenames or
-mutable paths.
+also validates exact queue-to-voice bindings carried by reviewed source-reference
+manifests. Exact queue bindings split otherwise similar groups and remain
+automatic. The candidate inventory then combines that authority with exact
+manifest names/aliases and reviewed variants of the same character. Its stable
+evidence order is: explicit assignment or exact queue binding, matching original
+voice ID, matching portrait plus source bank, exact character name or alias,
+matching portrait, matching bank, then another reviewed character variant.
+Candidates outside the top evidence margin remain in diagnostic provenance but
+do not create another player prompt. A unique candidate, a clear evidence winner
+and a one-line incidental role resolve automatically.
+
+Narrator dialogue and named roles without a usable candidate receive an explicit
+narrator route without asking the player to confirm an already-known absence.
+Each group records ordered line IDs, one representative phrase, the complete
+ranked inventory, the bounded comparison candidates, the chosen source and
+reference hashes. Its control digest depends only on that group's selected voice
+and synthesis settings, so changing an unrelated voice reference does not
+invalidate compatible work. Player decisions use a separate digest containing
+only materially competitive candidates; adding a dominated candidate therefore
+does not force the player to repeat a choice. A changed selected reference or a
+new credible competitor does.
 
 Every usable selected voice is also represented as a checksum-bound candidate
 inside its group. This candidate inventory is the boundary used by the
@@ -135,17 +147,38 @@ limited output, stale references and mismatched diagnostics publish no preview.
 Embedded Pocket voices follow the same contract without pretending that a
 reference file or seed exists.
 
-An unresolved plan pauses the selection wizard on one embedded voice card. The
-card automatically generates and plays the current candidate, keeps `Use this
-voice` disabled until that exact preview is ready, replays the cached WAV without
-another synthesis call, and cycles candidates through `Try another`. `Use
-narrator` remains an explicit fallback rather than an inferred rejection. A
-choice is written atomically off the UI thread and is accepted only when it is a
-candidate bound to that group or the narrator sentinel. After all cards are
-decided, the wizard rebuilds the same voice plan and proceeds only if no
-ambiguity remains; a stale or inapplicable saved choice therefore cannot leak
-into generation. Cancelling during preview waits for the exact worker to reach a
-terminal state before the dialog closes.
+An unresolved plan hides the chapter-selection surface and shows one stable A/B
+comparison. The header reports how many choices remain, estimates their duration
+and offers `Choose all automatically`. The card explains the character variant,
+affected line count and reuse scope. It renders an exact installed portrait from
+the content package when `portraits/<portrait>.png` exists and still matches its
+planned checksum; it never substitutes a portrait ID as if it were an image.
+
+Both candidates synthesize the same representative phrase. Each has independent
+play/replay and choose controls, while a plain-language recommendation explains
+the evidence behind the first candidate. When a checksum-bound source-reference
+candidate provides a playable original WAV, `Play original game voice` turns the
+question into a similarity comparison. Without that anchor the copy explicitly
+calls the decision a preference and offers `Choose for me`. Playback never moves
+or disables the decision controls.
+
+`Neither sounds right` advances through remaining technically rendered
+candidates and then previews the configured narrator with the same phrase. If no
+narrator is runnable under the current offline setup, VNTTS keeps the best viable
+candidate rather than recording a route that would strand the job. A failed
+candidate preview is never displayed as a choice: one remaining result is chosen
+automatically and zero results take the safest runnable fallback. The choices
+advance immediately and are written together atomically in the background; a
+failed write retains them in memory and exposes one retry action. `Change saved
+voice choices` on the chapter-selection screen intentionally ignores prior
+decisions for that run, while the normal path reuses them.
+
+A persisted choice is accepted only when it is a candidate bound to that group
+or the narrator sentinel. After all cards are decided, the wizard rebuilds the
+same voice plan and proceeds only if no ambiguity remains; a stale or
+inapplicable saved choice therefore cannot leak into generation. Cancelling
+during preview waits for the exact worker to reach a terminal state before the
+dialog closes.
 
 The potentially large story-index read and reference hashing run outside the Qt
 thread while the selection dialog remains visibly busy. Cancelling requests a
@@ -289,5 +322,7 @@ activation components. One Pocket-style render succeeds and one reaches its
 typed limit; the latter becomes an explicit live fallback. The test then opens
 the completed result through the desktop action, saves `prefer-generated`, and
 verifies that the pack is active without exposing authoring vocabulary or asking
-for per-line review. The remaining acceptance extension is an actual ambiguous
-voice audition plus interruption/resume at that user decision.
+for per-line review. A second synthetic journey now interrupts the application at
+a real source-evidence ambiguity, reopens the same resumable job, renders the A/B
+comparison, persists one candidate decision, replans to zero ambiguity and
+publishes the pack without per-line review.

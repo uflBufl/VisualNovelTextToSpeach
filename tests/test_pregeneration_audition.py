@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 
 import numpy as np
+import soundfile as sf
 
 from tests.test_pregeneration_voices import write_content, write_manifest
 from vntts.pregeneration_audition import (
@@ -96,6 +97,46 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_returns_only_a_checksum_verified_playable_original_anchor(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            manifest = write_manifest(root / "voices")
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            sf.write(
+                reference, np.zeros(1_600, dtype=np.float32), 16_000, subtype="PCM_16"
+            )
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(speech_backend="moss-tts", tts_profile="stable"),
+                manifest_path=manifest,
+            )
+            selected = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            group = replace(
+                selected,
+                route="needs-audition",
+                resolution="ambiguous-voice-evidence",
+                anchor_source_id=selected.candidates[0].source_id,
+            )
+            plan = replace(
+                plan,
+                groups=tuple(
+                    group if value.group_id == group.group_id else value
+                    for value in plan.groups
+                ),
+            )
+            service = VoiceAuditionPreviewService(root / "auditions")
+
+            self.assertEqual(
+                service.reference_audio(plan, group, group.anchor_source_id),
+                reference.resolve(),
+            )
+            service.close()
+
     def test_generates_one_exact_preview_then_reuses_persistent_wav(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

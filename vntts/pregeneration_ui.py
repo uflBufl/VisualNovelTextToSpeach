@@ -5,6 +5,7 @@ from threading import Event
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.application_directories import get_local_data_directory
@@ -176,8 +178,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
         self.select_none_button = QPushButton("Select none")
         self.select_none_button.clicked.connect(lambda: self._set_all_checked(False))
+        self.change_voices = QCheckBox("Change saved voice choices")
+        self.change_voices.setAccessibleDescription(
+            "Review previously saved ambiguous character voices again for this selection"
+        )
         selection_actions.addWidget(self.select_all_button)
         selection_actions.addWidget(self.select_none_button)
+        selection_actions.addWidget(self.change_voices)
         selection_actions.addStretch()
 
         self.summary = QLabel("Select game content to continue.")
@@ -202,14 +209,19 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.clicked.connect(self._save_selection)
         self.cancel_button.clicked.connect(self._cancel_or_reject)
 
+        self.selection_panel = QWidget()
+        selection_layout = QVBoxLayout(self.selection_panel)
+        selection_layout.setContentsMargins(0, 0, 0, 0)
+        selection_layout.addWidget(intro)
+        selection_layout.addLayout(source_row)
+        selection_layout.addWidget(self.source_status)
+        selection_layout.addWidget(QLabel("Stories to prepare"))
+        selection_layout.addWidget(self.stories, 1)
+        selection_layout.addLayout(selection_actions)
+        selection_layout.addWidget(self.summary)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(intro)
-        layout.addLayout(source_row)
-        layout.addWidget(self.source_status)
-        layout.addWidget(QLabel("Stories to prepare"))
-        layout.addWidget(self.stories, 1)
-        layout.addLayout(selection_actions)
-        layout.addWidget(self.summary)
+        layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
         layout.addWidget(self.resume_status)
         layout.addWidget(self.buttons)
@@ -431,6 +443,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._close_after_voice_cancel = False
         self.voice_cancel_event.clear()
         self._set_import_controls(False)
+        self.selection_panel.setVisible(False)
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
         self.resume_status.setText(
@@ -441,6 +454,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._job,
             self.settings,
             cancellation=self.voice_cancel_event,
+            ignore_decisions=self.change_voices.isChecked(),
         )
 
     def _voice_plan_finished(self, plan, error):
@@ -452,6 +466,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setText("Cancel")
             self.cancel_button.setEnabled(True)
             self._set_import_controls(True)
+            self.selection_panel.setVisible(True)
             if isinstance(error, PregenerationVoiceCancelled):
                 if self._close_after_voice_cancel:
                     self.reject()
@@ -468,6 +483,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.cancel_button.setText("Cancel")
                 self.cancel_button.setEnabled(True)
                 self._set_import_controls(True)
+                self.selection_panel.setVisible(True)
                 self.resume_status.setText(
                     "Saved voice choices could not be applied. Nothing was generated."
                 )
@@ -478,6 +494,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.cancel_button.setText("Cancel")
                 self.cancel_button.setEnabled(True)
                 self._set_import_controls(True)
+                self.selection_panel.setVisible(True)
                 self.resume_status.setText(
                     f"Unable to choose character voices: {error}"
                 )
@@ -491,6 +508,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             return
         self.replanning_voice_decisions = False
+        self.voice_panel.shutdown()
         self._start_generation_input(plan)
 
     def _voice_auditions_completed(self):
@@ -515,6 +533,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
         self._set_import_controls(True)
+        self.selection_panel.setVisible(True)
         self.resume_status.setText("Voice selection cancelled.")
 
     def _start_generation_input(self, plan):
@@ -537,6 +556,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.selection_panel.setVisible(True)
             if isinstance(error, PregenerationQueueCancelled):
                 if self._close_after_voice_cancel:
                     self.reject()
@@ -570,6 +590,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.selection_panel.setVisible(True)
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Generation cancelled. Continue later to resume saved lines."
@@ -605,6 +626,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.selection_panel.setVisible(True)
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Automatic recovery cancelled. Continue later to resume saved lines."
@@ -640,6 +662,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.selection_panel.setVisible(True)
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Final checks cancelled. Continue later to resume saved lines."
@@ -674,6 +697,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.selection_panel.setVisible(True)
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Final save cancelled. Continue later to reuse prepared lines."
@@ -727,6 +751,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.setEnabled(enabled)
         self.select_all_button.setEnabled(enabled)
         self.select_none_button.setEnabled(enabled)
+        self.change_voices.setEnabled(enabled)
         self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
 
     def _cancel_or_reject(self):

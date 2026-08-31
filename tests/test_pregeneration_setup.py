@@ -442,7 +442,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool = ManualThreadPool()
             voice_plan_store = Mock()
 
-            def create(_job, _settings, *, cancellation):
+            def create(_job, _settings, *, cancellation, ignore_decisions=False):
+                self.assertFalse(ignore_decisions)
                 self.assertTrue(cancellation.is_set())
                 raise PregenerationVoiceCancelled("cancelled")
 
@@ -503,6 +504,34 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertFalse(dialog.preparing_inputs)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            dialog.deleteLater()
+
+    def test_change_saved_voices_reopens_decisions_during_initial_planning(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            voice_plan = Mock(audition_count=0)
+            voice_plan_store = Mock()
+            voice_plan_store.create.return_value = voice_plan
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_plan_store=voice_plan_store,
+                input_store=Mock(),
+                thread_pool=pool,
+            )
+
+            dialog.change_voices.setChecked(True)
+            dialog.continue_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertTrue(
+                voice_plan_store.create.call_args.kwargs["ignore_decisions"]
+            )
+            self.assertFalse(dialog.selection_panel.isVisible())
             dialog.deleteLater()
 
     def test_generation_cancel_terminates_before_dialog_closes(self):
