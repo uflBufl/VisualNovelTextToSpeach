@@ -2011,6 +2011,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             f"Generated {generation_result.generated}; "
             + (
                 f"automatic recovery fixed {recovery_result.recovered}; "
+                f"{recovery_result.live_fallbacks} will use live voice; "
                 f"{generation_result.failed} still need a fallback."
                 if recovery_result is not None
                 else f"{generation_result.failed} need automatic recovery."

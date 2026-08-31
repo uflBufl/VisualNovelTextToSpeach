@@ -66,6 +66,9 @@ from vntts.authoring.generation_manifest import (
     write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA as AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+)
+from vntts.authoring.generation_state import (
     FAILURE_KINDS as FAILURE_KINDS,
 )
 from vntts.authoring.generation_state import (
@@ -73,6 +76,12 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.generation_state import (
     LEGACY_STATE_VERSION as LEGACY_STATE_VERSION,
+)
+from vntts.authoring.generation_state import (
+    LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED as LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+)
+from vntts.authoring.generation_state import (
+    LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION as LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_EVIDENCE_SCHEMA as LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -2538,12 +2547,12 @@ def authorize_live_fallback(
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = state["items"].get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
-        if (
-            reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED
-            and state.get("active") is not None
-        ):
+        if reason in {
+            LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+            LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+        } and state.get("active") is not None:
             raise BulkGenerationError(
-                "Exhausted-hypothesis fallback requires an inactive base workspace"
+                "Recovery fallback requires an inactive generation state"
             )
         previous_sha256 = None if existing is None else _canonical_sha256(existing)
         evidence = None
@@ -2571,6 +2580,20 @@ def authorize_live_fallback(
                     existing,
                     evidence_workspaces,
                 )
+        elif reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+            if tuple(evidence_workspaces) or tuple(evidence_reviews):
+                raise BulkGenerationError(
+                    "Automatic-recovery fallback derives its evidence from the "
+                    "current generation state"
+                )
+            evidence = _automatic_recovery_fallback_evidence(
+                state_path,
+                queue_path,
+                state_sha256,
+                queue_sha256,
+                queue_id,
+                existing,
+            )
         elif tuple(evidence_workspaces) or tuple(evidence_reviews):
             raise BulkGenerationError(
                 "Live fallback evidence sources require the "
@@ -2582,12 +2605,17 @@ def authorize_live_fallback(
         decision = {
             "schema": LIVE_FALLBACK_SCHEMA,
             "schema_version": (
-                LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION
-                if isinstance(evidence, dict) and evidence.get("schema_version") == 2
+                LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION
+                if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED
                 else (
-                    LIVE_FALLBACK_EVIDENCE_VERSION
-                    if evidence is not None
-                    else LIVE_FALLBACK_VERSION
+                    LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION
+                    if isinstance(evidence, dict)
+                    and evidence.get("schema_version") == 2
+                    else (
+                        LIVE_FALLBACK_EVIDENCE_VERSION
+                        if evidence is not None
+                        else LIVE_FALLBACK_VERSION
+                    )
                 )
             ),
             "reason": reason,
@@ -2698,6 +2726,21 @@ def authorize_live_fallback(
 
 
 def _validate_live_fallback_source(existing, queue_item, reason):
+    if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+        if (
+            not isinstance(existing, dict)
+            or existing.get("status") != "failed"
+            or existing.get("provider") != "pocket-tts"
+            or existing.get("model") != "pocket-tts"
+            or existing.get("generation_profile") != "default"
+            or not isinstance(existing.get("failure"), dict)
+            or existing["failure"].get("kind") in {"cancelled", "interrupted"}
+        ):
+            raise BulkGenerationError(
+                "Automatic-recovery fallback requires an exact terminal Pocket "
+                "failure"
+            )
+        return
     if reason == "reference_unavailable_after_audit":
         if existing is not None and (
             existing.get("status") != "failed"
@@ -2744,6 +2787,56 @@ def _validate_live_fallback_source(existing, queue_item, reason):
         raise BulkGenerationError(
             "Offline-exhausted live fallback requires a typed failed Pocket fallback"
         )
+
+
+def _automatic_recovery_fallback_evidence(
+    state_path,
+    queue_path,
+    state_sha256,
+    queue_sha256,
+    queue_id,
+    existing,
+):
+    plan = generation_failure_repair_plan(state_path, queue_path)
+    if (
+        plan.get("state_sha256") != state_sha256
+        or plan.get("queue_sha256") != queue_sha256
+    ):
+        raise BulkGenerationSourceChangedError(
+            "Generation evidence changed while automatic fallback was planned"
+        )
+    record = next(
+        (
+            value
+            for value in plan.get("records", ())
+            if isinstance(value, dict) and value.get("queue_id") == queue_id
+        ),
+        None,
+    )
+    action = record.get("action") if isinstance(record, dict) else None
+    allowed_actions = {
+        "bounded_seed_retry",
+        "offline_fallback_backend",
+        "inline_pause_marker_comparison",
+        "reference_comparison",
+        "reference_discovery",
+        "backend_diagnosis",
+        "provenance_recovery_or_regeneration",
+    }
+    if action not in allowed_actions:
+        raise BulkGenerationError(
+            "Automatic live fallback cannot replace a remaining safe repair"
+        )
+    return {
+        "schema": AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+        "schema_version": 1,
+        "queue_sha256": queue_sha256,
+        "queue_id": queue_id,
+        "base_result_sha256": _canonical_sha256(existing),
+        "base_result": copy.deepcopy(existing),
+        "recovery_action": action,
+        "failure_kind": existing["failure"]["kind"],
+    }
 
 
 def _capture_live_fallback_evidence(

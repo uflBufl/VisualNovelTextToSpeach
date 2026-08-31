@@ -91,6 +91,10 @@ class OfflineGenerationWorker:
             cancel_event=cancel_event,
         )
 
+    def inspect(self, generation_input):
+        """Reload the current validated terminal counts without starting work."""
+        return _load_result(_generation_output(generation_input), generation_input)
+
     def _base_arguments(self, generation_input, voice_plan, output, *, retries=None):
         if not isinstance(generation_input, PregenerationInput):
             raise OfflineGenerationError("Offline generation input is invalid")

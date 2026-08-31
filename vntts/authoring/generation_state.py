@@ -63,6 +63,7 @@ LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION = 4
 LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION = 5
 LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION = 6
 LIVE_FALLBACK_REVIEWED_REJECTION_VERSION = 7
+LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION = 8
 LIVE_FALLBACK_EVIDENCE_SCHEMA = "vntts.authoring-live-fallback-evidence"
 MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-missing-voice-live-fallback-evidence"
@@ -76,6 +77,9 @@ AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
 REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
     "vntts.authoring-reviewed-rejection-live-fallback-evidence"
 )
+AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA = (
+    "vntts.self-service-automatic-recovery-live-fallback-evidence"
+)
 AUDIO_EVENT_OMISSION_SCHEMA = "vntts.authoring-audio-event-omission"
 AUDIO_EVENT_OMISSION_VERSION = 1
 AUDIO_EVENT_OMISSION_REASON = "no_validated_source_or_supported_generator"
@@ -83,12 +87,14 @@ REVIEWED_WAVEFORM_PUBLICATION_SCHEMA = "vntts.authoring-reviewed-waveform-public
 REVIEWED_WAVEFORM_PUBLICATION_VERSION = 1
 REVIEWED_WAVEFORM_PUBLICATION_REASON = "legacy_control_inventory_unavailable"
 LIVE_FALLBACK_HYPOTHESES_EXHAUSTED = "generation_hypotheses_exhausted"
+LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED = "automatic_recovery_exhausted"
 LIVE_FALLBACK_REASONS = frozenset(
     {
         "offline_fallback_exhausted",
         "reference_unavailable_after_audit",
         "generated_audio_rejected",
         LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+        LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     }
 )
 FAILURE_KINDS = {
@@ -563,6 +569,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
             LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
             LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
+            LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
         }
         else common_fields
     )
@@ -579,6 +586,7 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
             LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
             LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
+            LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
         }
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
@@ -635,6 +643,16 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
             decision.get("requested_voice_character"),
             queue_item,
         )
+    elif version == LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION:
+        if decision.get("reason") != LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} automatic-recovery fallback reason is invalid"
+            )
+        _validate_automatic_recovery_live_fallback_evidence(
+            decision.get("evidence"),
+            queue_id,
+            decision.get("previous_result_sha256"),
+        )
     elif version in {
         LIVE_FALLBACK_EVIDENCE_VERSION,
         LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
@@ -649,6 +667,10 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
     elif decision.get("reason") == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
         raise BulkGenerationError(
             f"State item {queue_id!r} exhausted-hypothesis evidence is missing"
+        )
+    elif decision.get("reason") == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} automatic-recovery evidence is missing"
         )
     for field in ("model", "generation_profile", "decided_at"):
         _required_text(
@@ -1092,6 +1114,69 @@ def _validate_reviewed_rejection_live_fallback_evidence(
         raise BulkGenerationError(
             f"State item {queue_id!r} reviewed-rejection queue identity changed"
         )
+
+
+def _validate_automatic_recovery_live_fallback_evidence(
+    evidence,
+    queue_id,
+    previous_result_sha256,
+):
+    fields = {
+        "schema",
+        "schema_version",
+        "queue_sha256",
+        "queue_id",
+        "base_result_sha256",
+        "base_result",
+        "recovery_action",
+        "failure_kind",
+    }
+    base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
+    failure = base_result.get("failure") if isinstance(base_result, dict) else None
+    allowed_actions = {
+        "bounded_seed_retry",
+        "offline_fallback_backend",
+        "inline_pause_marker_comparison",
+        "reference_comparison",
+        "reference_discovery",
+        "backend_diagnosis",
+        "provenance_recovery_or_regeneration",
+    }
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != fields
+        or evidence.get("schema")
+        != AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA
+        or evidence.get("schema_version") != 1
+        or evidence.get("queue_id") != queue_id
+        or evidence.get("base_result_sha256") != previous_result_sha256
+        or not isinstance(base_result, dict)
+        or base_result.get("status") != "failed"
+        or base_result.get("provider") != "pocket-tts"
+        or base_result.get("model") != "pocket-tts"
+        or base_result.get("generation_profile") != "default"
+        or isinstance(base_result.get("live_fallback"), dict)
+        or canonical_document_sha256(base_result)
+        != evidence.get("base_result_sha256")
+        or evidence.get("recovery_action") not in allowed_actions
+        or not isinstance(failure, dict)
+        or failure.get("kind") != evidence.get("failure_kind")
+        or failure.get("kind") in {"cancelled", "interrupted"}
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} automatic-recovery evidence is malformed"
+        )
+    _required_sha256(
+        evidence.get("queue_sha256"),
+        f"State item {queue_id!r} automatic-recovery queue",
+    )
+    _required_sha256(
+        evidence.get("base_result_sha256"),
+        f"State item {queue_id!r} automatic-recovery base result",
+    )
+    _validate_failure_record(failure, queue_id, result=base_result)
+    _validate_synthesis_identity(base_result, queue_id)
+    _validate_seed_application(base_result, queue_id)
 
 
 def _validate_synthesis_identity(result, queue_id, queue_item=None):
@@ -2247,6 +2332,7 @@ def validate_generation_state_document(document, output_directory, queue, queue_
 
 
 __all__ = [
+    "AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "AUDIO_EVENT_OMISSION_REASON",
     "AUDIO_EVENT_OMISSION_SCHEMA",
@@ -2257,6 +2343,8 @@ __all__ = [
     "LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "LIVE_FALLBACK_EVIDENCE_VERSION",
     "LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION",
+    "LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED",
+    "LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION",
     "LIVE_FALLBACK_REVIEWED_REJECTION_VERSION",
     "LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION",
     "LIVE_FALLBACK_HYPOTHESES_EXHAUSTED",

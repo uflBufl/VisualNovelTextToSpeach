@@ -180,6 +180,15 @@ same recovery run. Thus a persistent defect becomes a deferred fallback instead
 of an infinite retry loop. Recovery shares the generation cancellation signal
 and resumes from the same output after restart.
 
+When Pocket itself cannot finish a line and no supported safe action remains,
+the same background recovery phase records an explicit live-Pocket terminal
+route. This is not a fabricated successful WAV: schema-versioned evidence embeds
+the exact failed outcome, its hash, typed failure kind, queue hash and deferred
+recovery action. State validation rejects interrupted outcomes, stale evidence,
+non-Pocket controls or an attempt to bypass a still-supported safe repair. The
+wizard can therefore finish without line-by-line review while diagnostics and a
+future game pack still distinguish prepared audio from runtime synthesis.
+
 ## Acceptance gates
 
 The first production slice is complete only when an offscreen and synthetic

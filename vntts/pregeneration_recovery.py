@@ -7,9 +7,14 @@ from dataclasses import dataclass
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    authorize_live_fallback,
     generation_failure_repair_plan,
 )
+from vntts.authoring.generation_state import (
+    LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+)
 from vntts.pregeneration_generation import (
+    OfflineGenerationCancelled,
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
@@ -42,6 +47,7 @@ class OfflineRecoveryPlan:
     failure_count: int
     automatic_batches: tuple[OfflineRecoveryBatch, ...]
     deferred_action_counts: tuple[tuple[str, int], ...]
+    deferred_batches: tuple[OfflineRecoveryBatch, ...] = ()
 
     @property
     def automatic_count(self):
@@ -59,6 +65,7 @@ class OfflineRecoveryResult:
     recovered: int
     remaining_failed: int
     remaining_action_counts: tuple[tuple[str, int], ...]
+    live_fallbacks: int = 0
 
 
 def plan_automatic_recovery(generation_input, voice_plan, generation_result):
@@ -80,6 +87,7 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
         raise OfflineRecoveryError("Offline recovery plan is malformed")
     grouped = {action: [] for action in AUTOMATIC_ACTION_ORDER}
     deferred = Counter()
+    deferred_queue_ids = {}
     seen_queue_ids = set()
     for record in records:
         if not isinstance(record, dict):
@@ -103,6 +111,7 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
             grouped[action].append(queue_id)
         else:
             deferred[action] += 1
+            deferred_queue_ids.setdefault(action, []).append(queue_id)
     failure_count = document.get("failure_count")
     if (
         not isinstance(failure_count, int)
@@ -121,15 +130,26 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
             if grouped[action]
         ),
         deferred_action_counts=tuple(sorted(deferred.items())),
+        deferred_batches=tuple(
+            OfflineRecoveryBatch(action, tuple(sorted(queue_ids)))
+            for action, queue_ids in sorted(deferred_queue_ids.items())
+        ),
     )
 
 
 class OfflineRecoveryWorker:
     """Apply each safe queue/action pair at most once, replanning after changes."""
 
-    def __init__(self, generator=None, *, planner=plan_automatic_recovery):
+    def __init__(
+        self,
+        generator=None,
+        *,
+        planner=plan_automatic_recovery,
+        terminalizer=None,
+    ):
         self.generator = generator or OfflineGenerationWorker()
         self.planner = planner
+        self.terminalizer = terminalizer or _terminalize_pocket_failures
 
     def recover(
         self,
@@ -144,6 +164,8 @@ class OfflineRecoveryWorker:
         initial_failures = generation_result.failed
         current = generation_result
         applied = set()
+        terminalized = 0
+        terminalization_attempted = False
         while True:
             plan = self.planner(generation_input, voice_plan, current)
             next_batch = None
@@ -157,15 +179,39 @@ class OfflineRecoveryWorker:
                     next_batch = OfflineRecoveryBatch(batch.action, fresh)
                     break
             if next_batch is None:
+                terminal_queue_ids = tuple(
+                    queue_id
+                    for batch in plan.deferred_batches
+                    for queue_id in batch.queue_ids
+                )
+                if (
+                    terminal_queue_ids
+                    and not terminalization_attempted
+                    and voice_plan.synthesis_backend == "pocket-tts"
+                ):
+                    current = self.terminalizer(
+                        generation_input,
+                        current,
+                        terminal_queue_ids,
+                        cancel_event,
+                        generator=self.generator,
+                    )
+                    terminalized = len(terminal_queue_ids)
+                    terminalization_attempted = True
+                    continue
                 remaining = Counter(dict(plan.deferred_action_counts))
                 for batch in plan.automatic_batches:
                     remaining[batch.action] += len(batch.queue_ids)
                 return OfflineRecoveryResult(
                     generation=current,
                     attempted_actions=len(applied),
-                    recovered=max(0, initial_failures - current.failed),
+                    recovered=max(
+                        0,
+                        initial_failures - current.failed - terminalized,
+                    ),
                     remaining_failed=current.failed,
                     remaining_action_counts=tuple(sorted(remaining.items())),
+                    live_fallbacks=terminalized,
                 )
             current = self.generator.repair(
                 generation_input,
@@ -178,6 +224,33 @@ class OfflineRecoveryWorker:
             applied.update(
                 (queue_id, next_batch.action) for queue_id in next_batch.queue_ids
             )
+
+
+def _terminalize_pocket_failures(
+    generation_input,
+    generation_result,
+    queue_ids,
+    cancel_event,
+    *,
+    generator,
+):
+    _validate_inputs(generation_input, generation_result)
+    for queue_id in sorted(set(queue_ids)):
+        if cancel_event is not None and cancel_event.is_set():
+            raise OfflineGenerationCancelled("Automatic recovery was cancelled")
+        try:
+            authorize_live_fallback(
+                generation_result.state,
+                generation_input.queue,
+                queue_id,
+                reason=LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+                model="pocket-tts",
+            )
+        except (BulkGenerationError, OSError, ValueError) as error:
+            raise OfflineRecoveryError(
+                f"Unable to preserve live fallback for {queue_id!r}: {error}"
+            ) from error
+    return generator.inspect(generation_input)
 
 
 def _validate_inputs(generation_input, generation_result):

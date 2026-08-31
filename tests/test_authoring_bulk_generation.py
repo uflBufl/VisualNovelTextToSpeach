@@ -25,6 +25,7 @@ from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
+    authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
     generation_review_authority,
@@ -187,6 +188,46 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["file_sha256"], audio_hash)
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
+
+    def test_self_service_pocket_failure_becomes_evidenced_live_fallback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+            failed = run_bulk_generation(
+                queue,
+                output,
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+            )
+
+            decision = authorize_live_fallback(
+                failed.state,
+                queue,
+                item["queue_id"],
+                reason="automatic_recovery_exhausted",
+                model="pocket-tts",
+            )
+            state = load_generation_state(failed.state, queue)
+            stored = state["items"][item["queue_id"]]
+
+        self.assertEqual(decision["schema_version"], 8)
+        self.assertEqual(
+            decision["evidence"]["recovery_action"], "bounded_seed_retry"
+        )
+        self.assertEqual(stored["status"], "live_fallback")
+        self.assertEqual(stored["review_status"], "live_fallback")
+        self.assertEqual(
+            stored["live_fallback"]["previous_result_sha256"],
+            stored["live_fallback"]["evidence"]["base_result_sha256"],
+        )
 
     def test_explicit_regeneration_replaces_only_pending_review_audio(self):
         with TemporaryDirectory() as directory:

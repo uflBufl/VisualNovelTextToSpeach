@@ -89,6 +89,10 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             ),
         )
         self.assertEqual(plan.deferred_action_counts, (("reference_comparison", 1),))
+        self.assertEqual(
+            plan.deferred_batches,
+            (OfflineRecoveryBatch("reference_comparison", ("d",)),),
+        )
 
     def test_unseeded_pocket_backend_defers_a_seed_retry(self):
         with TemporaryDirectory() as temporary_directory:
@@ -203,6 +207,50 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_action_counts, (("reference_comparison", 1),))
+
+    def test_terminalizes_deferred_pocket_failures_without_human_review(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, first, voice_plan = inputs(Path(temporary_directory))
+            voice_plan = replace(
+                voice_plan,
+                synthesis_backend="pocket-tts",
+                synthesis_model="pocket-tts",
+            )
+            final = OfflineGenerationResult(
+                first.output, first.state, first.manifest, 1, 0, 2
+            )
+            plans = iter(
+                (
+                    OfflineRecoveryPlan(
+                        "1" * 64,
+                        "2" * 64,
+                        2,
+                        (),
+                        (("backend_diagnosis", 2),),
+                        (OfflineRecoveryBatch("backend_diagnosis", ("a", "b")),),
+                    ),
+                    OfflineRecoveryPlan(
+                        "3" * 64,
+                        "2" * 64,
+                        0,
+                        (),
+                        (),
+                    ),
+                )
+            )
+            terminalizer = Mock(return_value=final)
+
+            result = OfflineRecoveryWorker(
+                Mock(),
+                planner=lambda *_arguments: next(plans),
+                terminalizer=terminalizer,
+            ).recover(generation_input, voice_plan, first)
+
+        terminalizer.assert_called_once()
+        self.assertEqual(terminalizer.call_args.args[2], ("a", "b"))
+        self.assertEqual(result.recovered, 0)
+        self.assertEqual(result.live_fallbacks, 2)
+        self.assertEqual(result.remaining_failed, 0)
 
 
 if __name__ == "__main__":
