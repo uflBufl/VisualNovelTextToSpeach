@@ -102,11 +102,6 @@ intentional omission as distinct terminal authorities.
       root. Split and fully annotate the component protocols, add them to mypy,
       remove component-to-facade re-entry and require focused plus complete
       runtime regression tests before deleting the current private callbacks.
-- [ ] Make settings, profile and voice-assignment changes failure-atomic. Persist
-      a candidate state before publishing it to the controller, dashboard or
-      in-memory profile store; catch and explain write failures; roll back
-      launch-at-login when the paired settings write fails; and add read-only
-      directory/full-disk writer tests for every mutation entry point.
 - [ ] Make release packages able to run the backend they recommend by default.
       Bundle a relocatable Pocket TTS runtime on macOS and Windows or select and
       expose only a backend actually present in the frozen bundle. Resolve the

@@ -1526,6 +1526,47 @@ class MainTest(unittest.TestCase):
         self.assertFalse(restored.force_live_narrator)
         self.assertNotIn("narrator", controller.voice_router.registry.assignments)
 
+    def test_voice_changes_publish_only_after_commit_callback_succeeds(self):
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+        controller.voice_router.audio_cache = Mock()
+
+        with self.assertRaisesRegex(OSError, "disk full"):
+            controller.assign_voice(
+                "Selone",
+                "preset:alba",
+                commit_settings=Mock(side_effect=OSError("disk full")),
+            )
+
+        self.assertEqual(controller.settings.voice_assignments, {})
+        self.assertNotIn("selone", controller.voice_router.registry.assignments)
+
+        controller.assign_voice("Narrator", "preset:alba")
+        assigned_settings = controller.settings
+        assigned_registry = dict(controller.voice_router.registry.assignments)
+        with self.assertRaisesRegex(OSError, "disk full"):
+            controller.clear_voice_assignment(
+                "Narrator",
+                commit_settings=Mock(side_effect=OSError("disk full")),
+            )
+        self.assertIs(controller.settings, assigned_settings)
+        self.assertEqual(
+            controller.voice_router.registry.assignments,
+            assigned_registry,
+        )
+
+        with self.assertRaisesRegex(OSError, "disk full"):
+            controller.set_force_live_narrator(
+                True,
+                commit_settings=Mock(side_effect=OSError("disk full")),
+            )
+        self.assertIs(controller.settings, assigned_settings)
+        self.assertFalse(controller.settings.force_live_narrator)
+
     def test_controller_previews_a_catalog_choice_on_the_speech_executor(self):
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),

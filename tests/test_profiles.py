@@ -69,6 +69,37 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(removed, original)
         self.assertEqual(store.profiles, [renamed])
 
+    def test_profile_mutations_publish_memory_only_after_persistence(self):
+        operations = (
+            lambda store, profile: store.create("Other", AppSettings()),
+            lambda store, profile: store.duplicate(profile.id, "Copy"),
+            lambda store, profile: store.rename(profile.id, "Renamed"),
+            lambda store, profile: store.remove(profile.id),
+            lambda store, profile: store.update_from_settings(
+                profile.id,
+                AppSettings(game_window_title="Changed"),
+            ),
+            lambda store, profile: store.update_region(
+                profile.id,
+                DialogRegion(0.2, 0.2, 0.5, 0.5),
+            ),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation), TemporaryDirectory() as directory:
+                store = GameProfileStore(Path(directory) / "profiles.json")
+                profile = store.create("Game", AppSettings())
+                before = list(store.profiles)
+                with (
+                    patch(
+                        "vntts.profiles.write_versioned_json",
+                        side_effect=OSError("disk full"),
+                    ),
+                    self.assertRaisesRegex(OSError, "disk full"),
+                ):
+                    operation(store, profile)
+
+                self.assertEqual(store.profiles, before)
+
     def test_profile_persists_and_preflights_game_pack_on_activation(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"

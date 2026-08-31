@@ -1679,8 +1679,16 @@ class TrayApplication(QObject):
             self.live_voice_preflight_cancel_button = None
 
     def toggle_auto_advance(self, enabled):
-        self.settings = self.settings.updated(auto_advance_enabled=bool(enabled))
-        self.settings.save()
+        candidate = self.settings.updated(auto_advance_enabled=bool(enabled))
+        try:
+            candidate.save()
+        except OSError as error:
+            self.auto_advance_action.blockSignals(True)
+            self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
+            self.auto_advance_action.blockSignals(False)
+            self.show_error(f"Unable to save auto-advance setting: {error}")
+            return
+        self.settings = candidate
         self.controller.set_auto_advance_enabled(enabled)
 
     def toggle_speech_pause(self):
@@ -1736,7 +1744,10 @@ class TrayApplication(QObject):
     def update_profile_region(self, region):
         profile_id = self.settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
-            self.profile_store.update_region(profile_id, region)
+            try:
+                self.profile_store.update_region(profile_id, region)
+            except OSError as error:
+                self.show_error(f"Unable to save the calibrated profile region: {error}")
 
     def open_diagnostics(self):
         if self.diagnostics_dialog is None:
@@ -1848,9 +1859,16 @@ class TrayApplication(QObject):
             wizard.deleteLater()
             return
 
-        self.settings = wizard.settings()
-        path = self.settings.save()
-        self.controller.apply_settings(self.settings)
+        candidate = wizard.settings()
+        try:
+            path = candidate.save()
+        except OSError as error:
+            self.set_status("Setup required")
+            self.show_error(f"Unable to save setup settings: {error}")
+            wizard.deleteLater()
+            return
+        self.settings = candidate
+        self.controller.apply_settings(candidate)
         self.set_ready(self.controller.is_ready)
         self.set_status(f"Setup completed; settings saved to {path}")
         wizard.deleteLater()
@@ -1947,14 +1965,32 @@ class TrayApplication(QObject):
         except GamePackError as error:
             self.show_error(f"Unable to import game pack: {error}")
             return
-        if updated_settings.launch_at_login != self.settings.launch_at_login:
+        original_settings = self.settings
+        launch_changed = (
+            updated_settings.launch_at_login != original_settings.launch_at_login
+        )
+        if launch_changed:
             try:
                 configure_macos_launch_at_login(updated_settings.launch_at_login)
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return
+        try:
+            path = updated_settings.save()
+        except OSError as error:
+            rollback_error = None
+            if launch_changed:
+                try:
+                    configure_macos_launch_at_login(original_settings.launch_at_login)
+                except OSError as caught_error:
+                    rollback_error = caught_error
+            message = f"Unable to save settings: {error}"
+            if rollback_error is not None:
+                message += f"; launch-at-login rollback also failed: {rollback_error}"
+            self.show_error(message)
+            return
         restart_changes = restart_required_setting_changes(
-            self.settings, updated_settings
+            original_settings, updated_settings
         )
         effective_backend = self.controller.settings.speech_backend
         self.settings = updated_settings
@@ -1968,17 +2004,20 @@ class TrayApplication(QObject):
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
         self.auto_advance_action.blockSignals(False)
-        path = self.settings.save()
-        self._sync_active_profile()
+        profile_synced = self._sync_active_profile(updated_settings)
         self.controller.apply_settings(self.settings)
         self.signals.hotkeys_requested.emit()
+        profile_suffix = ""
+        if not profile_synced:
+            profile_suffix = "; active profile could not be updated"
         if restart_changes:
             self.set_status(
                 f"Settings saved to {path}; restart required to load speech "
-                f"engine/model changes. This session still uses {effective_backend}."
+                f"engine/model changes. This session still uses {effective_backend}"
+                f"{profile_suffix}."
             )
         else:
-            self.set_status(f"Settings saved to {path}")
+            self.set_status(f"Settings saved to {path}{profile_suffix}")
         if self.readiness_dialog is not None:
             self.readiness_dialog.update_settings(self.settings)
 
@@ -2003,8 +2042,13 @@ class TrayApplication(QObject):
         enabled = bool(enabled)
         if self.settings.compact_controls == enabled:
             return
-        self.settings = self.settings.updated(compact_controls=enabled)
-        self.settings.save()
+        candidate = self.settings.updated(compact_controls=enabled)
+        try:
+            candidate.save()
+        except OSError as error:
+            self.show_error(f"Unable to save compact-controls preference: {error}")
+            return
+        self.settings = candidate
 
     def notify_background_mode(self):
         self.tray.showMessage(
@@ -2044,8 +2088,13 @@ class TrayApplication(QObject):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.settings = dialog.settings()
-        path = self.settings.save()
+        candidate = dialog.settings()
+        try:
+            path = candidate.save()
+        except OSError as error:
+            self.show_error(f"Unable to save the selected profile: {error}")
+            return
+        self.settings = candidate
         self.dashboard.set_configuration(self.settings)
         self.sequence_resync_action.setVisible(
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
@@ -2169,12 +2218,21 @@ class TrayApplication(QObject):
         dialog = AssetManagerDialog(self.settings)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.settings = dialog.settings()
-        path = self.settings.save()
-        self._sync_active_profile()
+        candidate = dialog.settings()
+        try:
+            path = candidate.save()
+        except OSError as error:
+            self.show_error(f"Unable to save model and voice settings: {error}")
+            return
+        self.settings = candidate
+        profile_synced = self._sync_active_profile(candidate)
         self.controller.apply_settings(self.settings)
+        profile_suffix = ""
+        if not profile_synced:
+            profile_suffix = "; active profile could not be updated"
         self.set_status(
-            f"Assets updated; restart to load voice or model changes. Saved to {path}"
+            "Assets updated; restart to load voice or model changes. "
+            f"Saved to {path}{profile_suffix}"
         )
 
     def open_voice_previews(self):
@@ -2353,25 +2411,54 @@ class TrayApplication(QObject):
         return assigned
 
     def assign_voice(self, character, source_id):
-        self.settings = self.controller.assign_voice(character, source_id)
-        path = self.settings.save()
-        self._sync_active_profile()
-        self.set_status(f"Voice for {character} saved to {path}")
+        path, suffix = self._persist_voice_change(
+            lambda commit: self.controller.assign_voice(
+                character,
+                source_id,
+                commit_settings=commit,
+            ),
+            f"Unable to save the voice for {character}",
+        )
+        self.set_status(f"Voice for {character} saved to {path}{suffix}")
         return self.settings
 
     def clear_voice_assignment(self, character):
-        self.settings = self.controller.clear_voice_assignment(character)
-        path = self.settings.save()
-        self._sync_active_profile()
-        self.set_status(f"Automatic voice routing for {character} saved to {path}")
+        path, suffix = self._persist_voice_change(
+            lambda commit: self.controller.clear_voice_assignment(
+                character,
+                commit_settings=commit,
+            ),
+            f"Unable to save automatic voice routing for {character}",
+        )
+        self.set_status(
+            f"Automatic voice routing for {character} saved to {path}{suffix}"
+        )
         return self.settings
 
     def set_force_live_narrator(self, enabled):
-        self.settings = self.controller.set_force_live_narrator(enabled)
-        path = self.settings.save()
-        self._sync_active_profile()
-        self.set_status(f"Narrator routing saved to {path}")
+        path, suffix = self._persist_voice_change(
+            lambda commit: self.controller.set_force_live_narrator(
+                enabled,
+                commit_settings=commit,
+            ),
+            "Unable to save Narrator routing",
+        )
+        self.set_status(f"Narrator routing saved to {path}{suffix}")
         return self.settings
+
+    def _persist_voice_change(self, operation, failure_message):
+        saved_path = []
+        try:
+            settings = operation(
+                lambda candidate: saved_path.append(candidate.save())
+            )
+        except OSError as error:
+            self.show_error(f"{failure_message}: {error}")
+            raise
+        self.settings = settings
+        profile_synced = self._sync_active_profile(self.settings)
+        suffix = "" if profile_synced else "; active profile could not be updated"
+        return saved_path[0], suffix
 
     def open_support_center(self):
         if self.support_dialog is None:
@@ -2490,10 +2577,19 @@ class TrayApplication(QObject):
     def open_macos_permissions(self):
         MacOSPermissionsDialog().exec()
 
-    def _sync_active_profile(self):
-        profile_id = self.settings.active_profile_id
+    def _sync_active_profile(self, settings=None):
+        settings = self.settings if settings is None else settings
+        profile_id = settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
-            self.profile_store.update_from_settings(profile_id, self.settings)
+            try:
+                self.profile_store.update_from_settings(profile_id, settings)
+            except OSError as error:
+                self.show_error(
+                    "Settings were saved, but the active profile could not be "
+                    f"updated: {error}"
+                )
+                return False
+        return True
 
     def open_settings_folder(self):
         path = get_settings_path().parent

@@ -182,14 +182,22 @@ class GameProfileStore:
         )
 
     def save(self):
+        return self._save_profiles(self.profiles)
+
+    def _save_profiles(self, profiles):
         write_versioned_json(
             self.path,
             profiles_schema_version,
             {
-                "profiles": [profile.to_mapping() for profile in self.profiles],
+                "profiles": [profile.to_mapping() for profile in profiles],
             },
         )
         return self.path
+
+    def _commit_profiles(self, profiles):
+        profiles = list(profiles)
+        self._save_profiles(profiles)
+        self.profiles = profiles
 
     def get(self, profile_id):
         return next(
@@ -200,30 +208,26 @@ class GameProfileStore:
     def create(self, name, settings, *, region=None):
         self._ensure_name_available(name)
         profile = GameProfile.from_settings(name, settings, region=region)
-        self.profiles.append(profile)
-        self.save()
+        self._commit_profiles((*self.profiles, profile))
         return profile
 
     def duplicate(self, profile_id, name):
         source = self._required(profile_id)
         self._ensure_name_available(name)
         duplicate = replace(source, id=uuid4().hex, name=_validated_name(name))
-        self.profiles.append(duplicate)
-        self.save()
+        self._commit_profiles((*self.profiles, duplicate))
         return duplicate
 
     def rename(self, profile_id, name):
         profile = self._required(profile_id)
         self._ensure_name_available(name, excluding=profile_id)
         updated = replace(profile, name=_validated_name(name))
-        self._replace(updated)
-        self.save()
+        self._commit_profiles(self._replaced(updated))
         return updated
 
     def remove(self, profile_id):
         profile = self._required(profile_id)
-        self.profiles.remove(profile)
-        self.save()
+        self._commit_profiles(item for item in self.profiles if item.id != profile.id)
         return profile
 
     def update_from_settings(self, profile_id, settings, *, region=None):
@@ -231,18 +235,16 @@ class GameProfileStore:
             settings,
             region=region,
         )
-        self._replace(profile)
-        self.save()
+        self._commit_profiles(self._replaced(profile))
         return profile
 
     def update_region(self, profile_id, region):
         profile = replace(self._required(profile_id), dialog_region=region)
-        self._replace(profile)
-        self.save()
+        self._commit_profiles(self._replaced(profile))
         return profile
 
-    def _replace(self, updated):
-        self.profiles = [
+    def _replaced(self, updated):
+        return [
             updated if profile.id == updated.id else profile
             for profile in self.profiles
         ]

@@ -102,7 +102,7 @@ class GameProfilesDialog(QDialog):
                 self.original_settings,
                 region=get_dialog_region(),
             )
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Unable to create profile", str(error))
             return
         self.refresh_profiles(profile.id)
@@ -120,7 +120,7 @@ class GameProfilesDialog(QDialog):
             return
         try:
             duplicate = self.store.duplicate(profile.id, name)
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Unable to duplicate profile", str(error))
             return
         if self.correction_store is not None:
@@ -140,7 +140,7 @@ class GameProfilesDialog(QDialog):
             return
         try:
             renamed = self.store.rename(profile.id, name)
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Unable to rename profile", str(error))
             return
         self.refresh_profiles(renamed.id)
@@ -156,7 +156,11 @@ class GameProfilesDialog(QDialog):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.store.remove(profile.id)
+        try:
+            self.store.remove(profile.id)
+        except OSError as error:
+            QMessageBox.warning(self, "Unable to remove profile", str(error))
+            return
         if self.correction_store is not None:
             self.correction_store.remove_profile(profile.id)
         self.refresh_profiles()

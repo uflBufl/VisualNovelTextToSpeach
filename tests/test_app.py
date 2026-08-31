@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -1291,6 +1291,34 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.settings, updated)
         tray_application.shutdown()
 
+    def test_failed_settings_write_rolls_back_launch_at_login_before_publish(self):
+        original = AppSettings(launch_at_login=False)
+        controller = Mock(settings=original)
+        tray_application = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.settings.return_value = original.updated(launch_at_login=True)
+
+        with (
+            patch("vntts.app.SettingsDialog", return_value=dialog),
+            patch("vntts.app.configure_macos_launch_at_login") as configure,
+            patch(
+                "vntts.app.AppSettings.save",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            tray_application.open_settings()
+
+        self.assertEqual(configure.call_args_list, [call(True), call(False)])
+        self.assertIs(tray_application.settings, original)
+        controller.apply_settings.assert_not_called()
+        self.assertIn("disk full", tray_application.status_action.text())
+        tray_application.shutdown()
+
     def test_backend_setting_reports_restart_and_keeps_effective_identity_visible(self):
         controller = Mock()
         controller.settings = AppSettings(speech_backend="pocket-tts")
@@ -1604,6 +1632,123 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray_application.settings.auto_advance_enabled)
         save.assert_called_once_with()
         tray_application.shutdown()
+
+    def test_failed_auto_advance_write_restores_action_without_runtime_change(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(auto_advance_enabled=False),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch(
+            "vntts.app.AppSettings.save",
+            side_effect=OSError("read-only directory"),
+        ):
+            tray_application.auto_advance_action.setChecked(True)
+
+        self.assertFalse(tray_application.auto_advance_action.isChecked())
+        self.assertFalse(tray_application.settings.auto_advance_enabled)
+        controller.set_auto_advance_enabled.assert_not_called()
+        self.assertIn("read-only directory", tray_application.status_action.text())
+        tray_application.shutdown()
+
+    def test_failed_profile_asset_and_compact_writes_do_not_publish(self):
+        original = AppSettings(compact_controls=False)
+        candidate = original.updated(game_window_title="Changed")
+        dialog_cases = (
+            ("GameProfilesDialog", "open_profiles"),
+            ("AssetManagerDialog", "open_assets"),
+        )
+        for dialog_name, method_name in dialog_cases:
+            with self.subTest(method=method_name):
+                controller = Mock(settings=original)
+                tray_application = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = candidate
+                with (
+                    patch(f"vntts.app.{dialog_name}", return_value=dialog),
+                    patch(
+                        "vntts.app.AppSettings.save",
+                        side_effect=OSError("disk full"),
+                    ),
+                ):
+                    getattr(tray_application, method_name)()
+
+                self.assertIs(tray_application.settings, original)
+                controller.apply_settings.assert_not_called()
+                self.assertFalse(tray_application.profile_restart_runner.active)
+                self.assertIn("disk full", tray_application.status_action.text())
+                tray_application.shutdown()
+
+        tray_application = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=Mock(settings=original)),
+        )
+        with patch(
+            "vntts.app.AppSettings.save",
+            side_effect=OSError("disk full"),
+        ):
+            tray_application._save_compact_preference(True)
+        self.assertIs(tray_application.settings, original)
+        self.assertIn("disk full", tray_application.status_action.text())
+        tray_application.shutdown()
+
+    def test_failed_voice_writes_do_not_publish_application_settings(self):
+        original = AppSettings()
+        candidate = original.updated(voice_assignments={"Selone": "preset:alba"})
+        operations = (
+            (
+                "assign_voice",
+                ("Selone", "preset:alba"),
+                lambda controller: controller.assign_voice,
+            ),
+            (
+                "clear_voice_assignment",
+                ("Selone",),
+                lambda controller: controller.clear_voice_assignment,
+            ),
+            (
+                "set_force_live_narrator",
+                (True,),
+                lambda controller: controller.set_force_live_narrator,
+            ),
+        )
+        for method_name, arguments, controller_method in operations:
+            with self.subTest(method=method_name):
+                controller = Mock(settings=original)
+
+                def invoke_commit(*_args, commit_settings=None):
+                    commit_settings(candidate)
+                    return candidate
+
+                controller_method(controller).side_effect = invoke_commit
+                tray_application = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                with (
+                    patch(
+                        "vntts.app.AppSettings.save",
+                        side_effect=OSError("read-only directory"),
+                    ),
+                    self.assertRaisesRegex(OSError, "read-only directory"),
+                ):
+                    getattr(tray_application, method_name)(*arguments)
+
+                self.assertIs(tray_application.settings, original)
+                self.assertIn(
+                    "read-only directory",
+                    tray_application.status_action.text(),
+                )
+                tray_application.shutdown()
 
     def test_live_diagnostics_refresh_captures_a_fresh_snapshot(self):
         class ImmediateThread:

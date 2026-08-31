@@ -75,7 +75,11 @@ The application opens a compact control window and can optionally keep running
 in the system tray. Its settings are stored in the current user's application-data
 directory. Settings, game profiles, OCR corrections, and OCR review metadata
 use versioned JSON documents with shared compatibility checks, damaged-file
-fallback, and atomic publication. On first launch, complete the setup
+fallback, and atomic publication. Settings, profile edits, and voice assignments
+are published to the running application only after their durable write succeeds;
+write failures leave the previous in-memory state active and are reported in the
+UI. A failed settings write also restores the prior macOS login-item state. On
+first launch, complete the setup
 wizard to select the game, verify OCR and audio, calibrate the dialogue area,
 and run an OCR-to-speech test. Use **Manage models and voices** in the app to
 download or verify the speech model and import local character voice references.

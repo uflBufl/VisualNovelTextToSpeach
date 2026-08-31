@@ -427,14 +427,24 @@ class AppController:
     def stop_voice_preview(self):
         return self.voice_assignments.stop_preview()
 
-    def assign_voice(self, character, source_id):
-        return self.voice_assignments.assign(character, source_id)
+    def assign_voice(self, character, source_id, *, commit_settings=None):
+        return self.voice_assignments.assign(
+            character,
+            source_id,
+            commit_settings=commit_settings,
+        )
 
-    def clear_voice_assignment(self, character):
-        return self.voice_assignments.clear(character)
+    def clear_voice_assignment(self, character, *, commit_settings=None):
+        return self.voice_assignments.clear(
+            character,
+            commit_settings=commit_settings,
+        )
 
-    def set_force_live_narrator(self, enabled):
-        return self.voice_assignments.set_force_live_narrator(enabled)
+    def set_force_live_narrator(self, enabled, *, commit_settings=None):
+        return self.voice_assignments.set_force_live_narrator(
+            enabled,
+            commit_settings=commit_settings,
+        )
 
     def allow_narrator_fallback(self, character):
         return self.voice_assignments.allow_narrator_fallback(character)
@@ -1014,7 +1024,7 @@ class AppController:
             return True
         return False
 
-    def _assign_voice_impl(self, character, source_id):
+    def _assign_voice_impl(self, character, source_id, *, commit_settings=None):
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -1036,8 +1046,11 @@ class AppController:
             != normalize_character_name(character)
         }
         assignments[character] = source_id
+        updated_settings = self.settings.updated(voice_assignments=assignments)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
         self.voice_router.registry.set_assignment(character, source_id)
-        self.settings = self.settings.updated(voice_assignments=assignments)
+        self.settings = updated_settings
         if normalize_character_name(character) == "narrator":
             self._apply_narrator_voice(
                 self.voice_router.registry.resolve_source(source_id)
@@ -1050,7 +1063,7 @@ class AppController:
         self.status_handler(f"{choice.label} assigned to {character}")
         return self.settings
 
-    def _clear_voice_assignment_impl(self, character):
+    def _clear_voice_assignment_impl(self, character, *, commit_settings=None):
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -1064,11 +1077,14 @@ class AppController:
             ).items()
             if normalize_character_name(configured_character) != character_key
         }
-        self.voice_router.registry.assignments.pop(character_key, None)
         update = {"voice_assignments": assignments}
         if character_key == "narrator":
             update["force_live_narrator"] = False
-        self.settings = self.settings.updated(**update)
+        updated_settings = self.settings.updated(**update)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
+        self.voice_router.registry.assignments.pop(character_key, None)
+        self.settings = updated_settings
         if character_key == "narrator":
             self._apply_narrator_voice(None)
         self._clear_voice_runtime_cache()
@@ -1079,13 +1095,16 @@ class AppController:
         )
         return self.settings
 
-    def _set_force_live_narrator_impl(self, enabled):
+    def _set_force_live_narrator_impl(self, enabled, *, commit_settings=None):
         if self.is_live_running:
             raise RuntimeError("Stop live reading before changing Narrator routing")
         enabled = bool(enabled)
         if enabled and self.voice_assignment_for("Narrator") is None:
             raise ValueError("Choose a Narrator voice before forcing live TTS")
-        self.settings = self.settings.updated(force_live_narrator=enabled)
+        updated_settings = self.settings.updated(force_live_narrator=enabled)
+        if commit_settings is not None:
+            commit_settings(updated_settings)
+        self.settings = updated_settings
         self.status_handler(
             "Narrator will always use live TTS"
             if enabled

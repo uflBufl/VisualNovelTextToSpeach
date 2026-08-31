@@ -44,7 +44,11 @@ class ControllerComponentsTest(unittest.TestCase):
         controller.runtime_lifecycle.apply_settings.assert_called_once_with("settings")
         controller.runtime_lifecycle.shutdown.assert_called_once_with()
         controller.live_session.toggle.assert_called_once_with()
-        controller.voice_assignments.assign.assert_called_once_with("A", "voice")
+        controller.voice_assignments.assign.assert_called_once_with(
+            "A",
+            "voice",
+            commit_settings=None,
+        )
         controller.diagnostics.inspect_current_dialog.assert_called_once_with(
             notify=False
         )

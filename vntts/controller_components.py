@@ -26,9 +26,9 @@ class _ControllerImplementation(Protocol):
     def _voice_assignment_for_impl(self, character): ...
     def _preview_voice_choice_impl(self, source_id, text): ...
     def _stop_voice_preview_impl(self): ...
-    def _assign_voice_impl(self, character, source_id): ...
-    def _clear_voice_assignment_impl(self, character): ...
-    def _set_force_live_narrator_impl(self, enabled): ...
+    def _assign_voice_impl(self, character, source_id, *, commit_settings=None): ...
+    def _clear_voice_assignment_impl(self, character, *, commit_settings=None): ...
+    def _set_force_live_narrator_impl(self, enabled, *, commit_settings=None): ...
     def _allow_narrator_fallback_impl(self, character): ...
     def _unresolved_live_speakers_impl(self): ...
     def _approve_live_narrator_fallbacks_impl(self, characters): ...
@@ -106,14 +106,24 @@ class VoiceAssignmentComponent:
     def stop_preview(self):
         return self.controller._stop_voice_preview_impl()
 
-    def assign(self, character, source_id):
-        return self.controller._assign_voice_impl(character, source_id)
+    def assign(self, character, source_id, *, commit_settings=None):
+        return self.controller._assign_voice_impl(
+            character,
+            source_id,
+            commit_settings=commit_settings,
+        )
 
-    def clear(self, character):
-        return self.controller._clear_voice_assignment_impl(character)
+    def clear(self, character, *, commit_settings=None):
+        return self.controller._clear_voice_assignment_impl(
+            character,
+            commit_settings=commit_settings,
+        )
 
-    def set_force_live_narrator(self, enabled):
-        return self.controller._set_force_live_narrator_impl(enabled)
+    def set_force_live_narrator(self, enabled, *, commit_settings=None):
+        return self.controller._set_force_live_narrator_impl(
+            enabled,
+            commit_settings=commit_settings,
+        )
 
     def allow_narrator_fallback(self, character):
         return self.controller._allow_narrator_fallback_impl(character)
