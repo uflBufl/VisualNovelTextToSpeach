@@ -113,11 +113,6 @@ intentional omission as distinct terminal authorities.
       in-memory profile store; catch and explain write failures; roll back
       launch-at-login when the paired settings write fails; and add read-only
       directory/full-disk writer tests for every mutation entry point.
-- [ ] Make support-bundle sanitization match its privacy declaration. Redact all
-      path-bearing settings, including model, game-pack, story index, sequence
-      plan, speaker corpus and generated-audio manifest paths, with recursive or
-      explicitly typed sensitivity handling. Test every current setting with a
-      home-directory sentinel and fail when a new path field is unsanitized.
 - [ ] Make release packages able to run the backend they recommend by default.
       Bundle a relocatable Pocket TTS runtime on macOS and Windows or select and
       expose only a backend actually present in the frozen bundle. Resolve the

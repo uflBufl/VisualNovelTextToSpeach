@@ -76,10 +76,12 @@ class AppSettings:
     clear_queue_hotkey: str = field(default_factory=lambda: default_hotkey("x"))
     emergency_stop_hotkey: str = field(default_factory=lambda: default_hotkey("e"))
     screenshot_directory: str = field(
-        default_factory=lambda: str(get_local_data_directory() / "screenshots")
+        default_factory=lambda: str(get_local_data_directory() / "screenshots"),
+        metadata={"support_sensitivity": "path"},
     )
     ocr_diagnostics_directory: str = field(
-        default_factory=lambda: str(get_local_data_directory() / "ocr-diagnostics")
+        default_factory=lambda: str(get_local_data_directory() / "ocr-diagnostics"),
+        metadata={"support_sensitivity": "path"},
     )
     retain_uncertain_frames: bool = False
     capture_mode: str = "screen"
@@ -98,10 +100,16 @@ class AppSettings:
     ocr_language: str = "eng"
     speech_backend: str = "pocket-tts"
     audio_source_policy: str = default_audio_source_policy
-    tts_model: str | None = None
+    tts_model: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path-or-id"},
+    )
     tts_speaker: str | None = None
     tts_language: str | None = None
-    tts_speaker_wav: str | None = None
+    tts_speaker_wav: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
     tts_profile: str = "stable"
     output_volume_percent: int = 100
     speech_rate_percent: int = 100
@@ -109,13 +117,31 @@ class AppSettings:
     launch_at_login: bool = False
     keep_running_on_close: bool = False
     compact_controls: bool = False
-    game_pack: str | None = None
-    voice_manifest: str | None = None
-    story_index: str | None = None
-    live_sequence_plan: str | None = None
+    game_pack: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
+    voice_manifest: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
+    story_index: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
+    live_sequence_plan: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
     live_sequence_mode: str = "off"
-    live_speaker_corpus: str | None = None
-    generated_audio_manifest: str | None = None
+    live_speaker_corpus: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
+    generated_audio_manifest: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path"},
+    )
     narrator_speaker: str | None = None
     voice_assignments: dict[str, str] = field(default_factory=dict)
     force_live_narrator: bool = False

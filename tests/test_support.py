@@ -1,6 +1,7 @@
 import json
 import unittest
 import zipfile
+from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from vntts.support import (
     SupportBundleBuilder,
     collect_ocr_metrics,
     redact_text,
+    sanitize_settings,
     sequence_timeline_stages,
 )
 
@@ -356,6 +358,43 @@ class RuntimeSupportLogTest(unittest.TestCase):
 
 
 class SupportBundleBuilderTest(unittest.TestCase):
+    def test_every_sensitive_settings_path_is_redacted_by_metadata(self):
+        sensitive = {
+            definition.name: definition.metadata["support_sensitivity"]
+            for definition in fields(AppSettings)
+            if "support_sensitivity" in definition.metadata
+        }
+        sentinel = "/Volumes/private-user-data/sentinel"
+        settings = AppSettings(**{name: f"{sentinel}/{name}" for name in sensitive})
+
+        sanitized = sanitize_settings(settings)
+
+        self.assertEqual(
+            set(sensitive),
+            {
+                "screenshot_directory",
+                "ocr_diagnostics_directory",
+                "tts_model",
+                "tts_speaker_wav",
+                "game_pack",
+                "voice_manifest",
+                "story_index",
+                "live_sequence_plan",
+                "live_speaker_corpus",
+                "generated_audio_manifest",
+            },
+        )
+        self.assertNotIn(sentinel, json.dumps(sanitized))
+        self.assertTrue(all(sanitized[name] == "<path>" for name in sensitive))
+
+    def test_remote_model_identifier_remains_available_for_diagnostics(self):
+        settings = AppSettings(tts_model="OpenMOSS-Team/MOSS-TTS-v1.5")
+
+        self.assertEqual(
+            sanitize_settings(settings)["tts_model"],
+            "OpenMOSS-Team/MOSS-TTS-v1.5",
+        )
+
     def test_bundle_excludes_dialog_images_text_and_environment_values(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

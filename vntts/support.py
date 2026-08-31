@@ -5,7 +5,7 @@ import re
 import sys
 import zipfile
 from collections import Counter, OrderedDict, deque
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -384,16 +384,24 @@ class SupportBundleBuilder:
 
 def sanitize_settings(settings):
     values = asdict(settings)
-    for key in (
-        "screenshot_directory",
-        "ocr_diagnostics_directory",
-        "voice_manifest",
-        "tts_speaker_wav",
-    ):
-        value = values.get(key)
-        if value:
-            values[key] = redact_text(value)
+    for definition in fields(settings):
+        sensitivity = definition.metadata.get("support_sensitivity")
+        value = values.get(definition.name)
+        if not value or sensitivity is None:
+            continue
+        if sensitivity == "path":
+            values[definition.name] = "<path>"
+        elif sensitivity == "path-or-id" and _looks_like_local_path(value):
+            values[definition.name] = "<path>"
     return values
+
+
+def _looks_like_local_path(value):
+    value = str(value).strip()
+    return bool(
+        value.startswith(("/", "\\", "~", "./", "../"))
+        or re.match(r"(?i)^[a-z]:[\\/]", value)
+    )
 
 
 def sanitize_event(entry):

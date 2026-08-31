@@ -205,7 +205,9 @@ The first two seconds without a stable replacement are a nonfatal waiting
 state; confirmation remains active for ten seconds and never dispatches a
 second key for the same generation. The same privacy-safe
 timeline is included in exported support bundles; dialogue text and screenshots
-are excluded. Source audio is
+are excluded. Settings fields that own local paths are explicitly marked as
+sensitive and exported only as `<path>`; a remote model identifier remains
+available for diagnostics, while a local model path is redacted. Source audio is
 reported as declared available rather than checksum-verified; generated audio
 is reported as verified only after its manifest, checksum, WAV, and metadata
 checks pass.
