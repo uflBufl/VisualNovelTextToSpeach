@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -28,6 +28,11 @@ from vntts.authoring.reconciliation_schema import (
     WORKSPACE_NAME_PATTERN,
     AuthoringReconciliationSchemaError,
     validate_authoring_reconciliation_document,
+)
+from vntts.authoring.terminal_conflict_records import (
+    require_terminal_conflict_sha256,
+    require_terminal_conflict_text,
+    require_terminal_conflict_timestamp,
 )
 from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionError,
@@ -52,6 +57,17 @@ SUCCESSOR_ACTIONS = {
 
 class TerminalConflictSuccessorError(RuntimeError):
     """A resolution cannot safely project a successor reconciliation."""
+
+
+_text = partial(
+    require_terminal_conflict_text, error_type=TerminalConflictSuccessorError
+)
+_sha256 = partial(
+    require_terminal_conflict_sha256, error_type=TerminalConflictSuccessorError
+)
+_aware_timestamp = partial(
+    require_terminal_conflict_timestamp, error_type=TerminalConflictSuccessorError
+)
 
 
 @dataclass(frozen=True)
@@ -580,32 +596,6 @@ def _directory(value, label):
     if not root.is_dir():
         raise TerminalConflictSuccessorError(f"{label.title()} is unavailable: {root}")
     return root
-
-
-def _text(value, label):
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise TerminalConflictSuccessorError(f"{label} must be non-empty text")
-    return value
-
-
-def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise TerminalConflictSuccessorError(f"{label} must be lowercase SHA-256")
-    return value
-
-
-def _aware_timestamp(value, label):
-    try:
-        parsed = datetime.fromisoformat(_text(value, label))
-    except ValueError as error:
-        raise TerminalConflictSuccessorError(f"{label} is invalid") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise TerminalConflictSuccessorError(f"{label} requires a timezone")
-    return parsed
 
 
 __all__ = [

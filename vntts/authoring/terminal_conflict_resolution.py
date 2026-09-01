@@ -7,7 +7,7 @@ import hashlib
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -22,6 +22,12 @@ from vntts.authoring.authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+)
+from vntts.authoring.terminal_conflict_records import (
+    require_terminal_conflict_file,
+    require_terminal_conflict_sha256,
+    require_terminal_conflict_text,
+    require_terminal_conflict_timestamp,
 )
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
@@ -38,6 +44,20 @@ TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
 
 class TerminalConflictResolutionError(RuntimeError):
     """Completed terminal conflict decisions cannot be published safely."""
+
+
+_contained_file = partial(
+    require_terminal_conflict_file, error_type=TerminalConflictResolutionError
+)
+_text = partial(
+    require_terminal_conflict_text, error_type=TerminalConflictResolutionError
+)
+_sha256 = partial(
+    require_terminal_conflict_sha256, error_type=TerminalConflictResolutionError
+)
+_aware_timestamp = partial(
+    require_terminal_conflict_timestamp, error_type=TerminalConflictResolutionError
+)
 
 
 @dataclass(frozen=True)
@@ -616,58 +636,6 @@ def _directory(value, label):
     if not root.is_dir():
         raise TerminalConflictResolutionError(f"{label.title()} is unavailable: {root}")
     return root
-
-
-def _contained_file(root, value, label):
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise TerminalConflictResolutionError(f"{label.title()} path is invalid")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise TerminalConflictResolutionError(f"{label.title()} path is invalid")
-    root = Path(root).resolve()
-    current = root
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise TerminalConflictResolutionError(f"{label.title()} is unavailable")
-    path = current.resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise TerminalConflictResolutionError(
-            f"{label.title()} leaves its root"
-        ) from error
-    if not path.is_file():
-        raise TerminalConflictResolutionError(f"{label.title()} is unavailable")
-    return path
-
-
-def _text(value, label):
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise TerminalConflictResolutionError(f"{label} must be non-empty text")
-    return value
-
-
-def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise TerminalConflictResolutionError(f"{label} must be lowercase SHA-256")
-    return value
-
-
-def _aware_timestamp(value, label):
-    try:
-        parsed = datetime.fromisoformat(_text(value, label))
-    except ValueError as error:
-        raise TerminalConflictResolutionError(f"{label} is invalid") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise TerminalConflictResolutionError(f"{label} requires a timezone")
-    return parsed
 
 
 __all__ = [

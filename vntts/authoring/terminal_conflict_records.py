@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 
 TERMINAL_CONFLICT_MERGE_SCHEMA = "vntts.authoring-terminal-conflict-workspace-merge"
 TERMINAL_CONFLICT_MERGE_VERSION = 1
@@ -24,6 +26,70 @@ _WORKSPACE_PATTERN = re.compile(r"resume-[0-9a-f]{24}-[0-9a-f]{16}")
 
 class TerminalConflictRecordError(ValueError):
     """Terminal-conflict item provenance is malformed or unbound."""
+
+
+def require_terminal_conflict_text(
+    value, label, *, error_type=TerminalConflictRecordError, message=None
+):
+    """Require canonical non-empty terminal-conflict text."""
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise error_type(message or f"{label} must be non-empty text")
+    return value
+
+
+def require_terminal_conflict_sha256(
+    value, label, *, error_type=TerminalConflictRecordError, message=None
+):
+    """Require one lowercase hexadecimal SHA-256 value."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise error_type(message or f"{label} must be lowercase SHA-256")
+    return value
+
+
+def require_terminal_conflict_timestamp(
+    value, label, *, error_type=TerminalConflictRecordError
+):
+    """Require one timezone-aware ISO timestamp."""
+    try:
+        parsed = datetime.fromisoformat(
+            require_terminal_conflict_text(value, label, error_type=error_type)
+        )
+    except ValueError as error:
+        raise error_type(f"{label} is invalid") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise error_type(f"{label} requires a timezone")
+    return parsed
+
+
+def require_terminal_conflict_file(
+    root, value, label, *, error_type=TerminalConflictRecordError
+):
+    """Resolve one symlink-free contained terminal-conflict file."""
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise error_type(f"{label.title()} path is invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise error_type(f"{label.title()} path is invalid")
+    root = Path(root).resolve()
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise error_type(f"{label.title()} is unavailable")
+    path = current.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise error_type(f"{label.title()} leaves its root") from error
+    if not path.is_file():
+        raise error_type(f"{label.title()} is unavailable")
+    return path
 
 
 def is_terminal_review_outcome(result):
@@ -113,19 +179,19 @@ def validate_terminal_conflict_state_binding(state, merge):
 
 
 def _text(value, label):
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise TerminalConflictRecordError(f"Terminal conflict {label} is invalid")
-    return value
+    return require_terminal_conflict_text(
+        value,
+        label,
+        message=f"Terminal conflict {label} is invalid",
+    )
 
 
 def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise TerminalConflictRecordError(f"Terminal conflict {label} is invalid")
-    return value
+    return require_terminal_conflict_sha256(
+        value,
+        label,
+        message=f"Terminal conflict {label} is invalid",
+    )
 
 
 __all__ = [
@@ -133,6 +199,10 @@ __all__ = [
     "TERMINAL_CONFLICT_MERGE_VERSION",
     "TerminalConflictRecordError",
     "is_terminal_review_outcome",
+    "require_terminal_conflict_file",
+    "require_terminal_conflict_sha256",
+    "require_terminal_conflict_text",
+    "require_terminal_conflict_timestamp",
     "validate_terminal_conflict_item_provenance",
     "validate_terminal_conflict_state_binding",
 ]

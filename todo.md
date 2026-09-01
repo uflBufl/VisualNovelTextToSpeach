@@ -55,10 +55,6 @@ intentional omission as distinct terminal authorities.
 Keep wire schemas, public compatibility aliases and domain-specific validation
 messages stable. Prefer existing leaf modules over new abstraction layers.
 
-- [ ] Move repeated terminal-conflict text, digest, timestamp and contained-file
-      validation into the terminal-conflict record leaf with caller-selected
-      error types. Gate: review, resolution and successor tests preserve their
-      public exception classes and authority rejection behavior.
 - [ ] Remove remaining exact backend plumbing duplicates only where contracts are
       identical: runtime activation path calculation and lazy sounddevice/output
       underflow helpers. Do not merge renderer or playback state machines. Gate:

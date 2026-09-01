@@ -81,6 +81,13 @@ compatibility alias. The import-graph gate forbids production use of the old
 private name so the terminal status vocabulary cannot diverge between the two
 workflows.
 
+The record leaf also owns canonical non-empty text, lowercase SHA-256,
+timezone-aware timestamp and symlink-free contained-file validation. Review,
+resolution and successor modules bind those primitives to their established
+domain exception types; record provenance keeps its established record-specific
+messages. This keeps authority rejection behavior shared without coupling the
+wire layer to any publication workflow.
+
 ## Workspace filesystem foundation
 
 `workspace_foundation` is a leaf module for canonical POSIX-relative paths,

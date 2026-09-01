@@ -13,7 +13,8 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from functools import partial
+from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
@@ -43,6 +44,12 @@ from vntts.authoring.reconciliation import (
     AuthoringReconciliationError,
     load_authoring_reconciliation,
 )
+from vntts.authoring.terminal_conflict_records import (
+    require_terminal_conflict_file,
+    require_terminal_conflict_sha256,
+    require_terminal_conflict_text,
+    require_terminal_conflict_timestamp,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     list_review_items,
@@ -64,6 +71,18 @@ PROGRESS_LEASE_VERSION = 1
 
 class TerminalConflictReviewError(RuntimeError):
     """Terminal authority conflict evidence is invalid or changed."""
+
+
+_contained_file = partial(
+    require_terminal_conflict_file, error_type=TerminalConflictReviewError
+)
+_text = partial(require_terminal_conflict_text, error_type=TerminalConflictReviewError)
+_sha256 = partial(
+    require_terminal_conflict_sha256, error_type=TerminalConflictReviewError
+)
+_aware_timestamp = partial(
+    require_terminal_conflict_timestamp, error_type=TerminalConflictReviewError
+)
 
 
 @dataclass(frozen=True)
@@ -1180,31 +1199,6 @@ def _assert_progress_carry_forward(progress, review, seen=None):
     assert_authority_snapshot(progress_snapshot, "carried terminal conflict progress")
 
 
-def _contained_file(root, value, label):
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise TerminalConflictReviewError(f"{label.title()} path is invalid")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise TerminalConflictReviewError(f"{label.title()} path is invalid")
-    root = Path(root).resolve()
-    candidate = root / Path(*relative.parts)
-    current = root
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise TerminalConflictReviewError(f"{label.title()} is unavailable")
-    path = candidate.resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise TerminalConflictReviewError(f"{label.title()} leaves its root") from error
-    if not path.is_file():
-        raise TerminalConflictReviewError(f"{label.title()} is unavailable")
-    return path
-
-
 def _review_directory(directory):
     argument = Path(directory).expanduser()
     if argument.is_symlink():
@@ -1222,32 +1216,6 @@ def _review_directory(directory):
             f"Terminal conflict review directory is unavailable: {resolved}"
         )
     return resolved
-
-
-def _text(value, label):
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise TerminalConflictReviewError(f"{label} must be non-empty text")
-    return value
-
-
-def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise TerminalConflictReviewError(f"{label} must be lowercase SHA-256")
-    return value
-
-
-def _aware_timestamp(value, label):
-    try:
-        parsed = datetime.fromisoformat(_text(value, label))
-    except ValueError as error:
-        raise TerminalConflictReviewError(f"{label} is invalid") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise TerminalConflictReviewError(f"{label} requires a timezone")
-    return parsed
 
 
 @contextmanager
