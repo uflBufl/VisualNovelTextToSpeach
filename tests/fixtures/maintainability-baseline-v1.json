@@ -71,7 +71,7 @@
     "vntts.live_replay_coverage -> vntts.live_replay_sequence_seal:_write_json"
   ],
   "module_lines": {
-    "vntts.app": 2810,
+    "vntts.app": 2807,
     "vntts.authoring": 2026,
     "vntts.authoring.bulk_generation": 3665,
     "vntts.authoring.generation_state": 2369,

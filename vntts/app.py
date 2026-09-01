@@ -754,11 +754,6 @@ class SettingsDialog(QDialog):
         path = Path(text).expanduser()
         if path.exists() and not path.is_dir():
             return f"{label}: the selected path is not a directory."
-        parent = path if path.exists() else path.parent
-        while not parent.exists() and parent != parent.parent:
-            parent = parent.parent
-        if not parent.exists() or not parent.is_dir():
-            return f"{label}: the parent directory does not exist."
         return None
 
     @staticmethod
