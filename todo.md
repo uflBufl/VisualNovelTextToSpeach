@@ -11,8 +11,11 @@ measurements and completed-work history in `docs/` and Git, not here.
     Windows wheels for the selected release.
   - Run the Linux X11 suite under Xvfb with EGL available; `offscreen` alone
     does not provide the display required by `pynput`.
+  - Install PipeWire's runtime library in Linux CI so importing Qt Multimedia
+    does not emit loader failures during clean CLI help smoke tests.
   - Preserve failing macOS shard output as a GitHub annotation so CI identifies
-    the exact test instead of reporting only the shard exit code.
+    the exact test instead of reporting only the shard exit code, including
+    both ends when a large assertion would otherwise hide the test name.
   - Accept a not-yet-created screenshot directory; capture already creates the
     full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,

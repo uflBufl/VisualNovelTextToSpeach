@@ -83,7 +83,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y espeak-ng libegl1 libportaudio2 tesseract-ocr xvfb
+          sudo apt-get install -y espeak-ng libegl1 libpipewire-0.3-0 libportaudio2 tesseract-ocr xvfb
 
       - name: Install locked dependencies
         run: uv sync --group dev --frozen

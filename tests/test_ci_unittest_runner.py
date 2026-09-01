@@ -10,6 +10,7 @@ from scripts.run_ci_unittests import (
     _run_exact_test_file,
     _run_macos_full_discovery,
     partition_macos_test_ids,
+    workflow_failure_details,
 )
 
 
@@ -35,6 +36,14 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             partition_macos_test_ids(["tests.test_app.X.test_a"] * 2)
         with self.assertRaisesRegex(ValueError, "incomplete"):
             partition_macos_test_ids(["tests.test_alpha.X.test_a"])
+
+    def test_failure_details_keep_both_ends(self):
+        value = "start" + "x" * 12_000 + "finish"
+        details = workflow_failure_details(value)
+
+        self.assertTrue(details.startswith("start"))
+        self.assertTrue(details.endswith("finish"))
+        self.assertLessEqual(len(details), 12_000)
 
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:

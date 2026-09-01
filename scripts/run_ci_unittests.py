@@ -16,6 +16,12 @@ def escape_workflow_command(value):
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+def workflow_failure_details(value):
+    if len(value) <= 12_000:
+        return value
+    return value[:4_000] + "\n... output truncated ...\n" + value[-7_950:]
+
+
 def _flatten_suite(suite):
     for value in suite:
         if isinstance(value, unittest.TestSuite):
@@ -102,7 +108,7 @@ def _run_macos_full_discovery():
             print(completed.stdout, end="")
             if completed.returncode:
                 if os.environ.get("GITHUB_ACTIONS"):
-                    details = completed.stdout[-12_000:] or (
+                    details = workflow_failure_details(completed.stdout) or (
                         f"macOS unittest shard {name} exited without output."
                     )
                     print(
@@ -131,7 +137,10 @@ def main(arguments=None):
     )
     print(completed.stdout, end="")
     if completed.returncode and os.environ.get("GITHUB_ACTIONS"):
-        details = completed.stdout[-12_000:] or "Unit tests exited without output."
+        details = (
+            workflow_failure_details(completed.stdout)
+            or "Unit tests exited without output."
+        )
         return cli_message(
             f"::error title=Unit tests failed::{escape_workflow_command(details)}",
             exit_code=completed.returncode,
