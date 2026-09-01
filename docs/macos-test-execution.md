@@ -17,7 +17,9 @@ rejects duplicate exact IDs, and runs two exact inventories:
 
 The partition rejects overlap or incomplete coverage, each child checks its
 executed count against its inventory, and any exception, assertion failure,
-signal or non-zero child exit fails the parent command. Targeted unittest
+signal or non-zero child exit fails the parent command. The qt-app child has a
+60-second timeout and the remainder child a 300-second timeout, so native
+teardown hangs fail the runner instead of blocking CI indefinitely. Targeted unittest
 arguments and non-macOS execution keep the ordinary single-process behavior.
 The README, CI workflows and macOS package build use this same runner.
 
@@ -26,6 +28,8 @@ cannot become discovery aliases. A repository regression
 asserts that raw `unittest` discovery contains no duplicate IDs; the runner does
 not deduplicate or hide violations.
 
-The 2026-08-28 acceptance run executed 74 app tests and 1,387 remaining tests:
-1,461 unique exact IDs in total, with zero discovery aliases. Both shards
-completed successfully without ignoring a native exit code.
+The Chatterbox stop-interruption regression uses an Event-based audio fake; it
+does not share `unittest.mock` state across the playback and assertion threads.
+On 2026-09-01 two consecutive acceptance runs each executed 102 app tests and
+1,851 remaining tests: 1,953 unique exact IDs in total, with zero discovery
+aliases. Both runs completed successfully without ignoring a native exit code.

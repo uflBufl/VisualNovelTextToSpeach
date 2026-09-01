@@ -1,11 +1,14 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
     _flatten_suite,
     _run_exact_test_file,
+    _run_macos_full_discovery,
     partition_macos_test_ids,
 )
 
@@ -44,6 +47,23 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ]
             path.write_text(json.dumps(names), encoding="utf-8")
             self.assertEqual(_run_exact_test_file(path), 0)
+
+    def test_macos_shard_timeout_fails_instead_of_hanging(self):
+        with (
+            patch(
+                "scripts.run_ci_unittests._flatten_suite",
+                return_value=(Mock(id=Mock(return_value="test-id")),),
+            ),
+            patch(
+                "scripts.run_ci_unittests.partition_macos_test_ids",
+                return_value=(("app-id",), ("other-id",)),
+            ),
+            patch(
+                "scripts.run_ci_unittests.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(("python",), 60),
+            ),
+        ):
+            self.assertEqual(_run_macos_full_discovery(), 124)
 
 
 if __name__ == "__main__":

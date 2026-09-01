@@ -53,16 +53,6 @@ intentional omission as distinct terminal authorities.
 
 ## P1 - Resolve project-wide code-review findings
 
-- [ ] Stabilize the canonical macOS full-suite runner after the reproducible
-      native crash in
-      `SpeechBackendTest.test_chatterbox_stop_interrupts_only_its_active_typed_call`.
-      The current app/remainder split still lets the threaded `unittest.mock`
-      playback test race with garbage collection and exit the remainder shard
-      through `SIGSEGV` (`245`), although `tests.test_speech_backend` passes
-      alone. Replace the concurrent mock with a deterministic thread-safe fake
-      or isolate the exact hazardous module, then require two consecutive full
-      runner passes and update `docs/macos-test-execution.md` with the new shard
-      contract.
 - [ ] Make release packages able to run the backend they recommend by default.
   - Follow [`docs/release-speech-runtime.md`](docs/release-speech-runtime.md).
     Retain repository/revision/checksum evidence for every downloaded model and

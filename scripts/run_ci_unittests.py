@@ -9,6 +9,8 @@ from pathlib import Path
 
 from vntts.cli import cli_message
 
+MACOS_SHARD_TIMEOUTS = {"qt-app": 60, "remainder": 300}
+
 
 def escape_workflow_command(value):
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -76,15 +78,24 @@ def _run_macos_full_discovery():
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running macOS unittest shard {name}: {len(ids)} tests")
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "scripts.run_ci_unittests",
-                    "--exact-test-ids-file",
-                    str(inventory),
-                ]
-            )
+            try:
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "scripts.run_ci_unittests",
+                        "--exact-test-ids-file",
+                        str(inventory),
+                    ],
+                    timeout=MACOS_SHARD_TIMEOUTS[name],
+                )
+            except subprocess.TimeoutExpired:
+                print(
+                    f"macOS unittest shard {name} exceeded "
+                    f"{MACOS_SHARD_TIMEOUTS[name]} seconds",
+                    file=sys.stderr,
+                )
+                return 124
             if completed.returncode:
                 return completed.returncode
     print(f"Ran all {len(test_ids)} exact discovered tests once in 2 shards")

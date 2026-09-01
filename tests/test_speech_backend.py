@@ -152,6 +152,24 @@ class FakeStreamingAudioOutput:
         return FakeOutputStream(self, **options)
 
 
+class BlockingAudioOutput:
+    def __init__(self):
+        self.entered_wait = Event()
+        self.release_wait = Event()
+        self.play_calls = []
+        self.stop_calls = 0
+
+    def play(self, *arguments, **options):
+        self.play_calls.append((arguments, options))
+
+    def wait(self):
+        self.entered_wait.set()
+        self.release_wait.wait(timeout=1)
+
+    def stop(self):
+        self.stop_calls += 1
+
+
 class ChatterboxNanoBackendTest(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = TemporaryDirectory()
@@ -488,15 +506,7 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         audio_output.play.assert_not_called()
 
     def test_chatterbox_stop_interrupts_only_its_active_typed_call(self):
-        entered_wait = Event()
-        release_wait = Event()
-        audio_output = Mock()
-
-        def wait():
-            entered_wait.set()
-            release_wait.wait(timeout=1)
-
-        audio_output.wait.side_effect = wait
+        audio_output = BlockingAudioOutput()
         backend, _model = self.create_backend(
             CharacterVoiceRegistry(), audio_output=audio_output
         )
@@ -510,18 +520,17 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         outcomes = []
         thread = Thread(target=lambda: outcomes.append(backend.play_prepared(prepared)))
         thread.start()
-        self.assertTrue(entered_wait.wait(timeout=1))
+        self.assertTrue(audio_output.entered_wait.wait(timeout=1))
 
         self.assertTrue(backend.stop())
-        release_wait.set()
+        audio_output.release_wait.set()
         thread.join(timeout=1)
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
-        audio_output.stop.assert_called_once_with()
-        audio_output.reset_mock()
+        self.assertEqual(audio_output.stop_calls, 1)
         self.assertFalse(backend.stop())
-        audio_output.stop.assert_not_called()
+        self.assertEqual(audio_output.stop_calls, 1)
 
     def test_play_uses_backend_sample_rate_and_volume(self):
         audio_output = Mock()
