@@ -81,6 +81,13 @@ character variant under identical synthesis controls. The second phrase is
 optional, has its own checksum-bound cache identity and never adds a mandatory
 decision.
 
+After both choices on the current card are playable, the panel opportunistically
+warms only the next unresolved comparison through the same preview service and
+checksum-bound cache. A completed warmup is consumed directly when the player
+advances, without a duplicate render. Speculative work never changes the number
+of required choices, disables the current controls or delays cancellation; its
+result is ignored when the selection has already ended.
+
 Voice planning normalizes stale synthesis controls before any preview or bulk
 work starts. Pocket always uses its native `default` profile; invalid clone-model
 profiles fall back to `stable`; and MOSS selected on non-Apple-Silicon hosts

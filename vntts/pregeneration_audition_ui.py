@@ -45,6 +45,8 @@ class VoiceAuditionPanel(QGroupBox):
         self.preview_service = preview_service or VoiceAuditionPreviewService()
         self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preview_runner.finished.connect(self._previews_finished)
+        self.prefetch_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.prefetch_runner.finished.connect(self._prefetch_finished)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_finished)
         self.audio_output = None
@@ -62,6 +64,10 @@ class VoiceAuditionPanel(QGroupBox):
         self._cancel_requested = False
         self._terminal_emitted = False
         self._ignore_preview_result = False
+        self._ignore_prefetch_result = False
+        self._prefetch_group_id = None
+        self._prefetched = {}
+        self._shutdown_requested = False
         self._loading_narrator = False
         self._narrator_companion = None
         self._alternate_active = False
@@ -164,6 +170,10 @@ class VoiceAuditionPanel(QGroupBox):
         self._cancel_requested = False
         self._terminal_emitted = False
         self._ignore_preview_result = False
+        self._ignore_prefetch_result = False
+        self._prefetch_group_id = None
+        self._prefetched = {}
+        self._shutdown_requested = False
         self._loading_narrator = False
         self._narrator_companion = None
         self._alternate_active = False
@@ -217,7 +227,8 @@ class VoiceAuditionPanel(QGroupBox):
             self._pending_decisions.append((group, source_id))
         self._group_index = len(self._groups)
         self._ignore_preview_result = self.preview_runner.active
-        if self.preview_runner.active:
+        self._ignore_prefetch_result = self.prefetch_runner.active
+        if self.preview_runner.active or self.prefetch_runner.active:
             self.preview_service.cancel()
         self._stop_player()
         self._start_save(
@@ -271,6 +282,10 @@ class VoiceAuditionPanel(QGroupBox):
 
     def shutdown(self):
         self._stop_player()
+        self._shutdown_requested = True
+        if self.prefetch_runner.active:
+            self.preview_service.cancel()
+            return
         if not self.active:
             self.preview_service.close()
 
@@ -332,6 +347,12 @@ class VoiceAuditionPanel(QGroupBox):
         self._set_decision_actions(False)
         self.choose_all_button.setEnabled(True)
         self.status.setText("Preparing a short A/B comparison...")
+        prefetched = self._prefetched.pop(group.group_id, None)
+        if prefetched is not None:
+            self._previews_finished(*prefetched)
+            return
+        if self.prefetch_runner.active and self._prefetch_group_id == group.group_id:
+            return
         self.preview_runner.start(
             self._generate_candidate_previews,
             self._plan,
@@ -450,6 +471,44 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.setText(
             "Play either voice in any order. Playback does not disable your choices."
         )
+        self._prefetch_next_group()
+
+    def _prefetch_next_group(self):
+        next_index = self._group_index + 1
+        if next_index >= len(self._groups) or self.prefetch_runner.active:
+            return
+        group = self._groups[next_index]
+        self._prefetch_group_id = group.group_id
+        self.prefetch_runner.start(
+            self._generate_candidate_previews,
+            self._plan,
+            group,
+            group.candidates,
+        )
+
+    def _prefetch_finished(self, result, error):
+        group_id = self._prefetch_group_id
+        self._prefetch_group_id = None
+        if self._shutdown_requested:
+            self.preview_service.close()
+            return
+        if self._terminal_emitted:
+            self.preview_service.close()
+            return
+        if self._ignore_prefetch_result:
+            self._ignore_prefetch_result = False
+            self._maybe_complete()
+            return
+        if self._cancel_requested:
+            if not self.active:
+                self._emit_cancelled()
+            return
+        if self._group_index < len(self._groups) and (
+            self.current_group().group_id == group_id
+        ):
+            self._previews_finished(result, error)
+            return
+        self._prefetched[group_id] = (result, error)
 
     def _show_narrator_fallback(self, *, companion=None):
         group = self.current_group()
@@ -682,7 +741,8 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._terminal_emitted = True
         self.setVisible(False)
-        self.preview_service.close()
+        if not self.prefetch_runner.active:
+            self.preview_service.close()
         self.cancelled.emit()
 
     def _ensure_player(self):

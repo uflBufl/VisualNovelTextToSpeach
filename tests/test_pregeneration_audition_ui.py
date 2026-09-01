@@ -50,6 +50,18 @@ def with_second_candidate(plan, group):
     return plan, group
 
 
+def with_second_group(plan, group):
+    second = replace(
+        group,
+        group_id="1" * 64,
+        character="Second character",
+        line_ids=("second-line",),
+        decision_context_sha256="2" * 64,
+        control_sha256="3" * 64,
+    )
+    return replace(plan, groups=(*plan.groups, second)), second
+
+
 class VoiceAuditionPanelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -178,7 +190,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.application.processEvents()
             self.assertTrue(panel.another_sample_button.isEnabled())
             self.assertTrue(
-                all("text" not in call.kwargs for call in preview_service.generate.call_args_list)
+                all(
+                    "text" not in call.kwargs
+                    for call in preview_service.generate.call_args_list
+                )
             )
 
             panel.another_sample_button.click()
@@ -193,6 +208,83 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 [group.alternate_sample_text, group.alternate_sample_text],
             )
             panel.shutdown()
+            panel.deleteLater()
+
+    def test_next_comparison_is_prefetched_and_used_without_a_second_render(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            plan, second = with_second_group(plan, group)
+            decisions = VoiceDecisionStore(root / "decisions.json")
+            preview_service = Mock()
+            preview_service.generate.side_effect = lambda _plan, value, source: Mock(
+                path=root / f"{value.group_id}-{source.removeprefix('character:')}.wav"
+            )
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions,
+                preview_service=preview_service,
+                thread_pool=pool,
+                player=Mock(),
+            )
+
+            panel.start(plan)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(len(pool.tasks), 1)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(preview_service.generate.call_count, 4)
+
+            panel.a_use.click()
+
+            self.assertEqual(panel.current_group(), second)
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(pool.tasks, [])
+            self.assertEqual(preview_service.generate.call_count, 4)
+
+            panel.b_use.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(
+                decisions.choice_for(second.group_id, second.decision_context_sha256),
+                second.candidates[1].source_id,
+            )
+            panel.shutdown()
+            panel.deleteLater()
+
+    def test_cancelling_does_not_wait_for_speculative_preview(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            plan, _second = with_second_group(plan, group)
+            preview_service = Mock()
+            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            pool = ManualThreadPool()
+            cancelled = Mock()
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=preview_service,
+                thread_pool=pool,
+                player=Mock(),
+            )
+            panel.cancelled.connect(cancelled)
+            panel.start(plan)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(len(pool.tasks), 1)
+
+            panel.cancel()
+
+            self.assertEqual(cancelled.call_count, 1)
+            preview_service.close.assert_not_called()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            preview_service.close.assert_called_once_with()
             panel.deleteLater()
 
     def test_save_failure_keeps_the_same_decision_available(self):
