@@ -11,12 +11,15 @@ Pregeneration is an ordinary-user workflow: a player selects installed story
 content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
-- [ ] Refine ambiguous-voice comparison without expanding mandatory review.
-  - [ ] Collect enough new independently reason-labelled bad previews to reserve
-        fit and held-out partitions for each target defect class, then calibrate
-        an automatic rejection rule. Follow the corpus-v3 evidence in
-        [`docs/speech-robustness-corpus.md`](docs/speech-robustness-corpus.md);
-        current waveform and proportional-timing signals remain diagnostic-only.
+- [ ] Calibrate automatic preview and bulk-quality routing without expanding
+      mandatory review. Collect enough independently reason-labelled bad outputs
+      for pacing, repetition, truncation, pronunciation, artifacts and speaker
+      identity to reserve fit and held-out partitions; compare a stronger local
+      ASR or forced aligner, and promote a rejection rule only after measuring
+      false positives and false negatives. Follow the corpus-v3 evidence in
+      [`docs/speech-robustness-corpus.md`](docs/speech-robustness-corpus.md);
+      until then keep existing signals diagnostic-only and use safe sentence
+      repair, one bounded provider-local retry, then typed XTTS/Pocket fallback.
 ## P1 - Improve the self-service generation engine
 
 Follow
@@ -24,14 +27,6 @@ Follow
 and keep original audio, approved generated audio, explicit live fallback and
 intentional omission as distinct terminal authorities.
 
-- [ ] Turn the existing defect-reason labels into a calibrated MOSS quality
-      router. Collect enough independently reviewed examples for pacing,
-      repetition, truncation, pronunciation, artifacts and speaker identity to
-      reserve an untouched validation split; compare a stronger local ASR or
-      forced aligner; publish a reject threshold only after measuring false
-      positives and false negatives on that split. Until then keep the current
-      order: safe sentence repair when eligible, one bounded provider-local
-      retry, then a typed XTTS or Pocket fallback.
 - [ ] Validate speaker-identity clustering before reducing voice choices. Select
       a redistributable local speaker-embedding implementation and label held-out
       same-speaker, different-speaker and same-character/different-age pairs from
