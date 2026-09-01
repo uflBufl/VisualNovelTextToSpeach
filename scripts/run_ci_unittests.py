@@ -9,7 +9,7 @@ from pathlib import Path
 
 from vntts.cli import cli_message
 
-MACOS_SHARD_TIMEOUTS = {"qt-app": 60, "remainder": 300}
+MACOS_SHARD_TIMEOUTS = {"qt-app": 60, "qt-assets": 60, "remainder": 300}
 
 
 def escape_workflow_command(value):
@@ -36,12 +36,16 @@ def partition_macos_test_ids(test_ids):
     if len(values) != len(set(values)):
         raise ValueError("Full test discovery contains duplicate test IDs")
     app = tuple(value for value in values if value.startswith("tests.test_app."))
-    remainder = tuple(value for value in values if value not in set(app))
-    if not app or not remainder or set(app).intersection(remainder):
+    assets = tuple(
+        value for value in values if value.startswith("tests.test_asset_ui.")
+    )
+    isolated = set((*app, *assets))
+    remainder = tuple(value for value in values if value not in isolated)
+    if not app or not assets or not remainder or isolated.intersection(remainder):
         raise ValueError("macOS unittest shards are incomplete or overlap")
-    if sorted((*app, *remainder)) != sorted(values):
+    if sorted((*app, *assets, *remainder)) != sorted(values):
         raise ValueError("macOS unittest shards do not cover exact discovery")
-    return app, remainder
+    return app, assets, remainder
 
 
 def _run_exact_test_file(path):
@@ -73,13 +77,17 @@ def _run_macos_full_discovery():
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
     try:
-        app_ids, remainder_ids = partition_macos_test_ids(test_ids)
+        app_ids, asset_ids, remainder_ids = partition_macos_test_ids(test_ids)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
     with tempfile.TemporaryDirectory(prefix="vntts-unittest-shards-") as directory:
         root = Path(directory)
-        shards = (("qt-app", app_ids), ("remainder", remainder_ids))
+        shards = (
+            ("qt-app", app_ids),
+            ("qt-assets", asset_ids),
+            ("remainder", remainder_ids),
+        )
         for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
@@ -117,7 +125,7 @@ def _run_macos_full_discovery():
                         file=sys.stderr,
                     )
                 return completed.returncode
-    print(f"Ran all {len(test_ids)} exact discovered tests once in 2 shards")
+    print(f"Ran all {len(test_ids)} exact discovered tests once in 3 shards")
     return 0
 
 

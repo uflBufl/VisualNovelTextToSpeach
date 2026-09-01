@@ -26,10 +26,12 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             "tests.test_alpha.AlphaTest.test_one",
             "tests.test_zed.ZedTest.test_two",
         ]
-        app, remainder = partition_macos_test_ids(values)
+        values.insert(1, "tests.test_asset_ui.AssetTest.test_dialog")
+        app, assets, remainder = partition_macos_test_ids(values)
         self.assertEqual(app, (values[0],))
-        self.assertEqual(remainder, tuple(values[1:]))
-        self.assertEqual(sorted((*app, *remainder)), sorted(values))
+        self.assertEqual(assets, (values[1],))
+        self.assertEqual(remainder, tuple(values[2:]))
+        self.assertEqual(sorted((*app, *assets, *remainder)), sorted(values))
 
     def test_partition_rejects_duplicates_and_missing_app_shard(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
@@ -65,7 +67,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ),
             patch(
                 "scripts.run_ci_unittests.partition_macos_test_ids",
-                return_value=(("app-id",), ("other-id",)),
+                return_value=(("app-id",), ("asset-id",), ("other-id",)),
             ),
             patch(
                 "scripts.run_ci_unittests.subprocess.run",
