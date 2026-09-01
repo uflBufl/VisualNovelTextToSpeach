@@ -91,6 +91,7 @@ class ModelListeningDialog(QDialog):
         self.current_trial = None
         self.auto_play = auto_play
         self.auto_play_pending_b = False
+        self.play_pending = False
         self.active_side = None
         self.started_sides = set()
         self.setWindowTitle("Blind voice-model listening workbench")
@@ -244,30 +245,13 @@ class ModelListeningDialog(QDialog):
         self.setTabOrder(self.neither, self.prefer_b)
 
         self.audio_output = QAudioOutput(self)
-        self.players = {}
-        for side in ("a", "b"):
-            player = QMediaPlayer(self)
-            player.mediaStatusChanged.connect(
-                lambda status, source_side=side: self.media_status_changed(
-                    source_side, status
-                )
-            )
-            player.playbackStateChanged.connect(
-                lambda state, source_side=side: self.playback_state_changed(
-                    source_side, state
-                )
-            )
-            player.durationChanged.connect(
-                lambda duration, source_side=side: self.duration_changed(
-                    source_side, duration
-                )
-            )
-            player.positionChanged.connect(
-                lambda position, source_side=side: self.position_changed(
-                    source_side, position
-                )
-            )
-            self.players[side] = player
+        self.player = QMediaPlayer(self)
+        self.player.setAudioOutput(self.audio_output)
+        self.player.mediaStatusChanged.connect(self.media_status_changed)
+        self.player.playbackStateChanged.connect(self.playback_state_changed)
+        self.player.durationChanged.connect(self.duration_changed)
+        self.player.positionChanged.connect(self.position_changed)
+        self.audio_sources = {}
         self.load_next_trial()
 
     def set_preference_buttons_enabled(self, enabled, reason=None):
@@ -386,6 +370,7 @@ class ModelListeningDialog(QDialog):
         self.current_trial = next_pending_trial(self.session)
         self.update_trial_context()
         self.auto_play_pending_b = False
+        self.play_pending = False
         self.active_side = None
         self.started_sides.clear()
         self.seek.setRange(0, 0)
@@ -425,10 +410,12 @@ class ModelListeningDialog(QDialog):
         ):
             widget.setEnabled(True)
         self.dialogue.setPlainText(self.current_trial.get("text", ""))
-        for side, player in self.players.items():
-            player.stop()
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.audio_sources = {}
+        for side in ("a", "b"):
             path = self.session_path.parent / self.current_trial["audio"][side]
-            player.setSource(QUrl.fromLocalFile(str(path)))
+            self.audio_sources[side] = QUrl.fromLocalFile(str(path))
         self.status.setText(
             "Starting A, then B automatically. Shortcuts: Ctrl+1 plays A; "
             "Ctrl+2 plays B; Ctrl+Space controls the active sample."
@@ -446,24 +433,34 @@ class ModelListeningDialog(QDialog):
             return
         if side == "b":
             self.auto_play_pending_b = False
-        other_side = "b" if side == "a" else "a"
-        self.players[other_side].stop()
-        player = self.players[side]
-        player.setAudioOutput(self.audio_output)
-        player.setPosition(0)
+        self.player.stop()
         self.active_side = side
-        self.duration_changed(side, player.duration())
-        self.position_changed(side, 0)
+        self.play_pending = True
         self.set_playback_indicator("loading", side)
-        player.play()
         mode = " automatically" if automatic else ""
         self.status.setText(f"Playing anonymous sample {side.upper()}{mode}.")
+        source = self.audio_sources[side]
+        if self.player.source() == source and self.player.mediaStatus() not in {
+            QMediaPlayer.MediaStatus.NoMedia,
+            QMediaPlayer.MediaStatus.LoadingMedia,
+            QMediaPlayer.MediaStatus.InvalidMedia,
+        }:
+            self.start_loaded_playback()
+        else:
+            self.player.setSource(source)
 
-    def playback_state_changed(self, side, state):
-        if (
-            state == QMediaPlayer.PlaybackState.PlayingState
-            and side == self.active_side
-        ):
+    def start_loaded_playback(self):
+        if not self.play_pending or self.active_side is None:
+            return
+        self.play_pending = False
+        self.player.setPosition(0)
+        self.duration_changed(self.player.duration())
+        self.position_changed(0)
+        self.player.play()
+
+    def playback_state_changed(self, state):
+        side = self.active_side
+        if state == QMediaPlayer.PlaybackState.PlayingState and side is not None:
             self.set_playback_indicator("playing", side)
             self.started_sides.add(side)
             if self.started_sides == {"a", "b"}:
@@ -473,10 +470,18 @@ class ModelListeningDialog(QDialog):
                 )
                 self.status.setText("Both samples have started. Choose a preference.")
 
-    def media_status_changed(self, side, status):
-        if status != QMediaPlayer.MediaStatus.EndOfMedia or side != self.active_side:
+    def media_status_changed(self, status):
+        side = self.active_side
+        if (
+            status == QMediaPlayer.MediaStatus.LoadedMedia
+            and side is not None
+            and self.player.source() == self.audio_sources[side]
+        ):
+            self.start_loaded_playback()
             return
-        self.position_changed(side, self.players[side].duration())
+        if status != QMediaPlayer.MediaStatus.EndOfMedia or side is None:
+            return
+        self.position_changed(self.player.duration())
         self.set_playback_indicator("finished", side)
         if side == "a" and self.auto_play_pending_b:
             self.auto_play_pending_b = False
@@ -492,56 +497,57 @@ class ModelListeningDialog(QDialog):
             f"{self.format_time(position)} / {self.format_time(duration)}"
         )
 
-    def duration_changed(self, side, duration):
-        if side != self.active_side:
+    def duration_changed(self, duration):
+        if self.active_side is None:
             return
         self.seek.setRange(0, max(0, int(duration)))
-        self.update_time_label(self.players[side].position(), duration)
+        self.update_time_label(self.player.position(), duration)
 
-    def position_changed(self, side, position):
-        if side != self.active_side:
+    def position_changed(self, position):
+        if self.active_side is None:
             return
         position = max(0, int(position))
         if not self.seek.isSliderDown():
             self.seek.setValue(position)
-        self.update_time_label(position, self.players[side].duration())
+        self.update_time_label(position, self.player.duration())
 
     def seek_to(self, position):
         if self.active_side is None:
             return
-        player = self.players[self.active_side]
-        player.setPosition(position)
+        self.player.setPosition(position)
         self.seek.setValue(position)
-        self.update_time_label(position, player.duration())
+        self.update_time_label(position, self.player.duration())
 
     def skip_by(self, delta):
         if self.active_side is None:
             return
-        player = self.players[self.active_side]
-        duration = max(0, int(player.duration()))
-        position = max(0, min(duration, int(player.position()) + delta))
-        player.setPosition(position)
+        duration = max(0, int(self.player.duration()))
+        position = max(0, min(duration, int(self.player.position()) + delta))
+        self.player.setPosition(position)
         self.update_time_label(position, duration)
 
     def stop_audio(self):
         self.auto_play_pending_b = False
-        for player in self.players.values():
-            player.stop()
+        self.play_pending = False
+        self.player.stop()
         self.set_playback_indicator("stopped", self.active_side)
 
     def toggle_playback(self):
         if self.current_trial is None or self.active_side is None:
             return
-        player = self.players[self.active_side]
         if self.playback_control_state == "stopped":
             self.set_playback_indicator("loading", self.active_side)
-            player.play()
+            self.player.play()
         elif self.playback_control_state == "finished":
-            player.setPosition(0)
+            self.player.setPosition(0)
             self.set_playback_indicator("loading", self.active_side)
-            player.play()
-        elif self.playback_control_state in {"loading", "playing"}:
-            player.pause()
+            self.player.play()
+        elif self.playback_control_state == "loading":
+            self.play_pending = False
+            self.player.stop()
+            self.set_playback_indicator("stopped", self.active_side)
+        elif self.playback_control_state == "playing":
+            self.player.pause()
             self.set_playback_indicator("stopped", self.active_side)
 
     def save_preference(self, preference):
@@ -620,8 +626,7 @@ class ModelListeningDialog(QDialog):
             )
             event.ignore()
             return
-        for player in self.players.values():
-            player.stop()
+        self.player.stop()
         super().closeEvent(event)
 
 
