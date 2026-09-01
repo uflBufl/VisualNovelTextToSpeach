@@ -36,32 +36,6 @@ intentional omission as distinct terminal authorities.
       same-speaker, different-speaker and same-character/different-age pairs from
       installed references. Publish a threshold only if it preserves every known
       age/identity boundary; until then keep the current evidence variants apart.
-- [ ] Complete the prepared three-trial blind Rhiannon comparison for exact
-      voiced line `reverse1999:101341:42`. Compare only anonymous A/B playback
-      and choose A, B, both acceptable/no preference, or neither; do not add a
-      broad cohort.
-  - [ ] Restart the patched workbench and replay trial 1: its first automatic B
-        playback must include `Aha` and its seek handle must reach the end. Then
-        discard this now-unblinded session and create fresh anonymous aliases
-        before collecting the three decisions.
-    - Both the separate-player and shared-player `QMediaPlayer` repairs failed
-      live verification; B still lost its onset and B-to-A could distort while
-      changing sample rate. Do not collect a verdict through that path.
-    - Replace `QMediaPlayer` in `vntts-listen` with one persistent
-      `sounddevice.OutputStream` at the output device's native format. Decode and
-      resample each immutable WAV before playback, keep the stream warm with
-      silence, and switch only at callback boundaries without reopening it.
-    - Drive seek, pause, completion and A-to-B auto-advance from PCM-frame and
-      DAC-time authority. Surface underflow as invalid playback that must be
-      replayed; never unlock a decision from incomplete evidence.
-    - Cover first-frame preservation, mixed sample rates/channels, reverse
-      switching, replay, pause, seek, stale completions and clean shutdown with
-      a fake stream. Gate completion on a live exact-session check with no
-      clipped `Aha`, no B-to-A distortion and a complete timeline.
-  - [ ] Use the final report only to locate degradation between original source,
-        the current MOSS reference-codec roundtrip and stable-profile synthesis.
-        Do not change MOSS sampling/profile controls from this single line.
-
 ## P1 - Resolve project-wide code-review findings
 
 - [ ] Make release packages able to run the backend they recommend by default.

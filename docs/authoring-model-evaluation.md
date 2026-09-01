@@ -259,11 +259,18 @@ first PCM was 1310 ms and fresh RTF was 1.44. All three strict reports share the
 exact source text hash and pass the listening loader's checksum/WAV validation.
 The blind session is
 `authoring/listening-sessions/rhiannon-original-codec-stable-20260901`; its
-public session SHA-256 is
-`64cfee5b08ca7521e2a279d369ba38f7da0d3fa62284b429663e2fa19d977972`
-and its mode-0600 blind-key SHA-256 is
-`b1574d4ea4795490684a7060857c1dcd43a7488c6636addd91771c8611bb569e`.
-It contains exactly three anonymous pairwise trials and starts at `0/3`.
+completed public session SHA-256 is
+`59f84ade0a9c5cb99faafd37173b5d7023750e8f199c3f8bfcb44d99d19ab152`
+and its final report SHA-256 is
+`ae5ee847a4728f5fbe9baca8974e43da554b135d88da15445702c4810b88e3b3`.
+The three anonymous pairwise trials completed `3/3`. Original game audio and
+the MOSS codec roundtrip tied; each also beat stable-profile MOSS synthesis.
+This locates the audible degradation in synthesis rather than the codec for
+this exact line. It does not justify a broad sampling/profile change.
+
+The final review used the persistent fixed-format PCM playback path on macOS.
+Live verification preserved the first `Aha` onset, completed the short clip's
+timeline and switched B-to-A without distortion.
 
 The checked-in three-line Rhiannon replay corpus uses the strict benchmark
 schema; its SHA-256 is
