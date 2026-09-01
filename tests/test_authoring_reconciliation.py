@@ -18,6 +18,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.reconciliation as reconciliation_module
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_cohort_review import create_pending_cohort_workspace
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_source_reference_review import (
@@ -736,7 +737,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 replacement = root / "replacement-state.json"
                 replacement.write_bytes(state.read_bytes())
                 state.unlink()
-                state.symlink_to(replacement)
+                symlink_or_skip(state, replacement)
                 original(snapshots)
 
             with (

@@ -15,6 +15,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live_replay import (
     LiveReplayRunner,
@@ -1361,7 +1362,7 @@ class LiveReplayTest(unittest.TestCase):
                     load_live_replay_corpus(path)
 
                 link = root / "linked.png"
-                link.symlink_to(outside)
+                symlink_or_skip(link, outside)
                 document["dialogue"][0]["frames"] = [link.name]
                 path.write_text(json.dumps(document), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "must not contain symlinks"):
@@ -1379,7 +1380,7 @@ class LiveReplayTest(unittest.TestCase):
                     load_live_replay_corpus(path)
 
                 manifest_link = root / "linked-generated.json"
-                manifest_link.symlink_to(outside_manifest)
+                symlink_or_skip(manifest_link, outside_manifest)
                 document["generated_audio_manifest"]["path"] = manifest_link.name
                 path.write_text(json.dumps(document), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "must not contain symlinks"):
@@ -1416,7 +1417,7 @@ class LiveReplayTest(unittest.TestCase):
                     load_live_replay_corpus(path)
 
                 audio_link = root / "linked.wav"
-                audio_link.symlink_to(outside_audio)
+                symlink_or_skip(audio_link, outside_audio)
                 generated_document["entries"][0]["audio"] = audio_link.name
                 generated_manifest.write_text(
                     json.dumps(generated_document), encoding="utf-8"

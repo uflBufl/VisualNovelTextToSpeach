@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -882,7 +883,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             )
             outside = root / "outside"
             outside.mkdir()
-            (workspace / "cohort-reviews").symlink_to(outside, target_is_directory=True)
+            symlink_or_skip(
+                workspace / "cohort-reviews", outside, target_is_directory=True
+            )
             before = state_path.read_bytes()
 
             with self.assertRaisesRegex(CohortReviewError, "cannot be a symlink"):

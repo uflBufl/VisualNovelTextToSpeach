@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.workbench as workbench_module
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_bulk_generation import SyntheticRenderer
 from tests.test_authoring_failure_reference_audit import (
     create_failed_reference_workspace,
@@ -155,7 +156,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
             replacement = root / "same-bytes.wav"
             replacement.write_bytes(payload)
             reference.unlink()
-            reference.symlink_to(replacement)
+            symlink_or_skip(reference, replacement)
 
             with self.assertRaisesRegex(FailureReferenceBindingError, "unsafe"):
                 load_failure_reference_binding(output)

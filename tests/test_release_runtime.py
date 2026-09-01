@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from tests.symlink_support import symlink_or_skip
 from vntts.release_runtime import (
     _find_managed_interpreter,
     _probe_relocated_runtime,
@@ -113,7 +114,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             interpreter.write_bytes(b"python")
             alias = root / "cpython-3.11-alias/bin/python3.11"
             alias.parent.mkdir(parents=True)
-            alias.symlink_to(interpreter)
+            symlink_or_skip(alias, interpreter)
 
             self.assertEqual(
                 _find_managed_interpreter(root, "darwin", "3.11"),
@@ -158,7 +159,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("development", encoding="utf-8")
             alias = managed_root / "cpython-3.11-alias"
-            alias.symlink_to(distribution)
+            symlink_or_skip(alias, distribution)
 
             _prune_managed_runtime(managed_root, interpreter)
 
@@ -190,7 +191,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             runtime_lock.write_bytes(b"")
             interpreter = runtime / "bin/python"
             interpreter.parent.mkdir(parents=True)
-            interpreter.symlink_to(managed_interpreter)
+            symlink_or_skip(interpreter, managed_interpreter)
             entrypoint = runtime / "bin/vntts"
             entrypoint.write_text("script", encoding="utf-8")
             entrypoint.chmod(0o755)

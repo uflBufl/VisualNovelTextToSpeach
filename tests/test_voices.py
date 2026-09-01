@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 
+from tests.symlink_support import symlink_or_skip
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -151,7 +152,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             manifest_root.mkdir()
             outside = root / "outside.wav"
             outside.write_bytes(b"outside")
-            (manifest_root / "linked.wav").symlink_to(outside)
+            symlink_or_skip(manifest_root / "linked.wav", outside)
             manifest_path = manifest_root / "manifest.json"
             manifest_path.write_text(
                 json.dumps(
@@ -199,7 +200,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             outside = root / "outside.wav"
             outside.write_bytes(b"replacement")
             reference.unlink()
-            reference.symlink_to(outside)
+            symlink_or_skip(reference, outside)
 
             with self.assertRaisesRegex(VoiceManifestError, "symlink"):
                 registry.resolve("Lucy")
@@ -334,7 +335,7 @@ class CharacterVoiceRouterTest(unittest.TestCase):
 
             def replace_with_symlink(_speaker):
                 reference.unlink()
-                reference.symlink_to(outside)
+                symlink_or_skip(reference, outside)
                 return False
 
             tts.has_speaker.side_effect = replace_with_symlink
@@ -382,7 +383,7 @@ class CharacterVoiceRouterTest(unittest.TestCase):
             def consume(_text, *, speaker, speaker_wav):
                 snapshot = Path(speaker_wav)
                 reference.unlink()
-                reference.symlink_to(outside)
+                symlink_or_skip(reference, outside)
                 captured.update(
                     speaker=speaker,
                     path=snapshot,

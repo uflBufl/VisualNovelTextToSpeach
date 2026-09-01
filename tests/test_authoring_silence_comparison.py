@@ -11,6 +11,7 @@ import numpy as np
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.listening import load_listening_session
 from vntts.authoring.silence_comparison import (
@@ -245,7 +246,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             sample = self._fixture(root)
             plan_path = self._write_input_plan(root, sample)
             alias = root / "raw-alias.wav"
-            alias.symlink_to(sample.raw_audio)
+            symlink_or_skip(alias, sample.raw_audio)
             document = json.loads(plan_path.read_text(encoding="utf-8"))
             document["samples"][0]["raw_audio"] = alias.name
             plan_path.write_text(json.dumps(document), encoding="utf-8")

@@ -15,6 +15,7 @@ from vntts_artifacts.generated_audio import (
     write_generated_audio_manifest,
 )
 
+from tests.symlink_support import symlink_or_skip
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
@@ -124,7 +125,7 @@ class GeneratedAudioTest(unittest.TestCase):
             manifest_root.mkdir()
             external = root / "outside.wav"
             write_wav(external, [0.0, 0.25, -0.25, 0.0])
-            (manifest_root / "linked.wav").symlink_to(external)
+            symlink_or_skip(manifest_root / "linked.wav", external)
             manifest = manifest_root / "generated-audio.json"
             manifest.write_text(
                 json.dumps(

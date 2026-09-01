@@ -28,6 +28,7 @@ from vntts_artifacts.voice_generation_queue import (
 import vntts.authoring as authoring_package
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.workbench as workbench_module
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_offline_fallback_authority import write_authority
 from vntts.authoring.authority import canonical_document_sha256
@@ -2815,9 +2816,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             workspace_root = root / "workspaces"
             import_root.mkdir()
             workspace_root.mkdir()
-            (import_root / imported.name).symlink_to(imported, target_is_directory=True)
-            (workspace_root / created.directory.name).symlink_to(
-                created.directory, target_is_directory=True
+            symlink_or_skip(
+                import_root / imported.name, imported, target_is_directory=True
+            )
+            symlink_or_skip(
+                workspace_root / created.directory.name,
+                created.directory,
+                target_is_directory=True,
             )
 
             imports = discover_imports(import_root)
@@ -4108,7 +4113,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 target = created.directory / target_name
                 outside = root / f"outside-{target_name.replace('.', '-')}"
                 target.rename(outside)
-                target.symlink_to(outside, target_is_directory=outside.is_dir())
+                symlink_or_skip(target, outside, target_is_directory=outside.is_dir())
 
                 with self.assertRaisesRegex(
                     AuthoringWorkbenchError, "queue|generated-audio"
@@ -4151,7 +4156,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 output = created.directory / "generated-audio"
                 preserved = root / "preserved-output"
                 shutil.move(output, preserved)
-                output.symlink_to(external, target_is_directory=True)
+                symlink_or_skip(output, external, target_is_directory=True)
                 return Backend()
 
             with (

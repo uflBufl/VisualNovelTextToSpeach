@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -305,7 +306,7 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                 if path.is_file() and path.name not in {"manifest.json", "bundle.json"}
             )
             reference.unlink()
-            reference.symlink_to(prepared.input_directory / "manifest.json")
+            symlink_or_skip(reference, prepared.input_directory / "manifest.json")
 
             with self.assertRaisesRegex(VoiceRepairComparisonError, "symbolic link"):
                 prepare_voice_repair_candidate_workspace(

@@ -9,6 +9,11 @@ and eSpeak-NG:
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 ```
 
+The test gate works from an ordinary Windows account. Security tests that need
+to create symbolic links are skipped only when Windows returns error 1314; turn
+on Developer Mode or run elevated if those containment tests must also execute.
+Other filesystem errors remain failures.
+
 The build discovers Tesseract from `PATH`, then the standard Program Files
 locations. Pass `-TesseractDirectory` to override discovery. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,

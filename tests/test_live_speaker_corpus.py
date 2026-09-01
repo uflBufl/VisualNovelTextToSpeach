@@ -4,6 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.symlink_support import symlink_or_skip
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 
 
@@ -68,7 +69,7 @@ class LiveSpeakerCorpusTest(unittest.TestCase):
                 corpus.revalidate()
 
             link = root / "linked.json"
-            link.symlink_to(path)
+            symlink_or_skip(link, path)
             with self.assertRaisesRegex(ValueError, "must not be a symlink"):
                 LiveSpeakerCorpus.load(link)
 

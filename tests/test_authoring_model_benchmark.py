@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
     ModelVariant,
@@ -83,7 +84,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             outside.write_bytes(b"must-not-be-published")
             pack = root / "pack"
             pack.mkdir()
-            (pack / "reference.wav").symlink_to(outside)
+            symlink_or_skip(pack / "reference.wav", outside)
             manifest = pack / "manifest.json"
             manifest.write_text(
                 json.dumps(

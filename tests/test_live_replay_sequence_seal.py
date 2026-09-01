@@ -11,6 +11,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.symlink_support import symlink_or_skip
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
@@ -551,7 +552,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
             frame_path.write_bytes(original_frame)
 
             alias = root / "story-alias.jsonl"
-            alias.symlink_to(story)
+            symlink_or_skip(alias, story)
             with self.assertRaisesRegex(
                 SequenceReplaySealError, "must not be a symlink"
             ):

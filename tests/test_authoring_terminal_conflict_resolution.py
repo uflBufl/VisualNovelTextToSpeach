@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import tests.test_authoring_reconciliation as reconciliation_tests
 import tests.test_authoring_terminal_conflict_review as review_tests
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
@@ -156,7 +157,7 @@ class TerminalConflictResolutionTest(unittest.TestCase):
                 load_terminal_conflict_resolution(root / "resolution")
 
             alias = root / "resolution-alias"
-            alias.symlink_to(root / "resolution", target_is_directory=True)
+            symlink_or_skip(alias, root / "resolution", target_is_directory=True)
             with self.assertRaisesRegex(
                 TerminalConflictResolutionError, "must not be a symlink"
             ):

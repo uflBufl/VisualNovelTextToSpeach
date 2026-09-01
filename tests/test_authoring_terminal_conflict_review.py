@@ -11,6 +11,7 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
 import tests.test_authoring_reconciliation as reconciliation_tests
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import inspect_generated_wav
@@ -340,7 +341,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             created = publish_terminal_conflict_review(report_path, output)
             review = json.loads(created.review.read_text(encoding="utf-8"))
             alias = root / "review-alias"
-            alias.symlink_to(output, target_is_directory=True)
+            symlink_or_skip(alias, output, target_is_directory=True)
 
             with self.assertRaisesRegex(
                 TerminalConflictReviewError, "must not be a symlink"

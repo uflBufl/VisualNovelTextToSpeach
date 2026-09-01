@@ -17,6 +17,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.queue_builder import (
@@ -507,7 +508,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             outside = root / "outside-reference.wav"
             outside.write_bytes(b"outside")
             linked = inputs / "references" / "linked.wav"
-            linked.symlink_to(outside)
+            symlink_or_skip(linked, outside)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["voices"][0]["references"] = ["references/linked.wav"]
             write_voice_manifest(manifest_path, manifest)

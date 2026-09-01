@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import vntts.authoring.cohort_bundle as cohort_bundle_module
 from tests import test_authoring_cohort_review
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
     CohortReviewError,
@@ -824,6 +825,6 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             publication = root / "bundle.json"
             write_cohort_review_bundle(bundle, publication)
             progress = root / "bundle.progress.json"
-            progress.symlink_to(root / "outside.json")
+            symlink_or_skip(progress, root / "outside.json")
             with self.assertRaisesRegex(CohortReviewError, "cannot be a symlink"):
                 load_resumable_cohort_review_bundle(publication)

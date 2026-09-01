@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
+from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     detect_standalone_ellipsis_frame,
@@ -243,7 +244,7 @@ class LiveReplayCaptureTest(unittest.TestCase):
             story = root / "story.jsonl"
             story.write_text("{}", encoding="utf-8")
             alias = root / "story-alias.jsonl"
-            alias.symlink_to(story)
+            symlink_or_skip(alias, story)
             with self.assertRaisesRegex(LiveReplayCaptureError, "cannot be a symlink"):
                 LiveReplayCaptureSession(
                     root / "capture",

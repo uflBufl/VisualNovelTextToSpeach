@@ -17,6 +17,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
@@ -1804,7 +1805,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             output = workspace / "generated-audio"
             external_output = root / "external-output"
             output.rename(external_output)
-            output.symlink_to(external_output, target_is_directory=True)
+            symlink_or_skip(output, external_output, target_is_directory=True)
             with patch(
                 "vntts.authoring.workbench_ui.QDesktopServices.openUrl"
             ) as open_url:
@@ -1816,7 +1817,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             reference = workspace / "inputs/voice/rhiannon.wav"
             external_reference = root / "external-reference.wav"
             reference.rename(external_reference)
-            reference.symlink_to(external_reference)
+            symlink_or_skip(reference, external_reference)
             dialog.player = Mock()
             dialog.play_reference()
 

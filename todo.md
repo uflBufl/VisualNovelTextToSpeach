@@ -3,6 +3,16 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
+## P0 - Make the Windows test gate non-admin portable
+
+- [ ] Make the full build/test gate pass from an ordinary Windows account.
+  - Replace only Windows-failing POSIX fixture paths with platform-neutral
+    temporary paths after binding each change to an exact traceback; do not
+    rewrite harmless virtual paths used solely as mocked values.
+  - Gate: `scripts/run_ci_unittests.py discover -s tests` and
+    `scripts/build-windows.ps1` complete as a non-admin user without requiring
+    Developer Mode. Retain the ordinary macOS full-suite gate.
+
 ## P0 - Make pregeneration self-service
 
 Follow

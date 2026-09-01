@@ -10,6 +10,7 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
 import vntts.authoring.reference_selection as selection_module
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.reference_selection import (
     ReferenceSelectionError,
@@ -109,7 +110,7 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             outside = root / "outside.wav"
             write_reference(outside, 440)
             linked = root / "references/linked.wav"
-            linked.symlink_to(outside)
+            symlink_or_skip(linked, outside)
             document = json.loads(manifest.read_text(encoding="utf-8"))
             document["voices"][0]["references"] = ["references/linked.wav"]
             manifest.write_text(json.dumps(document), encoding="utf-8")
