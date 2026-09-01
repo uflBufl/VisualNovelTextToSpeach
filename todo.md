@@ -31,22 +31,18 @@ intentional omission as distinct terminal authorities.
       positives and false negatives on that split. Until then keep the current
       order: safe sentence repair when eligible, one bounded provider-local
       retry, then a typed XTTS or Pocket fallback.
-- [ ] Complete the route-partitioned timing record for the exact Rhiannon replay
-      corpus. The generated MOSS seed-0 report is retained with fresh/cache
-      first-chunk timing and realtime factor; device underrun remains a separate
-      hardware measurement.
-  - [ ] Measure the original-game route on the same replay boundary and record it
-        beside the retained generated/cache checkpoint; do not infer playback
-        underruns from the device-free renderer.
 - [ ] Validate speaker-identity clustering before reducing voice choices. Select
       a redistributable local speaker-embedding implementation and label held-out
       same-speaker, different-speaker and same-character/different-age pairs from
       installed references. Publish a threshold only if it preserves every known
       age/identity boundary; until then keep the current evidence variants apart.
 - [ ] Run a small blind Rhiannon comparison between the stable generation
-      profile, the current reference-codec roundtrip and the original extracted
-      line. Judge speaker similarity, pronunciation, prosody, artifacts,
-      repetition and trailing silence before changing sampling controls.
+      profile, the current reference-codec roundtrip and an original extracted
+      line. Include the exact expressive-profile recovery for the no-audio short
+      hesitation against the ordinary Pocket fallback; stable seeds 0-2 and
+      natural seed 0 all miss EOS for that line. Judge speaker similarity,
+      pronunciation, prosody, artifacts, repetition and trailing silence before
+      changing sampling controls or automatically escalating the MOSS profile.
 
 ## P1 - Resolve project-wide code-review findings
 

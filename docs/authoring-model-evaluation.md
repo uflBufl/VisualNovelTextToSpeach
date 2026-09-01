@@ -235,10 +235,12 @@ be regenerated.
 The checked-in three-line Rhiannon replay corpus uses the strict benchmark
 schema; its SHA-256 is
 `a5ae711d69e1497cb4e2890921b676c3c2d8dd00e08936e32d80e765533ab095`.
-Its first line, `I, erhm ...`, declares available original-game audio and is not
-a MOSS generation target. Forcing it through MOSS correctly failed closed at the
-three-second missed-EOS guard and published no partial artifact. The two actual
-generated-route lines have a separate strict timing corpus with SHA-256
+The real story index marks its first line, `I, erhm ...`, as `no_audio` with
+reason `blank_voice_id` at `reverse1999:314601:41`, so it is a generation
+target. The conflicting `available` declaration belongs to a synthetic
+live-replay fixture that tests route mechanics; it is not content-authority
+evidence. The two longer lines also have a separate strict timing corpus with
+SHA-256
 `fb78e5f08242c985f2dd91d25e1e51f0c62af7a3828eef431e798fa18f0c0c3e`.
 
 The deterministic stable-profile seed-0 run with
@@ -251,10 +253,36 @@ Startup took 2520 ms. Fresh first PCM was 1287 ms and 670 ms, realtime factors
 were 1.16 and 1.00, and memory-cache retrieval took 13.3 ms and 13.1 ms. The WAV
 hashes are `387bb7336866266793d258a9375a2cc714d03ec68d85673c3ba40e524f6b5497`
 and `039a35c9a5c6a17c988878d4a31e7d29d837871b2a7fc5c227930c4ecaf52538`.
-The benchmark report now records its exact seed, and MOSS applies the same
-short trailing-ellipsis normalization at its live, offline and benchmark
-boundary. These remain renderer timings: they provide no audio-device underrun
-evidence and do not measure the original-game playback route.
+The benchmark report records its exact seed. MOSS applies the same trailing-
+ellipsis rule at its live, offline and benchmark boundary: plain one/two-word
+forms such as `Wait...` gain a terminal period, while punctuation-bearing
+hesitations such as `I, erhm ...` retain their exact punctuation. These remain
+renderer timings: they provide no audio-device underrun evidence and do not
+measure the original-game playback route.
+
+An outcome-preserving stable-profile seed-0 run over all three lines is retained
+under `benchmarks/models/rhiannon-moss-4b-stable-all-outcomes-seed0-v2-20260901`.
+Its report SHA-256 is
+`9b86da83ffc2034031604cb2ccf1283003caba508053248fa0789bb973e67244`.
+The exact game-pack voice manifest SHA-256 is
+`14e5eadbb06c2a5e0b311cae5c6f091e72fa787b59af8e08fcdb6c5ad9766792`;
+its three Rhiannon reference hashes are
+`5bb83cc73fae544e12945c563d820da4b7ffee5f97cebd4e16c79f1d9a3b8778`,
+`76527ff41e12301b51879c1830eadeebeb374e627fd37b038a09ccd7f25340cc`
+and `7b3b1a1da981255a2c64a840a3f9972132ef717a1e8683c383a2b4314a34e008`.
+The two longer samples completed with first PCM at 686 ms and 684 ms, wall
+times of 3826 ms and 4694 ms, and the same WAV hashes as the strict timing run.
+The short hesitation reached exactly 144,000 samples and the three-second guard
+without EOS, so no partial WAV was published.
+
+Stable seeds 1 and 2 and natural seed 0 reproduced that same bounded failure.
+Expressive seed 0 completed in 1.6 seconds with WAV SHA-256
+`4b4c188c6c10a90753cf6d6bd728e05d82123ae37830adae44aaa707edc732b8`,
+matching three earlier expressive runs of the real queue line. The missed EOS
+is therefore profile-specific, not evidence of missing source audio, changed
+references or a playback fault. Keep the three-second guard and the ordinary
+typed fallback until a blind comparison authorizes automatic profile
+escalation; do not publish a limited waveform.
 
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across

@@ -416,8 +416,12 @@ class MossTTSBackendTest(unittest.TestCase):
 
         prepared = backend.prepare("Narrator", "I, erhm ...")
 
-        self.assertEqual(prepared.text, "I, erhm.")
+        self.assertEqual(prepared.text, "I, erhm ...")
         self.assertEqual(normalize_short_trailing_ellipsis("Wait..."), "Wait.")
+        self.assertEqual(
+            normalize_short_trailing_ellipsis("I, erhm ..."),
+            "I, erhm ...",
+        )
         self.assertEqual(
             normalize_short_trailing_ellipsis("I don't know yet..."),
             "I don't know yet...",

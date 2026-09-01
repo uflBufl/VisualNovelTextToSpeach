@@ -118,7 +118,7 @@ moss_tts_generation_profiles = {
 }
 
 _SHORT_TRAILING_ELLIPSIS = re.compile(
-    r"^\s*(?P<spoken>[\w'’]+(?:[,;:]?\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
+    r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
 )
 
 moss_language_names = {
