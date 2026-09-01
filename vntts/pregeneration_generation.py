@@ -10,6 +10,7 @@ from pathlib import Path
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_voices import VoicePlan
+from vntts.subprocess_utils import last_output_line, terminate_process
 
 
 class OfflineGenerationError(RuntimeError):
@@ -196,12 +197,12 @@ class OfflineGenerationWorker:
                 break
             except subprocess.TimeoutExpired:
                 if cancel_event is not None and cancel_event.is_set():
-                    _terminate_process(process)
+                    terminate_process(process)
                     raise OfflineGenerationCancelled(
                         "Offline speech generation was cancelled"
                     )
         if process.returncode:
-            detail = _last_output_line(stderr) or _last_output_line(stdout)
+            detail = last_output_line(stderr) or last_output_line(stdout)
             raise OfflineGenerationError(
                 "Offline speech could not be generated"
                 + (f": {detail}" if detail else ".")
@@ -290,23 +291,6 @@ def _repair_option(action):
             f"Offline repair action is unsupported: {action!r}"
         ) from error
     return option, retries
-
-
-def _terminate_process(process):
-    process.terminate()
-    try:
-        process.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-
-
-def _last_output_line(value):
-    if not isinstance(value, str):
-        return None
-    return next(
-        (line.strip() for line in reversed(value.splitlines()) if line.strip()), None
-    )
 
 
 __all__ = [

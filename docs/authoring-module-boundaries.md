@@ -35,12 +35,14 @@ unchanged.
 
 ## Canonical document identity
 
-`authority.canonical_document_sha256` is the leaf API for the stable SHA-256 of
-canonical JSON-compatible records. Production authoring modules must not import
-the historical private `bulk_generation._canonical_sha256` helper. The first
-dependency-magnet extraction slice migrated all 21 production consumers,
-including workbench, cohort, reference, config-rebase, terminal-conflict and
-final-pack workflows, without changing any calculated document identity.
+`document_identity.canonical_document_sha256` is the runtime-neutral owner of
+the stable SHA-256 of canonical JSON-compatible records. `authority` re-exports
+the same function for its established public authoring API, while runtime pack
+validation and source-audio semantic validation import the neutral leaf
+directly. Production authoring modules must not define another serializer or
+import the historical private `bulk_generation._canonical_sha256` helper. The
+migration preserves canonical separators, Unicode handling, key ordering and
+every calculated identity; non-finite JSON numbers are rejected.
 
 `bulk_generation._canonical_sha256` remains available for compatibility, and
 the few modules whose existing tests exercised their imported private alias
@@ -48,6 +50,16 @@ retain a local alias to the leaf function. New code must use the public
 authority name. The import-graph test performs an AST inventory over all
 production modules and fails if a direct private bulk-generation hash import is
 introduced again.
+
+## Low-level publication and subprocess primitives
+
+`authority.write_json_document_no_replace()` is the single atomic JSON-file
+publisher. Its caller-selected error type preserves each domain's public
+exception while using one fsync plus hard-link no-replace implementation.
+`subprocess_utils` similarly owns captured-process termination and final-output
+line extraction for self-service import and generation workers. Domain modules
+retain command construction and error wording rather than duplicating these
+mechanics.
 
 ## Terminal-conflict record semantics
 

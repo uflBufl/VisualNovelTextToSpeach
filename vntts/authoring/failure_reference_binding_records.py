@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.document_identity import canonical_document_sha256
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
 FAILURE_REFERENCE_BINDING_VERSION = 2
@@ -80,7 +80,7 @@ def load_failure_reference_binding(directory):
         if key not in {"binding_id", "published_at"}
     }
     binding_id = _sha256(document.get("binding_id"), "Reference binding ID")
-    if binding_id != _canonical_sha256(identity):
+    if binding_id != canonical_document_sha256(identity):
         raise FailureReferenceBindingError("Reference binding identity changed")
     try:
         published_at = datetime.fromisoformat(document["published_at"])
@@ -330,13 +330,6 @@ def load_failure_reference_binding_document(directory):
             "Reference binding changed while it was loaded"
         )
     return document
-
-
-def _canonical_sha256(value):
-    payload = json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _contained_regular_file(directory, relative, label):

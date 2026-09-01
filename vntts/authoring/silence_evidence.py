@@ -17,6 +17,8 @@ from pathlib import Path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.document_identity import canonical_document_sha256
+
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
 SILENCE_FAILURE_EVIDENCE_VERSION = 1
 
@@ -142,7 +144,7 @@ def load_silence_failure_evidence(directory):
         )
         or not isinstance(state_item.get("failure"), dict)
         or state_item["failure"].get("kind") != "speech_silence"
-        or _canonical_sha256(state_item) != metadata["state_item_sha256"]
+        or canonical_document_sha256(state_item) != metadata["state_item_sha256"]
     ):
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence state item is malformed"
@@ -182,18 +184,6 @@ def _probe_pcm16_mono_bytes(payload):
         raise SilenceFailureEvidenceError(
             f"Silence-failure WAV is invalid: {error}"
         ) from error
-
-
-def _canonical_sha256(value):
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def _is_sha256(value):

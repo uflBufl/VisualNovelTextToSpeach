@@ -9,6 +9,8 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.document_identity import canonical_document_sha256
+
 FAILED_VOICE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -97,7 +99,10 @@ def load_offline_fallback_authorities(paths, source_items, selected_queue_ids):
             raise OfflineFallbackAuthorityError(
                 f"Offline fallback authority source is not failed: {queue_id!r}"
             )
-        if _canonical_sha256(source_item) != authority.source_item_sha256s[queue_id]:
+        if (
+            canonical_document_sha256(source_item)
+            != authority.source_item_sha256s[queue_id]
+        ):
             raise OfflineFallbackAuthorityError(
                 f"Offline fallback authority is stale for {queue_id!r}"
             )
@@ -173,7 +178,7 @@ def validate_offline_fallback_authority_records(records, directory, source_items
         source_item_sha256 = (
             source_item
             if _is_sha256(source_item)
-            else _canonical_sha256(source_item)
+            else canonical_document_sha256(source_item)
             if isinstance(source_item, dict)
             else None
         )
@@ -309,20 +314,13 @@ def _load_authority(path):
 
 def _canonical_id(document, field):
     claimed = document.get(field)
-    if not _is_sha256(claimed) or claimed != _canonical_sha256(
+    if not _is_sha256(claimed) or claimed != canonical_document_sha256(
         {key: value for key, value in document.items() if key != field}
     ):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority identity changed"
         )
     return claimed
-
-
-def _canonical_sha256(value):
-    payload = json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _is_sha256(value):

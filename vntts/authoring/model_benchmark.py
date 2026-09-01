@@ -26,6 +26,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.cli import cli_error, cli_messages
+from vntts.document_identity import canonical_document_sha256
 from vntts.settings import get_local_data_directory
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -748,8 +749,8 @@ def benchmark_model_variants(
         else:
             snapshot_registry = registry
             voice_controls = []
-        voice_controls_sha256 = _canonical_sha256(voice_controls)
-        voice_controls_content_sha256 = _canonical_sha256(
+        voice_controls_sha256 = canonical_document_sha256(voice_controls)
+        voice_controls_content_sha256 = canonical_document_sha256(
             [
                 {
                     key: control[key]
@@ -1028,17 +1029,6 @@ def _required_sha256(value, label):
 def _sha256_file(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _canonical_sha256(value):
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def _mono_pcm(value):

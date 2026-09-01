@@ -16,6 +16,7 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_local_data_directory
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
+from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voices import is_narrator, synthesis_character_for_line
 
 
@@ -130,7 +131,7 @@ class Reverse1999GameImporter:
             arguments.extend(("--voice-candidate-role", role))
         stdout, _stderr = self._run(arguments, cancel_event)
         try:
-            result = json.loads(_last_output_line(stdout) or "")
+            result = json.loads(last_output_line(stdout) or "")
             manifest = Path(result["voice_manifest"]).expanduser().resolve()
             root = (self.output_root / "reverse1999" / "voice-candidates").resolve()
             manifest.relative_to(root)
@@ -158,11 +159,11 @@ class Reverse1999GameImporter:
             ) from error
         while process.poll() is None:
             if cancel_event is not None and cancel_event.wait(0.1):
-                _terminate_process(process)
+                terminate_process(process)
                 raise GameContentImportCancelled("Game import was cancelled")
         stdout, stderr = process.communicate()
         if process.returncode:
-            detail = _last_output_line(stderr) or _last_output_line(stdout)
+            detail = last_output_line(stderr) or last_output_line(stdout)
             raise GameContentImportError(
                 "Reverse: 1999 content could not be imported"
                 + (f": {detail}" if detail else ".")
@@ -258,23 +259,6 @@ def resolve_reverse1999_installation(path):
             f"missing {', '.join(missing)}."
         )
     return resource_root, config_directory, audio_directory
-
-
-def _terminate_process(process):
-    process.terminate()
-    try:
-        process.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-
-
-def _last_output_line(value):
-    if not isinstance(value, str):
-        return None
-    return next(
-        (line.strip() for line in reversed(value.splitlines()) if line.strip()), None
-    )
 
 
 __all__ = [

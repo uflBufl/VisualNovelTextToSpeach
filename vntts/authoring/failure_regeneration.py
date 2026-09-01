@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import (
     generation_failure_repair_plan,
     load_generation_state,
@@ -165,33 +166,12 @@ def build_failure_regeneration_command(
 
 def write_failure_regeneration_plan(plan, output_path):
     document = _validated_plan_document(plan)
-    path = Path(output_path).expanduser().resolve()
-    payload = (
-        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
-    temporary = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, path)
-    except FileExistsError as error:
-        raise FailureRegenerationError(
-            f"Failure regeneration plan output exists: {path}"
-        ) from error
-    except OSError as error:
-        raise FailureRegenerationError(
-            f"Unable to publish failure regeneration plan {path}: {error}"
-        ) from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return path
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "failure regeneration plan",
+        error_type=FailureRegenerationError,
+    )
 
 
 def load_failure_regeneration_plan(path):

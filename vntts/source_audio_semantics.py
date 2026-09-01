@@ -11,6 +11,8 @@ from pathlib import Path
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
+from vntts.document_identity import canonical_document_sha256
+
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
 SEMANTIC_EVIDENCE_METHOD = "local-asr-exact-normalized-transcript"
@@ -31,16 +33,6 @@ def normalize_semantic_text(text):
 
 def semantic_text_sha256(text):
     return hashlib.sha256(normalize_semantic_text(text).encode("utf-8")).hexdigest()
-
-
-def canonical_document_sha256(document):
-    payload = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def load_source_audio_semantic_evidence(path, story_index_path=None):

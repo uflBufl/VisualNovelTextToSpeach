@@ -17,6 +17,7 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
+from vntts.document_identity import canonical_document_sha256
 from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
@@ -1327,7 +1328,7 @@ def _audio_event_omission_index(metadata):
             for key, field_value in raw.items()
             if key != "decision_sha256"
         }
-        if _canonical_sha256(decision_document) != raw["decision_sha256"]:
+        if canonical_document_sha256(decision_document) != raw["decision_sha256"]:
             raise ValueError(
                 "Generated-audio audio-event omission decision checksum changed"
             )
@@ -1387,7 +1388,8 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
                 for field in ("workspace_sha256", "state_sha256", "result_sha256")
             )
             or not isinstance(hypothesis.get("result"), dict)
-            or _canonical_sha256(hypothesis["result"]) != hypothesis["result_sha256"]
+            or canonical_document_sha256(hypothesis["result"])
+            != hypothesis["result_sha256"]
         ):
             raise ValueError(
                 "Generated-audio live fallback evidence hypothesis is malformed"
@@ -1496,7 +1498,7 @@ def _validate_known_role_live_fallback_evidence(
         or evidence.get("synthesis_character") != synthesis_character
         or not isinstance(item, dict)
         or item.get("status") != "failed"
-        or _canonical_sha256(item) != evidence.get("evidence_item_sha256")
+        or canonical_document_sha256(item) != evidence.get("evidence_item_sha256")
     ):
         raise ValueError("Generated-audio known-role fallback evidence is malformed")
     for field in (
@@ -1559,7 +1561,8 @@ def _validate_audio_event_projection_fallback_evidence(
         or base_result.get("status") != "generated"
         or base_result.get("review_status") != "rejected"
         or isinstance(base_result.get("live_fallback"), dict)
-        or _canonical_sha256(base_result) != evidence.get("base_result_sha256")
+        or canonical_document_sha256(base_result)
+        != evidence.get("base_result_sha256")
     ):
         raise ValueError(
             "Generated-audio event projection fallback evidence is malformed"
@@ -1637,7 +1640,8 @@ def _validate_reviewed_rejection_fallback_evidence(
         or base_result.get("status") != "generated"
         or base_result.get("review_status") != "rejected"
         or isinstance(base_result.get("live_fallback"), dict)
-        or _canonical_sha256(base_result) != evidence.get("base_result_sha256")
+        or canonical_document_sha256(base_result)
+        != evidence.get("base_result_sha256")
         or not isinstance(references, list)
         or not references
         or references != sorted(set(references))
@@ -1736,8 +1740,10 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         review = hypothesis["review"]
         decision = hypothesis["decision_document"]
         if (
-            _canonical_sha256(review) != hypothesis["review_document_sha256"]
-            or _canonical_sha256(decision) != hypothesis["decision_document_sha256"]
+            canonical_document_sha256(review)
+            != hypothesis["review_document_sha256"]
+            or canonical_document_sha256(decision)
+            != hypothesis["decision_document_sha256"]
             or review.get("review_id") != hypothesis["review_id"]
             or review.get("comparison_sha256") != hypothesis["comparison_sha256"]
             or review.get("arm_report_sha256") != hypothesis["arm_report_sha256"]
@@ -1767,17 +1773,6 @@ def _lowercase_sha256(value):
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
-
-
-def _canonical_sha256(value):
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def _validate_live_fallback_backend(backend, decision):

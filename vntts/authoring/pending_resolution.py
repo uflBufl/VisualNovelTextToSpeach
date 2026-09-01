@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     build_cohort_review_plan,
@@ -18,6 +17,7 @@ from vntts.authoring.workbench import (
     generation_command,
     list_review_items,
 )
+from vntts.document_identity import canonical_document_sha256
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
@@ -123,7 +123,7 @@ def build_pending_resolution_plan(workspace_directory):
         "action_counts": ({RECOVER_OR_REGENERATE: len(records)} if records else {}),
         "records": records,
     }
-    plan_id = _canonical_sha256(body)
+    plan_id = canonical_document_sha256(body)
     document = {**body, "plan_id": plan_id}
     return PendingResolutionPlan(plan_id, document)
 
@@ -187,7 +187,7 @@ def build_pending_regeneration_command(
         "queue_ids": list(queue_ids),
     }
     return PendingRegenerationCommand(
-        batch_id=_canonical_sha256(body),
+        batch_id=canonical_document_sha256(body),
         batch_index=batch_index,
         batch_count=batch_count,
         queue_ids=queue_ids,
@@ -198,33 +198,12 @@ def build_pending_regeneration_command(
 def write_pending_resolution_plan(plan, output_path):
     """Publish one validated plan atomically without replacing another file."""
     document = _validated_plan_document(plan)
-    path = Path(output_path).expanduser().resolve()
-    payload = (
-        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
-    temporary = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, path)
-    except FileExistsError as error:
-        raise PendingResolutionError(
-            f"Pending resolution plan output exists: {path}"
-        ) from error
-    except OSError as error:
-        raise PendingResolutionError(
-            f"Unable to publish pending resolution plan {path}: {error}"
-        ) from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return path
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "pending resolution plan",
+        error_type=PendingResolutionError,
+    )
 
 
 def load_pending_resolution_plan(path):
@@ -284,7 +263,7 @@ def _validated_plan_document(plan):
     expected_counts = {RECOVER_OR_REGENERATE: len(canonical)} if canonical else {}
     if document.get("action_counts") != expected_counts:
         raise PendingResolutionError("Pending resolution action counts are invalid")
-    actual_id = _canonical_sha256(
+    actual_id = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
     )
     if actual_id != document["plan_id"]:
@@ -322,7 +301,6 @@ def _required_text(value, label):
         raise PendingResolutionError(f"{label} must be non-empty text")
     return value
 
-
 def _required_sha256(value, label):
     if (
         not isinstance(value, str)
@@ -331,14 +309,3 @@ def _required_sha256(value, label):
     ):
         raise PendingResolutionError(f"{label} must be lowercase SHA-256")
     return value
-
-
-def _canonical_sha256(document):
-    payload = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()

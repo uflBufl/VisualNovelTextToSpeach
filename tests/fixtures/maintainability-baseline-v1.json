@@ -17,7 +17,6 @@
     "vntts.authoring.failed_prompt_hypothesis -> vntts.authoring.missing_voice_reuse:_require_fresh_plan",
     "vntts.authoring.failed_prompt_hypothesis -> vntts.authoring.missing_voice_reuse:_validate_plan",
     "vntts.authoring.failure_reference_audit -> vntts.authoring.game_pack:_rename_directory_no_replace",
-    "vntts.authoring.failure_reference_binding -> vntts.authoring.failure_reference_binding_records:_canonical_sha256",
     "vntts.authoring.failure_reference_binding -> vntts.authoring.failure_reference_binding_records:_contained_regular_file",
     "vntts.authoring.failure_reference_binding -> vntts.authoring.failure_reference_binding_records:_safe_relative",
     "vntts.authoring.failure_reference_binding -> vntts.authoring.failure_reference_binding_records:_sha256",

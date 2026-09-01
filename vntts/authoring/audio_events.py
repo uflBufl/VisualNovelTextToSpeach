@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass
+
+from vntts.document_identity import canonical_document_sha256
 
 AUDIO_EVENT_PLAN_FIELD = "vntts.authoring.audio_event_plan"
 AUDIO_EVENT_PLAN_SCHEMA = "vntts.authoring-audio-event-plan"
@@ -65,8 +66,8 @@ class AudioEventPlan:
         if story_audio_cues is not _MISSING:
             cues = validate_story_audio_cues(story_audio_cues)
             body["story_audio_cue_count"] = len(cues)
-            body["story_audio_cues_sha256"] = _canonical_sha256(cues)
-        return {**body, "plan_sha256": _canonical_sha256(body)}
+            body["story_audio_cues_sha256"] = canonical_document_sha256(cues)
+        return {**body, "plan_sha256": canonical_document_sha256(body)}
 
 
 def plan_inline_audio_events(text):
@@ -243,16 +244,6 @@ def _normalize_spoken_text(text):
 
 def _sha256(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _canonical_sha256(value):
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 __all__ = [

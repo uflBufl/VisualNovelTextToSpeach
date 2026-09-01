@@ -17,7 +17,6 @@ from vntts.authoring.failure_reference_binding_records import (
     FAILURE_REFERENCE_BINDING_VERSION,
     FailureReferenceBinding,
     FailureReferenceBindingError,
-    _canonical_sha256,
     _contained_regular_file,
     _safe_relative,
     _sha256,
@@ -28,6 +27,7 @@ from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document as load_failure_reference_binding_document,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.document_identity import canonical_document_sha256
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 _AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
@@ -182,7 +182,7 @@ def publish_failure_reference_binding(audit_directory, output_directory):
             "It does not approve generated audio or rewrite the source voice manifest."
         ),
     }
-    binding_id = _canonical_sha256(identity)
+    binding_id = canonical_document_sha256(identity)
     document = {
         **identity,
         "binding_id": binding_id,
@@ -297,7 +297,7 @@ def _load_audit_snapshots(directory):
     audit_id = _sha256(audit.get("audit_id"), "Reference audit ID")
     if (
         audit_id
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {name: value for name, value in audit.items() if name != "audit_id"}
         )
         or key.get("audit_id") != audit_id
@@ -307,7 +307,7 @@ def _load_audit_snapshots(directory):
     decision_set_id = _sha256(
         decisions.get("decision_set_id"), "Reference decision-set ID"
     )
-    if decision_set_id != _canonical_sha256(
+    if decision_set_id != canonical_document_sha256(
         {name: value for name, value in decisions.items() if name != "decision_set_id"}
     ):
         raise FailureReferenceBindingError("Reference decision identity changed")
@@ -318,7 +318,7 @@ def _load_audit_snapshots(directory):
         isinstance(value, list) for value in (groups, private_groups, decision_values)
     ):
         raise FailureReferenceBindingError("Reference audit inventory is malformed")
-    if audit.get("group_count") != len(groups) or _canonical_sha256(
+    if audit.get("group_count") != len(groups) or canonical_document_sha256(
         private_groups
     ) != audit.get("blind_key_groups_sha256"):
         raise FailureReferenceBindingError("Reference audit inventory changed")

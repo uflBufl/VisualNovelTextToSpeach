@@ -9,6 +9,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.document_identity import canonical_document_sha256
+
 
 class AuthoringAuthorityError(RuntimeError):
     """An immutable authoring input cannot be captured or published safely."""
@@ -31,14 +33,6 @@ class AuthoritySnapshot:
         if not isinstance(document, dict):
             raise AuthoringAuthorityError(f"{label.capitalize()} must be an object")
         return document
-
-
-def canonical_document_sha256(document):
-    """Return the stable SHA-256 of one JSON-compatible document."""
-    payload = json.dumps(
-        document, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def capture_authority_file(path, label, *, root=None):
@@ -91,7 +85,13 @@ def assert_authority_snapshot(snapshot, label="authority"):
         raise AuthoringAuthorityError(f"{label.capitalize()} changed: {path}")
 
 
-def write_json_document_no_replace(output, document, label):
+def write_json_document_no_replace(
+    output,
+    document,
+    label,
+    *,
+    error_type=AuthoringAuthorityError,
+):
     """Atomically publish one JSON document while refusing replacement."""
     path = Path(output).expanduser().resolve()
     payload = (
@@ -109,13 +109,9 @@ def write_json_document_no_replace(output, document, label):
             os.fsync(stream.fileno())
         os.link(temporary, path)
     except FileExistsError as error:
-        raise AuthoringAuthorityError(
-            f"{label.title()} output exists: {path}"
-        ) from error
+        raise error_type(f"{label.title()} output exists: {path}") from error
     except OSError as error:
-        raise AuthoringAuthorityError(
-            f"Unable to publish {label} {path}: {error}"
-        ) from error
+        raise error_type(f"Unable to publish {label} {path}: {error}") from error
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

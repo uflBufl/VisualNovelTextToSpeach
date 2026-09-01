@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from typing import Literal, Mapping
+
+from vntts.document_identity import canonical_document_sha256
 
 DELIVERY_ANNOTATION_VERSION = 1
 LEGACY_ENGLISH_POLICY = "legacy-english-heuristic-v1"
@@ -223,21 +223,10 @@ def apply_delivery_policy(
         "origin": "policy",
         "policy": LEGACY_ENGLISH_POLICY,
         "policy_version": DELIVERY_ANNOTATION_VERSION,
-        "input_sha256": _canonical_sha256(inputs),
+        "input_sha256": canonical_document_sha256(inputs),
         "generated_fields": list(_ANNOTATION_FIELDS),
     }
     return DeliveryPolicyApplication(result, "policy", provenance)
-
-
-def _canonical_sha256(value):
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _required_exact_text(value, label):

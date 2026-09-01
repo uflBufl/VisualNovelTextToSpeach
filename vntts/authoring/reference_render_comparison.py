@@ -33,6 +33,7 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
+from vntts.document_identity import canonical_document_sha256
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
@@ -405,7 +406,7 @@ def publish_reference_render_comparison(
                 "requires_human_listening": True,
             },
         }
-        comparison_id = _canonical_sha256(body)
+        comparison_id = canonical_document_sha256(body)
         document = {**body, "comparison_id": comparison_id}
         atomic_write_json(staging / "comparison.json", document)
         _assert_plan_and_audit_unchanged(plan)
@@ -754,7 +755,7 @@ def _load_comparison_document(root):
         or document.get("schema") != REFERENCE_RENDER_SCHEMA
         or document.get("schema_version") != REFERENCE_RENDER_VERSION
         or document.get("comparison_id")
-        != _canonical_sha256(
+        != canonical_document_sha256(
             {key: value for key, value in document.items() if key != "comparison_id"}
         )
     ):
@@ -1121,14 +1122,6 @@ def _required_sha256(value, label):
             f"Reference render {label} must be lowercase SHA-256"
         )
     return text
-
-
-def _canonical_sha256(value):
-    return hashlib.sha256(
-        json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 __all__ = [

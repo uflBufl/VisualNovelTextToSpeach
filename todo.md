@@ -50,6 +50,35 @@ intentional omission as distinct terminal authorities.
     an existing user model cache; retain checksum-bound self-test reports for
     both platforms.
 
+## P1 - Remove parallel infrastructure implementations
+
+Keep wire schemas, public compatibility aliases and domain-specific validation
+messages stable. Prefer existing leaf modules over new abstraction layers.
+
+- [ ] Replace private Qt `QRunnable`/signal copies in the cohort, reference-audit
+      and workbench interfaces with the existing `LatestTaskRunner`, retaining
+      independent operation lanes, latest-result-wins behavior and close safety.
+      Gate: focused UI tests cover success, error, stale completion and close.
+- [ ] Share the pinned local-model installation lifecycle between managed ASR and
+      speaker-identity models while leaving their descriptors, checksums, notices,
+      public APIs and domain errors explicit. Gate: both installer/status suites
+      pass, including races, invalid installations and local-source imports.
+- [ ] Extract the common workspace-successor mechanics used by audio-event,
+      known-role, reviewed-rejection, explicit-fallback and reviewed-waveform
+      publication: checksum-validated base-WAV copying and lexically scoped
+      staging cleanup. Keep each workflow's eligibility and evidence construction
+      local. Gate: all successor publication/validation tests pass and workspace
+      IDs plus generated manifests remain byte-for-byte compatible.
+- [ ] Move repeated terminal-conflict text, digest, timestamp and contained-file
+      validation into the terminal-conflict record leaf with caller-selected
+      error types. Gate: review, resolution and successor tests preserve their
+      public exception classes and authority rejection behavior.
+- [ ] Remove remaining exact backend plumbing duplicates only where contracts are
+      identical: runtime activation path calculation and lazy sounddevice/output
+      underflow helpers. Do not merge renderer or playback state machines. Gate:
+      speech backend, isolated worker and TTS engine tests pass on injected audio
+      modules without opening a real device.
+
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.
