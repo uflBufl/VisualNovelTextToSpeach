@@ -6,7 +6,6 @@ import hashlib
 import json
 import random
 import shutil
-import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
 )
 from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
@@ -348,13 +348,13 @@ def load_failure_reference_audit(directory):
     directory = Path(directory).expanduser().resolve()
     audit_path = directory / "audit.json"
     key_path = directory / ".blind-key.json"
+    if not private_file_is_restricted(key_path):
+        raise FailureReferenceAuditError("Reference audit blind key mode must be 0600")
     try:
         document = json.loads(audit_path.read_text(encoding="utf-8"))
         key = json.loads(key_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
-    if stat.S_IMODE(key_path.stat().st_mode) != 0o600:
-        raise FailureReferenceAuditError("Reference audit blind key mode must be 0600")
     if (
         document.get("schema") != FAILURE_REFERENCE_AUDIT_SCHEMA
         or document.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION

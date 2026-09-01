@@ -463,7 +463,10 @@ class AuthoringListeningTest(unittest.TestCase):
                     create_listening_session_from_reports(reports, root / "session")
 
     def test_resume_rejects_alias_checksum_and_hidden_key_mode_changes(self):
-        for mutation, pattern in (("alias", "checksum changed"), ("mode", "0600")):
+        mutations = (("alias", "checksum changed"),)
+        if os.name != "nt":
+            mutations += (("mode", "0600"),)
+        for mutation, pattern in mutations:
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
                 root = Path(directory)
                 session_path = create_listening_session_from_reports(

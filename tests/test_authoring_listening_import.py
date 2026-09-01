@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -153,7 +154,10 @@ def write_listening_fixture(root):
 
 class ListeningImportTest(unittest.TestCase):
     def test_reimport_rejects_forged_manifest_and_modified_hidden_key_mode(self):
-        for mutation in ("artifacts", "summary", "mode"):
+        mutations = ("artifacts", "summary")
+        if os.name != "nt":
+            mutations += ("mode",)
+        for mutation in mutations:
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
                 root = Path(directory)
                 source = write_listening_fixture(root)

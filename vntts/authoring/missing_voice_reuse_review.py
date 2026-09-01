@@ -8,7 +8,6 @@ import json
 import os
 import random
 import shutil
-import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +22,7 @@ from vntts.authoring.missing_voice_reuse import (
     _validate_plan,
     load_missing_voice_reuse_plan,
 )
+from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
 )
@@ -419,11 +419,9 @@ def load_missing_voice_reuse_review(session_path):
     ) != sha256_file(bundle_path):
         raise MissingVoiceReuseReviewError("Missing-voice review authority changed")
     key_path = root / ".blind-key.json"
-    if (
-        not key_path.is_file()
-        or stat.S_IMODE(key_path.stat().st_mode) != 0o600
-        or bundle.get("blind_key_sha256") != sha256_file(key_path)
-    ):
+    if not private_file_is_restricted(key_path) or bundle.get(
+        "blind_key_sha256"
+    ) != sha256_file(key_path):
         raise MissingVoiceReuseReviewError("Missing-voice blind key changed")
     key = load_workspace_json(key_path, "missing-voice review key")
     if (

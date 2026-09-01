@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +25,7 @@ from vntts.authoring.failure_reference_binding_records import (
 from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document as load_failure_reference_binding_document,
 )
+from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
 
@@ -269,6 +269,10 @@ def _load_audit_snapshots(directory):
         raise FailureReferenceBindingError(
             "Reference binding requires terminal decisions"
         )
+    if not private_file_is_restricted(paths["key"]):
+        raise FailureReferenceBindingError(
+            "Reference audit blind key mode must be 0600"
+        )
     try:
         payloads = {name: path.read_bytes() for name, path in paths.items()}
         documents = {
@@ -277,10 +281,6 @@ def _load_audit_snapshots(directory):
         }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceBindingError(str(error)) from error
-    if paths["key"].is_symlink() or stat.S_IMODE(paths["key"].stat().st_mode) != 0o600:
-        raise FailureReferenceBindingError(
-            "Reference audit blind key mode must be 0600"
-        )
     audit = documents["audit"]
     key = documents["key"]
     decisions = documents["decisions"]

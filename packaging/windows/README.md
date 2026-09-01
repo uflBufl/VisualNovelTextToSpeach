@@ -14,6 +14,10 @@ to create symbolic links are skipped only when Windows returns error 1314; turn
 on Developer Mode or run elevated if those containment tests must also execute.
 Other filesystem errors remain failures.
 
+Blind-review keys still require regular files, reject symbolic links, and stay
+checksum-bound. Windows uses the current user's profile-directory ACL instead
+of comparing Unix `0600` mode bits, which Windows does not implement.
+
 The build discovers Tesseract from `PATH`, then the standard Program Files
 locations. Pass `-TesseractDirectory` to override discovery. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.import_paths import default_import_root
+from vntts.authoring.private_files import private_file_is_restricted
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -40,7 +42,7 @@ class ListeningImportInspection:
     report_present: bool
     artifacts: tuple[tuple[str, Path, Path, str], ...]
     source_controls: tuple[tuple[Path, str], ...] = ()
-    key_mode: int = 0o600
+    key_mode: int | None = 0o600
 
 
 @dataclass(frozen=True)
@@ -62,7 +64,9 @@ def inspect_listening_session(session_directory):
         session_path, SESSION_SCHEMA, "listening session"
     )
     key, key_sha256 = _load_schema_snapshot(key_path, KEY_SCHEMA, "blind-listening key")
-    key_mode = key_path.stat().st_mode & 0o777
+    if not private_file_is_restricted(key_path):
+        raise ListeningImportError("Blind-listening key mode must be 0600")
+    key_mode = None if sys.platform == "win32" else key_path.stat().st_mode & 0o777
     trials, audio = _validate_session(root, session)
     audio_sha256 = {relative: sha256_file(path) for relative, path in audio.items()}
     source_controls = _validate_key(
@@ -158,8 +162,10 @@ def import_listening_session(session_directory, destination_root=None):
                 raise ListeningImportError(
                     f"Listening artifact changed during import: {source}"
                 )
-            if role == "blind_listening_key" and (
-                (target.stat().st_mode & 0o777) != inspection.key_mode
+            if (
+                role == "blind_listening_key"
+                and inspection.key_mode is not None
+                and ((target.stat().st_mode & 0o777) != inspection.key_mode)
             ):
                 raise ListeningImportError(
                     f"Blind-listening key mode changed during import: {source}"
@@ -482,7 +488,7 @@ def _manifest(inspection, import_id):
                 "sha256": digest,
                 **(
                     {"mode": inspection.key_mode}
-                    if role == "blind_listening_key"
+                    if role == "blind_listening_key" and inspection.key_mode is not None
                     else {}
                 ),
             }
@@ -538,6 +544,7 @@ def _verify_controls_unchanged(inspection):
             )
         if (
             role == "blind_listening_key"
+            and inspection.key_mode is not None
             and (source.stat().st_mode & 0o777) != inspection.key_mode
         ):
             raise ListeningImportError(

@@ -10,7 +10,6 @@ import os
 import random
 import re
 import shutil
-import stat
 import struct
 import unicodedata
 from collections import defaultdict
@@ -21,6 +20,7 @@ from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.private_files import private_file_is_restricted
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -391,7 +391,7 @@ def load_listening_session(path):
 
 def _load_blind_key(session_path, session):
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
-    if key_path.is_file() and stat.S_IMODE(key_path.stat().st_mode) != 0o600:
+    if key_path.is_file() and not private_file_is_restricted(key_path):
         raise ModelListeningError("Listening session blind key mode must be 0600")
     if not key_path.is_file() or sha256_file(key_path) != session.get(
         "blind_key_sha256"
