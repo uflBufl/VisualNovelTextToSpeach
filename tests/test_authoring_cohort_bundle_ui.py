@@ -10,6 +10,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -51,7 +52,21 @@ except ModuleNotFoundError as error:
 class AuthoringCohortBundleUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.media_player_patcher = patch(
+            "vntts.authoring.cohort_bundle_ui.QMediaPlayer"
+        )
+        cls.audio_output_patcher = patch(
+            "vntts.authoring.cohort_bundle_ui.QAudioOutput"
+        )
+        media_player = cls.media_player_patcher.start()
+        media_player.MediaStatus = QMediaPlayer.MediaStatus
+        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.audio_output_patcher.stop()
+        cls.media_player_patcher.stop()
 
     def tearDown(self):
         for widget in self.application.topLevelWidgets():

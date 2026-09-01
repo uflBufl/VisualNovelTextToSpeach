@@ -16,9 +16,9 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Preserve failing macOS shard output as a GitHub annotation so CI identifies
     the exact test instead of reporting only the shard exit code, including
     both ends when a large assertion would otherwise hide the test name.
-  - Isolate the nine Qt asset-manager tests from the non-Qt remainder process;
-    the macOS runner exited with signal 11 immediately after that module while
-    preserving exact once-only discovery coverage.
+  - Keep crash-prone Qt modules in exact once-only macOS shards and prevent UI
+    unit tests from starting a real FFmpeg/CoreAudio player on headless runners;
+    the runner otherwise exits with signal 11 instead of a Python traceback.
   - Accept a not-yet-created screenshot directory; capture already creates the
     full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
