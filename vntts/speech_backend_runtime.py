@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from collections import OrderedDict
 from functools import lru_cache
 from hashlib import blake2b
@@ -36,6 +38,43 @@ class BoundedCache:
 
     def clear(self):
         self._values.clear()
+
+
+def activate_backend_runtime(
+    runtime_directory,
+    *,
+    environment_variable,
+    backend_directory,
+    missing_message,
+):
+    """Expose one standalone backend environment to the current interpreter."""
+    runtime_directory = (
+        Path(
+            runtime_directory
+            or os.environ.get(environment_variable, "")
+            or Path(__file__).resolve().parents[1]
+            / "backends"
+            / backend_directory
+            / ".venv"
+        )
+        .expanduser()
+        .resolve()
+    )
+    if sys.platform == "win32":
+        site_packages = runtime_directory / "Lib" / "site-packages"
+    else:
+        site_packages = (
+            runtime_directory
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+        )
+    if not site_packages.is_dir():
+        raise TTSConfigurationError(missing_message)
+    site_packages_text = str(site_packages)
+    if site_packages_text not in sys.path:
+        sys.path.insert(0, site_packages_text)
+    return site_packages
 
 
 def validate_volume(volume):

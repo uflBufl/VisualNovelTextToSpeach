@@ -68,6 +68,13 @@ the configured volume there. Settings that change backend/model/language/voice
 identity remain restart-only, so no worker is silently repurposed across a
 different persisted runtime configuration.
 
+Pinned in-process backend environments share one site-packages resolver for
+explicit paths, backend-specific environment overrides and repository-local
+defaults. Chatterbox, Pocket and MOSS retain their public activation functions,
+platform gates and actionable installation messages. Playback implementations
+likewise share lazy `sounddevice` resolution and conservative output-underflow
+inspection; render-only construction never imports or opens the device module.
+
 `vntts.synthesis` defines the boundary between waveform generation and audio
 device playback. MOSS-TTS, Pocket TTS, Chatterbox Nano, and XTTS implement this
 boundary.

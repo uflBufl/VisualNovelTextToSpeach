@@ -21,6 +21,7 @@ from time import monotonic
 
 import numpy as np
 
+from vntts.audio_output import resolve_audio_output
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
 from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
@@ -1105,10 +1106,7 @@ class IsolatedSpeechBackend:
                 process.wait(timeout=2.0)
 
     def _resolve_audio_output(self):
-        if self.audio_output is None:
-            import sounddevice
-
-            self.audio_output = sounddevice
+        self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output
 
     def _prepare_audio(self, audio):

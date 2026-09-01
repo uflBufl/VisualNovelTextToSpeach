@@ -13,6 +13,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.application_directories import get_local_data_directory
 from vntts.audio_cache import PersistentAudioCache
+from vntts.audio_output import playback_underflowed, resolve_audio_output
 from vntts.playback import (
     PlaybackStatus,
     PreparedPlayback,
@@ -29,6 +30,7 @@ from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabiliti
 from vntts.speech_backend_runtime import (
     BoundedCache,
     SpeechCacheKeyFactory,
+    activate_backend_runtime,
     validate_speed,
     validate_volume,
     voice_artifact_cache_path,
@@ -725,24 +727,11 @@ class ChatterboxNanoVoiceRouterBackend:
         return was_playing
 
     def _resolve_audio_output(self):
-        if self.audio_output is None:
-            import sounddevice
-
-            self.audio_output = sounddevice
+        self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output
 
     def _playback_underflowed(self, playback_status=None):
-        value = getattr(playback_status, "output_underflow", None)
-        if isinstance(value, (bool, np.bool_)):
-            return bool(value)
-        get_stream = getattr(self.audio_output, "get_stream", None)
-        if not callable(get_stream):
-            return False
-        try:
-            value = get_stream().status.output_underflow
-        except (AttributeError, RuntimeError):
-            return False
-        return bool(value) if isinstance(value, (bool, np.bool_)) else False
+        return playback_underflowed(self.audio_output, playback_status)
 
     def _resolve_conditionals(self, character):
         voice = self.registry.resolve(character)
@@ -1389,10 +1378,7 @@ class PocketTTSVoiceRouterBackend:
             yield chunk
 
     def _resolve_audio_output(self):
-        if self.audio_output is None:
-            import sounddevice
-
-            self.audio_output = sounddevice
+        self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output
 
     def warm_up(self, *, progress=None, text=None):
@@ -2224,10 +2210,7 @@ class MossTTSVoiceRouterBackend:
         )
 
     def _resolve_audio_output(self):
-        if self.audio_output is None:
-            import sounddevice
-
-            self.audio_output = sounddevice
+        self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output
 
     def warm_up(self, *, progress=None, text="Voice ready."):
@@ -2495,66 +2478,27 @@ def get_torch_thread_count(torch_module):
 
 
 def activate_chatterbox_runtime(runtime_directory=None):
-    runtime_directory = (
-        Path(
-            runtime_directory
-            or os.environ.get("VNTTS_CHATTERBOX_RUNTIME", "")
-            or Path(__file__).resolve().parents[1]
-            / "backends"
-            / "chatterbox-nano"
-            / ".venv"
-        )
-        .expanduser()
-        .resolve()
-    )
-    if sys.platform == "win32":
-        site_packages = runtime_directory / "Lib" / "site-packages"
-    else:
-        site_packages = (
-            runtime_directory
-            / "lib"
-            / f"python{sys.version_info.major}.{sys.version_info.minor}"
-            / "site-packages"
-        )
-    if not site_packages.is_dir():
-        raise TTSConfigurationError(
+    return activate_backend_runtime(
+        runtime_directory,
+        environment_variable="VNTTS_CHATTERBOX_RUNTIME",
+        backend_directory="chatterbox-nano",
+        missing_message=(
             "Chatterbox Nano is not installed. Run "
             "`uv sync --project backends/chatterbox-nano`, then restart the app."
-        )
-    site_packages_text = str(site_packages)
-    if site_packages_text not in sys.path:
-        sys.path.insert(0, site_packages_text)
-    return site_packages
+        ),
+    )
 
 
 def activate_pocket_tts_runtime(runtime_directory=None):
-    runtime_directory = (
-        Path(
-            runtime_directory
-            or os.environ.get("VNTTS_POCKET_TTS_RUNTIME", "")
-            or Path(__file__).resolve().parents[1] / "backends" / "pocket-tts" / ".venv"
-        )
-        .expanduser()
-        .resolve()
-    )
-    if sys.platform == "win32":
-        site_packages = runtime_directory / "Lib" / "site-packages"
-    else:
-        site_packages = (
-            runtime_directory
-            / "lib"
-            / f"python{sys.version_info.major}.{sys.version_info.minor}"
-            / "site-packages"
-        )
-    if not site_packages.is_dir():
-        raise TTSConfigurationError(
+    return activate_backend_runtime(
+        runtime_directory,
+        environment_variable="VNTTS_POCKET_TTS_RUNTIME",
+        backend_directory="pocket-tts",
+        missing_message=(
             "Pocket TTS is not installed. Run "
             "`uv sync --project backends/pocket-tts`, then restart the app."
-        )
-    site_packages_text = str(site_packages)
-    if site_packages_text not in sys.path:
-        sys.path.insert(0, site_packages_text)
-    return site_packages
+        ),
+    )
 
 
 def activate_moss_tts_runtime(runtime_directory=None):
@@ -2562,27 +2506,12 @@ def activate_moss_tts_runtime(runtime_directory=None):
         raise TTSConfigurationError(
             "MOSS-TTS with MLX requires macOS on Apple Silicon."
         )
-    runtime_directory = (
-        Path(
-            runtime_directory
-            or os.environ.get("VNTTS_MOSS_RUNTIME", "")
-            or Path(__file__).resolve().parents[1] / "backends" / "moss-tts" / ".venv"
-        )
-        .expanduser()
-        .resolve()
-    )
-    site_packages = (
-        runtime_directory
-        / "lib"
-        / f"python{sys.version_info.major}.{sys.version_info.minor}"
-        / "site-packages"
-    )
-    if not site_packages.is_dir():
-        raise TTSConfigurationError(
+    return activate_backend_runtime(
+        runtime_directory,
+        environment_variable="VNTTS_MOSS_RUNTIME",
+        backend_directory="moss-tts",
+        missing_message=(
             "MOSS-TTS is not installed. Run "
             "`uv sync --project backends/moss-tts`, then restart the app."
-        )
-    site_packages_text = str(site_packages)
-    if site_packages_text not in sys.path:
-        sys.path.insert(0, site_packages_text)
-    return site_packages
+        ),
+    )

@@ -8,6 +8,7 @@ from time import monotonic
 import numpy as np
 from scipy.signal import resample_poly
 
+from vntts.audio_output import playback_underflowed, resolve_audio_output
 from vntts.playback import (
     PlaybackStatus,
     PreparedPlayback,
@@ -277,17 +278,7 @@ class TTSEngine:
         )
 
     def _playback_underflowed(self, playback_status=None):
-        value = getattr(playback_status, "output_underflow", None)
-        if isinstance(value, (bool, np.bool_)):
-            return bool(value)
-        get_stream = getattr(self.audio_output, "get_stream", None)
-        if not callable(get_stream):
-            return False
-        try:
-            value = get_stream().status.output_underflow
-        except (AttributeError, RuntimeError):
-            return False
-        return bool(value) if isinstance(value, (bool, np.bool_)) else False
+        return playback_underflowed(self.audio_output, playback_status)
 
     def synthesize(
         self,
@@ -591,8 +582,5 @@ class TTSEngine:
         return was_playing
 
     def _resolve_audio_output(self):
-        if self.audio_output is None:
-            import sounddevice
-
-            self.audio_output = sounddevice
+        self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output

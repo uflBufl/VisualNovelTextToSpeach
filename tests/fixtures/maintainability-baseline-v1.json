@@ -79,7 +79,7 @@
     "vntts.authoring.workbench_ui": 2794,
     "vntts.controller": 2985,
     "vntts.live": 2321,
-    "vntts.speech_backend": 2588
+    "vntts.speech_backend": 2517
   },
   "function_lines": {
     "vntts.app.SettingsDialog.__init__": 460,

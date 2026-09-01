@@ -50,17 +50,6 @@ intentional omission as distinct terminal authorities.
     an existing user model cache; retain checksum-bound self-test reports for
     both platforms.
 
-## P1 - Remove parallel infrastructure implementations
-
-Keep wire schemas, public compatibility aliases and domain-specific validation
-messages stable. Prefer existing leaf modules over new abstraction layers.
-
-- [ ] Remove remaining exact backend plumbing duplicates only where contracts are
-      identical: runtime activation path calculation and lazy sounddevice/output
-      underflow helpers. Do not merge renderer or playback state machines. Gate:
-      speech backend, isolated worker and TTS engine tests pass on injected audio
-      modules without opening a real device.
-
 ## P2 - Deferred audio experiments
 
 These tasks are useful but do not block the current Character Story release.
