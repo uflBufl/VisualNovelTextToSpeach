@@ -16,12 +16,16 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Preserve failing macOS shard output as a GitHub annotation so CI identifies
     the exact test instead of reporting only the shard exit code, including
     both ends within GitHub's 4,096-character annotation limit when a large
-    assertion would otherwise hide the test name.
+    assertion would otherwise hide the test name. Keep every unittest
+    `FAIL:`/`ERROR:` identity at the front even when buffered test stdout would
+    otherwise displace the final failure summary.
   - Keep crash-prone Qt modules in exact once-only macOS shards and prevent UI
     unit tests from starting a real FFmpeg/CoreAudio player on headless runners;
     the runner otherwise exits with signal 11 instead of a Python traceback.
   - Give the 1,896-test macOS remainder shard a realistic 15-minute bound; a
-    five-minute cutoff aborts a healthy full run on slower machines.
+    five-minute cutoff aborts a healthy full run on slower machines. Preserve
+    the last verbose test ID when that bound is exceeded so a real hang is
+    actionable instead of producing an empty shard timeout.
   - Accept a not-yet-created screenshot directory; capture already creates the
     full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,

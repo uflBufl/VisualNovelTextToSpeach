@@ -17,9 +17,16 @@ def escape_workflow_command(value):
 
 
 def workflow_failure_details(value):
+    identities = "\n".join(
+        line
+        for line in value.splitlines()
+        if line.startswith(("FAIL: ", "ERROR: "))
+    )
     if len(value) <= 4_000:
         return value
-    return value[:1_000] + "\n... output truncated ...\n" + value[-2_950:]
+    prefix = f"{identities[:1_000]}\n" if identities else value[:1_000]
+    tail_size = 3_950 - len(prefix)
+    return prefix + "\n... output truncated ...\n" + value[-tail_size:]
 
 
 def _flatten_suite(suite):
@@ -62,7 +69,7 @@ def _run_exact_test_file(path):
         print("Exact test inventory is malformed", file=sys.stderr)
         return 2
     suite = unittest.defaultTestLoader.loadTestsFromNames(test_ids)
-    result = unittest.TextTestRunner(verbosity=1).run(suite)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
     if result.testsRun != len(test_ids):
         print(
             f"Exact test inventory expected {len(test_ids)} tests but ran "
@@ -106,15 +113,25 @@ def _run_macos_full_discovery():
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as error:
+                output = error.stdout or ""
+                if isinstance(output, bytes):
+                    output = output.decode(errors="replace")
+                print(output, end="")
+                if os.environ.get("GITHUB_ACTIONS"):
+                    print(
+                        f"::error title=macOS {name} tests timed out::"
+                        f"{escape_workflow_command(workflow_failure_details(output))}",
+                        file=sys.stderr,
+                    )
                 print(
                     f"macOS unittest shard {name} exceeded "
                     f"{MACOS_SHARD_TIMEOUTS[name]} seconds",
                     file=sys.stderr,
                 )
                 return 124
-            print(completed.stdout, end="")
             if completed.returncode:
+                print(completed.stdout, end="")
                 if os.environ.get("GITHUB_ACTIONS"):
                     details = workflow_failure_details(completed.stdout) or (
                         f"macOS unittest shard {name} exited without output."
@@ -138,7 +155,7 @@ def main(arguments=None):
     if platform.system() == "Darwin" and arguments == ["discover", "-s", "tests"]:
         return _run_macos_full_discovery()
     completed = subprocess.run(
-        [sys.executable, "-m", "unittest", *arguments],
+        [sys.executable, "-u", "-m", "unittest", *arguments],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

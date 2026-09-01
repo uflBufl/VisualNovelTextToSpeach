@@ -40,10 +40,10 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             partition_macos_test_ids(["tests.test_alpha.X.test_a"])
 
     def test_failure_details_keep_both_ends(self):
-        value = "start" + "x" * 12_000 + "finish"
+        value = "start" + "x" * 6_000 + "\nFAIL: test_windows\n" + "y" * 6_000 + "finish"
         details = workflow_failure_details(value)
 
-        self.assertTrue(details.startswith("start"))
+        self.assertTrue(details.startswith("FAIL: test_windows"))
         self.assertTrue(details.endswith("finish"))
         self.assertLessEqual(len(details), 4_000)
 
