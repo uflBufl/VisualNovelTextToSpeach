@@ -163,6 +163,25 @@ Those exact-transcript failures demonstrate that content ASR cannot detect
 every pacing, timbre or artifact defect even when transcription succeeds.
 Neither threshold is production authority.
 
+Corpus v3
+`357847a8b7337afda0a7522eca30bd95d8b1e1de7e2516319d16f9c098f44040`
+was published on 2026-09-01 from 59 checksum-compatible cohort-review
+directories and contains 307 unique WAVs: 274 acceptable and 33 bad. Two
+legacy review directories were excluded because their stored sentence-repair
+text no longer validates against current state authority; they were not
+silently reinterpreted. This snapshot contains listening decisions only and
+therefore has zero typed generation failures.
+
+The bad set contains 13 `timbre_or_audio_artifact`, six
+`pronunciation_or_wrong_words`, two `truncation_or_missing_words` and one
+`pause_or_pacing` reason labels; 11 older bad decisions remain honestly
+unclassified. `near_clipping_candidate` marked ten WAVs, but only two were
+artifact-labelled bad and eight were acceptable. Exact-repeat and discontinuity
+signals marked none. The proportional timing diagnostics marked 20 fast WAVs
+(18 acceptable, two truncation-labelled bad) and five unmatched-pause WAVs
+(four acceptable, one artifact-labelled bad). No signal has adequate held-out
+precision and recall, so automatic preview rejection remains disabled.
+
 New cohort decisions and future corpus-v3 publications preserve explicit
 independent human defect reasons for
 pacing, repetition, truncation, pronunciation, timbre/artifact and speaker

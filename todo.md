@@ -12,10 +12,11 @@ content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
 - [ ] Refine ambiguous-voice comparison without expanding mandatory review.
-  - [ ] Calibrate an obvious-artifact preview rejection rule against held-out
-        decisions. Existing exact-repeat, near-clipping and discontinuity signals
-        remain diagnostic because the current labelled corpus does not establish
-        a safe automatic margin.
+  - [ ] Collect enough new independently reason-labelled bad previews to reserve
+        fit and held-out partitions for each target defect class, then calibrate
+        an automatic rejection rule. Follow the corpus-v3 evidence in
+        [`docs/speech-robustness-corpus.md`](docs/speech-robustness-corpus.md);
+        current waveform and proportional-timing signals remain diagnostic-only.
 ## P1 - Improve the self-service generation engine
 
 Follow
