@@ -42,6 +42,18 @@ class ReleasePackagingTest(unittest.TestCase):
 
         self.assertIn('"speech-runtimes"', spec)
 
+    def test_windows_build_discovers_tesseract_before_standard_locations(self):
+        script = (PROJECT_ROOT / "scripts/build-windows.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('Get-Command "tesseract.exe"', script)
+        self.assertIn('Join-Path $env:ProgramFiles "Tesseract-OCR"', script)
+        self.assertLess(
+            script.index('Get-Command "tesseract.exe"'),
+            script.index('Join-Path $env:ProgramFiles "Tesseract-OCR"'),
+        )
+
     def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):
         spec = (PROJECT_ROOT / "packaging/macos/vntts.spec").read_text(encoding="utf-8")
         script = (PROJECT_ROOT / "scripts/build-macos.sh").read_text(encoding="utf-8")

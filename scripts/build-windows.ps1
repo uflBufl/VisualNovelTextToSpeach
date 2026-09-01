@@ -1,5 +1,5 @@
 param(
-    [string]$TesseractDirectory = "C:\Program Files\Tesseract-OCR",
+    [string]$TesseractDirectory,
     [string]$EspeakDirectory,
     [switch]$SkipTests
 )
@@ -15,6 +15,22 @@ if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+if (-not $TesseractDirectory) {
+    $TesseractCommand = Get-Command "tesseract.exe" -ErrorAction SilentlyContinue
+    $TesseractCandidates = @(
+        $(if ($TesseractCommand) { Split-Path -Parent $TesseractCommand.Source }),
+        (Join-Path $env:ProgramFiles "Tesseract-OCR"),
+        (Join-Path ${env:ProgramFiles(x86)} "Tesseract-OCR")
+    ) | Where-Object {
+        $_ -and
+        (Test-Path (Join-Path $_ "tesseract.exe") -PathType Leaf) -and
+        (Test-Path (Join-Path $_ "tessdata\eng.traineddata") -PathType Leaf)
+    }
+    $TesseractDirectory = $TesseractCandidates | Select-Object -First 1
+}
+if (-not $TesseractDirectory) {
+    throw "Tesseract with English language data was not found."
+}
 $TesseractDirectory = (Resolve-Path $TesseractDirectory).Path
 $TesseractExecutable = Join-Path $TesseractDirectory "tesseract.exe"
 $EnglishLanguageData = Join-Path $TesseractDirectory "tessdata\eng.traineddata"

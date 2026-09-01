@@ -9,7 +9,8 @@ and eSpeak-NG:
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 ```
 
-Pass `-TesseractDirectory` when Tesseract is installed elsewhere. The output is
+The build discovers Tesseract from `PATH`, then the standard Program Files
+locations. Pass `-TesseractDirectory` to override discovery. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,
 all Python dependencies, Tesseract, English OCR data, and eSpeak-NG; speech
 models remain user-managed downloads.
