@@ -19,6 +19,8 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Keep crash-prone Qt modules in exact once-only macOS shards and prevent UI
     unit tests from starting a real FFmpeg/CoreAudio player on headless runners;
     the runner otherwise exits with signal 11 instead of a Python traceback.
+  - Give the 1,896-test macOS remainder shard a realistic 15-minute bound; a
+    five-minute cutoff aborts a healthy full run on slower machines.
   - Accept a not-yet-created screenshot directory; capture already creates the
     full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,

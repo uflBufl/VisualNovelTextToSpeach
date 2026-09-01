@@ -9,7 +9,7 @@ from pathlib import Path
 
 from vntts.cli import cli_message
 
-MACOS_SHARD_TIMEOUTS = {"qt-app": 60, "qt-assets": 60, "remainder": 300}
+MACOS_SHARD_TIMEOUTS = {"qt-app": 60, "qt-assets": 60, "remainder": 900}
 
 
 def escape_workflow_command(value):
