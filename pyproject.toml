@@ -23,8 +23,8 @@ dependencies = [
     "pyobjc-framework-quartz>=10.3 ; sys_platform == 'darwin'",
     "python-xlib>=0.33 ; sys_platform == 'linux'",
     "pynput>=1.8.1",
-    "torch>=2.11,<2.12",
-    "torchaudio>=2.11,<2.12",
+    "torch>=2.10,<2.11",
+    "torchaudio>=2.10,<2.11",
     "transformers==4.57.3",
     "pytesseract>=0.3.13",
     "numpy>=1.24",
@@ -75,11 +75,11 @@ vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
 ]
 torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
 reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "a17a9121a09d1a43c0d977589f934f706af5e523" }

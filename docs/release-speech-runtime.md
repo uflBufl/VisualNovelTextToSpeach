@@ -89,6 +89,13 @@ from that copied tree. The same relocation probe is mandatory on Windows; a uv
 or CPython change that breaks the portable launcher must fail the build rather
 than ship a package that silently uses a machine-local Python.
 
+The application and staged Pocket runtime require CPython 3.14 or newer. The
+application lock keeps Torch and Torchaudio on the matching 2.10 release: macOS
+uses the official CPU index, Linux uses the CUDA 12.9 index, and Windows uses
+the standard package index because the CUDA 12.9 index does not publish Windows
+CPython 3.14 wheels. Experimental backends retain their isolated, model-specific
+Python environments.
+
 Staging removes managed-CPython alias symlinks and its `include`, `share` and
 `lib/pkgconfig` development trees because they are not needed to execute the
 locked worker. The relocation/import probe runs after pruning, so a future

@@ -3,6 +3,16 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
+## P0 - Restore Python 3.14 CI dependency sync
+
+- [ ] Make the frozen Python 3.14 lock installable on macOS, Windows and Linux.
+  - Use a matching Torch/Torchaudio release that publishes CPython 3.14 wheels
+    for every target; keep the CUDA 12.9 index Linux-only because it has no
+    Windows wheels for the selected release.
+  - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
+    the local Python 3.14 quality/full-suite gate passes, and the pushed CI run
+    completes successfully on all three operating systems.
+
 ## P0 - Make the Windows test gate non-admin portable
 
 - [ ] Make the full build/test gate pass from an ordinary Windows account.
