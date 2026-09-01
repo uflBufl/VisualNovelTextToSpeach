@@ -507,6 +507,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             player.durationChanged.disconnect()
             player.positionChanged.disconnect()
         dialog.players = {"a": Mock(), "b": Mock()}
+        for player in dialog.players.values():
+            player.duration.return_value = 0
+            player.position.return_value = 0
 
     def test_requires_both_samples_then_saves_and_completes(self):
         with TemporaryDirectory() as directory:
@@ -673,6 +676,29 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 player.setSource.assert_not_called()
             dialog.players["a"].setPosition.assert_called_with(0)
             dialog.players["b"].setPosition.assert_called_with(0)
+            dialog.deleteLater()
+
+    def test_short_preloaded_side_starts_without_stop_and_finishes_its_timeline(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory))
+            dialog.players["a"].duration.return_value = 2_480
+            dialog.players["b"].duration.return_value = 1_300
+
+            dialog.play("a")
+            dialog.position_changed("a", 650)
+            dialog.players["b"].reset_mock()
+            dialog.play("b")
+
+            dialog.players["b"].stop.assert_not_called()
+            dialog.players["b"].setAudioOutput.assert_called_once_with(
+                dialog.audio_output
+            )
+            self.assertEqual(dialog.seek.maximum(), 1_300)
+            self.assertEqual(dialog.seek.value(), 0)
+            dialog.position_changed("b", 650)
+            dialog.media_status_changed("b", QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertEqual(dialog.seek.value(), 1_300)
+            self.assertEqual(dialog.time.text(), "0:01 / 0:01")
             dialog.deleteLater()
 
     def test_report_failure_advances_from_the_persisted_score(self):

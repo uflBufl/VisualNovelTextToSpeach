@@ -386,12 +386,15 @@ The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.
 
-Each trial preloads A and B into separate `QMediaPlayer`/`QAudioOutput` pairs.
-Switching stops the inactive side and restarts the selected side from position
-zero without replacing its asynchronous media source. Playback callbacks carry
-their source side, so a late state change from the previous candidate cannot
-start, finish or move the controls for the newly selected candidate. This also
-keeps rapid switching stable when the two WAVs use different sample rates.
+Each trial preloads A and B into separate `QMediaPlayer` decoders but routes the
+selected decoder through one shared `QAudioOutput`. Switching stops the inactive
+side and restarts the selected side from position zero without replacing its
+asynchronous media source or cold-starting a second device output. Playback
+callbacks carry their source side, so a late state change from the previous
+candidate cannot start, finish or move the controls for the newly selected
+candidate. The selected player's duration resets the seek range, and
+`EndOfMedia` explicitly completes the timeline because Qt position updates are
+periodic. This keeps short clips and rapid mixed-rate switching consistent.
 The workbench plays the verified candidate waveform without adding a synthetic
 preroll: an abnormal or clipped onset is candidate-quality evidence and must not
 be hidden by presentation timing.

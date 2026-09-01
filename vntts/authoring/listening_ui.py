@@ -243,12 +243,10 @@ class ModelListeningDialog(QDialog):
         self.setTabOrder(self.tie, self.neither)
         self.setTabOrder(self.neither, self.prefer_b)
 
-        self.audio_outputs = {}
+        self.audio_output = QAudioOutput(self)
         self.players = {}
         for side in ("a", "b"):
-            output = QAudioOutput(self)
             player = QMediaPlayer(self)
-            player.setAudioOutput(output)
             player.mediaStatusChanged.connect(
                 lambda status, source_side=side: self.media_status_changed(
                     source_side, status
@@ -269,7 +267,6 @@ class ModelListeningDialog(QDialog):
                     source_side, position
                 )
             )
-            self.audio_outputs[side] = output
             self.players[side] = player
         self.load_next_trial()
 
@@ -452,9 +449,11 @@ class ModelListeningDialog(QDialog):
         other_side = "b" if side == "a" else "a"
         self.players[other_side].stop()
         player = self.players[side]
-        player.stop()
+        player.setAudioOutput(self.audio_output)
         player.setPosition(0)
         self.active_side = side
+        self.duration_changed(side, player.duration())
+        self.position_changed(side, 0)
         self.set_playback_indicator("loading", side)
         player.play()
         mode = " automatically" if automatic else ""
@@ -477,6 +476,7 @@ class ModelListeningDialog(QDialog):
     def media_status_changed(self, side, status):
         if status != QMediaPlayer.MediaStatus.EndOfMedia or side != self.active_side:
             return
+        self.position_changed(side, self.players[side].duration())
         self.set_playback_indicator("finished", side)
         if side == "a" and self.auto_play_pending_b:
             self.auto_play_pending_b = False

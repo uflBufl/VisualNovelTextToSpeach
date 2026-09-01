@@ -40,6 +40,10 @@ intentional omission as distinct terminal authorities.
       voiced line `reverse1999:101341:42`. Compare only anonymous A/B playback
       and choose A, B, both acceptable/no preference, or neither; do not add a
       broad cohort.
+  - [ ] Restart the patched workbench and replay trial 1: its first automatic B
+        playback must include `Aha` and its seek handle must reach the end. Then
+        discard this now-unblinded session and create fresh anonymous aliases
+        before collecting the three decisions.
   - [ ] Use the final report only to locate degradation between original source,
         the current MOSS reference-codec roundtrip and stable-profile synthesis.
         Do not change MOSS sampling/profile controls from this single line.
