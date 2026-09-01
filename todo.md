@@ -44,10 +44,20 @@ intentional omission as distinct terminal authorities.
         playback must include `Aha` and its seek handle must reach the end. Then
         discard this now-unblinded session and create fresh anonymous aliases
         before collecting the three decisions.
-    - The shared-output/two-player repair fixed the stale timeline but live
-      verification still clipped B on its first play. Replace the dual playback
-      players with one continuously attached player, wait for `LoadedMedia`
-      after source changes, and keep replay/seek/autoplay regression coverage.
+    - Both the separate-player and shared-player `QMediaPlayer` repairs failed
+      live verification; B still lost its onset and B-to-A could distort while
+      changing sample rate. Do not collect a verdict through that path.
+    - Replace `QMediaPlayer` in `vntts-listen` with one persistent
+      `sounddevice.OutputStream` at the output device's native format. Decode and
+      resample each immutable WAV before playback, keep the stream warm with
+      silence, and switch only at callback boundaries without reopening it.
+    - Drive seek, pause, completion and A-to-B auto-advance from PCM-frame and
+      DAC-time authority. Surface underflow as invalid playback that must be
+      replayed; never unlock a decision from incomplete evidence.
+    - Cover first-frame preservation, mixed sample rates/channels, reverse
+      switching, replay, pause, seek, stale completions and clean shutdown with
+      a fake stream. Gate completion on a live exact-session check with no
+      clipped `Aha`, no B-to-A distortion and a complete timeline.
   - [ ] Use the final report only to locate degradation between original source,
         the current MOSS reference-codec roundtrip and stable-profile synthesis.
         Do not change MOSS sampling/profile controls from this single line.

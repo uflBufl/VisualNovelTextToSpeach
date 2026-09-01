@@ -362,7 +362,8 @@ are locked, ready or saving. Use `Ctrl+1` and `Ctrl+2` to play A and B,
 `Ctrl+Space` to pause/continue/restart the active sample, and
 `Ctrl+Shift+A`, `Ctrl+Shift+B`, `Ctrl+Shift+T` or `Ctrl+Shift+N` for A, B,
 both acceptable/no preference, or neither acceptable. Decisions remain locked
-until both anonymous samples have started. The four choices use a compact
+until both anonymous samples have played completely without an output
+underflow. The four choices use a compact
 two-row layout without exposing model identities.
 
 Scoring is append-safe by default: rating an already completed trial requires
@@ -383,18 +384,17 @@ tie. Use `No preference` only when both samples are acceptable and approximately
 equal. The CLI equivalent is `--preference neither`; the Qt shortcut is
 `Ctrl+Shift+N`.
 The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
-keeps preference controls locked until both sides start, and provides pause,
+keeps preference controls locked until both sides finish, and provides pause,
 restart, seek and five-second skip controls.
 
-Each trial routes A and B through one continuously attached
-`QMediaPlayer`/`QAudioOutput` pair. Switching changes the local source and waits
-for `LoadedMedia` before starting at position zero, so the second candidate does
-not cold-start a separate player or device output. A pending source is checked
-against the selected side before playback, so a late status from an abandoned
-switch cannot start the wrong candidate. The selected source's duration resets
-the seek range, and `EndOfMedia` explicitly completes the timeline because Qt
-position updates are periodic. This keeps short clips and rapid mixed-rate
-switching consistent.
+Each trial decodes A and B once, resamples them to the output device's native
+sample rate and normalizes their channel layout. One persistent
+`sounddevice.OutputStream` stays open and emits silence while idle; switching
+candidates replaces only the prepared PCM buffer instead of reopening or
+reconfiguring the device. Playback position and completion come from submitted
+PCM frames plus PortAudio DAC time, so A-to-B autoplay cannot treat queued audio
+as already heard. An output underflow invalidates that play and requires a
+replay before the decision unlocks.
 The workbench plays the verified candidate waveform without adding a synthetic
 preroll: an abnormal or clipped onset is candidate-quality evidence and must not
 be hidden by presentation timing.

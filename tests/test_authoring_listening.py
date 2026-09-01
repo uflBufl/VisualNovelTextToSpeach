@@ -3,6 +3,7 @@ import json
 import os
 import time
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -27,13 +28,13 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.listening_cli import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
+from vntts.authoring.pcm_playback import PcmClip, PlaybackSnapshot
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
-    from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
@@ -47,8 +48,85 @@ except ModuleNotFoundError as error:
     Qt = None
     QTimer = None
     QTest = None
-    QMediaPlayer = None
     ModelListeningDialog = None
+
+
+class FakePlayback:
+    def __init__(self):
+        self.sample_rate = 16_000
+        self.channels = 1
+        self.token = 0
+        self.clip = PcmClip(np.empty((0, 1), dtype=np.float32), self.sample_rate)
+        self.position = 0
+        self.started = False
+        self.playing = False
+        self.finished = False
+        self.underflowed = False
+        self.error = None
+        self.play_calls = []
+        self.pause_calls = 0
+        self.closed = False
+
+    def load(self, path):
+        with wave.open(str(path), "rb") as source:
+            frames = source.getnframes()
+        return PcmClip(np.zeros((frames, 1), dtype=np.float32), self.sample_rate)
+
+    def play(self, clip, *, position_frames=0):
+        self.token += 1
+        self.clip = clip
+        self.position = position_frames
+        self.started = False
+        self.playing = True
+        self.finished = False
+        self.underflowed = False
+        self.error = None
+        self.play_calls.append((clip, position_frames))
+        return self.token
+
+    def finish(self, *, underflowed=False):
+        self.position = self.clip.frames
+        self.started = True
+        self.playing = False
+        self.finished = True
+        self.underflowed = underflowed
+
+    def snapshot(self):
+        return PlaybackSnapshot(
+            token=self.token,
+            position_frames=self.position,
+            total_frames=self.clip.frames,
+            started=self.started,
+            playing=self.playing,
+            finished=self.finished,
+            underflowed=self.underflowed,
+            error=self.error,
+        )
+
+    def pause(self):
+        self.pause_calls += 1
+        self.playing = False
+
+    def resume(self):
+        self.token += 1
+        self.playing = True
+        self.started = False
+        self.finished = False
+        return self.token
+
+    def seek(self, position_frames):
+        self.token += 1
+        self.position = max(0, min(self.clip.frames, position_frames))
+        self.finished = False
+        return self.token
+
+    def stop(self):
+        self.token += 1
+        self.playing = False
+        self.finished = False
+
+    def close(self):
+        self.closed = True
 
 
 def write_model_reports(root, *, item_count=2):
@@ -494,33 +572,25 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         session = create_listening_session_from_reports(
             write_model_reports(root, item_count=item_count), root / "session"
         )
-        dialog = ModelListeningDialog(session, auto_play=False, **kwargs)
-        self.replace_player_with_mock(dialog)
-        return session, dialog
-
-    @staticmethod
-    def replace_player_with_mock(dialog):
-        dialog.player.stop()
-        dialog.player.mediaStatusChanged.disconnect()
-        dialog.player.playbackStateChanged.disconnect()
-        dialog.player.durationChanged.disconnect()
-        dialog.player.positionChanged.disconnect()
-        dialog.player = Mock()
-        dialog.player.duration.return_value = 0
-        dialog.player.position.return_value = 0
-        dialog.player.mediaStatus.return_value = QMediaPlayer.MediaStatus.LoadedMedia
-        dialog.player.source.side_effect = lambda: dialog.audio_sources.get(
-            dialog.active_side
+        playback = FakePlayback()
+        dialog = ModelListeningDialog(
+            session,
+            auto_play=False,
+            playback_factory=lambda: playback,
+            **kwargs,
         )
+        return session, dialog
 
     def test_requires_both_samples_then_saves_and_completes(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
             dialog.play("a")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback.finish()
+            dialog.poll_playback()
             self.assertFalse(dialog.prefer_a.isEnabled())
             dialog.play("b")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback.finish()
+            dialog.poll_playback()
             self.assertTrue(dialog.prefer_a.isEnabled())
             self.assertTrue(dialog.neither.isEnabled())
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
@@ -584,11 +654,12 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
             dialog.play_a.setFocus()
             QTest.keyClick(dialog.play_a, Qt.Key.Key_Return)
-            dialog.player.play.assert_called_once_with()
+            self.assertEqual(len(dialog.playback.play_calls), 1)
+            dialog.playback.finish()
+            dialog.poll_playback()
             dialog.play("b")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
-            dialog.active_side = "a"
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback.finish()
+            dialog.poll_playback()
             self.assertTrue(dialog.prefer_a.isEnabled())
             self.assertIn("Decision ready", dialog.decision_reason.text())
             dialog.save_preference = Mock()
@@ -606,7 +677,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
     def test_neither_acceptable_button_persists_distinct_verdict(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
-            dialog.started_sides = {"a", "b"}
+            dialog.completed_sides = {"a", "b"}
             dialog.set_preference_buttons_enabled(True)
             dialog.neither.click()
             self.wait_for(lambda: not dialog._preference_active)
@@ -620,29 +691,31 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
             dialog.start_auto_playback()
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
-            self.assertEqual(dialog.started_sides, {"a"})
-            dialog.media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertEqual(dialog.completed_sides, {"a"})
             self.application.processEvents()
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
-            self.assertEqual(dialog.started_sides, {"a", "b"})
+            self.assertEqual(dialog.active_side, "b")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertEqual(dialog.completed_sides, {"a", "b"})
             self.assertTrue(dialog.tie.isEnabled())
             dialog.toggle_playback()
-            dialog.player.pause.assert_called_once_with()
-            self.assertEqual(dialog.stop.text(), "Continue")
+            self.assertEqual(len(dialog.playback.play_calls), 3)
+            self.assertEqual(dialog.stop.text(), "Stop")
             dialog.deleteLater()
 
     def test_seek_skip_and_track_click(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
             dialog.active_side = "a"
-            dialog.player.position.return_value = 2_000
-            dialog.player.duration.return_value = 120_000
-            dialog.duration_changed(120_000)
-            dialog.position_changed(65_000)
+            clip = PcmClip(np.empty((1_920_000, 1), dtype=np.float32), 16_000)
+            dialog.audio_clips["a"] = clip
+            dialog.playback.clip = clip
+            dialog.seek.setRange(0, clip.duration_ms)
             dialog.seek_to(90_000)
             dialog.skip_by(5_000)
-            self.assertEqual(dialog.time.text(), "0:07 / 2:00")
+            self.assertEqual(dialog.time.text(), "1:35 / 2:00")
             dialog.show()
             self.application.processEvents()
             QTest.mouseClick(
@@ -653,55 +726,40 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertAlmostEqual(dialog.seek.value(), 90_000, delta=2_000)
             dialog.deleteLater()
 
-    def test_rapid_switch_uses_one_continuously_attached_player(self):
+    def test_rapid_switch_reuses_one_persistent_playback_stream(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
-            session = create_listening_session_from_reports(
-                write_model_reports(root, item_count=1), root / "session"
-            )
-            dialog = ModelListeningDialog(session, auto_play=False)
-            self.assertIs(dialog.player.audioOutput(), dialog.audio_output)
-            self.replace_player_with_mock(dialog)
+            _session, dialog = self.create_dialog(Path(directory))
+            playback = dialog.playback
 
             for side in ("a", "b", "a"):
                 dialog.play(side)
-                dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
 
-            self.assertEqual(dialog.started_sides, {"a", "b"})
-            self.assertEqual(dialog.player.play.call_count, 3)
-            dialog.player.setSource.assert_not_called()
-            self.assertEqual(dialog.player.setPosition.call_count, 3)
+            self.assertIs(dialog.playback, playback)
+            self.assertEqual(len(playback.play_calls), 3)
+            self.assertIs(playback.play_calls[0][0], dialog.audio_clips["a"])
+            self.assertIs(playback.play_calls[1][0], dialog.audio_clips["b"])
             dialog.deleteLater()
 
-    def test_source_change_waits_for_loaded_media_and_finishes_its_timeline(self):
+    def test_complete_pcm_playback_finishes_timeline_and_underflow_does_not_count(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
-            dialog.player.source.side_effect = None
-            dialog.player.source.return_value = None
-            dialog.player.mediaStatus.return_value = (
-                QMediaPlayer.MediaStatus.LoadingMedia
-            )
-            dialog.player.duration.return_value = 1_300
+            dialog.play("b")
+            dialog.playback.finish(underflowed=True)
+            dialog.poll_playback()
+            self.assertNotIn("b", dialog.completed_sides)
+            self.assertIn("underflowed", dialog.status.text())
 
             dialog.play("b")
-
-            dialog.player.setSource.assert_called_once_with(dialog.audio_sources["b"])
-            dialog.player.play.assert_not_called()
-            dialog.player.source.return_value = dialog.audio_sources["b"]
-            dialog.media_status_changed(QMediaPlayer.MediaStatus.LoadedMedia)
-            dialog.player.play.assert_called_once_with()
-            self.assertEqual(dialog.seek.maximum(), 1_300)
-            self.assertEqual(dialog.seek.value(), 0)
-            dialog.position_changed(650)
-            dialog.media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.assertEqual(dialog.seek.value(), 1_300)
-            self.assertEqual(dialog.time.text(), "0:01 / 0:01")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertIn("b", dialog.completed_sides)
+            self.assertEqual(dialog.seek.value(), dialog.seek.maximum())
             dialog.deleteLater()
 
     def test_report_failure_advances_from_the_persisted_score(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
-            dialog.started_sides = {"a", "b"}
+            dialog.completed_sides = {"a", "b"}
             report_path = session.with_name("report.json").resolve()
             from vntts.authoring import listening as listening_module
 
@@ -737,7 +795,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             session, dialog = self.create_dialog(
                 Path(directory), preference_recorder=slow_recorder
             )
-            dialog.started_sides = {"a", "b"}
+            dialog.completed_sides = {"a", "b"}
             dialog.set_preference_buttons_enabled(True)
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
@@ -775,7 +833,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             session, dialog = self.create_dialog(
                 Path(directory), preference_recorder=flaky_recorder
             )
-            dialog.started_sides = {"a", "b"}
+            dialog.completed_sides = {"a", "b"}
             dialog.set_preference_buttons_enabled(True)
 
             dialog.save_preference("a")
