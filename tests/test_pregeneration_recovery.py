@@ -66,10 +66,26 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 "queue_sha256": "2" * 64,
                 "failure_count": 4,
                 "records": [
-                    {"queue_id": "d", "action": "reference_comparison"},
-                    {"queue_id": "b", "action": "edge_silence_trim"},
-                    {"queue_id": "c", "action": "bounded_seed_retry"},
-                    {"queue_id": "a", "action": "edge_silence_trim"},
+                    {
+                        "queue_id": "d",
+                        "action": "reference_comparison",
+                        "provider": "moss-tts",
+                    },
+                    {
+                        "queue_id": "b",
+                        "action": "edge_silence_trim",
+                        "provider": "moss-tts",
+                    },
+                    {
+                        "queue_id": "c",
+                        "action": "bounded_seed_retry",
+                        "provider": "moss-tts",
+                    },
+                    {
+                        "queue_id": "a",
+                        "action": "edge_silence_trim",
+                        "provider": "moss-tts",
+                    },
                 ],
             }
 
@@ -84,13 +100,11 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             (
                 OfflineRecoveryBatch("edge_silence_trim", ("a", "b")),
                 OfflineRecoveryBatch("bounded_seed_retry", ("c",)),
+                OfflineRecoveryBatch("offline_fallback_backend", ("d",)),
             ),
         )
-        self.assertEqual(plan.deferred_action_counts, (("reference_comparison", 1),))
-        self.assertEqual(
-            plan.deferred_batches,
-            (OfflineRecoveryBatch("reference_comparison", ("d",)),),
-        )
+        self.assertEqual(plan.deferred_action_counts, ())
+        self.assertEqual(plan.deferred_batches, ())
 
     def test_unseeded_pocket_backend_defers_a_seed_retry(self):
         with TemporaryDirectory() as temporary_directory:
@@ -103,9 +117,18 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             document = {
                 "state_sha256": "1" * 64,
                 "queue_sha256": "2" * 64,
-                "failure_count": 1,
+                "failure_count": 2,
                 "records": [
-                    {"queue_id": "a", "action": "bounded_seed_retry"},
+                    {
+                        "queue_id": "a",
+                        "action": "bounded_seed_retry",
+                        "provider": "pocket-tts",
+                    },
+                    {
+                        "queue_id": "b",
+                        "action": "offline_fallback_backend",
+                        "provider": "pocket-tts",
+                    },
                 ],
             }
 
@@ -116,7 +139,11 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 plan = plan_automatic_recovery(generation_input, voice_plan, result)
 
         self.assertEqual(plan.automatic_batches, ())
-        self.assertEqual(plan.deferred_action_counts, (("bounded_seed_retry", 1),))
+        self.assertEqual(
+            plan.deferred_action_counts,
+            (("bounded_seed_retry", 1), ("offline_fallback_backend", 1)),
+        )
+        self.assertEqual(plan.live_fallback_queue_ids, ("a", "b"))
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
@@ -204,6 +231,45 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_action_counts, (("reference_comparison", 1),))
 
+    def test_uses_one_pocket_attempt_for_residual_moss_failures(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, first, voice_plan = inputs(Path(temporary_directory))
+            recovered = OfflineGenerationResult(
+                first.output, first.state, first.manifest, 3, 0, 0
+            )
+            plans = iter(
+                (
+                    OfflineRecoveryPlan(
+                        "1" * 64,
+                        "2" * 64,
+                        2,
+                        (
+                            OfflineRecoveryBatch(
+                                "offline_fallback_backend", ("a", "b")
+                            ),
+                        ),
+                        (),
+                    ),
+                    OfflineRecoveryPlan("3" * 64, "2" * 64, 0, (), ()),
+                )
+            )
+            generator = Mock()
+            generator.repair.return_value = recovered
+
+            result = OfflineRecoveryWorker(
+                generator, planner=lambda *_arguments: next(plans)
+            ).recover(generation_input, voice_plan, first)
+
+        selected_plan = generator.repair.call_args.args[1]
+        self.assertEqual(selected_plan.synthesis_backend, "pocket-tts")
+        self.assertIsNone(selected_plan.synthesis_model)
+        self.assertEqual(selected_plan.synthesis_profile, "default")
+        self.assertEqual(
+            generator.repair.call_args.kwargs["action"],
+            "offline_fallback_backend",
+        )
+        self.assertEqual(result.recovered, 2)
+
     def test_terminalizes_deferred_pocket_failures_without_human_review(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
@@ -224,6 +290,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                         (),
                         (("backend_diagnosis", 2),),
                         (OfflineRecoveryBatch("backend_diagnosis", ("a", "b")),),
+                        ("a", "b"),
                     ),
                     OfflineRecoveryPlan(
                         "3" * 64,

@@ -225,6 +225,38 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertFalse(process.terminated)
         self.assertFalse(process.killed)
 
+    def test_offline_fallback_repair_uses_exact_pocket_option(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generation_input, plan = generation_inputs(root)
+            output = root / f"generation-output-{generation_input.identity[:16]}"
+            output.mkdir()
+            state = output / "generation-state.json"
+            manifest = output / "manifest.json"
+            state.write_text("{}", encoding="utf-8")
+            manifest.write_text("{}", encoding="utf-8")
+            result = OfflineGenerationResult(output, state, manifest, 1, 2, 0)
+            popen = Mock(return_value=FinishedProcess())
+            worker = OfflineGenerationWorker(
+                command=("worker",), popen_factory=popen
+            )
+
+            with patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                return_value={"items": {"a": {"status": "generated"}}},
+            ):
+                worker.repair(
+                    generation_input,
+                    plan,
+                    result,
+                    action="offline_fallback_backend",
+                    queue_ids=("a", "b"),
+                )
+
+        arguments = popen.call_args.args[0]
+        self.assertEqual(arguments.count("--offline-fallback-failed"), 2)
+        self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
+
     def test_running_cancellation_terminates_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, plan = generation_inputs(Path(temporary_directory))

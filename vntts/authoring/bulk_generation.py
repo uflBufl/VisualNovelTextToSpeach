@@ -1090,6 +1090,7 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "requested_voice_character": record["requested_voice_character"],
                 "synthesis_voice_character": record["synthesis_voice_character"],
                 "failure_kind": kind,
+                "provider": record["provider"],
                 "attempts": attempts,
                 "seed": record["seed"],
                 "attempted_repair_strategy": previous_strategy,

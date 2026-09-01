@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -27,6 +27,7 @@ AUTOMATIC_ACTION_ORDER = (
     "sentence_boundary_segmentation",
     "edge_silence_trim",
     "bounded_seed_retry",
+    "offline_fallback_backend",
 )
 
 
@@ -48,6 +49,7 @@ class OfflineRecoveryPlan:
     automatic_batches: tuple[OfflineRecoveryBatch, ...]
     deferred_action_counts: tuple[tuple[str, int], ...]
     deferred_batches: tuple[OfflineRecoveryBatch, ...] = ()
+    live_fallback_queue_ids: tuple[str, ...] = ()
 
     @property
     def automatic_count(self):
@@ -88,6 +90,7 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
     grouped = {action: [] for action in AUTOMATIC_ACTION_ORDER}
     deferred = Counter()
     deferred_queue_ids = {}
+    live_fallback_queue_ids = []
     seen_queue_ids = set()
     for record in records:
         if not isinstance(record, dict):
@@ -104,11 +107,15 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
         ):
             raise OfflineRecoveryError("Offline recovery record is malformed")
         seen_queue_ids.add(queue_id)
-        if action in grouped and not (
-            action == "bounded_seed_retry"
-            and voice_plan.synthesis_backend == "pocket-tts"
-        ):
+        provider = record.get("provider")
+        if provider == "pocket-tts":
+            deferred[action] += 1
+            deferred_queue_ids.setdefault(action, []).append(queue_id)
+            live_fallback_queue_ids.append(queue_id)
+        elif action in grouped:
             grouped[action].append(queue_id)
+        elif provider is not None and action != "provenance_recovery_or_regeneration":
+            grouped["offline_fallback_backend"].append(queue_id)
         else:
             deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
@@ -134,6 +141,7 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
             OfflineRecoveryBatch(action, tuple(sorted(queue_ids)))
             for action, queue_ids in sorted(deferred_queue_ids.items())
         ),
+        live_fallback_queue_ids=tuple(sorted(live_fallback_queue_ids)),
     )
 
 
@@ -179,15 +187,10 @@ class OfflineRecoveryWorker:
                     next_batch = OfflineRecoveryBatch(batch.action, fresh)
                     break
             if next_batch is None:
-                terminal_queue_ids = tuple(
-                    queue_id
-                    for batch in plan.deferred_batches
-                    for queue_id in batch.queue_ids
-                )
+                terminal_queue_ids = plan.live_fallback_queue_ids
                 if (
                     terminal_queue_ids
                     and not terminalization_attempted
-                    and voice_plan.synthesis_backend == "pocket-tts"
                 ):
                     current = self.terminalizer(
                         generation_input,
@@ -213,9 +216,19 @@ class OfflineRecoveryWorker:
                     remaining_action_counts=tuple(sorted(remaining.items())),
                     live_fallbacks=terminalized,
                 )
+            repair_voice_plan = (
+                replace(
+                    voice_plan,
+                    synthesis_backend="pocket-tts",
+                    synthesis_model=None,
+                    synthesis_profile="default",
+                )
+                if next_batch.action == "offline_fallback_backend"
+                else voice_plan
+            )
             current = self.generator.repair(
                 generation_input,
-                voice_plan,
+                repair_voice_plan,
                 current,
                 action=next_batch.action,
                 queue_ids=next_batch.queue_ids,

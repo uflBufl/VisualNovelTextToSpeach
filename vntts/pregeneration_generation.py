@@ -245,6 +245,7 @@ def _repair_option(action):
         "sentence_boundary_segmentation": ("--sentence-segment-failed", 0),
         "edge_silence_trim": ("--trim-edge-silence-failed", 0),
         "bounded_seed_retry": ("--bounded-seed-failed", 2),
+        "offline_fallback_backend": ("--offline-fallback-failed", 0),
     }
     try:
         option, retries = options[action]

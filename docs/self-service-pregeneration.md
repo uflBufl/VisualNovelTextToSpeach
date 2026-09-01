@@ -301,9 +301,12 @@ bounded MOSS seed attempts. Pocket is unseeded, so it never receives a seed
 retry. Every subprocess is scoped to the exact failed queue IDs and one repair
 strategy; successful and unrelated outcomes are not regenerated. The plan is
 recomputed after every batch, and one queue/action pair is never repeated in the
-same recovery run. Thus a persistent defect becomes a deferred fallback instead
-of an infinite retry loop. Recovery shares the generation cancellation signal
-and resumes from the same output after restart.
+same recovery run. A residual failure with bound non-Pocket provenance receives
+exactly one Pocket default fallback attempt. A failed Pocket result is never
+retried by Pocket again; it proceeds to the explicit live route below. Legacy
+failures without bound synthesis provenance remain blocked instead of being
+guessed. Recovery shares the generation cancellation signal and resumes from the
+same output after restart.
 
 When Pocket itself cannot finish a line and no supported safe action remains,
 the same background recovery phase records an explicit live-Pocket terminal

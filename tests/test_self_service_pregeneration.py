@@ -112,7 +112,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             dialog.continue_button.click()
             for _step in range(6):
-                self.assertTrue(pool.tasks)
+                self.assertTrue(
+                    pool.tasks,
+                    f"step {_step}: {dialog.resume_status.text()}",
+                )
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
                 visible_text.extend(
@@ -256,7 +259,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             for _step in range(8):
                 if second.result() == QDialog.DialogCode.Accepted:
                     break
-                self.assertTrue(pool.tasks)
+                self.assertTrue(
+                    pool.tasks,
+                    f"step {_step}: {second.resume_status.text()}",
+                )
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
 
