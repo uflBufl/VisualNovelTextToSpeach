@@ -195,6 +195,7 @@ class TrayApplicationTest(unittest.TestCase):
             imported=Mock(),
             approved=38,
             live_fallbacks=1,
+            story_lines=42,
         )
         dialog.pack_result.return_value = pack_result
 
@@ -218,11 +219,11 @@ class TrayApplicationTest(unittest.TestCase):
         start_activation.assert_called_once()
         self.assertIs(start_activation.call_args.args[0], pack_result)
         status = start_activation.call_args.args[1]
-        self.assertIn("42 lines", status)
+        self.assertIn("covers 42 dialogue lines", status)
         self.assertIn("Matched 3 voice groups", status)
         self.assertIn("1 will use narrator", status)
-        self.assertIn("Generated 38", status)
-        self.assertIn("1 need automatic recovery", status)
+        self.assertIn("38 have prepared voices", status)
+        self.assertIn("1 will use live voice", status)
         tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):

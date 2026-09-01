@@ -21,10 +21,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
   - [ ] Opportunistically pre-render the next unresolved comparison after the
         current A/B card becomes usable, without delaying a decision or making
         cancellation wait for speculative work.
-- [ ] Extend automatic pack publication from the completed single-selection path
-      to incremental chapter preparation: reuse unchanged work, keep the last good
-      pack playable while another chapter is prepared, merge terminal routes
-      atomically, and report coverage only in player language.
 - [ ] Extend the synthetic end-to-end journey with cancellation during active
       generation, process restart and exact-line resume before the already tested
       repair, fallback, publication and activation stages.

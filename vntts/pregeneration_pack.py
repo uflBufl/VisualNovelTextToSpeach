@@ -16,12 +16,21 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
     write_generated_audio_manifest,
 )
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexError,
+    load_story_index_document,
+    write_story_index_document,
+)
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    load_voice_manifest,
+    normalize_character_name,
+    write_voice_manifest,
+)
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.generation_manifest import approved_manifest_entries
@@ -36,7 +45,10 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
 )
-from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_queue import (
+    PregenerationInput,
+    project_source_audio_semantics,
+)
 from vntts.pregeneration_setup import PregenerationJob
 from vntts.source_audio_semantics import (
     canonical_document_sha256,
@@ -56,9 +68,15 @@ class OfflinePackResult:
     imported: GamePackImport
     approved: int
     live_fallbacks: int
+    story_lines: int = 0
 
 
 class OfflinePackPublisher:
+    def __init__(self, *, base_pack=None):
+        self.base_pack = (
+            Path(base_pack).expanduser().resolve() if base_pack else None
+        )
+
     def publish(
         self,
         job,
@@ -93,8 +111,14 @@ class OfflinePackPublisher:
                 f"Unable to inspect prepared audio: {error}"
             ) from error
         _require_terminal_generation(state, queue)
+        base, source_story = _load_incremental_base(self.base_pack, job, story)
+        base_identity = (
+            None
+            if base is None
+            else base.pack.extensions["vntts.self-service"]["identity"]
+        )
         state_sha256 = sha256_file(generation_result.state)
-        identity = _identity(generation_input, state_sha256)
+        identity = _identity(generation_input, state_sha256, base_identity)
         destination = (
             generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
         )
@@ -108,33 +132,51 @@ class OfflinePackPublisher:
             story_copy = staging / "story" / "story-index.jsonl"
             voice_copy = staging / "voices" / "voice-manifest.json"
             generated_copy = staging / "generated" / "manifest.json"
-            _copy_file(generation_input.story_index, story_copy)
-            _copy_file(generation_input.voice_manifest, voice_copy)
-            _copy_voice_references(
-                generation_input.voice_manifest,
-                voice_copy,
-                voice_document,
-                voices,
-            )
-            _raise_if_cancelled(cancel_event)
-            generated_records = approved_manifest_entries(
-                state,
-                generation_result.output,
-            )
-            for record in generated_records:
-                relative = _safe_relative(record["audio"], "Generated WAV")
-                _copy_file(
-                    generation_result.output / Path(*relative.parts),
-                    generated_copy.parent / Path(*relative.parts),
+            if base is None:
+                _copy_file(generation_input.story_index, story_copy)
+                _copy_file(generation_input.voice_manifest, voice_copy)
+                _copy_voice_references(
+                    generation_input.voice_manifest,
+                    voice_copy,
+                    voice_document,
+                    voices,
                 )
-            live_fallbacks = _live_fallback_records(state)
+                published_story = story
+            else:
+                published_story, semantic_copy, semantic_document = (
+                    _write_cumulative_story(
+                        base,
+                        source_story,
+                        generation_input,
+                        story_copy,
+                    )
+                )
+                _write_cumulative_voices(
+                    base,
+                    generation_input.voice_manifest,
+                    voice_document,
+                    voices,
+                    voice_copy,
+                )
+            _raise_if_cancelled(cancel_event)
+            generated_records, live_fallbacks = _write_cumulative_routes(
+                base,
+                story,
+                state,
+                generation_result,
+                generated_copy,
+            )
             write_generated_audio_manifest(
                 generated_copy,
                 {
-                    "game": story.game,
-                    "language": story.language,
-                    "source_queue_sha256": generation_input.queue_sha256,
+                    "game": published_story.game,
+                    "language": published_story.language,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "vntts.self-service.incremental": {
+                        "schema_version": 1,
+                        "base_pack_identity": base_identity,
+                        "current_queue_sha256": generation_input.queue_sha256,
+                    },
                     "vntts.authoring.live_fallback": {
                         "schema_version": 1,
                         "mode": "explicit",
@@ -148,11 +190,12 @@ class OfflinePackPublisher:
                 },
                 generated_records,
             )
-            semantic_copy, semantic_document = _copy_semantic_evidence(
-                generation_input,
-                staging,
-                story_copy,
-            )
+            if base is None:
+                semantic_copy, semantic_document = _copy_semantic_evidence(
+                    generation_input,
+                    staging,
+                    story_copy,
+                )
             components = {
                 "story_index": story_copy,
                 "voice_manifest": voice_copy,
@@ -160,7 +203,7 @@ class OfflinePackPublisher:
             }
             pack_metadata = {
                 "game": {
-                    "id": story.game or job.game,
+                    "id": published_story.game or job.game,
                     "version": job.game_version or "local",
                 },
                 "producers": [{"name": "vntts-self-service", "version": "1"}],
@@ -174,6 +217,8 @@ class OfflinePackPublisher:
                     "source_state_sha256": state_sha256,
                     "approved_count": len(generated_records),
                     "live_fallback_count": len(live_fallbacks),
+                    "story_line_count": len(published_story.records),
+                    "base_pack_identity": base_identity,
                 },
             }
             if semantic_copy is not None:
@@ -257,7 +302,7 @@ def _require_terminal_generation(state, queue):
             )
 
 
-def _identity(generation_input, state_sha256):
+def _identity(generation_input, state_sha256, base_pack_identity=None):
     payload = {
         "schema_version": 1,
         "generation_input_identity": generation_input.identity,
@@ -271,7 +316,209 @@ def _identity(generation_input, state_sha256):
             else sha256_file(generation_input.source_audio_semantic_evidence)
         ),
     }
+    if base_pack_identity is not None:
+        payload["base_pack_identity"] = base_pack_identity
     return canonical_document_sha256(payload)
+
+
+def _load_incremental_base(path, job, selected_story):
+    if path is None or not path.is_file():
+        return None, None
+    try:
+        imported = import_game_pack(path)
+        extension = imported.pack.extensions.get("vntts.self-service")
+        if not isinstance(extension, dict) or not _is_sha256(
+            extension.get("identity")
+        ):
+            return None, None
+        if (
+            imported.pack.game_id != (selected_story.game or job.game)
+            or imported.pack.game_version != (job.game_version or "local")
+        ):
+            return None, None
+        source_path = Path(job.story_index).expanduser().resolve()
+        if sha256_file(source_path) != job.story_index_sha256:
+            raise OfflinePackError("Selected source story changed")
+        source = load_story_index_document(source_path)
+        base_story = load_story_index_document(imported.story_index)
+    except (GamePackError, OSError, StoryIndexError, ValueError) as error:
+        raise OfflinePackError(f"Unable to inspect the active offline pack: {error}") from error
+    if (
+        source.game != selected_story.game
+        or source.language != selected_story.language
+        or base_story.game != source.game
+        or base_story.language != source.language
+    ):
+        return None, None
+    source_by_id = {record.line_id: record for record in source.records}
+    if any(
+        record.line_id not in source_by_id
+        or source_by_id[record.line_id].text_sha256 != record.text_sha256
+        for record in base_story.records
+    ):
+        return None, None
+    return imported, source
+
+
+def _write_cumulative_story(
+    base,
+    source_story,
+    generation_input,
+    story_copy,
+):
+    base_story = load_story_index_document(base.story_index)
+    current_story = load_story_index_document(generation_input.story_index)
+    selected_ids = {
+        *(record.line_id for record in base_story.records),
+        *(record.line_id for record in current_story.records),
+    }
+    records = [
+        record.to_record()
+        for record in source_story.records
+        if record.line_id in selected_ids
+    ]
+    if {record["line_id"] for record in records} != selected_ids:
+        raise OfflinePackError("Cumulative story selection changed")
+    story_copy.parent.mkdir(parents=True, exist_ok=True)
+    metadata, records, semantic_copy = project_source_audio_semantics(
+        source_story.path,
+        source_story.metadata,
+        records,
+        story_copy.parent,
+    )
+    published_story = write_story_index_document(story_copy, metadata, records)
+    semantic_document = (
+        None
+        if semantic_copy is None
+        else load_source_audio_semantic_evidence(semantic_copy, story_copy)
+    )
+    return published_story, semantic_copy, semantic_document
+
+
+def _write_cumulative_voices(
+    base,
+    current_manifest,
+    current_document,
+    current_voices,
+    target_manifest,
+):
+    base_document, base_voices = load_voice_manifest(
+        base.voice_manifest,
+        allow_legacy=False,
+    )
+    merged = _portable_voice_entries(
+        base.voice_manifest,
+        target_manifest,
+        base_document,
+        base_voices,
+    )
+    for candidate in _portable_voice_entries(
+        current_manifest,
+        target_manifest,
+        current_document,
+        current_voices,
+    ):
+        names = {
+            normalize_character_name(value)
+            for value in (candidate["character"], *candidate.get("aliases", ()))
+        }
+        merged = [
+            existing
+            for existing in merged
+            if names.isdisjoint(
+                normalize_character_name(value)
+                for value in (
+                    existing["character"],
+                    *existing.get("aliases", ()),
+                )
+            )
+        ]
+        merged.append(candidate)
+    merged.sort(key=lambda value: value["character"].casefold())
+    write_voice_manifest(target_manifest, {"version": 2, "voices": merged})
+
+
+def _portable_voice_entries(source_manifest, target_manifest, document, voices):
+    raw_voices = document.get("voices")
+    if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
+        raise OfflinePackError("Offline voice manifest changed")
+    result = []
+    for raw, voice in zip(raw_voices, voices, strict=True):
+        if tuple(raw.get("references") or ()) != voice.references:
+            raise OfflinePackError("Offline voice references changed")
+        candidate = copy.deepcopy(raw)
+        candidate.pop("reference", None)
+        candidate["references"] = []
+        for configured in voice.references:
+            relative = _safe_relative(configured, "Voice reference")
+            source = source_manifest.parent / Path(*relative.parts)
+            digest = sha256_file(source)
+            portable = f"references/{digest}.wav"
+            _copy_file(source, target_manifest.parent / portable)
+            candidate["references"].append(portable)
+        result.append(candidate)
+    return result
+
+
+def _write_cumulative_routes(
+    base,
+    current_story,
+    state,
+    generation_result,
+    generated_copy,
+):
+    current_line_ids = {record.line_id for record in current_story.records}
+    records = []
+    live_fallbacks = []
+    if base is not None:
+        if base.generated_audio_manifest is None:
+            raise OfflinePackError("Active self-service pack has no audio routes")
+        base_generated = load_generated_audio_document(base.generated_audio_manifest)
+        for record in base_generated.records:
+            if record.line_id not in current_line_ids:
+                records.append(
+                    _portable_generated_record(
+                        record.to_record(),
+                        record.audio,
+                        generated_copy,
+                    )
+                )
+        live_fallbacks.extend(
+            value
+            for value in _document_live_fallbacks(base_generated)
+            if value.get("line_id") not in current_line_ids
+        )
+    for record in approved_manifest_entries(state, generation_result.output):
+        relative = _safe_relative(record["audio"], "Generated WAV")
+        records.append(
+            _portable_generated_record(
+                record,
+                generation_result.output / Path(*relative.parts),
+                generated_copy,
+            )
+        )
+    live_fallbacks.extend(_live_fallback_records(state))
+    records.sort(key=lambda value: (value["line_id"], value["text_sha256"]))
+    live_fallbacks.sort(key=lambda value: (value["line_id"], value["text_sha256"]))
+    return records, live_fallbacks
+
+
+def _portable_generated_record(record, source, generated_copy):
+    candidate = copy.deepcopy(record)
+    portable = f"audio/{candidate['audio_sha256']}.wav"
+    _copy_file(source, generated_copy.parent / portable)
+    candidate["audio"] = portable
+    return candidate
+
+
+def _document_live_fallbacks(document):
+    extension = document.producer_metadata.get("vntts.authoring.live_fallback")
+    if extension is None:
+        return []
+    entries = extension.get("entries") if isinstance(extension, dict) else None
+    if not isinstance(entries, list):
+        raise OfflinePackError("Active pack live fallback ledger is malformed")
+    return copy.deepcopy(entries)
 
 
 def _live_fallback_records(state):
@@ -340,22 +587,39 @@ def _load_existing(destination, identity):
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")
-    GeneratedAudioLibrary(
-        load_generated_audio_document(imported.generated_audio_manifest)
-    )
+    story_lines = len(load_story_index_document(imported.story_index).records)
+    if extension.get("story_line_count", story_lines) != story_lines:
+        raise OfflinePackError("Existing offline pack coverage changed")
+    generated = load_generated_audio_document(imported.generated_audio_manifest)
+    library = GeneratedAudioLibrary(generated)
+    approved = extension.get("approved_count")
+    live_fallbacks = extension.get("live_fallback_count")
+    if approved != len(generated.records) or live_fallbacks != len(
+        library.live_fallbacks
+    ):
+        raise OfflinePackError("Existing offline pack route counts changed")
     return OfflinePackResult(
         identity=identity,
         directory=destination,
         manifest=imported.pack.manifest_path,
         imported=imported,
-        approved=extension.get("approved_count"),
-        live_fallbacks=extension.get("live_fallback_count"),
+        approved=approved,
+        live_fallbacks=live_fallbacks,
+        story_lines=story_lines,
     )
 
 
 def _raise_if_cancelled(cancel_event):
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Offline pack publication was cancelled")
+
+
+def _is_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 __all__ = [

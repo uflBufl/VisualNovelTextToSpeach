@@ -119,7 +119,7 @@ class PregenerationInputStore:
             voice_path = staging / "voice-manifest.json"
             queue_path = staging / "queue.jsonl"
             story_metadata, selected_records, semantic_evidence = (
-                _project_source_audio_semantics(
+                project_source_audio_semantics(
                     Path(job.story_index).expanduser().resolve(),
                     story.metadata,
                     [record.to_record() for record in selected],
@@ -452,7 +452,7 @@ def _digest(value):
     ).hexdigest()
 
 
-def _project_source_audio_semantics(
+def project_source_audio_semantics(
     source_story_path,
     metadata,
     records,
@@ -536,4 +536,5 @@ __all__ = [
     "PregenerationInputStore",
     "PregenerationQueueCancelled",
     "PregenerationQueueError",
+    "project_source_audio_semantics",
 ]

@@ -1,10 +1,14 @@
 import hashlib
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import write_story_index_document
+from vntts_artifacts.story_index import (
+    load_story_index_document,
+    write_story_index_document,
+)
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
@@ -42,11 +46,12 @@ def item(name, sequence):
     }
 
 
-def fixture(root):
+def fixture(root, names=("generated", "fallback")):
     identity = "a" * 64
     directory = root / f"generation-input-{identity[:16]}"
+    directory.parent.mkdir(parents=True, exist_ok=True)
     directory.mkdir()
-    items = (item("generated", 1), item("fallback", 2))
+    items = tuple(item(name, sequence) for sequence, name in enumerate(names, 1))
     story = directory / "story-index.jsonl"
     write_story_index_document(
         story,
@@ -169,6 +174,76 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 (items[1]["line_id"], items[1]["text_sha256"]),
                 library.live_fallbacks,
             )
+
+    def test_second_selection_publishes_an_immutable_cumulative_successor(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            base_job, base_input, base_result, base_items = fixture(root / "base")
+            base = OfflinePackPublisher().publish(
+                base_job,
+                base_input,
+                base_result,
+            )
+            base_hashes = (
+                sha256_file(base.manifest),
+                sha256_file(base.imported.generated_audio_manifest),
+            )
+            current_job, current_input, current_result, current_items = fixture(
+                root / "current",
+                names=("generated", "new"),
+            )
+            base_story = load_story_index_document(base_job.story_index)
+            current_story = load_story_index_document(current_job.story_index)
+            records = {
+                record.line_id: record.to_record()
+                for record in (*base_story.records, *current_story.records)
+            }
+            source_story = root / "source" / "story-index.jsonl"
+            source_story.parent.mkdir(parents=True)
+            write_story_index_document(
+                source_story,
+                current_story.metadata,
+                records.values(),
+            )
+            current_job = replace(
+                current_job,
+                story_index=str(source_story),
+                story_index_sha256=sha256_file(source_story),
+            )
+
+            successor = OfflinePackPublisher(base_pack=base.manifest).publish(
+                current_job,
+                current_input,
+                current_result,
+            )
+            successor_story = load_story_index_document(successor.imported.story_index)
+            library = GeneratedAudioLibrary.load_optional(
+                successor.imported.generated_audio_manifest
+            )
+            current_found = library.find(
+                current_items[0]["line_id"], current_items[0]["text_sha256"]
+            ) is not None
+            live_fallbacks = set(library.live_fallbacks)
+            base_unchanged = base_hashes == (
+                sha256_file(base.manifest),
+                sha256_file(base.imported.generated_audio_manifest),
+            )
+
+        self.assertNotEqual(successor.identity, base.identity)
+        self.assertEqual(len(successor_story.records), 3)
+        self.assertEqual(successor.story_lines, 3)
+        self.assertEqual(successor.approved, 1)
+        self.assertEqual(successor.live_fallbacks, 2)
+        self.assertTrue(current_found)
+        self.assertIn(
+            (base_items[1]["line_id"], base_items[1]["text_sha256"]),
+            live_fallbacks,
+        )
+        self.assertIn(
+            (current_items[1]["line_id"], current_items[1]["text_sha256"]),
+            live_fallbacks,
+        )
+        self.assertTrue(base_unchanged)
 
 
 if __name__ == "__main__":

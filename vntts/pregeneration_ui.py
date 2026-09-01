@@ -90,7 +90,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
-        self.publisher = publisher or OfflinePackPublisher()
+        self.publisher = publisher or OfflinePackPublisher(
+            base_pack=settings.game_pack
+        )
         self.importer = importer or Reverse1999GameImporter()
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)

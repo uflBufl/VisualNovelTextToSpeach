@@ -72,13 +72,11 @@ from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
-from vntts.pregeneration_acceptance import OfflineAcceptanceResult
 from vntts.pregeneration_activation import (
     OfflinePackActivationResult,
     OfflinePackActivator,
 )
 from vntts.pregeneration_pack import OfflinePackResult
-from vntts.pregeneration_recovery import OfflineRecoveryResult
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
@@ -2012,12 +2010,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         voice_plan = dialog.voice_plan()
         generation_input = dialog.generation_input()
         generation_result = dialog.generation_result()
-        recovery_result = dialog.recovery_result()
-        if not isinstance(recovery_result, OfflineRecoveryResult):
-            recovery_result = None
-        acceptance_result = dialog.acceptance_result()
-        if not isinstance(acceptance_result, OfflineAcceptanceResult):
-            acceptance_result = None
         pack_result = dialog.pack_result()
         if not isinstance(pack_result, OfflinePackResult):
             pack_result = None
@@ -2033,23 +2025,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Offline preparation finished without a validated game pack"
             )
             return None
+        covered_lines = pack_result.story_lines or job.estimate.selected_lines
         status = (
-            f"Offline preparation saved for {job.estimate.selected_lines} lines. "
+            f"Offline audio now covers {covered_lines} dialogue lines. "
+            f"{pack_result.approved} have prepared voices; "
+            f"{pack_result.live_fallbacks} will use live voice. "
             f"Matched {len(voice_plan.groups)} voice groups; "
-            f"{voice_plan.narrator_fallback_count} will use narrator. "
-            f"Generated {generation_result.generated}; "
-            + (
-                f"accepted {acceptance_result.approved} after automatic checks. "
-                if acceptance_result is not None
-                else ""
-            )
-            + (
-                f"automatic recovery fixed {recovery_result.recovered}; "
-                f"{recovery_result.live_fallbacks} will use live voice; "
-                f"{generation_result.failed} still need a fallback."
-                if recovery_result is not None
-                else f"{generation_result.failed} need automatic recovery."
-            )
+            f"{voice_plan.narrator_fallback_count} will use narrator."
         )
         self._start_pregeneration_activation(pack_result, status)
         return job

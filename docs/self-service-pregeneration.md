@@ -337,8 +337,19 @@ Final publication is also a background, identity-addressed operation. It
 requires every selected generation item to be either automatically approved or
 an explicit live-Pocket fallback, then copies only the selected story, effective
 voice references, approved WAVs and optional projected ASR evidence into a new
-portable game-pack directory. The generated-audio manifest keeps generated WAVs
-and live fallbacks as separate routes. Before the directory can become visible,
+portable game-pack directory. When the active pack is a compatible self-service
+pack, publication builds an immutable cumulative successor: retained line IDs
+must still have the same text in the current checksum-bound source story; the
+current selection replaces every older route for those lines; and unrelated
+story lines, voices, generated WAVs and live fallbacks are copied forward.
+Semantic evidence is reprojected from the current source story over the complete
+union instead of combining stale projected evidence. The successor identity
+includes the base-pack identity, while the old directory remains unchanged and
+active until successor activation succeeds. Packs from another game/version,
+non-self-service packs and incompatible source lines are not reused.
+
+The generated-audio manifest keeps generated WAVs and live fallbacks as separate
+routes. Before the directory can become visible,
 the public game-pack importer, semantic-evidence validator and runtime generated
 audio loader all reopen the staged bytes. Publication uses a no-overwrite atomic
 rename; repeating an identical terminal state reuses the same validated pack,
