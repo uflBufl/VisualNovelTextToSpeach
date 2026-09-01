@@ -79,6 +79,7 @@ class VoiceAuditionPreviewService:
         group,
         candidate_source_id,
         *,
+        text=None,
         cancel_event=None,
     ):
         """Generate or reuse the group's one representative candidate phrase."""
@@ -89,9 +90,10 @@ class VoiceAuditionPreviewService:
             cancellation = _CombinedCancellation(self._cancel, cancel_event)
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
+            preview_text = _preview_text(group, text)
             registry = _load_candidate_registry(plan, candidate)
             _preflight_candidate_references(registry, candidate)
-            identity = _preview_identity(plan, group, candidate)
+            identity = _preview_identity(plan, group, candidate, preview_text)
             target = self.root / f"{identity}.wav"
             if target.exists():
                 return _cached_preview(
@@ -100,6 +102,7 @@ class VoiceAuditionPreviewService:
                     plan,
                     group,
                     candidate,
+                    preview_text,
                 )
 
             self.root.mkdir(parents=True, exist_ok=True)
@@ -133,7 +136,7 @@ class VoiceAuditionPreviewService:
             seed = None if plan.synthesis_backend == "pocket-tts" else 0
             request = SynthesisRequest(
                 voice=candidate.source_character,
-                text=group.sample_text,
+                text=preview_text,
                 seed=seed,
                 generation_profile=plan.synthesis_profile,
                 cancellation=cancellation,
@@ -173,7 +176,7 @@ class VoiceAuditionPreviewService:
             staging = _staging_path(target)
             try:
                 write_pcm16_wav(staging, samples, sample_rate)
-                _inspect_preview(staging, group.sample_text)
+                _inspect_preview(staging, preview_text)
                 _load_candidate_registry(plan, candidate)
                 _raise_if_cancelled(cancellation)
                 os.replace(staging, target)
@@ -185,6 +188,7 @@ class VoiceAuditionPreviewService:
                 plan,
                 group,
                 candidate,
+                preview_text,
                 reused=False,
             )
 
@@ -258,9 +262,18 @@ def _validate_request(plan, group, candidate_source_id):
         candidates = (*candidates, group.narrator_candidate)
     if len(candidates) != 1:
         raise VoiceAuditionError("Voice audition candidate is not uniquely available")
-    if not group.sample_text.strip():
-        raise VoiceAuditionError("Voice audition text is blank")
     return candidates[0]
+
+
+def _preview_text(group, text):
+    selected = group.sample_text if text is None else text
+    if (
+        not isinstance(selected, str)
+        or not selected.strip()
+        or selected not in {group.sample_text, group.alternate_sample_text}
+    ):
+        raise VoiceAuditionError("Voice audition text is invalid")
+    return selected
 
 
 def _load_candidate_registry(plan, candidate):
@@ -314,12 +327,12 @@ def _load_candidate_registry(plan, candidate):
     return CharacterVoiceRegistry((voice,))
 
 
-def _preview_identity(plan, group, candidate):
+def _preview_identity(plan, group, candidate, text):
     document = {
         "group_id": group.group_id,
         "decision_context_sha256": group.decision_context_sha256,
         "candidate": asdict(candidate),
-        "text": group.sample_text,
+        "text": text,
         "backend": plan.synthesis_backend,
         "model": plan.synthesis_model,
         "language": plan.synthesis_language,
@@ -367,11 +380,11 @@ def _inspect_preview(path, text):
     return quality
 
 
-def _cached_preview(target, identity, plan, group, candidate, *, reused=True):
+def _cached_preview(target, identity, plan, group, candidate, text, *, reused=True):
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
-        info = _inspect_preview(target, group.sample_text)
+        info = _inspect_preview(target, text)
         audio_sha256 = sha256_file(target)
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
@@ -379,7 +392,7 @@ def _cached_preview(target, identity, plan, group, candidate, *, reused=True):
         identity=identity,
         group_id=group.group_id,
         candidate_source_id=candidate.source_id,
-        text=group.sample_text,
+        text=text,
         backend=plan.synthesis_backend,
         model=plan.synthesis_model,
         generation_profile=plan.synthesis_profile,

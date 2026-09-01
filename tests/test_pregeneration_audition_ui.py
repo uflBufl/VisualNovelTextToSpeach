@@ -158,6 +158,43 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.assertNotIn(authoring_word, visible_text)
             panel.deleteLater()
 
+    def test_second_phrase_is_generated_only_when_requested(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            preview_service = Mock()
+            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=preview_service,
+                thread_pool=pool,
+                player=Mock(),
+            )
+
+            panel.start(plan)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertTrue(panel.another_sample_button.isEnabled())
+            self.assertTrue(
+                all("text" not in call.kwargs for call in preview_service.generate.call_args_list)
+            )
+
+            panel.another_sample_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertIn(group.alternate_sample_text, panel.sample.text())
+            self.assertTrue(panel.a_use.isEnabled())
+            alternate_calls = preview_service.generate.call_args_list[-2:]
+            self.assertEqual(
+                [call.kwargs["text"] for call in alternate_calls],
+                [group.alternate_sample_text, group.alternate_sample_text],
+            )
+            panel.shutdown()
+            panel.deleteLater()
+
     def test_save_failure_keeps_the_same_decision_available(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -359,6 +359,11 @@ class VoicePlanStoreTest(unittest.TestCase):
                 rhiannon.reference_sha256s,
             )
             self.assertEqual(rhiannon.portrait, "10")
+            self.assertEqual(
+                rhiannon.sample_text,
+                "This is the most useful preview sentence for my voice.",
+            )
+            self.assertEqual(rhiannon.alternate_sample_text, "Short.")
             self.assertNotIn("line:original", rhiannon.line_ids)
             self.assertTrue(VoicePlanStore(jobs).path_for(job).is_file())
 

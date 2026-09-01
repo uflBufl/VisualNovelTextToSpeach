@@ -221,6 +221,36 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertFalse(factory_called)
 
+    def test_optional_second_phrase_uses_a_separate_persistent_preview(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: backend,
+            )
+            source_id = group.candidates[0].source_id
+
+            first = service.generate(plan, group, source_id)
+            alternate = service.generate(
+                plan,
+                group,
+                source_id,
+                text=group.alternate_sample_text,
+            )
+            with self.assertRaisesRegex(VoiceAuditionError, "text is invalid"):
+                service.generate(plan, group, source_id, text="Unbound phrase")
+            service.close()
+
+            self.assertNotEqual(first.identity, alternate.identity)
+            self.assertNotEqual(first.path, alternate.path)
+            self.assertEqual(alternate.text, "Short.")
+            self.assertEqual(
+                [request.text for request in backend.requests],
+                [group.sample_text, group.alternate_sample_text],
+            )
+
     def test_rejects_objectively_bad_reference_before_starting_model(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

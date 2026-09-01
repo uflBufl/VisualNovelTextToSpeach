@@ -64,6 +64,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._ignore_preview_result = False
         self._loading_narrator = False
         self._narrator_companion = None
+        self._alternate_active = False
 
         self.summary = QLabel()
         self.summary.setAccessibleName("Voice choice estimate")
@@ -94,6 +95,9 @@ class VoiceAuditionPanel(QGroupBox):
         self.sample = QLabel()
         self.sample.setAccessibleName("Voice preview phrase")
         self.sample.setWordWrap(True)
+        self.another_sample_button = QPushButton("Try another phrase")
+        self.another_sample_button.clicked.connect(self.try_another_phrase)
+        self.another_sample_button.setVisible(False)
 
         self.a_box, self.a_title, self.a_reason, self.a_play, self.a_use = (
             self._candidate_box("Voice A", 0)
@@ -130,6 +134,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.question)
         layout.addWidget(self.anchor_button)
         layout.addWidget(self.sample)
+        layout.addWidget(self.another_sample_button)
         layout.addLayout(comparison)
         layout.addLayout(outcomes)
         layout.addWidget(self.status)
@@ -161,6 +166,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._ignore_preview_result = False
         self._loading_narrator = False
         self._narrator_companion = None
+        self._alternate_active = False
         self.retry_save_button.setVisible(False)
         self.setVisible(True)
         self._show_group()
@@ -228,6 +234,29 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._show_narrator_fallback()
 
+    def try_another_phrase(self):
+        group = self.current_group()
+        if (
+            self.preview_runner.active
+            or self.decision_runner.active
+            or self._alternate_active
+            or group.alternate_sample_text is None
+        ):
+            return
+        self._alternate_active = True
+        self.sample.setText(f'Both voices say: "{group.alternate_sample_text}"')
+        self.another_sample_button.setEnabled(False)
+        self._hide_candidate_boxes()
+        self._set_decision_actions(False)
+        self.status.setText("Preparing the same voices with another phrase...")
+        self.preview_runner.start(
+            self._generate_candidate_previews,
+            self._plan,
+            group,
+            group.candidates,
+            group.alternate_sample_text,
+        )
+
     def cancel(self):
         if self._terminal_emitted:
             return
@@ -275,6 +304,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._displayed = ()
         self._loading_narrator = False
         self._narrator_companion = None
+        self._alternate_active = False
         group = self.current_group()
         remaining = len(self._groups) - self._group_index
         estimate = max(15, remaining * 15)
@@ -296,6 +326,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.anchor_button.setVisible(False)
         self.sample.setText(f'Both voices say: "{group.sample_text}"')
+        self.another_sample_button.setVisible(group.alternate_sample_text is not None)
+        self.another_sample_button.setEnabled(False)
         self._hide_candidate_boxes()
         self._set_decision_actions(False)
         self.choose_all_button.setEnabled(True)
@@ -307,7 +339,7 @@ class VoiceAuditionPanel(QGroupBox):
             group.candidates,
         )
 
-    def _generate_candidate_previews(self, plan, group, candidates):
+    def _generate_candidate_previews(self, plan, group, candidates, text=None):
         results = []
         for candidate in candidates:
             try:
@@ -315,6 +347,7 @@ class VoiceAuditionPanel(QGroupBox):
                     plan,
                     group,
                     candidate.source_id,
+                    **({} if text is None else {"text": text}),
                 )
             except VoiceAuditionCancelled:
                 raise
@@ -392,6 +425,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._show_candidate_pair()
 
     def _show_candidate_pair(self):
+        group = self.current_group()
         pair = self._viable_candidates[
             self._candidate_offset : self._candidate_offset + 2
         ]
@@ -410,6 +444,9 @@ class VoiceAuditionPanel(QGroupBox):
         self.neither_button.setEnabled(True)
         self.auto_button.setEnabled(True)
         self.choose_all_button.setEnabled(True)
+        self.another_sample_button.setEnabled(
+            group.alternate_sample_text is not None and not self._alternate_active
+        )
         self.status.setText(
             "Play either voice in any order. Playback does not disable your choices."
         )
@@ -427,6 +464,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._loading_narrator = True
         self._narrator_companion = companion
+        self.another_sample_button.setEnabled(False)
         self._hide_candidate_boxes()
         self._set_decision_actions(False)
         self.status.setText("Preparing the narrator fallback preview...")
@@ -435,10 +473,17 @@ class VoiceAuditionPanel(QGroupBox):
             self._plan,
             group,
             candidate,
+            (
+                group.alternate_sample_text
+                if self._alternate_active
+                else group.sample_text
+            ),
         )
 
-    def _generate_narrator_preview(self, plan, group, candidate):
-        preview = self.preview_service.generate(plan, group, candidate.source_id)
+    def _generate_narrator_preview(self, plan, group, candidate, text):
+        preview = self.preview_service.generate(
+            plan, group, candidate.source_id, text=text
+        )
         return candidate, preview
 
     def _narrator_preview_finished(self, result, error):

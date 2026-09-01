@@ -32,7 +32,7 @@ from vntts.voices import (
     synthesis_character_for_line,
 )
 
-voice_plan_schema_version = 2
+voice_plan_schema_version = 3
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
@@ -83,6 +83,7 @@ class VoiceGroup:
     source_voice_id: str | None
     line_ids: tuple[str, ...]
     sample_text: str
+    alternate_sample_text: str | None
     route: str
     source_id: str
     source_character: str | None
@@ -484,6 +485,7 @@ class VoicePlanStore:
             and candidates[0].match_score >= 100
             else None
         )
+        sample_text, alternate_sample_text = _sample_texts(records)
         return VoiceGroup(
             group_id=group_id,
             character=character,
@@ -493,7 +495,8 @@ class VoicePlanStore:
             source_bank=source_bank,
             source_voice_id=source_voice_id,
             line_ids=tuple(record.line_id for record in records),
-            sample_text=_sample_text(records),
+            sample_text=sample_text,
+            alternate_sample_text=alternate_sample_text,
             route=route,
             source_id=source_id,
             source_character=candidate.character if candidate is not None else None,
@@ -1023,11 +1026,14 @@ def _optional_variant(value):
     return _digest(value)
 
 
-def _sample_text(records):
-    eligible = [record.text.strip() for record in records if record.text.strip()]
+def _sample_texts(records):
+    eligible = list(
+        dict.fromkeys(record.text.strip() for record in records if record.text.strip())
+    )
     if not eligible:
-        return "Voice preview."
-    return min(eligible, key=lambda value: (abs(len(value) - 90), len(value)))
+        return "Voice preview.", None
+    ranked = sorted(eligible, key=lambda value: (abs(len(value) - 90), len(value)))
+    return ranked[0], ranked[1] if len(ranked) > 1 else None
 
 
 def _synthesis_controls(settings):

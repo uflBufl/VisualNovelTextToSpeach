@@ -75,6 +75,12 @@ and zero surviving candidates take the existing safe fallback. Diagnostic
 artifact signals are not rejection authority until held-out evidence establishes
 a safe margin.
 
+The first comparison uses one representative line. When the same voice remains
+ambiguous, `Try another phrase` lazily renders one different line from the same
+character variant under identical synthesis controls. The second phrase is
+optional, has its own checksum-bound cache identity and never adds a mandatory
+decision.
+
 ## Progress and recovery
 
 Before generation, the wizard shows selected chapters, dialogue-line count, an

@@ -18,8 +18,9 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
         a safe automatic margin.
   - [ ] Cluster acoustically duplicate references for one evidenced speaker while
         preserving genuinely distinct age and identity variants.
-  - [ ] Add an optional second matched phrase and opportunistically pre-render the
-        next unresolved comparison after the current A/B card becomes usable.
+  - [ ] Opportunistically pre-render the next unresolved comparison after the
+        current A/B card becomes usable, without delaying a decision or making
+        cancellation wait for speculative work.
 - [ ] Complete automatic quality recovery after the resumable first pass. Select
       a supported local backend/profile from hardware capabilities instead of
       blindly trusting stale settings; classify truncation, repetition,
