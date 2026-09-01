@@ -153,8 +153,8 @@ def handle(arguments: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "comparison": str(arguments.comparison),
-                    "session": str(session),
+                    "comparison": arguments.comparison.as_posix(),
+                    "session": session.as_posix(),
                 },
                 indent=2,
                 sort_keys=True,

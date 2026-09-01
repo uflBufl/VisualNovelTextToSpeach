@@ -1544,6 +1544,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.resize(900, 640)
             dialog.show()
             self.application.processEvents()
+            dialog.layout().activate()
             dialog.player = Mock()
             controls = (
                 dialog.previous_pending,

@@ -213,8 +213,9 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertFalse(managed_lock.exists())
             self.assertFalse(managed_temp.exists())
             self.assertFalse(runtime_lock.exists())
-            self.assertTrue(managed_interpreter.stat().st_mode & 0o111)
-            self.assertFalse(executable_data.stat().st_mode & 0o111)
+            if os.name != "nt":
+                self.assertTrue(managed_interpreter.stat().st_mode & 0o111)
+                self.assertFalse(executable_data.stat().st_mode & 0o111)
 
     def test_windows_entrypoint_pruning_preserves_distribution_root(self):
         with TemporaryDirectory() as directory:

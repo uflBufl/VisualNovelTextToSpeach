@@ -134,7 +134,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                             {
                                 "character": "Lucy",
                                 "speaker": "lucy",
-                                "references": [str(outside)],
+                                "references": ["../outside.wav"],
                             }
                         ],
                     }

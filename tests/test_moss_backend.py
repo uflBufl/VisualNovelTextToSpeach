@@ -659,7 +659,9 @@ class MossTTSBackendTest(unittest.TestCase):
             machine = SimpleNamespace(machine="arm64")
             with (
                 patch("vntts.speech_backend.sys.platform", "darwin"),
-                patch("vntts.speech_backend.os.uname", return_value=machine),
+                patch(
+                    "vntts.speech_backend.os.uname", return_value=machine, create=True
+                ),
                 self.assertRaisesRegex(TTSConfigurationError, "uv sync --project"),
             ):
                 activate_moss_tts_runtime(missing_runtime)

@@ -531,14 +531,14 @@ class SourceReferenceQualityDialog(QDialog):
         )
 
     def _decision_finished(self, _result, error):
-        self._decision_active = False
         if error is None:
             self._load_next()
         else:
-            self._update_decision_enabled()
             self.status.setText(
                 f"Decision was not saved: {error}. Choose again to retry."
             )
+        self._decision_active = False
+        self._update_decision_enabled()
         if self._close_pending:
             self._close_pending = False
             self.close()

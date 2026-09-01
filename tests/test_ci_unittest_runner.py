@@ -11,6 +11,7 @@ from scripts.run_ci_unittests import (
     _run_macos_full_discovery,
     partition_macos_test_ids,
     workflow_failure_details,
+    workflow_failure_sections,
 )
 
 
@@ -40,12 +41,26 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             partition_macos_test_ids(["tests.test_alpha.X.test_a"])
 
     def test_failure_details_keep_both_ends(self):
-        value = "start" + "x" * 6_000 + "\nFAIL: test_windows\n" + "y" * 6_000 + "finish"
+        value = (
+            "start" + "x" * 6_000 + "\nFAIL: test_windows\n" + "y" * 6_000 + "finish"
+        )
         details = workflow_failure_details(value)
 
         self.assertTrue(details.startswith("FAIL: test_windows"))
         self.assertTrue(details.endswith("finish"))
         self.assertLessEqual(len(details), 4_000)
+
+    def test_failure_sections_keep_each_unittest_traceback(self):
+        divider = "=" * 70
+        output = (
+            f"dots\n{divider}\nFAIL: test_one\ntrace one\n"
+            f"{divider}\nERROR: test_two\ntrace two\n{divider}\nsummary"
+        )
+
+        self.assertEqual(
+            workflow_failure_sections(output),
+            ("FAIL: test_one\ntrace one", "ERROR: test_two\ntrace two"),
+        )
 
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:

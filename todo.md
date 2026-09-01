@@ -35,6 +35,9 @@ measurements and completed-work history in `docs/` and Git, not here.
 ## P0 - Make the Windows test gate non-admin portable
 
 - [ ] Make the full build/test gate pass from an ordinary Windows account.
+  - Resolve the current Windows-only failures in asset validation's stale-path
+    race, cache pruning order, and the render/silence CLI JSON path contracts;
+    bind each change to the exact assertion from the unbuffered CI report.
   - Replace only Windows-failing POSIX fixture paths with platform-neutral
     temporary paths after binding each change to an exact traceback; do not
     rewrite harmless virtual paths used solely as mocked values.

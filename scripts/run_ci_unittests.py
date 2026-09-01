@@ -1,6 +1,7 @@
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,15 +19,21 @@ def escape_workflow_command(value):
 
 def workflow_failure_details(value):
     identities = "\n".join(
-        line
-        for line in value.splitlines()
-        if line.startswith(("FAIL: ", "ERROR: "))
+        line for line in value.splitlines() if line.startswith(("FAIL: ", "ERROR: "))
     )
     if len(value) <= 4_000:
         return value
     prefix = f"{identities[:1_000]}\n" if identities else value[:1_000]
     tail_size = 3_950 - len(prefix)
     return prefix + "\n... output truncated ...\n" + value[-tail_size:]
+
+
+def workflow_failure_sections(value):
+    return tuple(
+        section.strip()
+        for section in re.split(r"^={70}\r?$", value, flags=re.MULTILINE)
+        if section.lstrip().startswith(("FAIL: ", "ERROR: "))
+    )
 
 
 def _flatten_suite(suite):
@@ -162,6 +169,12 @@ def main(arguments=None):
     )
     print(completed.stdout, end="")
     if completed.returncode and os.environ.get("GITHUB_ACTIONS"):
+        for section in workflow_failure_sections(completed.stdout):
+            print(
+                "::error title=Unittest failure::"
+                f"{escape_workflow_command(workflow_failure_details(section))}",
+                file=sys.stderr,
+            )
         details = (
             workflow_failure_details(completed.stdout)
             or "Unit tests exited without output."

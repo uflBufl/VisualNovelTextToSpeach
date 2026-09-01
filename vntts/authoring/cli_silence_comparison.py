@@ -88,8 +88,8 @@ def handle(arguments: argparse.Namespace) -> int:
             seed=arguments.seed,
         )
         payload = {
-            "session": str(session),
-            "comparison": str(arguments.comparison),
+            "session": session.as_posix(),
+            "comparison": arguments.comparison.as_posix(),
         }
     else:
         raise ValueError(

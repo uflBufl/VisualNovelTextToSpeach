@@ -753,6 +753,8 @@ class CompactController(QWidget):
     def _fit_content(self):
         right = self.x() + self.width()
         top = self.y()
+        for label in (self.status, self.speaker):
+            label.setMinimumHeight(label.heightForWidth(label.width()))
         self.adjustSize()
         if self.isVisible():
             self.move(right - self.width(), top)
