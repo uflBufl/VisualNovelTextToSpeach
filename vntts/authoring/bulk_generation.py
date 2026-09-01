@@ -216,7 +216,7 @@ from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisRequest,
 )
-from vntts.voices import synthesis_character_for_line
+from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
 
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
@@ -781,7 +781,7 @@ def _synthesis_fallback_document(
 
 
 def _assert_missing_voice_overrides_match_manifest(
-    controls, character_overrides, *, narrator_character
+    controls, character_overrides, *, narrator_character, provider
 ):
     if not character_overrides:
         return
@@ -823,7 +823,11 @@ def _assert_missing_voice_overrides_match_manifest(
                 f"Narrator fallback role {requested!r} still has configured references"
             )
     narrator = indexed.get(normalize_character_name(narrator_character))
-    if narrator is None or not narrator.references:
+    if narrator is None or not (
+        narrator.references
+        or provider == "pocket-tts"
+        and narrator.speaker in pocket_tts_preset_voices
+    ):
         raise BulkGenerationError(
             f"Narrator character {narrator_character!r} has no configured reference"
         )
@@ -1595,6 +1599,7 @@ def run_bulk_generation(
         controls,
         character_overrides,
         narrator_character=narrator_character,
+        provider=provider,
     )
     control_records = [_stored_control(value) for value in controls]
     synthesis_configuration = {

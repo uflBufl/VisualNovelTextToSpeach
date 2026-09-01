@@ -412,3 +412,11 @@ reopened with all 1,205 queue items runnable and 15 explicit narrator-fallback
 roles. Distinct selected voices for the same displayed character receive
 checksum-derived, exact-line internal manifest routes; the queue keeps the
 original `speaker`, so this routing identity is not exposed as dialogue UI.
+
+The bounded real-backend canary then generated one character line and one
+missing-role narrator fallback with Pocket, automatically accepted both WAVs,
+published a two-line pack, reopened it through the public importer and activated
+it against isolated settings. Pocket's allowlisted embedded narrator now passes
+the same reference-free contract in CLI setup and shared fallback preflight. An
+intentional harness abort followed by two exact-job resumes performed no recovery
+or acceptance work; both WAV mtimes, sizes and SHA-256 values remained unchanged.

@@ -546,6 +546,50 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
+    def test_pocket_fallback_accepts_allowlisted_reference_free_narrator(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(character="Poacher I")
+            queue = write_queue(root / "queue.jsonl", [item])
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Narrator",
+                                "speaker": "alba",
+                                "aliases": [],
+                                "references": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            renderer = SyntheticRenderer()
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+            policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
+
+            result = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+                synthesis_character_overrides={"Poacher I": "Narrator"},
+                missing_voice_policy=policy.to_document(),
+                narrator_character="Narrator",
+                control_files={"voice_manifest": voice_manifest},
+            )
+
+        self.assertEqual(result.generated, 1)
+        self.assertEqual(renderer.requests[0].voice, "Narrator")
+
     def test_fallback_refuses_a_role_that_still_has_manifest_references(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

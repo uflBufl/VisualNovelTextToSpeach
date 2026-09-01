@@ -33,9 +33,6 @@ intentional omission as distinct terminal authorities.
       checksum-bound import of Chapter 13 plus `The Eaglet Takes Wing` has 1,205
       synthesis candidates; never resume the 1,220-item queue across that changed
       story-index identity.
-  - [ ] Run a bounded canary through generation, recovery, automatic acceptance,
-        publication and activation. Resume the same exact job after an
-        interruption and prove completed WAVs are not regenerated.
   - [ ] Complete the full current corpus only after the canary passes. Preserve
         source-audio candidates and invalidate decisions when controlling hashes
         change, but do not make the ordinary user review every technical flag or
