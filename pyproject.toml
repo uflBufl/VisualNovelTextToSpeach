@@ -43,6 +43,9 @@ rapidocr = [
     "rapidocr>=3.8.1,<4",
     "onnxruntime>=1.23,<2",
 ]
+speaker-identity = [
+    "speechbrain==1.0.3",
+]
 
 [project.scripts]
 vntts = "vntts.main:main"

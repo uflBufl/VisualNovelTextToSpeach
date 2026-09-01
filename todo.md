@@ -27,11 +27,15 @@ Follow
 and keep original audio, approved generated audio, explicit live fallback and
 intentional omission as distinct terminal authorities.
 
-- [ ] Validate speaker-identity clustering before reducing voice choices. Select
-      a redistributable local speaker-embedding implementation and label held-out
-      same-speaker, different-speaker and same-character/different-age pairs from
-      installed references. Publish a threshold only if it preserves every known
-      age/identity boundary; until then keep the current evidence variants apart.
+- [ ] Complete real speaker-identity threshold validation with the diagnostic
+      harness in
+      [`docs/speaker-identity-diagnostics.md`](docs/speaker-identity-diagnostics.md).
+      Label independently reviewed fit and held-out `same-speaker`,
+      `different-speaker` and `same-character/different-age` pairs from the
+      installed checksum-bound inventory. Publish a downstream threshold only
+      if the fit groups separate and held-out evaluation preserves every known
+      age/identity boundary; until then keep all current variants separate.
+
 ## P1 - Resolve project-wide code-review findings
 
 - [ ] Make release packages able to run the backend they recommend by default.

@@ -60,6 +60,15 @@ from vntts.authoring.cli_silence_comparison import (
 from vntts.authoring.cli_silence_comparison import (
     handle as handle_silence_comparison_command,
 )
+from vntts.authoring.cli_speaker_identity import (
+    COMMANDS as SPEAKER_IDENTITY_COMMANDS,
+)
+from vntts.authoring.cli_speaker_identity import (
+    configure_parsers as configure_speaker_identity_parsers,
+)
+from vntts.authoring.cli_speaker_identity import (
+    handle as handle_speaker_identity_command,
+)
 from vntts.authoring.cli_speech_robustness import (
     COMMANDS as SPEECH_ROBUSTNESS_COMMANDS,
 )
@@ -118,6 +127,7 @@ def create_parser() -> argparse.ArgumentParser:
     configure_voice_quality_parsers(subparsers)
     configure_references(subparsers)
     configure_silence_comparison_parsers(subparsers)
+    configure_speaker_identity_parsers(subparsers)
     configure_cohort_planning_parsers(subparsers)
     configure_cohort_decision_parsers(subparsers)
     configure_pack_parsers(subparsers)
@@ -139,6 +149,7 @@ COMMAND_FAMILIES = (
     CommandFamily(VOICE_QUALITY_COMMANDS, handle_voice_quality_command),
     CommandFamily(REFERENCE_COMMANDS, handle_reference_command),
     CommandFamily(SILENCE_COMPARISON_COMMANDS, handle_silence_comparison_command),
+    CommandFamily(SPEAKER_IDENTITY_COMMANDS, handle_speaker_identity_command),
     CommandFamily(COHORT_REVIEW_COMMANDS, handle_cohort_review_command),
     CommandFamily(PACK_COMMANDS, handle_pack_command),
     CommandFamily(DELIVERY_COMMANDS, handle_delivery_command),

@@ -16,6 +16,10 @@ from vntts.authoring.cli_render_reviews import (
     RenderHypothesisReviewError,
 )
 from vntts.authoring.cli_silence_comparison import SilenceComparisonError
+from vntts.authoring.cli_speaker_identity import (
+    SpeakerIdentityError,
+    SpeakerIdentityModelError,
+)
 from vntts.authoring.cli_speech_robustness import SpeechRobustnessCommandError
 from vntts.authoring.cli_terminal_conflicts import (
     TerminalConflictResolutionError,
@@ -78,6 +82,8 @@ USER_ERRORS = (
     ReferenceRenderComparisonError,
     RenderHypothesisReviewError,
     SilenceComparisonError,
+    SpeakerIdentityError,
+    SpeakerIdentityModelError,
     SpeechRobustnessCommandError,
     SourceReferenceReviewError,
     SourceReferenceQualityError,
