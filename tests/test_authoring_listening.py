@@ -495,17 +495,27 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             write_model_reports(root, item_count=item_count), root / "session"
         )
         dialog = ModelListeningDialog(session, auto_play=False, **kwargs)
-        dialog.player = Mock()
+        self.replace_players_with_mocks(dialog)
         return session, dialog
+
+    @staticmethod
+    def replace_players_with_mocks(dialog):
+        for player in dialog.players.values():
+            player.stop()
+            player.mediaStatusChanged.disconnect()
+            player.playbackStateChanged.disconnect()
+            player.durationChanged.disconnect()
+            player.positionChanged.disconnect()
+        dialog.players = {"a": Mock(), "b": Mock()}
 
     def test_requires_both_samples_then_saves_and_completes(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
             dialog.play("a")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("a", QMediaPlayer.PlaybackState.PlayingState)
             self.assertFalse(dialog.prefer_a.isEnabled())
             dialog.play("b")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("b", QMediaPlayer.PlaybackState.PlayingState)
             self.assertTrue(dialog.prefer_a.isEnabled())
             self.assertTrue(dialog.neither.isEnabled())
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
@@ -569,11 +579,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
             dialog.play_a.setFocus()
             QTest.keyClick(dialog.play_a, Qt.Key.Key_Return)
-            dialog.player.play.assert_called_once_with()
+            dialog.players["a"].play.assert_called_once_with()
             dialog.play("b")
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("b", QMediaPlayer.PlaybackState.PlayingState)
             dialog.active_side = "a"
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("a", QMediaPlayer.PlaybackState.PlayingState)
             self.assertTrue(dialog.prefer_a.isEnabled())
             self.assertIn("Decision ready", dialog.decision_reason.text())
             dialog.save_preference = Mock()
@@ -605,25 +615,26 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
             dialog.start_auto_playback()
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("a", QMediaPlayer.PlaybackState.PlayingState)
             self.assertEqual(dialog.started_sides, {"a"})
-            dialog.media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            dialog.media_status_changed("a", QMediaPlayer.MediaStatus.EndOfMedia)
             self.application.processEvents()
-            dialog.playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            dialog.playback_state_changed("b", QMediaPlayer.PlaybackState.PlayingState)
             self.assertEqual(dialog.started_sides, {"a", "b"})
             self.assertTrue(dialog.tie.isEnabled())
             dialog.toggle_playback()
-            dialog.player.pause.assert_called_once_with()
+            dialog.players["b"].pause.assert_called_once_with()
             self.assertEqual(dialog.stop.text(), "Continue")
             dialog.deleteLater()
 
     def test_seek_skip_and_track_click(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
-            dialog.player.position.return_value = 2_000
-            dialog.player.duration.return_value = 120_000
-            dialog.duration_changed(120_000)
-            dialog.position_changed(65_000)
+            dialog.active_side = "a"
+            dialog.players["a"].position.return_value = 2_000
+            dialog.players["a"].duration.return_value = 120_000
+            dialog.duration_changed("a", 120_000)
+            dialog.position_changed("a", 65_000)
             dialog.seek_to(90_000)
             dialog.skip_by(5_000)
             self.assertEqual(dialog.time.text(), "0:07 / 2:00")
@@ -635,6 +646,33 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 pos=QPoint(dialog.seek.width() * 3 // 4, dialog.seek.height() // 2),
             )
             self.assertAlmostEqual(dialog.seek.value(), 90_000, delta=2_000)
+            dialog.deleteLater()
+
+    def test_rapid_switch_uses_preloaded_side_players_and_ignores_stale_events(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            dialog = ModelListeningDialog(session, auto_play=False)
+            self.assertTrue(
+                all(player.source().isLocalFile() for player in dialog.players.values())
+            )
+            self.replace_players_with_mocks(dialog)
+
+            for side in ("a", "b", "a"):
+                dialog.play(side)
+            dialog.playback_state_changed("b", QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(dialog.started_sides, set())
+            dialog.playback_state_changed("a", QMediaPlayer.PlaybackState.PlayingState)
+
+            self.assertEqual(dialog.started_sides, {"a"})
+            self.assertEqual(dialog.players["a"].play.call_count, 2)
+            self.assertEqual(dialog.players["b"].play.call_count, 1)
+            for player in dialog.players.values():
+                player.setSource.assert_not_called()
+            dialog.players["a"].setPosition.assert_called_with(0)
+            dialog.players["b"].setPosition.assert_called_with(0)
             dialog.deleteLater()
 
     def test_report_failure_advances_from_the_persisted_score(self):

@@ -353,6 +353,13 @@ The Qt workbench resumes the first serialized unrated trial, autoplays A then B,
 keeps preference controls locked until both sides start, and provides pause,
 restart, seek and five-second skip controls.
 
+Each trial preloads A and B into separate `QMediaPlayer`/`QAudioOutput` pairs.
+Switching stops the inactive side and restarts the selected side from position
+zero without replacing its asynchronous media source. Playback callbacks carry
+their source side, so a late state change from the previous candidate cannot
+start, finish or move the controls for the newly selected candidate. This also
+keeps rapid switching stable when the two WAVs use different sample rates.
+
 Preference and derived-report publication run outside the Qt thread. While the
 exact trial snapshot is being committed, decision buttons are disabled with a
 visible saving reason but playback remains available. Closing the dialog is
